@@ -1,0 +1,10 @@
+{
+  "name": "trelio-agent-workspaces-hooks",
+  "version": "0.1.0",
+  "description": "Стабильные hooks Trelio Agent Workspaces. Одобряются отдельно от обновляемого основного плагина.",
+  "author": {
+    "name": "Trelio"
+  },
+  "repository": "https://github.com/trelio-ru/agent-workspaces",
+  "hooks": "./hooks/hooks.json"
+}

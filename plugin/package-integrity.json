@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "plugin": "trelio-agent-workspaces-hooks",
+  "version": "0.1.0",
+  "sharedShell": {
+    "schemaVersion": 1,
+    "repository": "https://github.com/trelio-ru/agent-workspaces.git",
+    "revision": "46f03668b3d4e8f68f0e432be059bf35fefbd1af",
+    "directory": "plugins/trelio-agent-workspaces/scripts",
+    "componentVersion": "3.2.4"
+  },
+  "files": [
+    {
+      "path": ".codex-plugin/plugin.json",
+      "mode": 420,
+      "size": 381,
+      "sha256": "a3f65f158829fdcac519147fd3472b07a32df6b861cc46e10bee2ae601d0457c"
+    },
+    {
+      "path": ".gitattributes",
+      "mode": 420,
+      "size": 8,
+      "sha256": "705fd4d6451a31d36b3df7de96f83f30ac976c9b4a6d1e51671d8e2f33e2d0da"
+    },
+    {
+      "path": "hooks/hooks.json",
+      "mode": 420,
+      "size": 3277,
+      "sha256": "1e6a95ee5cd62f2021d38afd10ef8594b391416098c2a9154a30ce81e3cdb1bb"
+    },
+    {
+      "path": "scripts/launch-trelio-node",
+      "mode": 493,
+      "size": 2935,
+      "sha256": "045b5d54fa265a1e75ef011f771bf3bb77b058e50b1ce64d84353c0c40e741db"
+    },
+    {
+      "path": "scripts/launch-trelio-node.cmd",
+      "mode": 420,
+      "size": 3196,
+      "sha256": "dc2d254b2f418ee13c8bd8287970418ee1c5541b46d3e5407880b7062d03c5c1"
+    },
+    {
+      "path": "scripts/resolve-node.ps1",
+      "mode": 420,
+      "size": 4696,
+      "sha256": "84d25ed28693fbd0af99293111703430f666e534925710d2d5e3bb23c2e6b029"
+    },
+    {
+      "path": "scripts/trelio-host-runtime-download.mjs",
+      "mode": 420,
+      "size": 4876,
+      "sha256": "daf9fe77e6f9699755db24ec5d2a1189c36510c9ba20228ad36bf13e2fd4170b"
+    },
+    {
+      "path": "scripts/trelio-host-runtime-loader.mjs",
+      "mode": 420,
+      "size": 26081,
+      "sha256": "088333d64c2f038626adcf2cb599ea3fab1b287cd620ebfd0a8edfff2657f706"
+    },
+    {
+      "path": "scripts/trelio-host-runtime-shell.mjs",
+      "mode": 420,
+      "size": 8316,
+      "sha256": "e0c60b4e7271aa54626a6df217ea55a59b898a83785ab21a5a6c8feca1305d9e"
+    },
+    {
+      "path": "scripts/trelio-mcp-startup-budget.mjs",
+      "mode": 420,
+      "size": 2960,
+      "sha256": "87adf5cfef5772861673ec533c55b25b0137662b01eda23e08a211147248e974"
+    }
+  ]
+}

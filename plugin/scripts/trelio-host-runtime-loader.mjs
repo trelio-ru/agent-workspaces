@@ -1,0 +1,631 @@
+#!/usr/bin/env node
+
+/**
+ * Stable Trelio plugin shell.
+ *
+ * Loader never mutates Codex plugin cache. It selects an already verified
+ * content-addressed runtime outside that cache and checks for a newer signed
+ * package in a detached helper. A fresh installation and every long-lived MCP
+ * startup perform a foreground convergence because a stale MCP process cannot
+ * replace its own executable after the server raises the runtime minimum.
+ * Therefore runtime updates neither rewrite plugin files nor invalidate
+ * absolute paths held by open Codex tasks.
+ */
+import { spawn } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  PLUGIN_VERSION,
+  parseAndValidateHostRuntimePackage,
+  resolveWorkspaceBridgeConfigDirectory,
+} from "./trelio-host-runtime-shell.mjs";
+
+import {
+  downloadHostRuntimeResponse,
+  UPDATE_NETWORK_TIMEOUT_MS,
+} from "./trelio-host-runtime-download.mjs";
+import { createMcpStartupBudget, MCP_UPDATE_TIMEOUT_MS } from "./trelio-mcp-startup-budget.mjs";
+
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const HOST_RUNTIME_SKILL_ID = "trelio-host-runtime";
+const DEFAULT_ORIGIN = "https://trelio.ru";
+const UPDATE_INTERVAL_MS = 15 * 60 * 1000;
+const UPDATE_FAILURE_RETRY_MS = 5 * 60 * 1000;
+const LOCK_STALE_MS = 5 * 60 * 1000;
+const UPDATE_LOCK_WAIT_MS = 90 * 1000;
+const MAX_METADATA_BYTES = 256 * 1024;
+const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
+const MCP_STARTUP_REQUEST_TIMEOUT_MS = 4_000;
+const MCP_STARTUP_RETRY_DELAYS_MS = Object.freeze([200, 600, 1_200]);
+
+const CONFIG_DIRECTORY = resolveWorkspaceBridgeConfigDirectory();
+const RUNTIME_ROOT = path.join(CONFIG_DIRECTORY, "host-runtimes");
+const CURRENT_POINTER_PATH = path.join(RUNTIME_ROOT, "current.json");
+const UPDATE_STATE_PATH = path.join(RUNTIME_ROOT, "update-state.json");
+const UPDATE_LOCK_PATH = path.join(RUNTIME_ROOT, "update.lock");
+
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const stableVersionPattern = /^\d{1,9}\.\d{1,9}\.\d{1,9}$/u;
+const sha256Pattern = /^[0-9a-f]{64}$/u;
+
+const compareStableVersions = (left, right) => {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return leftParts[index] > rightParts[index] ? 1 : -1;
+    }
+  }
+  return 0;
+};
+
+const ensurePrivateDirectory = async (directoryPath) => {
+  await fs.mkdir(directoryPath, { recursive: true, mode: 0o700 });
+  const metadata = await fs.lstat(directoryPath);
+
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("Trelio host runtime cache имеет небезопасный тип.");
+  }
+  if (process.platform !== "win32") {
+    await fs.chmod(directoryPath, 0o700);
+  }
+};
+
+const readPrivateJson = async (filePath, startupBudget) => {
+  try {
+    startupBudget?.check("cache_verification");
+    const metadata = await fs.lstat(filePath);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+    const source = await fs.readFile(filePath, "utf8");
+    startupBudget?.check("cache_verification");
+    return JSON.parse(source);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+};
+
+const writePrivateJson = async (filePath, value) => {
+  await ensurePrivateDirectory(path.dirname(filePath));
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await fs.writeFile(temporaryPath, `${JSON.stringify(value)}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  await fs.rename(temporaryPath, filePath);
+};
+
+const scheduleNextUpdate = async (delayMilliseconds) => {
+  // update-state is a private throttle, not a diagnostic journal. Keeping only
+  // the timestamp consumed by startDetachedUpdate avoids stale duplicate state.
+  await writePrivateJson(UPDATE_STATE_PATH, {
+    nextAttemptAt: new Date(Date.now() + delayMilliseconds).toISOString(),
+  });
+};
+
+const normalizeOrigin = (rawOrigin) => {
+  const url = new URL(rawOrigin || DEFAULT_ORIGIN);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(url.hostname))) {
+    throw new Error("Trelio host runtime origin должен использовать HTTPS.");
+  }
+  url.pathname = "/";
+  url.search = "";
+  url.hash = "";
+  return url.origin;
+};
+
+export const normalizeHostRuntimeDescriptor = (payload, origin) => {
+  const runtime = payload?.runtime;
+  const packageUrl = new URL(String(runtime?.packageUrl || ""), origin);
+
+  if (
+    payload?.schemaVersion !== 1
+    || !runtime
+    || !stableVersionPattern.test(String(runtime.runtimeVersion || ""))
+    || !stableVersionPattern.test(String(runtime.minimumRuntimeVersion || ""))
+    || !stableVersionPattern.test(String(runtime.minimumPluginVersion || ""))
+    || compareStableVersions(runtime.runtimeVersion, runtime.minimumRuntimeVersion) < 0
+    || !sha256Pattern.test(String(runtime.packageSha256 || ""))
+    || !Number.isSafeInteger(runtime.packageSizeBytes)
+    || runtime.packageSizeBytes <= 0
+    || runtime.packageSizeBytes > MAX_PACKAGE_BYTES
+    || typeof runtime.packageSignature !== "string"
+    || typeof runtime.signingPublicKeySpki !== "string"
+    || packageUrl.origin !== origin
+    || packageUrl.protocol !== new URL(origin).protocol
+  ) {
+    throw new Error("Trelio вернул некорректное описание host runtime.");
+  }
+
+  return {
+    ...runtime,
+    packageUrl: packageUrl.href,
+  };
+};
+
+export const verifyHostRuntimeSignature = (packageBytes, descriptor) => {
+  const publicKey = crypto.createPublicKey({
+    key: Buffer.from(descriptor.signingPublicKeySpki, "base64"),
+    format: "der",
+    type: "spki",
+  });
+  const signature = Buffer.from(descriptor.packageSignature, "base64");
+
+  if (
+    publicKey.asymmetricKeyType !== "ed25519"
+    || signature.byteLength !== 64
+    || !crypto.verify(null, packageBytes, publicKey, signature)
+  ) {
+    throw new Error("Trelio host runtime не прошёл Ed25519 signature verification.");
+  }
+};
+
+const runtimeDirectoryFor = (descriptor) => path.join(
+  RUNTIME_ROOT,
+  descriptor.runtimeVersion,
+  descriptor.packageSha256,
+);
+
+const readVerifiedRuntime = async (pointer = null, startupBudget) => {
+  startupBudget?.check("cache_verification");
+  const selected = pointer ?? await readPrivateJson(CURRENT_POINTER_PATH, startupBudget);
+
+  if (
+    !selected
+    || !stableVersionPattern.test(String(selected.runtimeVersion || ""))
+    || !sha256Pattern.test(String(selected.packageSha256 || ""))
+  ) {
+    return null;
+  }
+
+  const runtimeDirectory = runtimeDirectoryFor(selected);
+  const marker = await readPrivateJson(path.join(runtimeDirectory, ".trelio-verified.json"), startupBudget);
+  const entrypointRelativePath = "scripts/trelio-host-runtime-entry.mjs";
+  const entrypointPath = path.join(runtimeDirectory, ...entrypointRelativePath.split("/"));
+
+  if (
+    marker?.runtimeVersion !== selected.runtimeVersion
+    || marker?.packageSha256 !== selected.packageSha256
+    || !Array.isArray(marker?.files)
+  ) {
+    return null;
+  }
+
+  const verifiedPaths = new Set();
+  for (const file of marker.files) {
+    startupBudget?.check("cache_verification");
+    if (
+      typeof file?.path !== "string"
+      || file.path.includes("\\")
+      || file.path.split("/").some((segment) => !segment || segment === "." || segment === "..")
+      || verifiedPaths.has(file.path)
+      || !sha256Pattern.test(String(file?.sha256 || ""))
+      || !Number.isSafeInteger(file?.sizeBytes)
+    ) {
+      return null;
+    }
+    const absolutePath = path.join(runtimeDirectory, ...file.path.split("/"));
+    try {
+      const metadata = await fs.lstat(absolutePath);
+      if (
+        !metadata.isFile()
+        || metadata.isSymbolicLink()
+        || metadata.size !== file.sizeBytes
+      ) {
+        return null;
+      }
+      const bytes = await fs.readFile(absolutePath);
+      if (crypto.createHash("sha256").update(bytes).digest("hex") !== file.sha256) {
+        return null;
+      }
+      // Проверка файла не становится бесплатной частью startup: даже если
+      // ОС долго отвечала на read, просроченный результат не запускает runtime.
+      startupBudget?.check("cache_verification");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+    verifiedPaths.add(file.path);
+  }
+  if (!verifiedPaths.has(entrypointRelativePath)) return null;
+
+  return {
+    runtimeVersion: selected.runtimeVersion,
+    packageSha256: selected.packageSha256,
+    runtimeDirectory,
+    entrypointPath,
+  };
+};
+
+const removeInvalidRuntimeTarget = async (targetDirectory) => {
+  const metadata = await fs.lstat(targetDirectory).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!metadata) return;
+  if (metadata.isSymbolicLink()) {
+    throw new Error("Повреждённый Trelio host runtime cache имеет небезопасный тип.");
+  }
+
+  // materializeRuntime is called only while the updater lock is held. The
+  // descriptor also fixes this exact version/hash path, so recovery removes no
+  // sibling runtime and cannot widen into a cache sweep.
+  if (metadata.isDirectory()) {
+    await fs.rm(targetDirectory, { recursive: true, force: false });
+  } else {
+    await fs.unlink(targetDirectory);
+  }
+};
+
+const materializeRuntime = async (descriptor, packageBytes, startupBudget) => {
+  startupBudget?.check("materialization");
+  const parsed = parseAndValidateHostRuntimePackage(packageBytes, HOST_RUNTIME_SKILL_ID);
+
+  if (
+    parsed.runtimeVersion !== descriptor.runtimeVersion
+    || parsed.packageSha256 !== descriptor.packageSha256
+    || parsed.packageSizeBytes !== descriptor.packageSizeBytes
+    || parsed.entrypoint.path !== "scripts/trelio-host-runtime-entry.mjs"
+    || parsed.entrypoint.interpreter !== "node"
+  ) {
+    throw new Error("Подписанный host runtime не совпадает с опубликованным manifest.");
+  }
+
+  const targetDirectory = runtimeDirectoryFor(descriptor);
+  const existing = await readVerifiedRuntime(descriptor, startupBudget);
+  if (existing) {
+    // An interrupted pointer update can leave the signed, fully verified tree
+    // intact while current.json is absent. Restore only the exact descriptor
+    // selected by the server before the caller tries to start the runtime.
+    await writePrivateJson(CURRENT_POINTER_PATH, {
+      runtimeVersion: descriptor.runtimeVersion,
+      packageSha256: descriptor.packageSha256,
+    });
+    return existing;
+  }
+
+  await ensurePrivateDirectory(path.dirname(targetDirectory));
+  await removeInvalidRuntimeTarget(targetDirectory);
+  const temporaryDirectory = await fs.mkdtemp(path.join(
+    path.dirname(targetDirectory),
+    ".materializing-",
+  ));
+  if (process.platform !== "win32") await fs.chmod(temporaryDirectory, 0o700);
+
+  try {
+    for (const file of parsed.files) {
+      startupBudget?.check("materialization");
+      const absolutePath = path.join(temporaryDirectory, ...file.path.split("/"));
+      await ensurePrivateDirectory(path.dirname(absolutePath));
+      await fs.writeFile(absolutePath, file.bytes, {
+        flag: "wx",
+        mode: file.mode,
+      });
+    }
+    await writePrivateJson(path.join(temporaryDirectory, ".trelio-verified.json"), {
+      runtimeVersion: descriptor.runtimeVersion,
+      packageSha256: descriptor.packageSha256,
+      verifiedAt: new Date().toISOString(),
+      files: parsed.files.map((file) => ({
+        path: file.path,
+        sha256: file.sha256,
+        sizeBytes: file.bytes.byteLength,
+      })),
+    });
+
+    startupBudget?.check("materialization");
+    await fs.rename(temporaryDirectory, targetDirectory);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    for (const file of parsed.files) file.bytes.fill(0);
+  }
+
+  startupBudget?.check("materialization");
+  await writePrivateJson(CURRENT_POINTER_PATH, {
+    runtimeVersion: descriptor.runtimeVersion,
+    packageSha256: descriptor.packageSha256,
+  });
+  const verified = await readVerifiedRuntime(descriptor, startupBudget);
+  if (!verified) throw new Error("Trelio host runtime не прошёл проверку после materialization.");
+  return verified;
+};
+
+const acquireUpdateLock = async ({ waitForExisting = false, requestPolicy } = {}) => {
+  await ensurePrivateDirectory(RUNTIME_ROOT);
+  // MCP должен успеть передать stdio рантайму до handshake timeout клиента.
+  // Ожидание чужого updater расходует ТОТ ЖЕ срок, что и следующие HTTP GET,
+  // а не отдельные 90 секунд до начала сетевого бюджета. Обычный __update
+  // сохраняет прежний предел ожидания; чужую блокировку при timeout не трогаем.
+  const deadline = Math.min(
+    Date.now() + UPDATE_LOCK_WAIT_MS,
+    requestPolicy?.deadline ?? Infinity,
+  );
+
+  while (true) {
+    if (Date.now() >= deadline) {
+      if (requestPolicy?.deadline !== undefined) {
+        const diagnostic = {
+          code: "TRELIO_HOST_RUNTIME_UPDATE_FAILED",
+          operation: "host_runtime_update",
+          reason: "timeout",
+          stage: "update_lock",
+          timeoutKind: "total",
+          timeoutMs: requestPolicy.totalTimeoutMs,
+        };
+        throw Object.assign(new Error(JSON.stringify(diagnostic)), { diagnostic });
+      }
+      throw new Error("Trelio host runtime update lock не освободился вовремя.");
+    }
+    try {
+      await fs.mkdir(UPDATE_LOCK_PATH, { mode: 0o700 });
+      return true;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+
+    const metadata = await fs.lstat(UPDATE_LOCK_PATH).catch(() => null);
+    if (metadata && Date.now() - metadata.mtimeMs > LOCK_STALE_MS) {
+      await fs.rm(UPDATE_LOCK_PATH, { recursive: true, force: true });
+      continue;
+    }
+    if (!waitForExisting) return false;
+    // A hard compatibility gate can race with the detached updater started at
+    // process launch. Waiting here avoids re-executing the same stale runtime.
+    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+  }
+};
+
+const updateRuntime = async ({
+  environment = process.env,
+  waitForExisting = false,
+  requestPolicy,
+  startupBudget,
+} = {}) => {
+  // Lock acquisition остаётся вне try/finally: процесс, который не получил
+  // блокировку, не вправе удалить её или менять retry-state другого updater.
+  if (!await acquireUpdateLock({ waitForExisting, requestPolicy })) return false;
+
+  try {
+    const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
+    const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
+    metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
+    // Один общий network budget не даёт непрерывному медленному stream либо
+    // четырём попыткам пережить срок stale lock. MCP startup передаёт уже
+    // начавшийся до lock короткий срок; остальные режимы получают сетевой
+    // бюджет здесь и могут завершить большую загрузку.
+    const networkPolicy = { totalTimeoutMs: UPDATE_NETWORK_TIMEOUT_MS, ...requestPolicy };
+    networkPolicy.deadline ??= Date.now() + networkPolicy.totalTimeoutMs;
+    const metadataResponse = await downloadHostRuntimeResponse(metadataUrl, {
+      ...networkPolicy,
+      resource: "metadata",
+      maximumBytes: MAX_METADATA_BYTES,
+    });
+
+    // A source-only/backend rollout may precede the first runtime artifact.
+    // Existing verified runtimes keep working, but a fresh shell must fail
+    // closed because it intentionally contains no executable fallback.
+    if (metadataResponse.status === 404) {
+      await scheduleNextUpdate(UPDATE_INTERVAL_MS);
+      return false;
+    }
+    let descriptor;
+    try {
+      descriptor = normalizeHostRuntimeDescriptor(JSON.parse(metadataResponse.bytes.toString("utf8")), origin);
+    } finally {
+      metadataResponse.bytes.fill(0);
+    }
+    if (compareStableVersions(PLUGIN_VERSION, descriptor.minimumPluginVersion) < 0) {
+      throw new Error(`Host runtime требует plugin v${descriptor.minimumPluginVersion} или новее.`);
+    }
+
+    // Lock мог достаться после публикации соседом нового pointer. Проверяем
+    // именно этот свежий snapshot, иначе каждый ожидавший процесс повторно
+    // скачает уже установленный package по своему прежнему выбору.
+    const current = await readVerifiedRuntime(null, startupBudget);
+    if (
+      current
+      && current.runtimeVersion === descriptor.runtimeVersion
+      && current.packageSha256 === descriptor.packageSha256
+    ) {
+      await scheduleNextUpdate(UPDATE_INTERVAL_MS);
+      return false;
+    }
+
+    // Повтор включает bounded чтение всего body. Signature/manifest checks
+    // выполняются только после полного ответа, вне transport retry: повреждённый
+    // либо неподписанный package не становится сетевой ошибкой.
+    const { bytes: packageBytes } = await downloadHostRuntimeResponse(descriptor.packageUrl, {
+      ...networkPolicy,
+      resource: "package",
+      maximumBytes: descriptor.packageSizeBytes,
+    });
+
+    try {
+      verifyHostRuntimeSignature(packageBytes, descriptor);
+      // Package parsing computes the whole-package SHA-256 once and compares
+      // both size and digest with this descriptor before any file is written.
+      await materializeRuntime(descriptor, packageBytes, startupBudget);
+    } finally {
+      packageBytes.fill(0);
+    }
+
+    await scheduleNextUpdate(UPDATE_INTERVAL_MS);
+    return true;
+  } catch (error) {
+    await scheduleNextUpdate(UPDATE_FAILURE_RETRY_MS).catch(() => undefined);
+    throw error;
+  } finally {
+    await fs.rm(UPDATE_LOCK_PATH, { recursive: true, force: true });
+  }
+};
+
+const startDetachedUpdate = async ({
+  environment = process.env,
+  spawnProcess = spawn,
+} = {}) => {
+  if (environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE === "1") return false;
+  const state = await readPrivateJson(UPDATE_STATE_PATH);
+  const nextAttemptAt = Date.parse(String(state?.nextAttemptAt || ""));
+  if (Number.isFinite(nextAttemptAt) && nextAttemptAt > Date.now()) return false;
+
+  const child = spawnProcess(process.execPath, [fileURLToPath(import.meta.url), "__update"], {
+    detached: true,
+    env: environment,
+    shell: false,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  return true;
+};
+
+export const selectHostRuntime = async () => readVerifiedRuntime();
+
+export const runHostRuntimeLoader = async ({
+  rawArguments = process.argv.slice(2),
+  environment = process.env,
+  spawnProcess = spawn,
+} = {}) => {
+  const [mode, ...forwardedArguments] = rawArguments;
+
+  if (mode === "__update") {
+    await updateRuntime({
+      environment,
+      waitForExisting: environment.TRELIO_HOST_RUNTIME_UPDATE_WAIT_FOR_LOCK === "1",
+    });
+    return 0;
+  }
+  if (!new Set(["bridge", "hook", "mcp"]).has(mode)) {
+    throw new Error("Trelio host runtime loader ожидает mode bridge, hook или mcp.");
+  }
+
+  // Отсчитываем от launcher/начала Node, а не от входа в эту функцию ПОСЛЕ
+  // imports. HTTP/lock получают только остаток 20 секунд; локальные проверки
+  // и spawn ограничены теми же часами с резервом 5 секунд, без нового бюджета.
+  const startupBudget = mode === "mcp" ? createMcpStartupBudget({ environment }) : undefined;
+  startupBudget?.trace("loader_enter");
+  const requestPolicy = mode === "mcp" ? {
+    requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
+    totalTimeoutMs: MCP_UPDATE_TIMEOUT_MS,
+    deadline: startupBudget.updateDeadline,
+    retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
+  } : undefined;
+  let selected = await readVerifiedRuntime(null, startupBudget);
+  startupBudget?.trace("cache_verified");
+  if (
+    !selected
+    || (mode === "mcp" && environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE !== "1")
+  ) {
+    let updateError;
+    try {
+      // The local MCP is long-lived. If it starts on a cached runtime and the
+      // server has already raised the minimum, a detached update can switch
+      // current.json but cannot replace the executable that owns this stdio
+      // transport. Converge before opening the transport and then re-read the
+      // verified pointer. A bounded network failure preserves the existing
+      // immutable runtime; its next server call remains fail-closed.
+      await updateRuntime({
+        environment,
+        waitForExisting: true,
+        requestPolicy,
+        startupBudget,
+      });
+    } catch (error) {
+      updateError = error;
+    }
+    // Пока мы ждали lock, соседний процесс мог закончить signed update.
+    // Перечитываем и проверяем pointer даже после timeout; прежний проверенный
+    // immutable runtime остаётся fallback с обычным server-side admission.
+    // Без проверенного runtime первый запуск fail-closed возвращает исходную
+    // ошибку, а не начинает второй bootstrap с новым, неограниченным бюджетом.
+    const previousSelection = selected;
+    selected = await readVerifiedRuntime(null, startupBudget);
+    // Старый объект выбора сам по себе не доказывает целостность файлов ПОСЛЕ
+    // ожидания updater. Если pointer исчез/повреждён, fallback заново проверяет
+    // exact прежнее дерево и никогда не исполняет уже повреждённый entrypoint.
+    if (!selected && previousSelection) {
+      selected = await readVerifiedRuntime(previousSelection, startupBudget);
+    }
+    startupBudget?.trace("update_complete");
+    if (!selected && updateError) throw updateError;
+  }
+  if (!selected) {
+    throw new Error(
+      "HOST_RUNTIME_UNAVAILABLE: подписанный Trelio host runtime ещё не опубликован или недоступен.",
+    );
+  }
+  // Update is deliberately outside the foreground path. This process never
+  // deletes the selected content-addressed directory, so an already running
+  // hook, bridge or MCP host keeps a stable executable tree.
+  return await new Promise((resolve, reject) => {
+    startupBudget?.check("runtime_spawn");
+    startupBudget?.trace("runtime_spawn");
+    // Не переносим отметку предыдущего launcher в hook/bridge либо следующий
+    // самостоятельный MCP. Это только local accounting, не runtime authority.
+    const childEnvironment = { ...environment };
+    delete childEnvironment.TRELIO_MCP_LAUNCH_TIME;
+    const child = spawnProcess(
+      process.execPath,
+      [selected.entrypointPath, mode, ...forwardedArguments],
+      {
+        cwd: selected.runtimeDirectory,
+        env: {
+          ...childEnvironment,
+          TRELIO_HOST_RUNTIME_VERSION: selected.runtimeVersion,
+          TRELIO_PLUGIN_VERSION: PLUGIN_VERSION,
+          TRELIO_PLUGIN_ROOT: PLUGIN_ROOT,
+        },
+        shell: false,
+        stdio: "inherit",
+        windowsHide: true,
+      },
+    );
+    // Чтение updater throttle/его spawn больше не стоит перед MCP transport.
+    // Ошибка фонового обслуживания не меняет уже проверенный выбор runtime.
+    void startDetachedUpdate({ environment: childEnvironment, spawnProcess }).catch(() => undefined);
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      resolve(code ?? 1);
+    });
+  });
+};
+
+// Node resolves the module through directory links/junctions, while argv[1]
+// retains the caller's spelling. Compare the actual file so an approved hook
+// cannot silently exit 0 before loading its signed runtime. This affects only
+// CLI detection, never package path validation, signatures or cache selection.
+const isLoaderEntrypoint = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return path.relative(
+      realpathSync.native(fileURLToPath(import.meta.url)),
+      realpathSync.native(path.resolve(process.argv[1])),
+    ) === "";
+  } catch {
+    return false;
+  }
+};
+
+if (isLoaderEntrypoint()) {
+  const isHookInvocation = process.argv[2] === "hook";
+  runHostRuntimeLoader()
+    .then((exitCode) => {
+      // Codex blocks a PreToolUse call only for exit 2. If package selection or
+      // the child hook fails with another code, forwarding it would let the MCP
+      // request proceed without the runtime proof and hide the local failure.
+      process.exitCode = isHookInvocation && exitCode !== 0 ? 2 : exitCode;
+    })
+    .catch((error) => {
+      process.stderr.write(`Trelio host runtime loader failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = isHookInvocation ? 2 : 1;
+    });
+}

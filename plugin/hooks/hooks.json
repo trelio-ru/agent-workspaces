@@ -1,0 +1,44 @@
+{
+  "description": "Закрепляет наблюдаемую клиентом модель и reasoning effort и подписывает защищённые Trelio MCP-вызовы.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
