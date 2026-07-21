@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trelio Workspace Worker"
+  short_description: "Выполняет задачи через Agent Workspaces"
+  default_prompt: "Возьми доступную задачу Trelio, выполни её в Agent Workspace и передай результат на проверку."

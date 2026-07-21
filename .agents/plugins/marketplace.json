@@ -1,0 +1,20 @@
+{
+  "name": "trelio-plugins",
+  "interface": {
+    "displayName": "Trelio"
+  },
+  "plugins": [
+    {
+      "name": "trelio-agent-workspaces",
+      "source": {
+        "source": "local",
+        "path": "./plugins/trelio-agent-workspaces"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
