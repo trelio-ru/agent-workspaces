@@ -8,7 +8,7 @@
 Добавьте GitHub-репозиторий как Codex marketplace:
 
 ```bash
-codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.1.0
+codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.1.1
 ```
 
 Затем перезапустите ChatGPT desktop, откройте `Plugins`, выберите источник

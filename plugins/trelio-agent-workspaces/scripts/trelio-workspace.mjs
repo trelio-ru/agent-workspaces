@@ -17,7 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.1.0";
+const BRIDGE_VERSION = "1.1.1";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
