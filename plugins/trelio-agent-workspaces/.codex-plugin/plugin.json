@@ -8,12 +8,12 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Trelio Agent Workspaces",
-    "shortDescription": "Выполняйте задачи в версионированных workspace.",
-    "longDescription": "Подключает Trelio MCP, безопасный локальный Git bridge и регламент Agent Run для компаний, проектов и задач.",
+    "shortDescription": "Получайте содержательный результат прямо в задаче.",
+    "longDescription": "Подключает Trelio MCP и безопасный Agent Workspace, публикует понятные комментарии в задачах и передаёт результат человеку без лишних технических деталей.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Возьми доступную задачу Trelio, выполни её в Agent Workspace и передай результат на проверку."
+    "defaultPrompt": "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат в задаче и передай его человеку на проверку."
   },
   "mcpServers": "./.mcp.json"
 }

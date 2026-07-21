@@ -37,6 +37,21 @@ const parseArguments = (rawArguments) => {
   const options = {};
   const positional = [];
 
+  // Повторяемые параметры нужны для содержательного handoff без передачи
+  // тяжёлого JSON через shell: агент может несколько раз указать --evidence,
+  // --file и --question. Для старых одиночных параметров контракт сохраняется.
+  const appendOption = (key, value) => {
+    const currentValue = options[key];
+
+    if (currentValue === undefined) {
+      options[key] = value;
+    } else if (Array.isArray(currentValue)) {
+      currentValue.push(value);
+    } else {
+      options[key] = [currentValue, value];
+    }
+  };
+
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
 
@@ -49,17 +64,17 @@ const parseArguments = (rawArguments) => {
     const key = token.slice(2, equalsIndex >= 0 ? equalsIndex : undefined);
 
     if (equalsIndex >= 0) {
-      options[key] = token.slice(equalsIndex + 1);
+      appendOption(key, token.slice(equalsIndex + 1));
       continue;
     }
 
     const nextToken = tokens[index + 1];
 
     if (nextToken && !nextToken.startsWith("--")) {
-      options[key] = nextToken;
+      appendOption(key, nextToken);
       index += 1;
     } else {
-      options[key] = true;
+      appendOption(key, true);
     }
   }
 
@@ -631,6 +646,30 @@ const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
   process.stdout.write(`Lease продлён до ${runPayload.leaseExpiresAt}.\n`);
 });
 
+const getOptionValues = (options, key) => {
+  const rawValue = options[key];
+  const values = Array.isArray(rawValue) ? rawValue : rawValue === undefined ? [] : [rawValue];
+  return values
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+};
+
+const getChangedPaths = async (workspaceDirectory) => {
+  const gitStatus = await getGitStatus(workspaceDirectory);
+
+  if (!gitStatus) {
+    return [];
+  }
+
+  // `git status --short` начинает строку двухсимвольным статусом и пробелом.
+  // Для rename человеку полезен итоговый путь справа от ` -> `.
+  return gitStatus
+    .split("\n")
+    .map((line) => line.slice(3).trim())
+    .map((changedPath) => changedPath.split(" -> ").at(-1)?.trim() || changedPath)
+    .filter(Boolean);
+};
+
 const checkpoint = async (options) => withRun(async ({ metadata, origin, token }) => {
   const checkpointType = String(options.type || "draft");
   const summary = String(options.summary || "").trim();
@@ -645,6 +684,36 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
     throw new Error("Неизвестный --type checkpoint.");
   }
 
+  const evidence = getOptionValues(options, "evidence");
+  const explicitlyNamedFiles = getOptionValues(options, "file");
+  const filesChanged = explicitlyNamedFiles.length > 0
+    ? explicitlyNamedFiles
+    : checkpointType === "handoff"
+      ? await getChangedPaths(metadata.workspaceDirectory)
+      : [];
+  const openQuestions = getOptionValues(options, "question");
+  const nextActionInstruction = getOptionValues(options, "next-action")[0] || "";
+  const rawTaskCommentId = getOptionValues(options, "task-comment")[0] || "";
+  const taskCommentId = rawTaskCommentId ? requireUuid(rawTaskCommentId, "task-comment") : "";
+
+  if (checkpointType === "handoff") {
+    if (summary.length < 20) {
+      throw new Error("Для handoff опишите итог для человека минимум в 20 символах через --summary.");
+    }
+
+    if (evidence.length === 0) {
+      throw new Error("Для handoff добавьте хотя бы один результат или проверку через --evidence.");
+    }
+
+    if (filesChanged.length === 0) {
+      throw new Error("Для handoff укажите материал через --file или оставьте изменения в workspace.");
+    }
+
+    if (!nextActionInstruction) {
+      throw new Error("Для handoff явно укажите действие оператора через --next-action.");
+    }
+  }
+
   const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/checkpoints`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -653,6 +722,11 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
       fencingToken: metadata.fencingToken,
       checkpointType,
       summary,
+      ...(evidence.length > 0 ? { evidence } : {}),
+      ...(filesChanged.length > 0 ? { filesChanged } : {}),
+      ...(openQuestions.length > 0 ? { openQuestions } : {}),
+      ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
+      ...(taskCommentId ? { taskCommentId } : {}),
     }),
   });
   const checkpointPayload = await response.json();
@@ -715,12 +789,9 @@ const submit = async (options) => withRun(async ({ metadata, origin, token }) =>
       body: createReadStream(bundlePath),
     });
     const result = await response.json();
-    process.stdout.write(`${JSON.stringify({
-      runId: result.run.id,
-      status: result.run.status,
-      candidateHead: result.run.candidateHead,
-      validation: result.validation,
-    }, null, 2)}\n`);
+    process.stdout.write("Результат передан человеку на проверку.\n");
+    process.stdout.write(`Статус: ${result.run.status === "review" ? "на проверке" : result.run.status}.\n`);
+    process.stdout.write("Проверки структуры и безопасности Trelio пройдены.\n");
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -734,6 +805,7 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace status\n");
   process.stdout.write("  trelio-workspace heartbeat\n");
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
+  process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
 };
 
