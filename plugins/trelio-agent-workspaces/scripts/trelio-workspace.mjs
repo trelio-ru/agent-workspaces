@@ -17,7 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.2.1";
+const BRIDGE_VERSION = "1.2.2";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
@@ -796,9 +796,15 @@ const submit = async (options) => withRun(async ({ metadata, origin, token }) =>
       body: createReadStream(bundlePath),
     });
     const result = await response.json();
-    process.stdout.write("Результат передан человеку на проверку.\n");
-    process.stdout.write(`Статус: ${result.run.status === "review" ? "на проверке" : result.run.status}.\n`);
-    process.stdout.write("Проверки структуры и безопасности Trelio пройдены.\n");
+    if (result.run.status !== "accepted") {
+      throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
+    }
+    process.stdout.write("Результат записан в рабочее пространство Trelio.\n");
+    process.stdout.write("Статус: принят автоматически.\n");
+    process.stdout.write("Проверки структуры, безопасности и актуальности базовой версии пройдены.\n");
+    if (result.projection?.status === "pending_reconciliation") {
+      process.stdout.write("Git-проекция будет восстановлена фоновым reconciliation; повторять submit не нужно.\n");
+    }
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }

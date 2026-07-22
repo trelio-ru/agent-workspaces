@@ -8,7 +8,7 @@
       "name": "trelio-agent-workspaces",
       "source": "./plugins/trelio-agent-workspaces",
       "description": "Trelio Agent Workspaces, one-use local Agent Secrets, and live company/project skills.",
-      "version": "1.2.1"
+      "version": "1.2.2"
     }
   ]
 }

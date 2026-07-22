@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Production integration for Trelio Agent Workspaces, Agent Secrets, and live company/project skill catalogs.",
   "author": {
     "name": "Trelio"
@@ -13,7 +13,7 @@
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],
-    "defaultPrompt": "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат в задаче и передай его человеку на проверку."
+    "defaultPrompt": "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат и сохрани материалы в рабочем пространстве."
   },
   "mcpServers": "./.mcp.json"
 }
