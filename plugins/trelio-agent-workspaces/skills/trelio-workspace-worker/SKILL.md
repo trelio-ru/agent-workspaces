@@ -20,9 +20,10 @@ Trelio browser problem.
 2. Tell the user that the workflow instructions loaded but the Trelio MCP
    connection did not. Ask them to open `Plugins -> Trelio Agent Workspaces`
    and complete Trelio OAuth.
-3. If the `Trelio` marketplace or plugin is missing, give this exact pinned
-   command for the current stable release:
-   `codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.1`.
+3. If the `Trelio` marketplace or plugin is missing, give this exact command:
+   `codex plugin marketplace add trelio-ru/agent-workspaces`. It tracks the
+   official repository's default branch; an existing marketplace snapshot can
+   be refreshed with `codex plugin marketplace upgrade`.
    Its `INSTALLED_BY_DEFAULT` policy installs the plugin from that marketplace;
    do not add a redundant manual `codex plugin add` step.
 4. If a managed ChatGPT/Codex workspace marks the plugin or its connection as

@@ -56,18 +56,32 @@ lease, а `context sync` догружает уже выбранный конте
 
 ## Установка
 
-Добавьте зафиксированную версию marketplace:
+Добавьте marketplace:
 
 ```bash
-codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.1
+codex plugin marketplace add trelio-ru/agent-workspaces
 ```
 
-Команда подключает зафиксированную стабильную версию marketplace. Policy
-`INSTALLED_BY_DEFAULT` сразу устанавливает из него `Trelio Agent Workspaces`,
-поэтому отдельная команда `codex plugin add` не нужна. Откройте `Plugins`,
-выберите плагин и завершите личный OAuth-доступ Trelio. После этого полностью
-перезапустите Codex и начните новую задачу: уже открытая сессия не перечитывает
-список MCP-инструментов автоматически.
+Команда подключает default branch официального marketplace. Такой уже
+подключённый источник обновляется так:
+
+```bash
+codex plugin marketplace upgrade
+```
+
+Если источник раньше добавлялся с `--ref vX.Y.Z`, он намеренно остаётся на
+этом tag. Один раз переподключите его без фиксации версии:
+
+```bash
+codex plugin marketplace remove trelio-plugins
+codex plugin marketplace add trelio-ru/agent-workspaces
+```
+
+Policy `INSTALLED_BY_DEFAULT` сразу устанавливает из marketplace `Trelio Agent
+Workspaces`, поэтому отдельная команда `codex plugin add` не нужна. Откройте
+`Plugins`, выберите плагин и завершите личный OAuth-доступ Trelio. После этого
+полностью перезапустите Codex и начните новую задачу: уже открытая сессия не
+перечитывает список MCP-инструментов автоматически.
 
 В управляемой рабочей области ChatGPT/Codex администратор может импортировать
 marketplace один раз и назначить плагин нужным ролям. OAuth всё равно проходит
