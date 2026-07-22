@@ -42,10 +42,88 @@ CONFIG_PATH = CONFIG_DIR / "accounts.toml"
 SECRETS_DIR = CONFIG_DIR / "secrets"
 KEYCHAIN_SERVICE_PREFIX = "trelio-email"
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
+GOOGLE_APP_PASSWORDS_URL = "https://myaccount.google.com/apppasswords"
+GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
+GMAIL_IMAP_HOST = "imap.gmail.com"
+GMAIL_SMTP_HOST = "smtp.gmail.com"
+
+# AppleScript получает только безопасный заголовок/текст через argv. Сам пароль
+# вводится уже внутри системного hidden-answer поля и возвращается через stdout,
+# поэтому не попадает в shell history или аргументы процесса.
+MACOS_PASSWORD_DIALOG_SCRIPT = r'''
+on run argv
+  set promptText to item 1 of argv
+  set dialogTitle to item 2 of argv
+  set dialogResult to display dialog promptText default answer "" with hidden answer buttons {"Отмена", "Сохранить"} default button "Сохранить" cancel button "Отмена" with title dialogTitle
+  return text returned of dialogResult
+end run
+'''.strip()
+
+# На Windows используем стандартное WinForms-окно с системным password mask.
+# Код статичен, секрет не передаётся в command line или environment: PowerShell
+# печатает его только в pipe родительского Python-процесса после нажатия OK.
+WINDOWS_PASSWORD_DIALOG_SCRIPT = r'''
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = New-Object System.Windows.Forms.Form
+$form.Text = $env:TRELIO_EMAIL_DIALOG_TITLE
+$form.StartPosition = 'CenterScreen'
+$form.FormBorderStyle = 'FixedDialog'
+$form.MinimizeBox = $false
+$form.MaximizeBox = $false
+$form.ShowInTaskbar = $true
+$form.TopMost = $true
+$form.ClientSize = New-Object System.Drawing.Size(500, 165)
+
+$label = New-Object System.Windows.Forms.Label
+$label.Text = $env:TRELIO_EMAIL_DIALOG_PROMPT
+$label.AutoSize = $false
+$label.Location = New-Object System.Drawing.Point(16, 16)
+$label.Size = New-Object System.Drawing.Size(468, 64)
+$form.Controls.Add($label)
+
+$passwordBox = New-Object System.Windows.Forms.TextBox
+$passwordBox.Location = New-Object System.Drawing.Point(16, 82)
+$passwordBox.Size = New-Object System.Drawing.Size(468, 24)
+$passwordBox.UseSystemPasswordChar = $true
+$form.Controls.Add($passwordBox)
+
+$okButton = New-Object System.Windows.Forms.Button
+$okButton.Text = 'Сохранить'
+$okButton.Location = New-Object System.Drawing.Point(304, 122)
+$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$form.Controls.Add($okButton)
+$form.AcceptButton = $okButton
+
+$cancelButton = New-Object System.Windows.Forms.Button
+$cancelButton.Text = 'Отмена'
+$cancelButton.Location = New-Object System.Drawing.Point(404, 122)
+$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$form.Controls.Add($cancelButton)
+$form.CancelButton = $cancelButton
+
+$form.Add_Shown({ $passwordBox.Select() })
+$result = $form.ShowDialog()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::Out.Write($passwordBox.Text)
+  $form.Dispose()
+  exit 0
+}
+$form.Dispose()
+exit 3
+'''.strip()
 
 
 class MailboxError(RuntimeError):
     """Expected configuration, protocol, or user-input error."""
+
+
+class PasswordDialogUnavailable(MailboxError):
+    """Native password dialog cannot be shown in the current environment."""
+
+
+class PasswordEntryCancelled(MailboxError):
+    """The operator explicitly cancelled native password entry."""
 
 
 @dataclass(frozen=True)
@@ -171,8 +249,122 @@ def keychain_service(account_name: str) -> str:
     return f"{KEYCHAIN_SERVICE_PREFIX}:{account_name}"
 
 
+def is_gmail_account(email_address: str, imap_host: str = "", smtp_host: str = "") -> bool:
+    """Recognize Gmail by address or canonical transport hosts.
+
+    The host checks also cover Google Workspace accounts whose email domain is
+    custom but whose IMAP/SMTP transport is still Gmail.
+    """
+
+    email_domain = email_address.strip().lower().rsplit("@", 1)[-1]
+    return (
+        email_domain in GMAIL_DOMAINS
+        or imap_host.strip().lower() == GMAIL_IMAP_HOST
+        or smtp_host.strip().lower() == GMAIL_SMTP_HOST
+    )
+
+
+def normalize_password_for_account(account: Account, raw_password: str) -> str:
+    """Normalize a password before it reaches any persistent credential store."""
+
+    # Для остальных провайдеров сохраняем секрет побайтно как ввёл оператор:
+    # пробел может быть легальной частью обычного пароля. Gmail – отдельный
+    # известный формат, где whitespace используется только для показа групп.
+    password = raw_password
+    if is_gmail_account(account.email_address, account.imap_host, account.smtp_host):
+        # Google renders the 16-character app password in four visual groups.
+        # Spaces/newlines are presentation only and must never be persisted.
+        password = re.sub(r"\s+", "", password)
+        if len(password) != 16:
+            raise MailboxError(
+                "Gmail app password must contain exactly 16 characters after spaces are removed. "
+                f"Create a new one at {GOOGLE_APP_PASSWORDS_URL}."
+            )
+    if not password:
+        raise MailboxError("Password cannot be empty.")
+    return password
+
+
+def prompt_password_macos(title: str, message: str) -> str:
+    if not shutil.which("osascript"):
+        raise PasswordDialogUnavailable("osascript is not available.")
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", MACOS_PASSWORD_DIALOG_SCRIPT, message, title],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PasswordDialogUnavailable(f"macOS password dialog failed: {error}") from error
+    if result.returncode == 0:
+        return result.stdout.rstrip("\n")
+    if "-128" in result.stderr or "User canceled" in result.stderr:
+        raise PasswordEntryCancelled("Password entry was cancelled.")
+    raise PasswordDialogUnavailable(result.stderr.strip() or "macOS password dialog failed.")
+
+
+def prompt_password_windows(title: str, message: str) -> str:
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        raise PasswordDialogUnavailable("PowerShell is not available.")
+    dialog_environment = os.environ.copy()
+    dialog_environment["TRELIO_EMAIL_DIALOG_TITLE"] = title
+    dialog_environment["TRELIO_EMAIL_DIALOG_PROMPT"] = message
+    try:
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-STA", "-Command", WINDOWS_PASSWORD_DIALOG_SCRIPT],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=dialog_environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PasswordDialogUnavailable(f"Windows password dialog failed: {error}") from error
+    if result.returncode == 0:
+        return result.stdout.rstrip("\r\n")
+    if result.returncode == 3:
+        raise PasswordEntryCancelled("Password entry was cancelled.")
+    raise PasswordDialogUnavailable(result.stderr.strip() or "Windows password dialog failed.")
+
+
+def prompt_password(account: Account, input_mode: str = "auto") -> str:
+    """Prefer a native masked window and keep getpass as a headless fallback."""
+
+    gmail_account = is_gmail_account(account.email_address, account.imap_host, account.smtp_host)
+    title = "Trelio – пароль приложения Gmail" if gmail_account else "Trelio – пароль почты"
+    message = (
+        "Вставьте 16-символьный пароль приложения Gmail. Пробелы будут удалены автоматически.\n"
+        f"Создать пароль: {GOOGLE_APP_PASSWORDS_URL}"
+        if gmail_account
+        else f"Введите пароль или пароль приложения для {account.email_address}."
+    )
+
+    if input_mode != "terminal":
+        try:
+            if sys.platform == "darwin":
+                return prompt_password_macos(title, message)
+            if os.name == "nt":
+                return prompt_password_windows(title, message)
+            if input_mode == "window":
+                raise PasswordDialogUnavailable("Native password window is supported on macOS and Windows only.")
+        except PasswordEntryCancelled:
+            raise
+        except PasswordDialogUnavailable as error:
+            if input_mode == "window":
+                raise
+            print(
+                f"Native password window is unavailable ({error}); using hidden terminal input.",
+                file=sys.stderr,
+            )
+
+    return getpass.getpass("Password or app password (input hidden): ")
+
+
 def store_password(account: Account, password: str) -> str:
     """Prefer macOS Keychain and fall back to a private local secret file."""
+
+    password = normalize_password_for_account(account, password)
 
     if sys.platform == "darwin" and shutil.which("security"):
         try:
@@ -207,7 +399,7 @@ def store_password(account: Account, password: str) -> str:
 def load_password(account: Account) -> str:
     environment_name = credential_environment_name(account.name)
     if os.environ.get(environment_name):
-        return os.environ[environment_name]
+        return normalize_password_for_account(account, os.environ[environment_name])
     if account.credential_store == "keychain":
         try:
             result = subprocess.run(
@@ -226,11 +418,11 @@ def load_password(account: Account) -> str:
             )
         except (OSError, subprocess.CalledProcessError) as error:
             raise MailboxError(f"Cannot read the password from macOS Keychain: {error}") from error
-        return result.stdout.rstrip("\n")
+        return normalize_password_for_account(account, result.stdout.rstrip("\n"))
     secret_path = SECRETS_DIR / f"{account.name}.password"
     ensure_private_file(secret_path)
     try:
-        return secret_path.read_text(encoding="utf-8").rstrip("\n")
+        return normalize_password_for_account(account, secret_path.read_text(encoding="utf-8").rstrip("\n"))
     except OSError as error:
         raise MailboxError(
             f"Cannot read {secret_path}. Re-run configure or set {environment_name}."
@@ -247,17 +439,27 @@ def command_configure(args: argparse.Namespace) -> dict[str, Any]:
     name = normalize_account_name(args.account)
     existing = load_raw_config().get("accounts", {}).get(name, {})
     email_address = prompt("Email address", str(existing.get("email", "")))
+    gmail_by_address = is_gmail_account(email_address)
+    if gmail_by_address:
+        print(
+            "Gmail requires a 16-character app password. Create it here: "
+            f"{GOOGLE_APP_PASSWORDS_URL}",
+            file=sys.stderr,
+        )
     username = prompt("IMAP/SMTP username", str(existing.get("username", email_address)))
     display_name = prompt("Display name (optional)", str(existing.get("display_name", "")))
-    imap_host = prompt("IMAP host", str(existing.get("imap_host", "")))
+    imap_host = prompt(
+        "IMAP host",
+        str(existing.get("imap_host", GMAIL_IMAP_HOST if gmail_by_address else "")),
+    )
     imap_port = int(prompt("IMAP TLS port", str(existing.get("imap_port", 993))))
-    smtp_host = prompt("SMTP host", str(existing.get("smtp_host", "")))
+    smtp_host = prompt(
+        "SMTP host",
+        str(existing.get("smtp_host", GMAIL_SMTP_HOST if gmail_by_address else "")),
+    )
     smtp_security = prompt("SMTP security: ssl or starttls", str(existing.get("smtp_security", "ssl"))).lower()
     default_smtp_port = 465 if smtp_security == "ssl" else 587
     smtp_port = int(prompt("SMTP port", str(existing.get("smtp_port", default_smtp_port))))
-    password = getpass.getpass("Password or app password (not echoed): ")
-    if not password:
-        raise MailboxError("Password cannot be empty.")
     candidate = Account(
         name=name,
         email_address=email_address,
@@ -272,6 +474,8 @@ def command_configure(args: argparse.Namespace) -> dict[str, Any]:
     )
     if candidate.smtp_security not in {"ssl", "starttls"}:
         raise MailboxError("SMTP security must be ssl or starttls.")
+    raw_password = prompt_password(candidate, args.password_input)
+    password = normalize_password_for_account(candidate, raw_password)
     credential_store = store_password(candidate, password)
     data = load_raw_config()
     data.setdefault("accounts", {})[name] = {
@@ -286,7 +490,13 @@ def command_configure(args: argparse.Namespace) -> dict[str, Any]:
         "credential_store": credential_store,
     }
     write_raw_config(data)
-    return {"configured": name, "credentialStore": credential_store, "configPath": str(CONFIG_PATH)}
+    return {
+        "configured": name,
+        "credentialStore": credential_store,
+        "configPath": str(CONFIG_PATH),
+        "passwordInput": args.password_input,
+        **({"appPasswordUrl": GOOGLE_APP_PASSWORDS_URL} if gmail_by_address else {}),
+    }
 
 
 def decode_header_value(value: str | None) -> str:
@@ -585,6 +795,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     configure_parser = subparsers.add_parser("configure", help="Configure one account interactively")
     configure_parser.add_argument("--account", required=True)
+    configure_parser.add_argument(
+        "--password-input",
+        choices=("auto", "window", "terminal"),
+        default="auto",
+        help="Password input mode. auto uses a native window on macOS/Windows and falls back to hidden terminal input.",
+    )
     configure_parser.set_defaults(handler=command_configure)
     accounts_parser = subparsers.add_parser("accounts", help="List configured accounts without secrets")
     accounts_parser.set_defaults(handler=command_accounts)
