@@ -14,10 +14,11 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.2.2";
+const BRIDGE_VERSION = "1.2.3";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
@@ -389,6 +390,241 @@ const makeReadOnly = async (directory) => {
   }
 };
 
+const makeWritable = async (directory) => {
+  if (process.platform === "win32") {
+    return;
+  }
+
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+
+    if (entry.isDirectory()) {
+      await fs.chmod(entryPath, 0o755);
+      await makeWritable(entryPath);
+    } else {
+      await fs.chmod(entryPath, 0o644);
+    }
+  }
+  await fs.chmod(directory, 0o755);
+};
+
+export const buildRunContextSpecifications = (runId, rawContextHeads = {}) => {
+  const normalizedRunId = requireUuid(runId, "run");
+  const specifications = [];
+  const seenWorkspaceIds = new Set();
+
+  const append = ({ dependencyKind, dependency, relativeDirectory, endpoint }) => {
+    if (!dependency) {
+      return;
+    }
+
+    const workspaceId = requireUuid(dependency.workspaceId, "workspace");
+
+    if (!GIT_OBJECT_PATTERN.test(String(dependency.head || ""))) {
+      throw new Error(`Контекст ${workspaceId} содержит некорректный Git head.`);
+    }
+
+    // Backend не должен присылать один workspace дважды как parent и related.
+    // Локальная проверка не даёт такому ответу перезаписать уже выбранный путь.
+    if (seenWorkspaceIds.has(workspaceId)) {
+      throw new Error(`Workspace ${workspaceId} повторяется в контексте Agent Run.`);
+    }
+    seenWorkspaceIds.add(workspaceId);
+    specifications.push({
+      dependencyKind,
+      workspaceId,
+      head: String(dependency.head),
+      scopeType: dependency.scopeType || dependencyKind,
+      scopeKey: dependency.scopeKey || "",
+      relativeDirectory,
+      endpoint,
+    });
+  };
+
+  append({
+    dependencyKind: "company",
+    dependency: rawContextHeads.company,
+    relativeDirectory: path.join("context", "company"),
+    endpoint: `/api/agent-workspaces/runs/${normalizedRunId}/context/company/bundle`,
+  });
+  append({
+    dependencyKind: "project",
+    dependency: rawContextHeads.project,
+    relativeDirectory: path.join("context", "project"),
+    endpoint: `/api/agent-workspaces/runs/${normalizedRunId}/context/project/bundle`,
+  });
+
+  const relatedContexts = Array.isArray(rawContextHeads.related) ? rawContextHeads.related : [];
+
+  for (const dependency of relatedContexts) {
+    const workspaceId = requireUuid(dependency.workspaceId, "workspace");
+    append({
+      dependencyKind: "related",
+      dependency,
+      // UUID является одновременно безопасным segment и стабильным именем:
+      // scopeKey может содержать `/` или измениться после переименования.
+      relativeDirectory: path.join("context", "related", workspaceId),
+      endpoint: `/api/agent-workspaces/runs/${normalizedRunId}/context/related/${workspaceId}/bundle`,
+    });
+  }
+
+  return specifications;
+};
+
+const readMaterializedContextHead = async (directory) => {
+  try {
+    const directoryStat = await fs.lstat(directory);
+
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      return null;
+    }
+
+    const [headResult, statusResult] = await Promise.all([
+      run("git", ["rev-parse", "HEAD"], { cwd: directory }),
+      run("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: directory }),
+    ]);
+
+    // Даже при неизменном HEAD локально испорченный read-only snapshot нельзя
+    // молча считать достоверным: bridge заново скачает pinned server revision.
+    return statusResult.stdout.trim() ? null : headResult.stdout.trim();
+  } catch {
+    return null;
+  }
+};
+
+const ensureContextDirectoryChain = async (rootDirectory, relativeDirectory) => {
+  const relativeParent = path.dirname(relativeDirectory);
+  let currentDirectory = rootDirectory;
+
+  for (const segment of relativeParent.split(path.sep).filter((part) => part && part !== ".")) {
+    currentDirectory = path.join(currentDirectory, segment);
+
+    try {
+      const currentStat = await fs.lstat(currentDirectory);
+
+      if (!currentStat.isDirectory() || currentStat.isSymbolicLink()) {
+        throw new Error(`Путь контекста ${currentDirectory} не является обычным каталогом.`);
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      await fs.mkdir(currentDirectory, { mode: 0o700 });
+    }
+  }
+};
+
+const replaceMaterializedContext = async ({
+  origin,
+  token,
+  rootDirectory,
+  specification,
+  temporaryDirectory,
+}) => {
+  const destination = path.join(rootDirectory, specification.relativeDirectory);
+  const currentHead = await readMaterializedContextHead(destination);
+
+  if (currentHead === specification.head) {
+    await makeReadOnly(destination);
+    return { ...specification, directory: destination, changed: false };
+  }
+
+  const bundlePath = path.join(temporaryDirectory, `${specification.workspaceId}.bundle`);
+  const stagingDirectory = `${destination}.staging-${crypto.randomUUID()}`;
+  await ensureContextDirectoryChain(rootDirectory, specification.relativeDirectory);
+
+  try {
+    const contextResponse = await request(origin, token, specification.endpoint);
+    await writeResponseToFile(contextResponse, bundlePath);
+    await materializeBundle({
+      bundlePath,
+      directory: stagingDirectory,
+      head: specification.head,
+      branch: "trelio-context",
+    });
+    await makeReadOnly(stagingDirectory);
+
+    try {
+      const destinationStat = await fs.lstat(destination);
+
+      if (destinationStat.isDirectory() && !destinationStat.isSymbolicLink()) {
+        await makeWritable(destination);
+        await fs.rm(destination, { recursive: true, force: true });
+      } else {
+        // Не следуем по локально подменённой symlink: удаляем только сам exact
+        // destination entry внутри принадлежащего Run root.
+        await fs.rm(destination, { force: true });
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+
+    // Rename в пределах одного root атомарно переключает локальный snapshot:
+    // агент не увидит наполовину распакованный related context.
+    await fs.rename(stagingDirectory, destination);
+    return { ...specification, directory: destination, changed: true };
+  } finally {
+    await makeWritable(stagingDirectory).catch(() => undefined);
+    await fs.rm(stagingDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+};
+
+const materializeRunContexts = async ({ origin, token, rootDirectory, runId, contextHeads }) => {
+  const specifications = buildRunContextSpecifications(runId, contextHeads);
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-context-"));
+  const contexts = [];
+
+  try {
+    for (const specification of specifications) {
+      contexts.push(await replaceMaterializedContext({
+        origin,
+        token,
+        rootDirectory,
+        specification,
+        temporaryDirectory,
+      }));
+    }
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+
+  return contexts;
+};
+
+const serializeMaterializedContexts = (contexts) => contexts.map((context) => ({
+  dependencyKind: context.dependencyKind,
+  workspaceId: context.workspaceId,
+  head: context.head,
+  scopeType: context.scopeType,
+  scopeKey: context.scopeKey,
+  directory: context.directory,
+}));
+
+const writeRunMetadata = async (metadataPath, metadata) => {
+  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+  await fs.chmod(metadataPath, 0o600);
+};
+
+const writeContextIndex = async (rootDirectory, contexts) => {
+  const contextDirectory = path.join(rootDirectory, "context");
+  const indexPath = path.join(contextDirectory, "index.json");
+  await ensureContextDirectoryChain(rootDirectory, path.join("context", "index.json"));
+  await fs.chmod(indexPath, 0o600).catch(() => undefined);
+  await fs.writeFile(indexPath, `${JSON.stringify({
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    contexts: serializeMaterializedContexts(contexts),
+  }, null, 2)}\n`, { mode: 0o600 });
+
+  if (process.platform !== "win32") {
+    await fs.chmod(indexPath, 0o444);
+  }
+};
+
 const readJsonResponse = async (response) => response.json();
 
 const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOption }) => {
@@ -518,15 +754,31 @@ const openWorkspace = async (origin, options) => {
       // отклонён как запрос от прежнего владельца аренды.
       const refreshedMetadata = {
         ...existingMetadata,
+        schemaVersion: 2,
         origin,
         leaseId: agentRun.leaseId,
         fencingToken: agentRun.fencingToken,
         baseHead: agentRun.baseHead,
         workspaceDirectory,
+        contextHeads: agentRun.contextHeadsJson || {},
         claimedAt: new Date().toISOString(),
       };
-      await fs.writeFile(metadataPath, `${JSON.stringify(refreshedMetadata, null, 2)}\n`, { mode: 0o600 });
-      await fs.chmod(metadataPath, 0o600);
+      // Новая lease-пара сохраняется до сетевой синхронизации контекста. Если
+      // download related bundle временно упадёт, следующий вызов `context sync`
+      // продолжит работу с уже актуальным fencing, а не со старой арендой.
+      await writeRunMetadata(metadataPath, refreshedMetadata);
+      const contexts = await materializeRunContexts({
+        origin,
+        token,
+        rootDirectory,
+        runId,
+        contextHeads: refreshedMetadata.contextHeads,
+      });
+      await writeContextIndex(rootDirectory, contexts);
+      await writeRunMetadata(metadataPath, {
+        ...refreshedMetadata,
+        contexts: serializeMaterializedContexts(contexts),
+      });
       process.stdout.write(`${workspaceDirectory}\n`);
       return;
     }
@@ -557,33 +809,17 @@ const openWorkspace = async (origin, options) => {
     });
 
     const contextHeads = agentRun.contextHeadsJson || {};
-
-    for (const dependencyKind of ["company", "project"]) {
-      const dependency = contextHeads[dependencyKind];
-
-      if (!dependency) {
-        continue;
-      }
-
-      const contextBundlePath = path.join(temporaryDirectory, `${dependencyKind}.bundle`);
-      const contextResponse = await request(
-        origin,
-        token,
-        `/api/agent-workspaces/runs/${runId}/context/${dependencyKind}/bundle`,
-      );
-      await writeResponseToFile(contextResponse, contextBundlePath);
-      const contextDirectory = path.join(rootDirectory, "context", dependencyKind);
-      await materializeBundle({
-        bundlePath: contextBundlePath,
-        directory: contextDirectory,
-        head: dependency.head,
-        branch: "trelio-context",
-      });
-      await makeReadOnly(contextDirectory);
-    }
+    const contexts = await materializeRunContexts({
+      origin,
+      token,
+      rootDirectory,
+      runId,
+      contextHeads,
+    });
+    await writeContextIndex(rootDirectory, contexts);
 
     const metadata = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       origin,
       workspaceId,
       runId,
@@ -591,9 +827,11 @@ const openWorkspace = async (origin, options) => {
       fencingToken: agentRun.fencingToken,
       baseHead: agentRun.baseHead,
       workspaceDirectory,
+      contextHeads,
+      contexts: serializeMaterializedContexts(contexts),
       createdAt: new Date().toISOString(),
     };
-    await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+    await writeRunMetadata(metadataPath, metadata);
     process.stdout.write(`${workspaceDirectory}\n`);
   } catch (error) {
     // Не оставляем полуматериализованный Run: следующий open должен либо найти
@@ -651,6 +889,69 @@ const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
   });
   const runPayload = await response.json();
   process.stdout.write(`Lease продлён до ${runPayload.leaseExpiresAt}.\n`);
+});
+
+const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) => {
+  const overview = await readJsonResponse(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/workspaces/${requireUuid(metadata.workspaceId, "workspace")}`,
+  ));
+  const agentRun = overview.runs.find((item) => item.id === metadata.runId);
+
+  if (!agentRun) {
+    throw new Error("Agent Run не найден или больше недоступен пользователю.");
+  }
+
+  const rootDirectory = path.dirname(metadataPath);
+  const contextHeads = agentRun.contextHeadsJson || {};
+  const contexts = await materializeRunContexts({
+    origin,
+    token,
+    rootDirectory,
+    runId: metadata.runId,
+    contextHeads,
+  });
+  await writeContextIndex(rootDirectory, contexts);
+  await writeRunMetadata(metadataPath, {
+    ...metadata,
+    schemaVersion: 2,
+    contextHeads,
+    contexts: serializeMaterializedContexts(contexts),
+    contextSyncedAt: new Date().toISOString(),
+  });
+  const changedCount = contexts.filter((context) => context.changed).length;
+  process.stdout.write(`Контекст синхронизирован: ${contexts.length}, обновлено: ${changedCount}.\n`);
+  process.stdout.write(`${path.join(rootDirectory, "context", "index.json")}\n`);
+};
+
+const contextCommand = async (options, positional) => withRun(async (runContext) => {
+  if (positional[0] === "sync") {
+    await synchronizeRunContext(runContext);
+    return;
+  }
+
+  if (positional[0] === "attach") {
+    const relatedWorkspaceId = requireUuid(options.workspace, "workspace");
+    await readJsonResponse(await request(
+      runContext.origin,
+      runContext.token,
+      `/api/agent-workspaces/runs/${runContext.metadata.runId}/context/related`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          relatedWorkspaceId,
+          leaseId: runContext.metadata.leaseId,
+          fencingToken: runContext.metadata.fencingToken,
+        }),
+      },
+    ));
+    await synchronizeRunContext(runContext);
+    return;
+  }
+
+  throw new Error("Поддерживаются `trelio-workspace context sync` и `trelio-workspace context attach --workspace UUID`.");
 });
 
 const getOptionValues = (options, key) => {
@@ -752,6 +1053,7 @@ const status = async () => withRun(async ({ metadata }) => {
     runId: metadata.runId,
     baseHead: metadata.baseHead,
     workspaceDirectory: metadata.workspaceDirectory,
+    contexts: Array.isArray(metadata.contexts) ? metadata.contexts : [],
     dirty: Boolean(gitStatus),
     changes: gitStatus ? gitStatus.split("\n") : [],
   }, null, 2)}\n`);
@@ -962,6 +1264,8 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace open --workspace UUID [--run UUID] [--dir PATH]\n");
   process.stdout.write("  trelio-workspace status\n");
   process.stdout.write("  trelio-workspace heartbeat\n");
+  process.stdout.write("  trelio-workspace context sync\n");
+  process.stdout.write("  trelio-workspace context attach --workspace UUID\n");
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
@@ -982,6 +1286,8 @@ const main = async () => {
     await status();
   } else if (command === "heartbeat") {
     await heartbeat();
+  } else if (command === "context") {
+    await contextCommand(options, positional);
   } else if (command === "checkpoint") {
     await checkpoint(options);
   } else if (command === "submit") {
@@ -999,4 +1305,6 @@ const main = async () => {
   }
 };
 
-main().catch((error) => fail(error instanceof Error ? error.message : String(error)));
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => fail(error instanceof Error ? error.message : String(error)));
+}

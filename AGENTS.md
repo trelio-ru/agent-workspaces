@@ -38,6 +38,12 @@ Trelio-монорепозитории быть не должно.
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio
   ничего не исполняет, plaintext не выводится bridge и не попадает в workspace.
+- Агент может искать только доступные пользователю принятые text-файлы других
+  workspace через MCP и явно прикреплять выбранные workspace к активному Run
+  как pinned read-only `related` context. Bridge материализует их только в
+  `context/related/<workspace-uuid>`, поддерживает `context sync` и никогда не
+  смешивает их с единственным writable workspace. Прямые связи задач не требуют
+  общего кейса, а их человекочитаемая подпись является свободным текстом, не enum.
 
 ## Изменения и проверки
 
