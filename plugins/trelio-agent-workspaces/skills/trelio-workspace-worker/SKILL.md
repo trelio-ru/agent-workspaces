@@ -9,6 +9,35 @@ Use Trelio MCP as the control plane and the bundled `scripts/trelio-workspace.mj
 
 Treat Agent Secrets the same way. Use `list_agent_secrets` for safe metadata. If access is missing, call `request_agent_secret_access`; never ask the user to paste a password, token, or private key into chat. Create a new record only with `create_agent_secret_placeholder`. Ask the user to configure its value in Trelio's protected browser form, or, when the value already exists in a local producer/file, write it directly with `PRODUCER | trelio-workspace secret set --secret UUID` or `trelio-workspace secret set --secret UUID --file PATH` inside the current Run. Never place the literal value in argv, a shell variable, prompt, workspace file, comment, checkpoint, or handoff.
 
+## Missing MCP tools
+
+If this skill is available but the Trelio MCP tools are absent from the current
+Codex session, treat that as incomplete plugin setup rather than a task, ACL, or
+Trelio browser problem.
+
+1. Do not open the Trelio task in a browser as a substitute for MCP and do not
+   continue task work without the Agent Workspace control plane.
+2. Tell the user that the workflow instructions loaded but the Trelio MCP
+   connection did not. Ask them to open `Plugins -> Trelio Agent Workspaces`
+   and complete Trelio OAuth.
+3. If the `Trelio` marketplace or plugin is missing, give these exact commands
+   for the current stable release, in this order:
+   `codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.3` and
+   `codex plugin add trelio-agent-workspaces@trelio-plugins`. The policy in
+   `main` installs the plugin by default, but that behavior is not present in
+   the pinned `v1.2.3`; never claim that the first command alone installed it.
+4. If a managed ChatGPT/Codex workspace marks the plugin or its connection as
+   unavailable, tell the user that a workspace admin must enable it for their
+   role. Do not suggest resetting Trelio credentials before that policy blocker
+   is resolved.
+5. After installation or OAuth, require a full Codex restart and a new task so
+   the callable MCP tool list is loaded again. Then retry the original Trelio
+   read once.
+
+Never claim that setup succeeded merely because the skill text is visible. A
+successful low-risk MCP read such as `get_my_context` or `get_task` is the
+readiness check.
+
 When a local tool needs a configured secret, call `prepare_agent_secret_checkout` for the current Run and exact executable, then execute the returned `trelio-workspace secret exec --grant ... -- COMMAND` command. The bridge retrieves the value once and delivers it locally using the server-authorized `stdin`, `env`, or private temporary-file mode. Trelio does not run the command. Never replace the executable with a shell, logger, `env`, `printenv`, `cat`, or another program whose purpose is to reveal the value.
 
 Discover additional context autonomously when it is likely to change the quality of the requested work, but do not crawl every workspace by default. `get_task` and `list_task_connections` reveal only task links and work-case members the user may read. A direct link does not imply a shared case. Use `search_agent_workspace_files` for concepts, names, decisions, or prior materials across every workspace available to the user, then read an exact hit with `get_agent_workspace_file`. Use `get_agent_workspace_by_scope` when a linked task/project/company UUID is already known. Every tool reapplies ordinary ACL; a link never grants access. Do not create a missing unrelated workspace merely to use it as context.

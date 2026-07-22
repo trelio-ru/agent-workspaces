@@ -58,11 +58,21 @@ lease, а `context sync` догружает уже выбранный конте
 
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.3
+codex plugin add trelio-agent-workspaces@trelio-plugins
 ```
 
-Перезапустите Codex, откройте `Plugins`, выберите источник `Trelio` и установите
-`Trelio Agent Workspaces`. При первом подключении Trelio запросит OAuth-доступ,
-а локальный bridge сохранит credential в системном хранилище.
+Первая команда подключает зафиксированную стабильную версию marketplace, вторая
+устанавливает из него плагин. Откройте `Plugins`, выберите
+`Trelio Agent Workspaces` и завершите личный OAuth-доступ Trelio. После этого
+полностью перезапустите Codex и начните новую задачу: уже открытая сессия не
+перечитывает список MCP-инструментов автоматически.
+
+В управляемой рабочей области ChatGPT/Codex администратор может импортировать
+marketplace один раз и назначить плагин нужным ролям. OAuth всё равно проходит
+каждый пользователь лично. Ветка `main` уже помечает плагин как
+`INSTALLED_BY_DEFAULT`; автоматическая установка начнёт действовать с первого
+релиза, который содержит эту policy. Для текущей `v1.2.3` обе команды выше
+обязательны.
 
 Для Claude Code / Claude Cowork используйте marketplace этого же репозитория:
 
