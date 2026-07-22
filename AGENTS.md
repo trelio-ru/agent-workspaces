@@ -29,6 +29,10 @@ Trelio-монорепозитории быть не должно.
   хранения удаляет из 16-символьного пароля визуальные пробелы. Интерактивная
   настройка предпочитает нативное скрытое окно macOS/Windows, оставляя
   terminal `getpass` только явным выбором или headless fallback.
+- Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
+  metadata и одноразовый grant, а локальный bridge consume-ит его для точного
+  executable и передаёт значение через stdin/env/private temp file. Trelio
+  ничего не исполняет, plaintext не выводится bridge и не попадает в workspace.
 
 ## Изменения и проверки
 

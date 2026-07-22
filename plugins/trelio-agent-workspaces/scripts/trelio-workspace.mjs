@@ -17,9 +17,9 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.1.1";
+const BRIDGE_VERSION = "1.2.1";
 const DEFAULT_ORIGIN = "https://trelio.ru";
-const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write";
+const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
 const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
 const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
@@ -54,6 +54,13 @@ const parseArguments = (rawArguments) => {
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
+
+    // POSIX `--` завершает разбор bridge options. Всё после него является
+    // argv локальной программы и передаётся spawn напрямую, без shell.
+    if (token === "--") {
+      positional.push(...tokens.slice(index + 1));
+      break;
+    }
 
     if (!token.startsWith("--")) {
       positional.push(token);
@@ -797,6 +804,151 @@ const submit = async (options) => withRun(async ({ metadata, origin, token }) =>
   }
 });
 
+const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentVariable, secretValue }) => {
+  const [executable, ...args] = commandArguments;
+  const childEnvironment = { ...process.env };
+  let temporaryDirectory = null;
+  let childStdin = "inherit";
+
+  if (deliveryMode === "env") {
+    if (!environmentVariable) {
+      throw new Error("Сервер не указал переменную окружения для env checkout.");
+    }
+    childEnvironment[environmentVariable] = secretValue;
+  } else if (deliveryMode === "stdin") {
+    childStdin = "pipe";
+  } else if (deliveryMode === "file") {
+    temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-secret-"));
+    await fs.chmod(temporaryDirectory, 0o700);
+    const secretFilePath = path.join(temporaryDirectory, "value");
+    await fs.writeFile(secretFilePath, secretValue, { mode: 0o600 });
+    await fs.chmod(secretFilePath, 0o600);
+    // Фиксированное имя не содержит название секрета и позволяет инструменту
+    // прочитать файл без подстановки plaintext в argv или shell history.
+    childEnvironment.TRELIO_SECRET_FILE = secretFilePath;
+  } else {
+    throw new Error(`Неизвестный delivery mode: ${deliveryMode}`);
+  }
+
+  try {
+    const exitCode = await new Promise((resolve, reject) => {
+      const child = spawn(executable, args, {
+        cwd: process.cwd(),
+        env: childEnvironment,
+        shell: false,
+        stdio: [childStdin, "inherit", "inherit"],
+      });
+
+      child.once("error", reject);
+      child.once("exit", (code, signal) => {
+        if (signal) {
+          reject(new Error(`Локальная команда остановлена сигналом ${signal}.`));
+          return;
+        }
+        resolve(code ?? 1);
+      });
+
+      if (deliveryMode === "stdin") {
+        child.stdin.end(secretValue);
+      }
+    });
+
+    if (exitCode !== 0) {
+      throw new Error(`Локальная команда завершилась с кодом ${exitCode}.`);
+    }
+  } finally {
+    // Значение не логируем и не сохраняем в workspace. В file mode удаляем
+    // весь отдельный private temp directory независимо от результата команды.
+    if (temporaryDirectory) {
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  }
+};
+
+const readSecretInput = async (fileOption) => {
+  if (fileOption) {
+    const filePath = path.resolve(String(fileOption));
+    const stat = await fs.stat(filePath);
+    if (!stat.isFile() || stat.size < 1 || stat.size > 64 * 1024) {
+      throw new Error("Файл секрета должен содержать от 1 до 65536 байт.");
+    }
+    return fs.readFile(filePath, "utf8");
+  }
+
+  if (process.stdin.isTTY) {
+    throw new Error("Передайте значение через stdin или --file. Не указывайте секрет в аргументах команды.");
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > 64 * 1024) throw new Error("Значение секрета превышает 65536 байт.");
+    chunks.push(bytes);
+  }
+  const value = Buffer.concat(chunks).toString("utf8");
+  if (!value) throw new Error("Значение секрета не может быть пустым.");
+  return value;
+};
+
+const setSecretValue = async (options, positional) => withRun(async ({ metadata, origin, token }) => {
+  if (positional[0] !== "set") {
+    throw new Error("Поддерживаются `secret set` и `secret exec`.");
+  }
+  const secretId = requireUuid(options.secret, "secret");
+  const value = await readSecretInput(options.file);
+  const response = await request(origin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId: metadata.runId, value }),
+  });
+  await response.json();
+  process.stdout.write("Значение секрета зашифровано и сохранено новой версией.\n");
+});
+
+const executeSecretCheckout = async (options, positional) => withRun(async ({ metadata, origin, token }) => {
+  if (positional[0] !== "exec") {
+    throw new Error("Поддерживается команда `trelio-workspace secret exec --grant UUID -- COMMAND [ARGS...]`.");
+  }
+
+  const grantId = requireUuid(options.grant, "grant");
+  const commandArguments = positional.slice(1);
+
+  if (commandArguments.length === 0) {
+    throw new Error("После `--` укажите локальную программу и её аргументы.");
+  }
+
+  if (!metadata.runId) {
+    throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
+  }
+
+  // Endpoint атомарно consume-ит одноразовый grant. Ответ держим только в
+  // памяти bridge и никогда не печатаем, не пишем в metadata и не передаём MCP.
+  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // runId берётся только из materialized `.trelio-run.json`. Backend сверяет
+    // его с grant и повторно проверяет активную lease в atomic consume.
+    body: JSON.stringify({ runId: metadata.runId }),
+  });
+  const payload = await response.json();
+
+  if (payload.executable !== commandArguments[0]) {
+    throw new Error("Локальная программа не совпадает с executable, закреплённым в checkout grant.");
+  }
+
+  if (payload.runId !== metadata.runId) {
+    throw new Error("Checkout grant принадлежит другому Trelio Agent Run.");
+  }
+
+  await spawnSecretCommand({
+    commandArguments,
+    deliveryMode: payload.deliveryMode,
+    environmentVariable: payload.environmentVariable,
+    secretValue: payload.value,
+  });
+});
+
 const printHelp = () => {
   process.stdout.write(`Trelio Agent Workspace Bridge ${BRIDGE_VERSION}\n\n`);
   process.stdout.write("Команды:\n");
@@ -807,10 +959,13 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
+  process.stdout.write("  trelio-workspace secret exec --grant UUID -- COMMAND [ARGS...]\n");
+  process.stdout.write("  COMMAND | trelio-workspace secret set --secret UUID\n");
+  process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH\n");
 };
 
 const main = async () => {
-  const { command, options } = parseArguments(process.argv.slice(2));
+  const { command, options, positional } = parseArguments(process.argv.slice(2));
   const origin = normalizeOrigin(options.origin || DEFAULT_ORIGIN);
 
   if (command === "login") {
@@ -825,6 +980,12 @@ const main = async () => {
     await checkpoint(options);
   } else if (command === "submit") {
     await submit(options);
+  } else if (command === "secret") {
+    if (positional[0] === "set") {
+      await setSecretValue(options, positional);
+    } else {
+      await executeSecretCheckout(options, positional);
+    }
   } else if (command === "help" || command === "--help" || command === "-h") {
     printHelp();
   } else {

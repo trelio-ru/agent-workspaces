@@ -11,6 +11,8 @@
   компании и проекта через MCP без фиксации версии в Run;
 - локальный Git bridge для открытия workspace, checkpoint и передачи candidate
   revision на проверку;
+- безопасное применение Agent Secrets через одноразовую выдачу конкретному
+  локальному executable без вывода значения в MCP, prompt или shell-аргументы;
 - переносимый TLS IMAP/SMTP CLI для первого навыка электронной почты без Gmail API.
 
 При настройке Gmail CLI показывает прямую официальную страницу
@@ -39,7 +41,7 @@
 Добавьте зафиксированную версию marketplace:
 
 ```bash
-codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.0
+codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.1
 ```
 
 Перезапустите Codex, откройте `Plugins`, выберите источник `Trelio` и установите
@@ -64,6 +66,12 @@ codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.0
 Публичный репозиторий содержит только клиентский дистрибутив. Публикация MCP URL
 не открывает данные Trelio: каждый запрос проходит OAuth, scopes и обычные
 проверки доступа компании, проекта и задачи.
+
+Agent Secrets хранятся и расшифровываются на стороне Trelio, но Trelio не
+исполняет пользовательские команды. MCP возвращает только безопасные описания
+и одноразовый grant, а bridge внутри текущего Agent Run сверяет `runId` и
+передаёт значение локальной программе через `stdin`, переменную окружения или
+закрытый временный файл.
 
 Не добавляйте токены, локальные credentials и содержимое рабочих workspace в
 issues или pull requests. Для уязвимостей используйте приватное сообщение через

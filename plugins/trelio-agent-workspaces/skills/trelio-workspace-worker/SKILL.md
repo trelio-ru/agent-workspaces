@@ -7,6 +7,10 @@ description: Work through Trelio company, project, or task Agent Workspaces with
 
 Use Trelio MCP as the control plane and the bundled `scripts/trelio-workspace.mjs` bridge as the local Git data plane. Never place OAuth credentials in prompts, commands, workspace files, Git config, comments, or checkpoints.
 
+Treat Agent Secrets the same way. Use `list_agent_secrets` for safe metadata. If access is missing, call `request_agent_secret_access`; never ask the user to paste a password, token, or private key into chat. Create a new record only with `create_agent_secret_placeholder`. Ask the user to configure its value in Trelio's protected browser form, or, when the value already exists in a local producer/file, write it directly with `PRODUCER | trelio-workspace secret set --secret UUID` or `trelio-workspace secret set --secret UUID --file PATH` inside the current Run. Never place the literal value in argv, a shell variable, prompt, workspace file, comment, checkpoint, or handoff.
+
+When a local tool needs a configured secret, call `prepare_agent_secret_checkout` for the current Run and exact executable, then execute the returned `trelio-workspace secret exec --grant ... -- COMMAND` command. The bridge retrieves the value once and delivers it locally using the server-authorized `stdin`, `env`, or private temporary-file mode. Trelio does not run the command. Never replace the executable with a shell, logger, `env`, `printenv`, `cat`, or another program whose purpose is to reveal the value.
+
 ## Execute the work
 
 1. Resolve the requested company, project, or task through Trelio MCP. Do not guess an ID from a title when more than one result matches.
