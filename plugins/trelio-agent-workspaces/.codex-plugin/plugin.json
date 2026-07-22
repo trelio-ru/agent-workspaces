@@ -1,7 +1,7 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.3.0",
-  "description": "Production integration for searchable Trelio Agent Workspaces, pinned related context, Agent Secrets, and live company/project skill catalogs.",
+  "version": "1.3.1",
+  "description": "Production integration for scoped batch task discovery, searchable Trelio Agent Workspaces, pinned related context, Agent Secrets, and live company/project skill catalogs.",
   "author": {
     "name": "Trelio"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",
-    "longDescription": "Подключает Trelio MCP, поиск по доступным workspace, закреплённый read-only контекст других задач и проектов, безопасный Agent Workspace, одноразовое локальное применение Agent Secrets и актуальные навыки компаний и проектов.",
+    "longDescription": "Подключает Trelio MCP, массовый обычный поиск задач по независимым формулировкам, поиск по доступным workspace, закреплённый read-only контекст, безопасный Agent Workspace, одноразовое локальное применение Agent Secrets и актуальные навыки компаний и проектов.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],

@@ -22,7 +22,7 @@ Trelio browser problem.
    and complete Trelio OAuth.
 3. If the `Trelio` marketplace or plugin is missing, give this exact pinned
    command for the current stable release:
-   `codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.0`.
+   `codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.1`.
    Its `INSTALLED_BY_DEFAULT` policy installs the plugin from that marketplace;
    do not add a redundant manual `codex plugin add` step.
 4. If a managed ChatGPT/Codex workspace marks the plugin or its connection as
@@ -39,13 +39,27 @@ readiness check.
 
 When a local tool needs a configured secret, call `prepare_agent_secret_checkout` for the current Run and exact executable, then execute the returned `trelio-workspace secret exec --grant ... -- COMMAND` command. The bridge retrieves the value once and delivers it locally using the server-authorized `stdin`, `env`, or private temporary-file mode. Trelio does not run the command. Never replace the executable with a shell, logger, `env`, `printenv`, `cat`, or another program whose purpose is to reveal the value.
 
+## Resolve the work item before choosing a workspace
+
+Treat company or project mappings in the local `AGENTS.md` as search boundaries, not as an automatic writable workspace. A Codex project may permit one company, several companies, one project, or several projects. Keep those boundaries when searching and ask only when the request remains ambiguous after read-only discovery.
+
+Trelio task search is lexical, not semantic. If the user supplied a canonical task URL or exact company/project/task coordinates, read that task directly with `get_task`. Otherwise:
+
+1. Build 5–12 short independent queries from the request: important nouns, synonyms, abbreviations, alternate spellings, old names, object or city, counterparty, document type, and expected result.
+2. Call `search_tasks` once with those phrases as separate `queries` items and with every permitted `companySlugs`; pass `projectSlugs` only when the user or local instructions actually limit the work to those projects. Never concatenate synonyms into one long query because the server searches every item independently as ordinary text.
+3. Prefer tasks matched by several query variants, but do not trust ranking alone. Read up to three material candidates with `get_task`; inspect recent activity or attachments only when needed to distinguish them.
+4. Treat a task as probable only when at least two independent identifiers agree. A similar title alone is insufficient. A canonical URL or exact coordinates supplied by the user count as confirmation after successful readback.
+5. If several candidates remain plausible, show their direct URLs and differences and ask the operator to choose before mutation or workspace work. If none match, use a project workspace only for genuinely shared project knowledge and a company workspace only for company-wide material; do not create a task without authority.
+
+After confirmation, use the task's own scope as the writable workspace. The mapped company or project remains parent/read-only context unless the requested result genuinely belongs at that broader level.
+
 Discover additional context autonomously when it is likely to change the quality of the requested work, but do not crawl every workspace by default. `get_task` and `list_task_connections` reveal only task links and work-case members the user may read. A direct link does not imply a shared case. Use `search_agent_workspace_files` for concepts, names, decisions, or prior materials across every workspace available to the user, then read an exact hit with `get_agent_workspace_file`. Use `get_agent_workspace_by_scope` when a linked task/project/company UUID is already known. Every tool reapplies ordinary ACL; a link never grants access. Do not create a missing unrelated workspace merely to use it as context.
 
 When the requested work itself needs to connect tasks, prefer `create_task_relation` for an ordinary pair. Describe `relationType` in precise human language for that pair; suggestions such as “Блокирует” are examples, not an enum. Set `isDirectional` only when source-to-target order matters. Create a work case only when multiple tasks genuinely represent one shared subject from different perspectives, and pass a stable unique `clientRequestId` to `create_work_case`. Do not force unrelated or merely adjacent tasks into a case.
 
 ## Execute the work
 
-1. Resolve the requested company, project, or task through Trelio MCP. Do not guess an ID from a title when more than one result matches. For task work, read `get_task` connections before deciding which neighboring context matters.
+1. Resolve the requested company, project, or task through the discovery flow above. Do not guess an ID from a title when more than one result matches. For task work, read `get_task` connections before deciding which neighboring context matters.
 2. Search other readable workspace files when the subject suggests relevant prior work. Read only the exact hits needed. Resolve directly linked scopes with `get_agent_workspace_by_scope` and keep the selected workspace IDs for the Run.
 3. Call `ensure_agent_workspace` with the exact writable scope and UUID. Use task scope for task work, project scope for shared project knowledge, and company scope only for company-wide materials.
 4. Read the returned permissions. Stop before changing files if `canWrite` is false.

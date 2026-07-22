@@ -53,7 +53,7 @@ test("bridge rejects duplicate workspace ids and malformed pinned heads", () => 
 
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.0/);
+  assert.match(result.stdout, /Bridge 1\.3\.1/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
 });

@@ -11,6 +11,8 @@
   компании и проекта через MCP без фиксации версии в Run;
 - локальный Git bridge для открытия workspace, checkpoint и атомарной записи
   candidate revision с защитой от конфликтов версий;
+- один scoped MCP-вызов для массового обычного поиска задач по отдельным
+  синонимам, сокращениям и вариантам формулировки;
 - ACL-фильтруемый поиск по принятым workspace-файлам и материализацию выбранных
   workspace как pinned read-only контекста под `context/related/`;
 - прямые связи между задачами со свободным описанием смысла и отдельные
@@ -57,7 +59,7 @@ lease, а `context sync` догружает уже выбранный конте
 Добавьте зафиксированную версию marketplace:
 
 ```bash
-codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.0
+codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.3.1
 ```
 
 Команда подключает зафиксированную стабильную версию marketplace. Policy
