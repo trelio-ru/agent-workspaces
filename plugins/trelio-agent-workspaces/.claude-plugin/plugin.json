@@ -1,0 +1,8 @@
+{
+  "name": "trelio-agent-workspaces",
+  "version": "1.2.0",
+  "description": "Trelio Agent Workspaces, live company/project skills, and portable IMAP/SMTP email support.",
+  "author": {
+    "name": "Trelio"
+  }
+}

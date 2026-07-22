@@ -1,7 +1,7 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.1.1",
-  "description": "Production integration for company, project and task Agent Workspaces in Trelio.",
+  "version": "1.2.0",
+  "description": "Production integration for Trelio Agent Workspaces and live company/project skill catalogs.",
   "author": {
     "name": "Trelio"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Получайте содержательный результат прямо в задаче.",
-    "longDescription": "Подключает Trelio MCP и безопасный Agent Workspace, публикует понятные комментарии в задачах и передаёт результат человеку без лишних технических деталей.",
+    "longDescription": "Подключает Trelio MCP, безопасный Agent Workspace и актуальные навыки компаний и проектов, включая почту через IMAP/SMTP.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],

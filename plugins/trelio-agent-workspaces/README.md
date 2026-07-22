@@ -1,14 +1,15 @@
 # Trelio Agent Workspaces
 
-Официальный плагин для работы Codex с управляемыми
-пространствами Trelio уровня компании, проекта и задачи.
+Официальный плагин для работы Codex и Claude с управляемыми пространствами
+Trelio уровня компании, проекта и задачи, а также с актуальными навыками,
+которые компания или отдельный проект включили для агентов.
 
 ## Установка
 
 Добавьте GitHub-репозиторий как Codex marketplace:
 
 ```bash
-codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.1.1
+codex plugin marketplace add trelio-ru/agent-workspaces --ref v1.2.0
 ```
 
 Затем перезапустите ChatGPT desktop, откройте `Plugins`, выберите источник
@@ -24,6 +25,45 @@ codex plugin marketplace add /absolute/path/to/agent-workspaces
 
 Marketplace описан в `.agents/plugins/marketplace.json`; plugin manifest – в
 `.codex-plugin/plugin.json`.
+
+Для Claude Code / Claude Cowork добавьте тот же GitHub-репозиторий как
+marketplace и установите `trelio-agent-workspaces`:
+
+```text
+/plugin marketplace add trelio-ru/agent-workspaces
+/plugin install trelio-agent-workspaces@trelio-plugins
+```
+
+Claude manifest находится в `.claude-plugin/plugin.json`, а marketplace – в
+корневом `.claude-plugin/marketplace.json`. После обновления marketplace клиент
+получает новую версию плагина штатным механизмом Claude.
+
+## Живой каталог навыков
+
+Bootstrap-навык `trelio-skill-catalog` получает через Trelio MCP текущий список
+навыков компании и конкретного проекта. Корпоративные и проектные назначения
+складываются; отключение назначения не удаляет и не запрещает личный навык
+пользователя. Инструкции загружаются непосредственно перед применением и не
+фиксируются в Agent Run, поэтому новая опубликованная версия доступна при
+следующем чтении каталога.
+
+Первый навык – электронная почта через обычные IMAP/SMTP. Плагин включает
+dependency-free CLI `scripts/trelio-email.py` для Python 3.11+: поиск, чтение,
+список и сохранение выбранных вложений, диагностику и подтверждаемую отправку.
+Gmail API не нужен. Для Gmail, Mail.ru, Яндекса и некоторых корпоративных
+серверов может понадобиться пароль приложения и отдельное разрешение IMAP/SMTP.
+
+Первичная настройка выполняется интерактивно, чтобы пароль не попадал в shell
+history:
+
+```bash
+python3 scripts/trelio-email.py configure --account work
+python3 scripts/trelio-email.py doctor --account work
+```
+
+На macOS пароль сохраняется в Keychain. На других системах используется файл
+`~/.config/trelio/email/secrets/<account>.password` с закрытыми правами; его
+можно заменить переменной окружения `TRELIO_EMAIL_PASSWORD_<ACCOUNT>`.
 
 ## Что видит оператор
 

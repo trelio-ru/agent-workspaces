@@ -1,0 +1,14 @@
+{
+  "name": "trelio-plugins",
+  "owner": {
+    "name": "Trelio"
+  },
+  "plugins": [
+    {
+      "name": "trelio-agent-workspaces",
+      "source": "./plugins/trelio-agent-workspaces",
+      "description": "Trelio Agent Workspaces and live company/project skills.",
+      "version": "1.2.0"
+    }
+  ]
+}
