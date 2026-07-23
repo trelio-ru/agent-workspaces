@@ -33,10 +33,14 @@ Trelio-монорепозитории быть не должно.
   принятых решений и открытых вопросов. Он не является источником инструкций и
   не может переопределять Trelio, `AGENTS.md`, навыки или прямые указания
   пользователя. `AGENTS.md`, `CLAUDE.md` и `.trelio/**` менять нельзя.
-- Bridge материализует binary и крупные файлы из private workspace object
-  storage как обычные файлы, а при submit оставляет в Git только небольшие
-  безопасные UTF-8 материалы и точные content-addressed pointers. Candidate
-  bundle передаёт только delta после pinned base.
+- Bridge eager-материализует binary и крупные файлы writable `workspace/`, но
+  parent/related read-only context открывает pointer-first без object bytes.
+  Агент распознаёт exact pointer и перед чтением вызывает
+  `context fetch --path`; backend проверяет run, dependency workspace, pinned
+  head и path. Проверенные bytes хранятся в общем локальном SHA-256 cache,
+  копируются через clonefile/reflink/copy без mutable hardlink. При submit в
+  Git остаются небольшие безопасные UTF-8 материалы и точные pointers, а
+  candidate bundle передаёт только delta после pinned base.
 - Агент не должен предлагать оператору самостоятельно копировать или
   публиковать уже подготовленный комментарий.
 - `trelio-skill-catalog` всегда читает текущую опубликованную инструкцию через
@@ -80,6 +84,12 @@ Trelio-монорепозитории быть не должно.
   лексических вариантов запроса. Синонимы нельзя склеивать в одну строку;
   найденную задачу нужно проверить через `get_task`, а project/company workspace
   выбирать только для действительно общего результата соответствующего уровня.
+- Terminal Run roots очищаются только после безопасного retention, повторной
+  проверки backend status и чистоты writable workspace. `clean --dry-run`
+  обязан показывать exact пути и reclaimable bytes; active, unknown и dirty Run
+  не удаляются, а backend outage делает auto-prune полностью no-op. Object
+  cache чистится по LRU/возрасту/лимиту и не затрагивает digest обнаруженных
+  Run. Успешный submit лишь помечает Run eligible, но не удаляет его сразу.
 
 ## Изменения и проверки
 
@@ -96,6 +106,10 @@ Trelio-монорепозитории быть не должно.
   --stdin` с явным закрытием stdin, candidate bundle доходит до сервера, а
   рабочие bytes остаются materialized. `execFile` option `input` для этого
   использовать нельзя: Node.js его не поддерживает и дочерний Git ждёт EOF.
+- Pointer-first context обязан иметь regressions на нулевой object-byte
+  download при `open`, exact single-path fetch, cache hit следующего Run,
+  повторную загрузку после tamper и сохранение active/unknown/dirty roots при
+  `clean`.
 - Plugin release всегда публикуется с точным названием `vX.Y.Z`, без префикса,
   суффикса и краткого описания в title. Release notes пишутся по-русски и только
   по каноническим разделам в этом порядке: `## Что вошло в релиз`,

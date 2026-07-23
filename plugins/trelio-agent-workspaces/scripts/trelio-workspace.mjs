@@ -10,7 +10,7 @@
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -28,7 +28,18 @@ const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:agen
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
 const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
 const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
+const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
+const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
+const CACHE_ROOT_DIRECTORY = process.platform === "win32"
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Trelio", "workspace-bridge", "cache")
+  : path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "trelio", "workspace-bridge");
+const OBJECT_CACHE_DIRECTORY = path.join(CACHE_ROOT_DIRECTORY, "objects");
+const DEFAULT_LOCAL_SETTINGS = Object.freeze({
+  terminalRunRetentionDays: 7,
+  objectCacheMaxAgeDays: 30,
+  objectCacheMaxBytes: 10 * 1024 * 1024 * 1024,
+});
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GIT_OBJECT_PATTERN = /^[0-9a-f]{40,64}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -511,6 +522,161 @@ const hashFile = async (filePath) => {
   return { sha256: hash.digest("hex"), sizeBytes };
 };
 
+const getCachedObjectPath = (sha256) => {
+  if (!SHA256_PATTERN.test(String(sha256 || ""))) {
+    throw new Error("Некорректный SHA-256 для локального cache.");
+  }
+
+  return path.join(OBJECT_CACHE_DIRECTORY, sha256.slice(0, 2), sha256);
+};
+
+const validateCachedObject = async (pointer) => {
+  const cachePath = getCachedObjectPath(pointer.sha256);
+
+  try {
+    const stat = await fs.lstat(cachePath);
+
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== pointer.sizeBytes) {
+      await fs.rm(cachePath, { force: true });
+      return null;
+    }
+
+    const digest = await hashFile(cachePath);
+
+    if (digest.sha256 !== pointer.sha256 || digest.sizeBytes !== pointer.sizeBytes) {
+      // Cache считается недоверенным локальным ускорителем: любое расхождение
+      // удаляем до повторной загрузки и никогда не копируем в Run snapshot.
+      await fs.rm(cachePath, { force: true });
+      return null;
+    }
+
+    const now = new Date();
+    await fs.utimes(cachePath, now, now).catch(() => undefined);
+    return cachePath;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const downloadResponseIntoCache = async (response, pointer) => {
+  if (!response.body) {
+    throw new Error("Trelio вернул пустой поток workspace object.");
+  }
+
+  const cachePath = getCachedObjectPath(pointer.sha256);
+  const cacheDirectory = path.dirname(cachePath);
+  await fs.mkdir(cacheDirectory, { recursive: true, mode: 0o700 });
+  const temporaryPath = path.join(
+    cacheDirectory,
+    `.${pointer.sha256}.download-${crypto.randomUUID()}`,
+  );
+  const hash = crypto.createHash("sha256");
+  let receivedBytes = 0;
+  const verifier = new Transform({
+    transform(chunk, _encoding, callback) {
+      receivedBytes += chunk.byteLength;
+
+      if (receivedBytes > pointer.sizeBytes) {
+        callback(new Error(`Workspace object ${pointer.sha256} превысил заявленный размер.`));
+        return;
+      }
+
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      verifier,
+      createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }),
+    );
+
+    if (receivedBytes !== pointer.sizeBytes || hash.digest("hex") !== pointer.sha256) {
+      throw new Error(`Workspace object ${pointer.sha256} не прошёл локальную проверку.`);
+    }
+
+    try {
+      await fs.rename(temporaryPath, cachePath);
+    } catch (error) {
+      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") {
+        throw error;
+      }
+
+      // Параллельный Run мог первым опубликовать тот же digest. Доверяем ему
+      // только после полной повторной проверки, как обычному cache hit.
+      const concurrentCachePath = await validateCachedObject(pointer);
+
+      if (!concurrentCachePath) {
+        throw new Error(`Параллельная публикация cache object ${pointer.sha256} повреждена.`);
+      }
+    }
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+
+  const verifiedCachePath = await validateCachedObject(pointer);
+
+  if (!verifiedCachePath) {
+    throw new Error(`Workspace object ${pointer.sha256} не появился в cache после проверки.`);
+  }
+
+  return verifiedCachePath;
+};
+
+const copyCachedObjectToDestination = async (cachePath, destination, pointer) => {
+  const parentDirectory = path.dirname(destination);
+  const temporaryPath = path.join(
+    parentDirectory,
+    `.${path.basename(destination)}.materialize-${crypto.randomUUID()}`,
+  );
+
+  try {
+    // clonefile/reflink экономит место между Run, но не создаёт mutable hardlink.
+    // На неподдерживаемой ФС COPYFILE_FICLONE падает, после чего используем
+    // обычную независимую копию.
+    try {
+      await fs.copyFile(cachePath, temporaryPath, fsConstants.COPYFILE_FICLONE);
+    } catch (error) {
+      if (error.code !== "ENOTSUP" && error.code !== "EXDEV" && error.code !== "EINVAL") {
+        throw error;
+      }
+      await fs.copyFile(cachePath, temporaryPath);
+    }
+
+    const copied = await hashFile(temporaryPath);
+
+    if (copied.sha256 !== pointer.sha256 || copied.sizeBytes !== pointer.sizeBytes) {
+      throw new Error(`Локальная копия workspace object ${pointer.sha256} повреждена.`);
+    }
+
+    if (process.platform === "win32") {
+      await fs.rm(destination, { force: true });
+    }
+    await fs.rename(temporaryPath, destination);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+};
+
+const ensureCachedWorkspaceObject = async ({ pointer, fetchResponse }) => {
+  const cachedPath = await validateCachedObject(pointer);
+
+  if (cachedPath) {
+    return { cachePath: cachedPath, cacheHit: true };
+  }
+
+  const response = await fetchResponse();
+  return {
+    cachePath: await downloadResponseIntoCache(response, pointer),
+    cacheHit: false,
+  };
+};
+
 export const inspectWorkspaceFile = async (filePath) => {
   const fileStat = await fs.lstat(filePath);
 
@@ -549,54 +715,16 @@ const downloadAndVerifyWorkspaceObject = async ({
   pointer,
   destination,
 }) => {
-  const response = await request(
-    origin,
-    token,
-    `/api/agent-workspaces/runs/${runId}/objects/${pointer.sha256}`,
-  );
-
-  if (!response.body) {
-    throw new Error("Trelio вернул пустой поток workspace object.");
-  }
-
-  const temporaryPath = `${destination}.trelio-download-${crypto.randomUUID()}`;
-  const hash = crypto.createHash("sha256");
-  let receivedBytes = 0;
-  const verifier = new Transform({
-    transform(chunk, _encoding, callback) {
-      receivedBytes += chunk.byteLength;
-
-      if (receivedBytes > pointer.sizeBytes) {
-        callback(new Error(`Workspace object ${pointer.sha256} превысил заявленный размер.`));
-        return;
-      }
-
-      hash.update(chunk);
-      callback(null, chunk);
-    },
+  const cached = await ensureCachedWorkspaceObject({
+    pointer,
+    fetchResponse: () => request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${runId}/objects/${pointer.sha256}`,
+    ),
   });
-
-  try {
-    await pipeline(
-      Readable.fromWeb(response.body),
-      verifier,
-      createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }),
-    );
-
-    if (receivedBytes !== pointer.sizeBytes || hash.digest("hex") !== pointer.sha256) {
-      throw new Error(`Workspace object ${pointer.sha256} не прошёл локальную проверку.`);
-    }
-
-    // POSIX rename атомарно заменяет pointer-файл. Windows не заменяет
-    // существующий destination, поэтому удаляем только уже проверенный pointer
-    // непосредственно перед публикацией exact bytes.
-    if (process.platform === "win32") {
-      await fs.rm(destination, { force: true });
-    }
-    await fs.rename(temporaryPath, destination);
-  } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await copyCachedObjectToDestination(cached.cachePath, destination, pointer);
+  return cached;
 };
 
 const setSkipWorktree = async (workspaceDirectory, filePaths, enabled) => {
@@ -845,14 +973,8 @@ const replaceMaterializedContext = async ({
   const currentHead = await readMaterializedContextHead(destination);
 
   if (currentHead === specification.head) {
-    await makeWritable(destination);
-    await materializeWorkspaceObjects({
-      origin,
-      token,
-      runId,
-      workspaceDirectory: destination,
-    });
-    await makeReadOnly(destination);
+    // Read-only parent/related context остаётся pointer-first. Конкретные
+    // external bytes агент получает только через `context fetch --path`.
     return { ...specification, directory: destination, changed: false };
   }
 
@@ -868,12 +990,6 @@ const replaceMaterializedContext = async ({
       directory: stagingDirectory,
       head: specification.head,
       branch: "trelio-context",
-    });
-    await materializeWorkspaceObjects({
-      origin,
-      token,
-      runId,
-      workspaceDirectory: stagingDirectory,
     });
     await makeReadOnly(stagingDirectory);
 
@@ -1173,6 +1289,12 @@ const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOpti
 const openWorkspace = async (origin, options) => {
   const token = await requireToken(origin);
   await ensureBridgeCompatibility(origin, token);
+  await cleanLocalRuns({
+    origin,
+    token,
+    dryRun: false,
+    automatic: true,
+  }).catch(() => undefined);
   const workspaceId = requireUuid(options.workspace, "workspace");
   let runPayload;
 
@@ -1296,6 +1418,7 @@ const openWorkspace = async (origin, options) => {
         agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
         objects,
       });
+      await registerRunRoot(rootDirectory);
       process.stdout.write(`${workspaceDirectory}\n`);
       return;
     }
@@ -1362,6 +1485,7 @@ const openWorkspace = async (origin, options) => {
       createdAt: new Date().toISOString(),
     };
     await writeRunMetadata(metadataPath, metadata);
+    await registerRunRoot(rootDirectory);
     process.stdout.write(`${workspaceDirectory}\n`);
   } catch (error) {
     // Не оставляем полуматериализованный Run: следующий open должен либо найти
@@ -1460,9 +1584,154 @@ const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) 
   process.stdout.write(`${path.join(rootDirectory, "context", "index.json")}\n`);
 };
 
+const fetchRunContextObject = async (
+  { metadata, metadataPath, origin, token },
+  rawPath,
+) => {
+  const requestedPath = String(rawPath || "").trim();
+
+  if (!requestedPath) {
+    throw new Error("Для `context fetch` укажите --path.");
+  }
+
+  const rootDirectory = path.dirname(metadataPath);
+  const absolutePath = path.isAbsolute(requestedPath)
+    ? path.resolve(requestedPath)
+    : requestedPath === "context" || requestedPath.startsWith(`context${path.sep}`)
+      ? path.resolve(rootDirectory, requestedPath)
+      : path.resolve(process.cwd(), requestedPath);
+  const contexts = Array.isArray(metadata.contexts) ? metadata.contexts : [];
+  const context = contexts.find((candidate) => {
+    const directory = path.resolve(String(candidate?.directory || ""));
+    return absolutePath.startsWith(`${directory}${path.sep}`);
+  });
+
+  if (!context) {
+    throw new Error("Путь не принадлежит pinned read-only context текущего Agent Run.");
+  }
+
+  const contextDirectory = path.resolve(context.directory);
+  const relativePath = path.relative(contextDirectory, absolutePath).split(path.sep).join("/");
+
+  if (
+    !relativePath
+    || relativePath.startsWith("../")
+    || relativePath.includes("/../")
+    || relativePath.includes("\\")
+  ) {
+    throw new Error("Некорректный путь файла read-only context.");
+  }
+
+  const fileStat = await fs.lstat(absolutePath);
+
+  if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.size > POINTER_MAX_BYTES) {
+    throw new Error("Выбранный файл не является workspace-object pointer.");
+  }
+
+  const pointerBytes = await fs.readFile(absolutePath);
+  const pointer = parseWorkspaceObjectPointer(pointerBytes);
+
+  if (!pointer) {
+    // Повторный fetch уже материализованного файла не должен заменять его
+    // неожиданно: агент получает явный и понятный результат.
+    throw new Error("Выбранный файл уже материализован или не содержит корректный workspace-object pointer.");
+  }
+
+  const query = new URLSearchParams({
+    head: String(context.head || ""),
+    path: relativePath,
+    sha256: pointer.sha256,
+    sizeBytes: String(pointer.sizeBytes),
+  });
+  const authorization = await readJsonResponse(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/runs/${requireUuid(metadata.runId, "run")}/context-objects/${requireUuid(context.workspaceId, "workspace")}?${query.toString()}`,
+  ));
+
+  if (
+    authorization.workspaceId !== context.workspaceId
+    || authorization.workspaceHead !== context.head
+    || authorization.filePath !== relativePath
+    || authorization.sha256 !== pointer.sha256
+    || authorization.sizeBytes !== pointer.sizeBytes
+  ) {
+    throw new Error("Trelio вернул несовпадающее разрешение на context object.");
+  }
+
+  const cached = await ensureCachedWorkspaceObject({
+    pointer,
+    fetchResponse: async () => {
+      const response = await fetch(new URL(authorization.url, `${origin}/`));
+
+      if (!response.ok) {
+        throw new TrelioApiError(response.status, await response.text());
+      }
+
+      return response;
+    },
+  });
+  const parentDirectory = path.dirname(absolutePath);
+
+  if (process.platform !== "win32") {
+    await fs.chmod(parentDirectory, 0o755);
+    await fs.chmod(absolutePath, 0o644);
+  }
+
+  try {
+    // Защищаемся от локальной подмены между authorization и публикацией bytes.
+    const currentPointer = parseWorkspaceObjectPointer(await fs.readFile(absolutePath));
+
+    if (
+      !currentPointer
+      || currentPointer.sha256 !== pointer.sha256
+      || currentPointer.sizeBytes !== pointer.sizeBytes
+      || currentPointer.contentType !== pointer.contentType
+    ) {
+      throw new Error("Workspace-object pointer изменился во время materialization.");
+    }
+
+    await copyCachedObjectToDestination(cached.cachePath, absolutePath, pointer);
+  } finally {
+    if (process.platform !== "win32") {
+      await fs.chmod(absolutePath, 0o444).catch(() => undefined);
+      await fs.chmod(parentDirectory, 0o555).catch(() => undefined);
+    }
+  }
+
+  const contextObjects = [
+    ...(Array.isArray(metadata.contextObjects) ? metadata.contextObjects : [])
+      .filter((item) => !(
+        item.workspaceId === context.workspaceId
+        && item.workspaceHead === context.head
+        && item.filePath === relativePath
+      )),
+    {
+      workspaceId: context.workspaceId,
+      workspaceHead: context.head,
+      filePath: relativePath,
+      sha256: pointer.sha256,
+      sizeBytes: pointer.sizeBytes,
+      materializedAt: new Date().toISOString(),
+    },
+  ];
+  await writeRunMetadata(metadataPath, {
+    ...metadata,
+    schemaVersion: 3,
+    contextObjects,
+  });
+  process.stdout.write(`${absolutePath}\n`);
+  process.stdout.write(cached.cacheHit ? "Источник: локальный cache.\n" : "Источник: Trelio object storage.\n");
+};
+
 const contextCommand = async (options, positional) => withRun(async (runContext) => {
   if (positional[0] === "sync") {
     await synchronizeRunContext(runContext);
+    return;
+  }
+
+  if (positional[0] === "fetch") {
+    await fetchRunContextObject(runContext, options.path);
     return;
   }
 
@@ -1865,6 +2134,16 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
     if (result.run.status !== "accepted") {
       throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
     }
+    // Accepted Run остаётся на месте для проверки результата. Cleanup увидит
+    // terminal mark, но удалит root только после server-confirmed retention.
+    await writeRunMetadata(metadataPath, {
+      ...metadata,
+      schemaVersion: 3,
+      candidateHead: head,
+      terminalStatus: "accepted",
+      terminalAt: result.run.acceptedAt || new Date().toISOString(),
+      cleanupEligibleAfterDays: (await readLocalSettings()).terminalRunRetentionDays,
+    });
     process.stdout.write("Результат записан в рабочее пространство Trelio.\n");
     process.stdout.write("Статус: принят автоматически.\n");
     process.stdout.write("Проверки структуры, безопасности и актуальности базовой версии пройдены.\n");
@@ -2021,6 +2300,350 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
   });
 });
 
+const calculateDirectoryBytes = async (directory) => {
+  let totalBytes = 0;
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+
+    if (entry.isSymbolicLink()) {
+      totalBytes += (await fs.lstat(entryPath)).size;
+    } else if (entry.isDirectory()) {
+      totalBytes += await calculateDirectoryBytes(entryPath);
+    } else if (entry.isFile()) {
+      totalBytes += (await fs.lstat(entryPath)).size;
+    }
+  }
+
+  return totalBytes;
+};
+
+const discoverDefaultRunRoots = async () => {
+  const roots = [];
+  let workspaceEntries = [];
+
+  try {
+    workspaceEntries = await fs.readdir(DEFAULT_WORKSPACES_DIRECTORY, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return roots;
+    }
+    throw error;
+  }
+
+  for (const workspaceEntry of workspaceEntries) {
+    if (!workspaceEntry.isDirectory() || !UUID_PATTERN.test(workspaceEntry.name)) {
+      continue;
+    }
+
+    const workspaceDirectory = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceEntry.name);
+    const runEntries = await fs.readdir(workspaceDirectory, { withFileTypes: true });
+
+    for (const runEntry of runEntries) {
+      if (runEntry.isDirectory() && UUID_PATTERN.test(runEntry.name)) {
+        roots.push(path.join(workspaceDirectory, runEntry.name));
+      }
+    }
+  }
+
+  return roots;
+};
+
+const discoverRegisteredRunRoots = async () => {
+  const roots = [...new Set([
+    ...(await readRunRegistry()),
+    ...(await discoverDefaultRunRoots()),
+  ].map((item) => path.resolve(item)))];
+  const discovered = [];
+
+  for (const rootDirectory of roots) {
+    try {
+      const [rootStat, metadata] = await Promise.all([
+        fs.lstat(rootDirectory),
+        fs.readFile(path.join(rootDirectory, ".trelio-run.json"), "utf8").then(JSON.parse),
+      ]);
+
+      if (
+        rootStat.isDirectory()
+        && !rootStat.isSymbolicLink()
+        && UUID_PATTERN.test(String(metadata.workspaceId || ""))
+        && UUID_PATTERN.test(String(metadata.runId || ""))
+        && path.resolve(metadata.workspaceDirectory || "") === path.join(rootDirectory, "workspace")
+      ) {
+        discovered.push({ rootDirectory, metadata });
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        // Повреждённый/неизвестный root намеренно не становится кандидатом на
+        // удаление. clean продолжает проверять остальные зарегистрированные Run.
+      }
+    }
+  }
+
+  return discovered;
+};
+
+const readRunStatusMap = async ({ origin, token, roots }) => {
+  const statusByRunId = new Map();
+  const workspaceIds = [...new Set(
+    roots
+      .filter((item) => normalizeOrigin(item.metadata.origin || DEFAULT_ORIGIN) === origin)
+      .map((item) => item.metadata.workspaceId),
+  )];
+
+  for (const workspaceId of workspaceIds) {
+    const overview = await readJsonResponse(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${requireUuid(workspaceId, "workspace")}`,
+    ));
+
+    for (const run of Array.isArray(overview.runs) ? overview.runs : []) {
+      statusByRunId.set(run.id, run);
+    }
+  }
+
+  return statusByRunId;
+};
+
+const isWritableWorkspaceDirty = async (root) => {
+  try {
+    const result = await run(
+      "git",
+      ["status", "--porcelain", "--untracked-files=all"],
+      { cwd: root.metadata.workspaceDirectory },
+    );
+    return Boolean(result.stdout.trim());
+  } catch {
+    // Неизвестное состояние безопаснее считать dirty, чем пытаться удалить.
+    return true;
+  }
+};
+
+const formatBytes = (value) => {
+  if (value < 1024) return `${value} Б`;
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} КиБ`;
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} МиБ`;
+  return `${(value / 1024 ** 3).toFixed(2)} ГиБ`;
+};
+
+const collectProtectedCacheDigests = (roots) => {
+  const digests = new Set();
+
+  for (const root of roots) {
+    for (const object of [
+      ...(Array.isArray(root.metadata.objects) ? root.metadata.objects : []),
+      ...(Array.isArray(root.metadata.contextObjects) ? root.metadata.contextObjects : []),
+    ]) {
+      if (SHA256_PATTERN.test(String(object?.sha256 || ""))) {
+        digests.add(String(object.sha256));
+      }
+    }
+  }
+
+  return digests;
+};
+
+const listCacheEntries = async () => {
+  const entries = [];
+  let prefixDirectories = [];
+
+  try {
+    prefixDirectories = await fs.readdir(OBJECT_CACHE_DIRECTORY, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return entries;
+    }
+    throw error;
+  }
+
+  for (const prefix of prefixDirectories) {
+    if (!prefix.isDirectory() || !/^[0-9a-f]{2}$/.test(prefix.name)) {
+      continue;
+    }
+
+    const prefixDirectory = path.join(OBJECT_CACHE_DIRECTORY, prefix.name);
+    const files = await fs.readdir(prefixDirectory, { withFileTypes: true });
+
+    for (const file of files) {
+      if (!file.isFile() || !SHA256_PATTERN.test(file.name)) {
+        continue;
+      }
+
+      const filePath = path.join(prefixDirectory, file.name);
+      const stat = await fs.lstat(filePath);
+
+      if (!stat.isSymbolicLink()) {
+        entries.push({
+          sha256: file.name,
+          filePath,
+          sizeBytes: stat.size,
+          lastUsedAtMs: Math.max(stat.atimeMs, stat.mtimeMs),
+        });
+      }
+    }
+  }
+
+  return entries;
+};
+
+const planObjectCachePrune = async ({ roots, settings }) => {
+  const protectedDigests = collectProtectedCacheDigests(roots);
+  const entries = (await listCacheEntries())
+    .sort((left, right) => left.lastUsedAtMs - right.lastUsedAtMs);
+  const maximumAgeMs = settings.objectCacheMaxAgeDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let retainedBytes = entries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+  const candidates = [];
+
+  for (const entry of entries) {
+    if (protectedDigests.has(entry.sha256)) {
+      continue;
+    }
+
+    if (
+      now - entry.lastUsedAtMs >= maximumAgeMs
+      || retainedBytes > settings.objectCacheMaxBytes
+    ) {
+      candidates.push(entry);
+      retainedBytes -= entry.sizeBytes;
+    }
+  }
+
+  return candidates;
+};
+
+const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
+  const resolvedRoot = path.resolve(root.rootDirectory);
+  const defaultPrefix = `${path.resolve(DEFAULT_WORKSPACES_DIRECTORY)}${path.sep}`;
+
+  if (
+    !resolvedRoot.startsWith(defaultPrefix)
+    && !registeredRoots.has(resolvedRoot)
+  ) {
+    throw new Error(`Run root не зарегистрирован для безопасного удаления: ${resolvedRoot}`);
+  }
+
+  if (
+    path.resolve(root.metadata.workspaceDirectory || "") !== path.join(resolvedRoot, "workspace")
+    || path.dirname(path.resolve(path.join(resolvedRoot, ".trelio-run.json"))) !== resolvedRoot
+  ) {
+    throw new Error(`Run root не прошёл проверку структуры: ${resolvedRoot}`);
+  }
+};
+
+const planTerminalRunCleanup = async ({ origin, token, settings }) => {
+  const roots = await discoverRegisteredRunRoots();
+  const statusByRunId = await readRunStatusMap({ origin, token, roots });
+  const retentionMs = settings.terminalRunRetentionDays * 24 * 60 * 60 * 1000;
+  const candidates = [];
+
+  for (const root of roots) {
+    if (normalizeOrigin(root.metadata.origin || DEFAULT_ORIGIN) !== origin) {
+      continue;
+    }
+
+    const runState = statusByRunId.get(root.metadata.runId);
+
+    if (!runState || !["accepted", "cancelled"].includes(runState.status)) {
+      continue;
+    }
+
+    const terminalAt = Date.parse(
+      runState.acceptedAt
+      || runState.cancelledAt
+      || runState.updatedAt
+      || "",
+    );
+
+    if (!Number.isFinite(terminalAt) || Date.now() - terminalAt < retentionMs) {
+      continue;
+    }
+
+    if (await isWritableWorkspaceDirty(root)) {
+      continue;
+    }
+
+    candidates.push({
+      ...root,
+      status: runState.status,
+      terminalAt: new Date(terminalAt).toISOString(),
+      sizeBytes: await calculateDirectoryBytes(root.rootDirectory),
+    });
+  }
+
+  return { roots, candidates };
+};
+
+const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
+  const settings = await readLocalSettings();
+  let cleanupPlan;
+
+  try {
+    cleanupPlan = await planTerminalRunCleanup({ origin, token, settings });
+  } catch (error) {
+    if (automatic) {
+      // Backend недоступен или статус не доказан — автоматическая очистка
+      // ничего не удаляет, включая cache.
+      return { skipped: true, reason: error instanceof Error ? error.message : String(error) };
+    }
+    throw error;
+  }
+
+  const registeredRoots = new Set((await readRunRegistry()).map((item) => path.resolve(item)));
+  const cacheCandidates = await planObjectCachePrune({
+    roots: cleanupPlan.roots,
+    settings,
+  });
+  const reclaimableBytes = [
+    ...cleanupPlan.candidates,
+    ...cacheCandidates,
+  ].reduce((sum, item) => sum + item.sizeBytes, 0);
+
+  if (!automatic || dryRun) {
+    process.stdout.write(`Terminal Run roots: ${cleanupPlan.candidates.length}\n`);
+    for (const candidate of cleanupPlan.candidates) {
+      process.stdout.write(
+        `- ${candidate.rootDirectory} · ${candidate.status} · ${formatBytes(candidate.sizeBytes)}\n`,
+      );
+    }
+    process.stdout.write(`Cache objects: ${cacheCandidates.length}\n`);
+    for (const candidate of cacheCandidates) {
+      process.stdout.write(`- ${candidate.filePath} · ${formatBytes(candidate.sizeBytes)}\n`);
+    }
+    process.stdout.write(`Можно освободить: ${formatBytes(reclaimableBytes)}\n`);
+  }
+
+  if (dryRun) {
+    return { deletedRuns: 0, deletedCacheObjects: 0, reclaimableBytes };
+  }
+
+  for (const candidate of cleanupPlan.candidates) {
+    assertSafeRegisteredRunRoot(candidate, registeredRoots);
+    await fs.rm(candidate.rootDirectory, { recursive: true, force: true });
+  }
+
+  for (const candidate of cacheCandidates) {
+    await fs.rm(candidate.filePath, { force: true });
+  }
+
+  const deletedRootSet = new Set(cleanupPlan.candidates.map((item) => path.resolve(item.rootDirectory)));
+  await writeRunRegistry(
+    (await readRunRegistry()).filter((item) => !deletedRootSet.has(path.resolve(item))),
+  );
+
+  if (!automatic) {
+    process.stdout.write("Очистка завершена.\n");
+  }
+
+  return {
+    deletedRuns: cleanupPlan.candidates.length,
+    deletedCacheObjects: cacheCandidates.length,
+    reclaimableBytes,
+  };
+};
+
 const printHelp = () => {
   process.stdout.write(`Trelio Agent Workspace Bridge ${BRIDGE_VERSION}\n\n`);
   process.stdout.write("Команды:\n");
@@ -2030,6 +2653,9 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace heartbeat\n");
   process.stdout.write("  trelio-workspace context sync\n");
   process.stdout.write("  trelio-workspace context attach --workspace UUID\n");
+  process.stdout.write("  trelio-workspace context fetch --path ../context/project/path/to/file\n");
+  process.stdout.write("  trelio-workspace clean --dry-run\n");
+  process.stdout.write("  trelio-workspace clean\n");
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
@@ -2052,6 +2678,14 @@ const main = async () => {
     await heartbeat();
   } else if (command === "context") {
     await contextCommand(options, positional);
+  } else if (command === "clean") {
+    const token = await requireToken(origin);
+    await ensureBridgeCompatibility(origin, token);
+    await cleanLocalRuns({
+      origin,
+      token,
+      dryRun: options["dry-run"] === true,
+    });
   } else if (command === "checkpoint") {
     await checkpoint(options);
   } else if (command === "submit") {

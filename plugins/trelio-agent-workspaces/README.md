@@ -126,9 +126,25 @@ trelio-workspace context sync
 
 Первая команда использует актуальные lease/fencing из локального Run,
 прикрепляет workspace и сразу синхронизирует его. `context sync` отдельно
-догружает уже прикреплённые через MCP revision. Bridge атомарно заменяет
-локальные read-only snapshots. Единственный каталог `workspace/` остаётся
-writable и только он попадает в candidate.
+обновляет уже прикреплённые через MCP revision. Bridge скачивает Git bundle,
+обычные inline text-файлы и точные object pointers, но не external object bytes,
+и атомарно заменяет локальные read-only snapshots. Единственный каталог
+`workspace/` остаётся writable и только он попадает в candidate.
+
+Конкретный бинарный или крупный файл read-only context материализуется лениво:
+
+```bash
+trelio-workspace context fetch --path ../context/project/sources/manual.pdf
+```
+
+Skill распознаёт пятистрочный workspace-object pointer и вызывает эту команду
+перед чтением выбранного файла. Полной фоновой догрузки нет. Backend
+авторизует exact `runId`, dependency workspace, pinned head и path, затем bridge
+проверяет размер и SHA-256. Проверенные bytes публикуются атомарно в локальный
+content-addressed cache вне Run и повторно используются следующими Run.
+Snapshot создаётся через clonefile/reflink с fallback на независимую копию;
+mutable hardlink не используется. Writable `workspace/` пока материализуется
+eager, чтобы сохранить совместимость candidate/submit.
 
 Codex в начале каждого Run читает защищённый `AGENTS.md` напрямую. Claude Code
 нативно читает защищённый корневой `CLAUDE.md`, который содержит только
@@ -145,6 +161,26 @@ Codex в начале каждого Run читает защищённый `AGEN
 content-addressed pointer. Candidate bundle содержит только delta относительно
 закреплённого base head, поэтому размер пользовательских материалов больше не
 совпадает с размером Git transport.
+
+## Локальная очистка
+
+Успешный submit не удаляет локальную папку сразу. Принятый или отменённый Run
+становится кандидатом на очистку только через 7 дней. Перед удалением bridge
+получает актуальный terminal status с backend и проверяет, что writable
+workspace не содержит локальных изменений. Active, unknown и dirty Run не
+удаляются; при недоступном backend автоматическая очистка ничего не меняет.
+
+Точный план и объём освобождаемого места показываются без удаления:
+
+```bash
+trelio-workspace clean --dry-run
+```
+
+Явная `trelio-workspace clean` применяет только такой безопасный план. Object
+cache очищается по LRU, возрасту и локальному лимиту, но не удаляет digest,
+которые используются обнаруженными Run. Безопасные defaults можно изменить в
+`~/.config/trelio/workspace-bridge/settings.json` через
+`terminalRunRetentionDays`, `objectCacheMaxAgeDays` и `objectCacheMaxBytes`.
 
 Простые связи задач не требуют общего кейса. Агент описывает смысл прямой
 связи свободной подписью, а направленность задаёт отдельно. Рабочий кейс
