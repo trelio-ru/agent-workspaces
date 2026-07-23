@@ -21,8 +21,9 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.3.3";
+export const BRIDGE_VERSION = "1.3.4";
 const DEFAULT_ORIGIN = "https://trelio.ru";
+const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
 const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
@@ -166,12 +167,30 @@ const run = async (executable, args, options = {}) => {
   }
 };
 
-const request = async (origin, token, pathname, options = {}) => {
-  const headers = new Headers(options.headers || {});
+export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
+  const headers = new Headers(initialHeaders);
+
+  // Один центральный version header покрывает open, heartbeat, bundle/object
+  // transfer и Agent Secrets. Backend поэтому проверяет фактически
+  // исполняемый bridge каждого запроса, а не только provenance старого Run.
+  headers.set(BRIDGE_VERSION_HEADER, BRIDGE_VERSION);
 
   if (token) {
     headers.set("authorization", `Bearer ${token}`);
   }
+
+  return headers;
+};
+
+class TrelioApiError extends Error {
+  constructor(statusCode, message) {
+    super(`Trelio API ${statusCode}: ${String(message).slice(0, 1000)}`);
+    this.statusCode = statusCode;
+  }
+}
+
+const request = async (origin, token, pathname, options = {}) => {
+  const headers = buildBridgeRequestHeaders(token, options.headers || {});
 
   const response = await fetch(new URL(pathname, `${origin}/`), { ...options, headers });
 
@@ -186,7 +205,7 @@ const request = async (origin, token, pathname, options = {}) => {
       // Не-JSON proxy response всё равно полезнее скрытой HTTP ошибки.
     }
 
-    throw new Error(`Trelio API ${response.status}: ${String(message).slice(0, 1000)}`);
+    throw new TrelioApiError(response.status, message);
   }
 
   return response;
@@ -906,6 +925,42 @@ const writeContextIndex = async (rootDirectory, contexts) => {
 
 const readJsonResponse = async (response) => response.json();
 
+const ensureBridgeCompatibility = async (origin, token) => {
+  try {
+    const compatibility = await readJsonResponse(await request(
+      origin,
+      token,
+      "/api/agent-workspaces/bridge-compatibility",
+    ));
+
+    if (compatibility?.supported === true) {
+      return;
+    }
+
+    const minimumVersion = typeof compatibility?.minimumVersion === "string"
+      ? compatibility.minimumVersion
+      : "актуальная";
+    const updateCommand = typeof compatibility?.update?.codexCommand === "string"
+      ? compatibility.update.codexCommand
+      : "codex plugin marketplace upgrade trelio-plugins";
+    throw new Error(
+      `Версия Trelio Agent Workspaces v${BRIDGE_VERSION} больше не поддерживается; `
+      + `требуется ${minimumVersion === "актуальная" ? minimumVersion : `v${minimumVersion}`}. `
+      + `Выполните \`${updateCommand}\`, полностью перезапустите Codex или Claude `
+      + "и начните новую задачу.",
+    );
+  } catch (error) {
+    if (error instanceof TrelioApiError && error.statusCode === 404) {
+      // Плагин публикуется раньше backend hard gate. Короткое окно deploy
+      // остаётся обратно совместимым: старый backend игнорирует version header,
+      // а новый уже вернёт строгий compatibility payload.
+      return;
+    }
+
+    throw error;
+  }
+};
+
 const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOption }) => {
   const rootDirectory = path.resolve(String(
     directoryOption || path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId, runId),
@@ -950,6 +1005,7 @@ const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOpti
 
 const openWorkspace = async (origin, options) => {
   const token = await requireToken(origin);
+  await ensureBridgeCompatibility(origin, token);
   const workspaceId = requireUuid(options.workspace, "workspace");
   let runPayload;
 
@@ -1035,6 +1091,7 @@ const openWorkspace = async (origin, options) => {
         ...existingMetadata,
         schemaVersion: 3,
         origin,
+        pluginVersion: BRIDGE_VERSION,
         leaseId: agentRun.leaseId,
         fencingToken: agentRun.fencingToken,
         baseHead: agentRun.baseHead,
@@ -1114,6 +1171,7 @@ const openWorkspace = async (origin, options) => {
     const metadata = {
       schemaVersion: 3,
       origin,
+      pluginVersion: BRIDGE_VERSION,
       workspaceId,
       runId,
       leaseId: agentRun.leaseId,

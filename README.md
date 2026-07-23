@@ -120,9 +120,19 @@ GitHub Security Advisory.
 
 ## Версионирование
 
-Версия плагина и публичный Git tag выпускаются вместе. Для production-установок
-используйте `--ref vX.Y.Z`, чтобы обновление дистрибутива не происходило
-неожиданно.
+Версия плагина и публичный Git tag выпускаются вместе. Production backend
+Trelio требует последнюю опубликованную стабильную версию плагина для каждого
+bridge-запроса. Поэтому обычный marketplace подключается без `--ref` и перед
+новой работой обновляется командой:
+
+```bash
+codex plugin marketplace upgrade trelio-plugins
+```
+
+После обновления полностью перезапустите Codex или Claude и начните новую
+задачу. Источник, закреплённый на `--ref vX.Y.Z`, перестанет открывать Agent
+Workspace после следующего plugin release; pin допустим только как короткая
+диагностика или rollback до восстановления совместимой текущей версии.
 
 Подробности находятся в
 [`plugins/trelio-agent-workspaces/README.md`](plugins/trelio-agent-workspaces/README.md).

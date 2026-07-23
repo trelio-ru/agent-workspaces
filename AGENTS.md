@@ -54,6 +54,13 @@ Trelio-монорепозитории быть не должно.
   skill уже загрузился, а MCP tools в сессии отсутствуют, агент обязан
   остановить работу, объяснить настройку, потребовать перезапуск и новую задачу
   и не подменять MCP открытием карточки Trelio в браузере.
+- Backend требует последнюю опубликованную стабильную версию плагина для
+  каждого bridge-запроса. Bridge передаёт единый
+  `x-trelio-agent-workspaces-version`, выполняет совместимый preflight до
+  start/claim и на `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` останавливает
+  работу до `codex plugin marketplace upgrade trelio-plugins`, полного
+  перезапуска и новой задачи. Текущий Run можно продолжить повторным `open`;
+  подделывать version header или обходить gate другим `clientKind` нельзя.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio
@@ -78,6 +85,8 @@ Trelio-монорепозитории быть не должно.
   `plugin-creator` и синтаксис bridge через Node.js 22+.
 - Версия manifest и Git tag выпускаются вместе. Не меняй стабильную версию и
   не создавай tag без явной команды на релиз.
+- Bridge-константа, Codex manifest, Claude manifest и Claude marketplace entry
+  обязаны иметь одну release-версию; это защищает автоматический тест.
 - Plugin release всегда публикуется с точным названием `vX.Y.Z`, без префикса,
   суффикса и краткого описания в title. Release notes пишутся по-русски и только
   по каноническим разделам в этом порядке: `## Что вошло в релиз`,

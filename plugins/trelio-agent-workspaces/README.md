@@ -19,6 +19,13 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin marketplace upgrade
 ```
 
+Trelio проверяет версию bridge при preflight и во всех transport-запросах.
+Версия ниже последнего опубликованного стабильного plugin release получает
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` и не может открыть, продлить или
+отправить Run. После обновления полностью перезапустите клиент и начните новую
+задачу; существующую локальную папку можно продолжить повторным `open` того же
+Run.
+
 Источник, ранее добавленный с `--ref vX.Y.Z`, остаётся на выбранном tag. Чтобы
 перевести его на обновляемый default branch, один раз выполните:
 

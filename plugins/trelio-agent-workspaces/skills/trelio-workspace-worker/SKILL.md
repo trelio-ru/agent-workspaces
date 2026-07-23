@@ -38,6 +38,29 @@ Never claim that setup succeeded merely because the skill text is visible. A
 successful low-risk MCP read such as `get_my_context` or `get_task` is the
 readiness check.
 
+## Required plugin version
+
+Trelio intentionally requires the latest published stable version of
+`trelio-ru/agent-workspaces` for every bridge operation. If the bridge or API
+returns `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, stop workspace work and do
+not retry with the old process.
+
+1. Tell the user which installed and minimum versions the error reports.
+2. For Codex, give the exact command
+   `codex plugin marketplace upgrade trelio-plugins`. For Claude, direct the
+   user to refresh the `trelio-plugins` marketplace through its plugin manager.
+3. Require a full client restart and a new task so both executable code and
+   skill instructions are reloaded.
+4. Preserve the existing local Run directory. After restart, execute the same
+   `trelio-workspace open --workspace <uuid> --run <uuid>` command; the updated
+   bridge claim refreshes lease/fencing and continues the Run without deleting
+   local changes.
+
+Do not bypass the version gate with direct HTTP calls, a different
+`clientKind`, edited metadata, or a forged header. The gate is an operational
+compatibility requirement in addition to, not instead of, server-side ACL and
+candidate validation.
+
 When a local tool needs a configured secret, call `prepare_agent_secret_checkout` for the current Run and exact executable, then execute the returned `trelio-workspace secret exec --grant ... -- COMMAND` command. The bridge retrieves the value once and delivers it locally using the server-authorized `stdin`, `env`, or private temporary-file mode. Trelio does not run the command. Never replace the executable with a shell, logger, `env`, `printenv`, `cat`, or another program whose purpose is to reveal the value.
 
 ## Resolve the work item before choosing a workspace

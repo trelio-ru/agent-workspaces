@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  BRIDGE_VERSION,
   buildRunContextSpecifications,
+  buildBridgeRequestHeaders,
   inspectWorkspaceFile,
   isProtectedWorkspaceControlPath,
   parseWorkspaceObjectPointer,
@@ -16,6 +18,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
+const pluginDirectory = path.resolve(testDirectory, "..");
 const bridgePath = path.resolve(testDirectory, "../scripts/trelio-workspace.mjs");
 const runId = "11111111-1111-4111-8111-111111111111";
 const companyWorkspaceId = "22222222-2222-4222-8222-222222222222";
@@ -58,9 +61,39 @@ test("bridge rejects duplicate workspace ids and malformed pinned heads", () => 
   }), /Git head/);
 });
 
+test("bridge release version stays synchronized across executable and manifests", async () => {
+  const codexManifest = JSON.parse(await readFile(
+    path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
+    "utf8",
+  ));
+  const claudeManifest = JSON.parse(await readFile(
+    path.join(pluginDirectory, ".claude-plugin", "plugin.json"),
+    "utf8",
+  ));
+  const claudeMarketplace = JSON.parse(await readFile(
+    path.resolve(pluginDirectory, "..", "..", ".claude-plugin", "marketplace.json"),
+    "utf8",
+  ));
+  const claudeMarketplaceEntry = claudeMarketplace.plugins.find(
+    (plugin) => plugin.name === "trelio-agent-workspaces",
+  );
+
+  assert.equal(BRIDGE_VERSION, "1.3.4");
+  assert.equal(codexManifest.version, BRIDGE_VERSION);
+  assert.equal(claudeManifest.version, BRIDGE_VERSION);
+  assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
+});
+
+test("bridge adds its release version and bearer credential to every API request", () => {
+  const headers = buildBridgeRequestHeaders("oauth-token", { accept: "application/json" });
+  assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
+  assert.equal(headers.get("authorization"), "Bearer oauth-token");
+  assert.equal(headers.get("accept"), "application/json");
+});
+
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.3/);
+  assert.match(result.stdout, /Bridge 1\.3\.4/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
 });
