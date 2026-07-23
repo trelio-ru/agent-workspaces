@@ -24,7 +24,7 @@ const execFileAsync = promisify(execFile);
 export const BRIDGE_VERSION = "1.3.5";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
-const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
+const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:agent-instructions:manage mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
 const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
 const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
@@ -941,14 +941,147 @@ const writeRunMetadata = async (metadataPath, metadata) => {
   await fs.chmod(metadataPath, 0o600);
 };
 
-const writeContextIndex = async (rootDirectory, contexts) => {
+const readLocalSettings = async () => {
+  let rawSettings = {};
+
+  try {
+    rawSettings = JSON.parse(await fs.readFile(LOCAL_SETTINGS_FILE, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  const readBoundedInteger = (value, fallback, minimum, maximum) => {
+    const numericValue = Number(value);
+    return Number.isSafeInteger(numericValue) && numericValue >= minimum && numericValue <= maximum
+      ? numericValue
+      : fallback;
+  };
+
+  return {
+    terminalRunRetentionDays: readBoundedInteger(
+      rawSettings.terminalRunRetentionDays,
+      DEFAULT_LOCAL_SETTINGS.terminalRunRetentionDays,
+      1,
+      365,
+    ),
+    objectCacheMaxAgeDays: readBoundedInteger(
+      rawSettings.objectCacheMaxAgeDays,
+      DEFAULT_LOCAL_SETTINGS.objectCacheMaxAgeDays,
+      1,
+      3650,
+    ),
+    objectCacheMaxBytes: readBoundedInteger(
+      rawSettings.objectCacheMaxBytes,
+      DEFAULT_LOCAL_SETTINGS.objectCacheMaxBytes,
+      256 * 1024 * 1024,
+      1024 * 1024 * 1024 * 1024,
+    ),
+  };
+};
+
+const readRunRegistry = async () => {
+  try {
+    const payload = JSON.parse(await fs.readFile(RUN_REGISTRY_FILE, "utf8"));
+    return Array.isArray(payload?.roots)
+      ? payload.roots.filter((item) => typeof item === "string" && path.isAbsolute(item))
+      : [];
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+};
+
+const writeRunRegistry = async (roots) => {
+  await fs.mkdir(CONFIG_DIRECTORY, { recursive: true, mode: 0o700 });
+  const temporaryPath = `${RUN_REGISTRY_FILE}.tmp-${crypto.randomUUID()}`;
+
+  try {
+    await fs.writeFile(
+      temporaryPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        roots: [...new Set(roots.map((item) => path.resolve(item)))].sort(),
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    await fs.rename(temporaryPath, RUN_REGISTRY_FILE);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+};
+
+const registerRunRoot = async (rootDirectory) => {
+  const roots = await readRunRegistry();
+  await writeRunRegistry([...roots, path.resolve(rootDirectory)]);
+};
+
+const normalizeAgentInstructionsSnapshot = (rawSnapshot) => {
+  const snapshot = rawSnapshot && typeof rawSnapshot === "object" ? rawSnapshot : {};
+  const compiledMarkdown = typeof snapshot.compiledMarkdown === "string"
+    ? snapshot.compiledMarkdown
+    : "";
+
+  if (!compiledMarkdown || Buffer.byteLength(compiledMarkdown, "utf8") > 300 * 1024) {
+    throw new Error("Agent Run содержит некорректный снимок рабочих правил.");
+  }
+
+  const normalizeRevision = (revision) => (
+    revision
+    && typeof revision === "object"
+    && UUID_PATTERN.test(String(revision.revisionId || ""))
+    && Number.isSafeInteger(revision.version)
+    && revision.version > 0
+      ? {
+          revisionId: String(revision.revisionId),
+          version: revision.version,
+        }
+      : null
+  );
+
+  return {
+    schemaVersion: 1,
+    company: normalizeRevision(snapshot.company),
+    project: normalizeRevision(snapshot.project),
+    compiledMarkdown,
+  };
+};
+
+const writeAgentInstructionsSnapshot = async (rootDirectory, rawSnapshot) => {
+  const snapshot = normalizeAgentInstructionsSnapshot(rawSnapshot);
+  const contextDirectory = path.join(rootDirectory, "context");
+  const instructionsPath = path.join(contextDirectory, "agent-instructions.md");
+  await ensureContextDirectoryChain(rootDirectory, path.join("context", "agent-instructions.md"));
+  await fs.chmod(instructionsPath, 0o600).catch(() => undefined);
+  await fs.writeFile(instructionsPath, snapshot.compiledMarkdown, { mode: 0o600 });
+
+  if (process.platform !== "win32") {
+    await fs.chmod(instructionsPath, 0o444);
+  }
+
+  return {
+    path: instructionsPath,
+    company: snapshot.company,
+    project: snapshot.project,
+  };
+};
+
+const writeContextIndex = async (rootDirectory, contexts, rawAgentInstructionsSnapshot) => {
   const contextDirectory = path.join(rootDirectory, "context");
   const indexPath = path.join(contextDirectory, "index.json");
+  const agentInstructions = await writeAgentInstructionsSnapshot(
+    rootDirectory,
+    rawAgentInstructionsSnapshot,
+  );
   await ensureContextDirectoryChain(rootDirectory, path.join("context", "index.json"));
   await fs.chmod(indexPath, 0o600).catch(() => undefined);
   await fs.writeFile(indexPath, `${JSON.stringify({
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
+    agentInstructions,
     contexts: serializeMaterializedContexts(contexts),
   }, null, 2)}\n`, { mode: 0o600 });
 
@@ -1131,6 +1264,7 @@ const openWorkspace = async (origin, options) => {
         baseHead: agentRun.baseHead,
         workspaceDirectory,
         contextHeads: agentRun.contextHeadsJson || {},
+        agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
         claimedAt: new Date().toISOString(),
       };
       // Новая lease-пара сохраняется до сетевой синхронизации контекста. Если
@@ -1151,10 +1285,15 @@ const openWorkspace = async (origin, options) => {
         workspaceDirectory,
         knownObjects: existingMetadata.objects || [],
       });
-      await writeContextIndex(rootDirectory, contexts);
+      await writeContextIndex(
+        rootDirectory,
+        contexts,
+        agentRun.agentInstructionsSnapshotJson,
+      );
       await writeRunMetadata(metadataPath, {
         ...refreshedMetadata,
         contexts: serializeMaterializedContexts(contexts),
+        agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
         objects,
       });
       process.stdout.write(`${workspaceDirectory}\n`);
@@ -1200,7 +1339,11 @@ const openWorkspace = async (origin, options) => {
       runId,
       contextHeads,
     });
-    await writeContextIndex(rootDirectory, contexts);
+    await writeContextIndex(
+      rootDirectory,
+      contexts,
+      agentRun.agentInstructionsSnapshotJson,
+    );
 
     const metadata = {
       schemaVersion: 3,
@@ -1213,6 +1356,7 @@ const openWorkspace = async (origin, options) => {
       baseHead: agentRun.baseHead,
       workspaceDirectory,
       contextHeads,
+      agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
       contexts: serializeMaterializedContexts(contexts),
       objects,
       createdAt: new Date().toISOString(),
@@ -1298,11 +1442,16 @@ const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) 
     runId: metadata.runId,
     contextHeads,
   });
-  await writeContextIndex(rootDirectory, contexts);
+  await writeContextIndex(
+    rootDirectory,
+    contexts,
+    agentRun.agentInstructionsSnapshotJson,
+  );
   await writeRunMetadata(metadataPath, {
     ...metadata,
     schemaVersion: 3,
     contextHeads,
+    agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
     contexts: serializeMaterializedContexts(contexts),
     contextSyncedAt: new Date().toISOString(),
   });
