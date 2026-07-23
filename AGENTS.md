@@ -87,6 +87,11 @@ Trelio-монорепозитории быть не должно.
   не создавай tag без явной команды на релиз.
 - Bridge-константа, Codex manifest, Claude manifest и Claude marketplace entry
   обязаны иметь одну release-версию; это защищает автоматический тест.
+- External-object submit обязан иметь реальный Git regression test: binary
+  загружается через fake HTTP API, pointer передаётся в `git hash-object
+  --stdin` с явным закрытием stdin, candidate bundle доходит до сервера, а
+  рабочие bytes остаются materialized. `execFile` option `input` для этого
+  использовать нельзя: Node.js его не поддерживает и дочерний Git ждёт EOF.
 - Plugin release всегда публикуется с точным названием `vX.Y.Z`, без префикса,
   суффикса и краткого описания в title. Release notes пишутся по-русски и только
   по каноническим разделам в этом порядке: `## Что вошло в релиз`,

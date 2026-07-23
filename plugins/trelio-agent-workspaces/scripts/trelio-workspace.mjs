@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.3.4";
+export const BRIDGE_VERSION = "1.3.5";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
@@ -148,19 +148,53 @@ const requireUuid = (value, name) => {
   return String(value).toLowerCase();
 };
 
-const run = async (executable, args, options = {}) => {
-  try {
-    return await execFileAsync(executable, args, {
-      ...options,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-      env: {
-        ...process.env,
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_PAGER: "cat",
-        ...options.env,
-      },
+const execFileWithInput = async (executable, args, options, input) => (
+  new Promise((resolve, reject) => {
+    const child = execFile(executable, args, options, (error, stdout, stderr) => {
+      if (error) {
+        // Сохраняем тот же диагностический контракт, что у promisify(execFile):
+        // run() ниже сможет показать stderr/stdout завершившейся команды.
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+
+      resolve({ stdout, stderr });
     });
+
+    if (!child.stdin) {
+      child.kill();
+      reject(new Error(`${executable} не открыл stdin для входных данных.`));
+      return;
+    }
+
+    // execFile принимает options, но не поддерживает option `input`. Передаём
+    // bytes явно и обязательно закрываем stdin: без end() `git hash-object
+    // --stdin` бесконечно ждёт EOF после загрузки external workspace object.
+    child.stdin.once("error", reject);
+    child.stdin.end(input);
+  })
+);
+
+const run = async (executable, args, options = {}) => {
+  const { input, ...execFileOptions } = options;
+  const commandOptions = {
+    ...execFileOptions,
+    encoding: "utf8",
+    maxBuffer: 32 * 1024 * 1024,
+    env: {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_PAGER: "cat",
+      ...execFileOptions.env,
+    },
+  };
+
+  try {
+    return input === undefined
+      ? await execFileAsync(executable, args, commandOptions)
+      : await execFileWithInput(executable, args, commandOptions, input);
   } catch (error) {
     const detail = String(error.stderr || error.stdout || error.message).trim();
     throw new Error(`${executable} завершился с ошибкой: ${detail}`);

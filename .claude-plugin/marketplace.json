@@ -8,7 +8,7 @@
       "name": "trelio-agent-workspaces",
       "source": "./plugins/trelio-agent-workspaces",
       "description": "Scoped batch task discovery, searchable Trelio Agent Workspaces, pinned related context, one-use local Agent Secrets, and live company/project skills.",
-      "version": "1.3.4"
+      "version": "1.3.5"
     }
   ]
 }
