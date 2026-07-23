@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Production integration for scoped batch task discovery, searchable Trelio Agent Workspaces, pinned related context, Agent Secrets, and live company/project skill catalogs.",
   "author": {
     "name": "Trelio"

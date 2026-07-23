@@ -8,17 +8,20 @@
  * хранилище и отправляет на сервер только candidate bundle текущего Run.
  */
 import { execFile, spawn } from "node:child_process";
+import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const BRIDGE_VERSION = "1.3.2";
+const BRIDGE_VERSION = "1.3.3";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
 const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
@@ -27,6 +30,40 @@ const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
 const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GIT_OBJECT_PATTERN = /^[0-9a-f]{40,64}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const WORKSPACE_OBJECT_POINTER_VERSION = "https://trelio.ru/spec/workspace-object/v1";
+const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
+const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
+const POINTER_MAX_BYTES = 1024;
+
+export const isProtectedWorkspaceControlPath = (filePath) => (
+  filePath === "AGENTS.md"
+  || filePath === "CLAUDE.md"
+  || filePath === ".trelio"
+  || filePath.startsWith(".trelio/")
+);
+
+// MIME нужен не для доверия к содержимому, а для безопасного download/preview.
+// Незнакомое расширение остаётся бинарным octet-stream; активные HTML/SVG
+// никогда не получают исполняемый тип от bridge.
+const SAFE_CONTENT_TYPES_BY_EXTENSION = new Map(Object.entries({
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
+  ".csv": "text/csv",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".json": "application/json",
+  ".md": "text/markdown",
+  ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".txt": "text/plain",
+  ".webp": "image/webp",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
+}));
 
 const fail = (message, exitCode = 1) => {
   process.stderr.write(`Ошибка: ${message}\n`);
@@ -349,8 +386,235 @@ const requireToken = async (origin) => {
 };
 
 const writeResponseToFile = async (response, destination) => {
-  const bytes = Buffer.from(await response.arrayBuffer());
-  await fs.writeFile(destination, bytes, { mode: 0o600 });
+  if (!response.body) {
+    throw new Error("Trelio вернул пустой поток файла.");
+  }
+
+  // Bundle и workspace object могут быть значительно больше памяти процесса.
+  // Web Stream переводим в Node Stream и пишем с backpressure.
+  await pipeline(
+    Readable.fromWeb(response.body),
+    createWriteStream(destination, { flags: "wx", mode: 0o600 }),
+  );
+};
+
+export const parseWorkspaceObjectPointer = (value) => {
+  const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
+  const lines = text.split("\n");
+
+  if (
+    lines.length !== 5
+    || lines[0] !== `version ${WORKSPACE_OBJECT_POINTER_VERSION}`
+    || lines[4] !== ""
+  ) {
+    return null;
+  }
+
+  const sha256 = lines[1]?.match(/^oid sha256:([0-9a-f]{64})$/)?.[1];
+  const rawSize = lines[2]?.match(/^size ([1-9][0-9]*)$/)?.[1];
+  const contentType = lines[3]?.match(/^content-type ([A-Za-z0-9!#$&^_.+\-/]{1,255})$/)?.[1];
+  const sizeBytes = Number(rawSize);
+
+  if (!sha256 || !contentType || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    return null;
+  }
+
+  return { sha256, sizeBytes, contentType };
+};
+
+const serializeWorkspaceObjectPointer = ({ sha256, sizeBytes, contentType }) => {
+  if (
+    !SHA256_PATTERN.test(sha256)
+    || !Number.isSafeInteger(sizeBytes)
+    || sizeBytes <= 0
+    || !/^[A-Za-z0-9!#$&^_.+\-/]{1,255}$/.test(contentType)
+  ) {
+    throw new Error("Не удалось сформировать корректный указатель workspace object.");
+  }
+
+  return [
+    `version ${WORKSPACE_OBJECT_POINTER_VERSION}`,
+    `oid sha256:${sha256}`,
+    `size ${sizeBytes}`,
+    `content-type ${contentType}`,
+    "",
+  ].join("\n");
+};
+
+const inferWorkspaceObjectContentType = (filePath) => {
+  return SAFE_CONTENT_TYPES_BY_EXTENSION.get(path.extname(filePath).toLowerCase())
+    || "application/octet-stream";
+};
+
+const hashFile = async (filePath) => {
+  const hash = crypto.createHash("sha256");
+  let sizeBytes = 0;
+
+  for await (const chunk of createReadStream(filePath)) {
+    sizeBytes += chunk.byteLength;
+    hash.update(chunk);
+  }
+
+  return { sha256: hash.digest("hex"), sizeBytes };
+};
+
+export const inspectWorkspaceFile = async (filePath) => {
+  const fileStat = await fs.lstat(filePath);
+
+  if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+    throw new Error(`Workspace содержит неподдерживаемый тип файла: ${filePath}`);
+  }
+
+  if (fileStat.size <= MAX_INLINE_TEXT_BYTES) {
+    const bytes = await fs.readFile(filePath);
+
+    if (isUtf8(bytes) && !bytes.includes(0)) {
+      return { external: false, sizeBytes: bytes.byteLength };
+    }
+
+    return {
+      external: true,
+      ...(await hashFile(filePath)),
+    };
+  }
+
+  return {
+    external: true,
+    ...(await hashFile(filePath)),
+  };
+};
+
+const listTrackedWorkspacePaths = async (workspaceDirectory) => {
+  const result = await run("git", ["ls-files", "-z"], { cwd: workspaceDirectory });
+  return result.stdout.split("\0").filter(Boolean);
+};
+
+const downloadAndVerifyWorkspaceObject = async ({
+  origin,
+  token,
+  runId,
+  pointer,
+  destination,
+}) => {
+  const response = await request(
+    origin,
+    token,
+    `/api/agent-workspaces/runs/${runId}/objects/${pointer.sha256}`,
+  );
+
+  if (!response.body) {
+    throw new Error("Trelio вернул пустой поток workspace object.");
+  }
+
+  const temporaryPath = `${destination}.trelio-download-${crypto.randomUUID()}`;
+  const hash = crypto.createHash("sha256");
+  let receivedBytes = 0;
+  const verifier = new Transform({
+    transform(chunk, _encoding, callback) {
+      receivedBytes += chunk.byteLength;
+
+      if (receivedBytes > pointer.sizeBytes) {
+        callback(new Error(`Workspace object ${pointer.sha256} превысил заявленный размер.`));
+        return;
+      }
+
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(
+      Readable.fromWeb(response.body),
+      verifier,
+      createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }),
+    );
+
+    if (receivedBytes !== pointer.sizeBytes || hash.digest("hex") !== pointer.sha256) {
+      throw new Error(`Workspace object ${pointer.sha256} не прошёл локальную проверку.`);
+    }
+
+    // POSIX rename атомарно заменяет pointer-файл. Windows не заменяет
+    // существующий destination, поэтому удаляем только уже проверенный pointer
+    // непосредственно перед публикацией exact bytes.
+    if (process.platform === "win32") {
+      await fs.rm(destination, { force: true });
+    }
+    await fs.rename(temporaryPath, destination);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
+};
+
+const setSkipWorktree = async (workspaceDirectory, filePaths, enabled) => {
+  // Ограничиваем argv небольшими группами: workspace может содержать тысячи
+  // объектов, а системный ARG_MAX отличается между macOS/Linux/Windows.
+  for (let index = 0; index < filePaths.length; index += 100) {
+    const chunk = filePaths.slice(index, index + 100);
+
+    if (chunk.length > 0) {
+      await run(
+        "git",
+        ["update-index", enabled ? "--skip-worktree" : "--no-skip-worktree", "--", ...chunk],
+        { cwd: workspaceDirectory },
+      );
+    }
+  }
+};
+
+const materializeWorkspaceObjects = async ({
+  origin,
+  token,
+  runId,
+  workspaceDirectory,
+  knownObjects = [],
+}) => {
+  const objectsByPath = new Map(
+    knownObjects
+      .filter((object) => (
+        object
+        && typeof object.filePath === "string"
+        && SHA256_PATTERN.test(String(object.sha256 || ""))
+        && Number.isSafeInteger(object.sizeBytes)
+        && object.sizeBytes > 0
+      ))
+      .map((object) => [object.filePath, object]),
+  );
+  const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
+  const trackedPathSet = new Set(trackedPaths);
+
+  for (const filePath of trackedPaths) {
+    const absolutePath = path.join(workspaceDirectory, filePath);
+    const fileStat = await fs.lstat(absolutePath);
+
+    if (!fileStat.isFile() || fileStat.size > POINTER_MAX_BYTES) {
+      continue;
+    }
+
+    const pointer = parseWorkspaceObjectPointer(await fs.readFile(absolutePath));
+
+    if (!pointer) {
+      continue;
+    }
+
+    await downloadAndVerifyWorkspaceObject({
+      origin,
+      token,
+      runId,
+      pointer,
+      destination: absolutePath,
+    });
+    objectsByPath.set(filePath, { filePath, ...pointer });
+  }
+
+  const objects = [...objectsByPath.values()]
+    .filter((object) => trackedPathSet.has(object.filePath));
+  await setSkipWorktree(
+    workspaceDirectory,
+    objects.map((object) => object.filePath),
+    true,
+  );
+  return objects;
 };
 
 const materializeBundle = async ({ bundlePath, directory, head, branch }) => {
@@ -519,6 +783,7 @@ const ensureContextDirectoryChain = async (rootDirectory, relativeDirectory) => 
 const replaceMaterializedContext = async ({
   origin,
   token,
+  runId,
   rootDirectory,
   specification,
   temporaryDirectory,
@@ -527,6 +792,13 @@ const replaceMaterializedContext = async ({
   const currentHead = await readMaterializedContextHead(destination);
 
   if (currentHead === specification.head) {
+    await makeWritable(destination);
+    await materializeWorkspaceObjects({
+      origin,
+      token,
+      runId,
+      workspaceDirectory: destination,
+    });
     await makeReadOnly(destination);
     return { ...specification, directory: destination, changed: false };
   }
@@ -543,6 +815,12 @@ const replaceMaterializedContext = async ({
       directory: stagingDirectory,
       head: specification.head,
       branch: "trelio-context",
+    });
+    await materializeWorkspaceObjects({
+      origin,
+      token,
+      runId,
+      workspaceDirectory: stagingDirectory,
     });
     await makeReadOnly(stagingDirectory);
 
@@ -583,6 +861,7 @@ const materializeRunContexts = async ({ origin, token, rootDirectory, runId, con
       contexts.push(await replaceMaterializedContext({
         origin,
         token,
+        runId,
         rootDirectory,
         specification,
         temporaryDirectory,
@@ -754,7 +1033,7 @@ const openWorkspace = async (origin, options) => {
       // отклонён как запрос от прежнего владельца аренды.
       const refreshedMetadata = {
         ...existingMetadata,
-        schemaVersion: 2,
+        schemaVersion: 3,
         origin,
         leaseId: agentRun.leaseId,
         fencingToken: agentRun.fencingToken,
@@ -774,10 +1053,18 @@ const openWorkspace = async (origin, options) => {
         runId,
         contextHeads: refreshedMetadata.contextHeads,
       });
+      const objects = await materializeWorkspaceObjects({
+        origin,
+        token,
+        runId,
+        workspaceDirectory,
+        knownObjects: existingMetadata.objects || [],
+      });
       await writeContextIndex(rootDirectory, contexts);
       await writeRunMetadata(metadataPath, {
         ...refreshedMetadata,
         contexts: serializeMaterializedContexts(contexts),
+        objects,
       });
       process.stdout.write(`${workspaceDirectory}\n`);
       return;
@@ -807,6 +1094,12 @@ const openWorkspace = async (origin, options) => {
       head: agentRun.baseHead,
       branch: "trelio-candidate",
     });
+    const objects = await materializeWorkspaceObjects({
+      origin,
+      token,
+      runId,
+      workspaceDirectory,
+    });
 
     const contextHeads = agentRun.contextHeadsJson || {};
     const contexts = await materializeRunContexts({
@@ -819,7 +1112,7 @@ const openWorkspace = async (origin, options) => {
     await writeContextIndex(rootDirectory, contexts);
 
     const metadata = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       origin,
       workspaceId,
       runId,
@@ -829,6 +1122,7 @@ const openWorkspace = async (origin, options) => {
       workspaceDirectory,
       contextHeads,
       contexts: serializeMaterializedContexts(contexts),
+      objects,
       createdAt: new Date().toISOString(),
     };
     await writeRunMetadata(metadataPath, metadata);
@@ -915,7 +1209,7 @@ const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) 
   await writeContextIndex(rootDirectory, contexts);
   await writeRunMetadata(metadataPath, {
     ...metadata,
-    schemaVersion: 2,
+    schemaVersion: 3,
     contextHeads,
     contexts: serializeMaterializedContexts(contexts),
     contextSyncedAt: new Date().toISOString(),
@@ -962,8 +1256,8 @@ const getOptionValues = (options, key) => {
     .filter(Boolean);
 };
 
-const getChangedPaths = async (workspaceDirectory) => {
-  const gitStatus = await getGitStatus(workspaceDirectory);
+const getChangedPaths = async (workspaceDirectory, knownObjects = []) => {
+  const gitStatus = await getGitStatus(workspaceDirectory, knownObjects);
 
   if (!gitStatus) {
     return [];
@@ -997,7 +1291,7 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
   const filesChanged = explicitlyNamedFiles.length > 0
     ? explicitlyNamedFiles
     : checkpointType === "handoff"
-      ? await getChangedPaths(metadata.workspaceDirectory)
+      ? await getChangedPaths(metadata.workspaceDirectory, metadata.objects || [])
       : [];
   const openQuestions = getOptionValues(options, "question");
   const nextActionInstruction = getOptionValues(options, "next-action")[0] || "";
@@ -1041,13 +1335,46 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
   process.stdout.write(`Checkpoint сохранён: ${checkpointPayload.id}.\n`);
 });
 
-const getGitStatus = async (workspaceDirectory) => {
+const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
   const result = await run("git", ["status", "--short"], { cwd: workspaceDirectory });
-  return result.stdout.trim();
+  const statusLines = result.stdout.trim() ? result.stdout.trim().split("\n") : [];
+  const listedPaths = new Set(
+    statusLines.map((line) => line.slice(3).split(" -> ").at(-1)?.trim()).filter(Boolean),
+  );
+
+  // Hydrated object-файлы помечены skip-worktree, чтобы Git не показывал
+  // обычные рабочие bytes как отличие от pointer в index. Для status/handoff
+  // сравниваем их с закреплённым digest явно и не теряем реальные изменения.
+  for (const object of knownObjects) {
+    if (!object?.filePath || listedPaths.has(object.filePath)) {
+      continue;
+    }
+
+    const absolutePath = path.join(workspaceDirectory, object.filePath);
+
+    try {
+      const inspection = await inspectWorkspaceFile(absolutePath);
+      const changed = !inspection.external
+        || inspection.sizeBytes !== object.sizeBytes
+        || inspection.sha256 !== object.sha256;
+
+      if (changed) {
+        statusLines.push(` M ${object.filePath}`);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        statusLines.push(` D ${object.filePath}`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return statusLines.join("\n");
 };
 
 const status = async () => withRun(async ({ metadata }) => {
-  const gitStatus = await getGitStatus(metadata.workspaceDirectory);
+  const gitStatus = await getGitStatus(metadata.workspaceDirectory, metadata.objects || []);
   process.stdout.write(`${JSON.stringify({
     workspaceId: metadata.workspaceId,
     runId: metadata.runId,
@@ -1059,32 +1386,228 @@ const status = async () => withRun(async ({ metadata }) => {
   }, null, 2)}\n`);
 });
 
-const submit = async (options) => withRun(async ({ metadata, origin, token }) => {
-  const workspaceDirectory = metadata.workspaceDirectory;
-  const gitStatus = await getGitStatus(workspaceDirectory);
+const registerWorkspaceObject = async ({
+  metadata,
+  origin,
+  token,
+  filePath,
+  inspection,
+}) => {
+  const contentType = inferWorkspaceObjectContentType(filePath);
+  const registerResponse = await request(
+    origin,
+    token,
+    `/api/agent-workspaces/runs/${metadata.runId}/objects/register`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        leaseId: metadata.leaseId,
+        fencingToken: metadata.fencingToken,
+        filePath,
+        sha256: inspection.sha256,
+        sizeBytes: inspection.sizeBytes,
+        contentType,
+      }),
+    },
+  );
+  let result = await registerResponse.json();
 
-  if (gitStatus) {
-    await run("git", ["add", "--all"], { cwd: workspaceDirectory });
-    await run("git", ["commit", "-m", String(options.message || "Подготовить результат Agent Run")], {
+  if (result.uploadRequired) {
+    const absolutePath = path.join(metadata.workspaceDirectory, filePath);
+    const uploadResponse = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${metadata.runId}/objects/${inspection.sha256}/content`,
+      {
+        method: "PUT",
+        duplex: "half",
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(inspection.sizeBytes),
+          "x-trelio-file-path": encodeURIComponent(filePath),
+          "x-trelio-object-content-type": contentType,
+          "x-trelio-lease-id": metadata.leaseId,
+          "x-trelio-fencing-token": String(metadata.fencingToken),
+        },
+        body: createReadStream(absolutePath),
+      },
+    );
+    result = await uploadResponse.json();
+  }
+
+  const expectedPointer = serializeWorkspaceObjectPointer({
+    sha256: inspection.sha256,
+    sizeBytes: inspection.sizeBytes,
+    contentType,
+  });
+
+  if (result.pointer !== expectedPointer) {
+    throw new Error(`Trelio вернул некорректный указатель для ${filePath}.`);
+  }
+
+  return {
+    filePath,
+    sha256: inspection.sha256,
+    sizeBytes: inspection.sizeBytes,
+    contentType,
+    pointer: expectedPointer,
+  };
+};
+
+const prepareCandidateIndex = async ({ metadata, origin, token }) => {
+  const workspaceDirectory = metadata.workspaceDirectory;
+  const knownObjectPaths = (metadata.objects || []).map((object) => object.filePath);
+  await setSkipWorktree(workspaceDirectory, knownObjectPaths, false);
+  await run("git", ["add", "--all"], { cwd: workspaceDirectory });
+  const candidateObjects = [];
+  const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
+  const inspections = new Map();
+  const inlineCandidates = [];
+  let inlineTreeBytes = 0;
+
+  for (const filePath of trackedPaths) {
+    const inspection = await inspectWorkspaceFile(path.join(workspaceDirectory, filePath));
+    inspections.set(filePath, inspection);
+
+    if (!inspection.external) {
+      inlineTreeBytes += inspection.sizeBytes;
+
+      if (!isProtectedWorkspaceControlPath(filePath)) {
+        inlineCandidates.push({ filePath, sizeBytes: inspection.sizeBytes });
+      }
+    }
+  }
+
+  // Много небольших текстов не должно превращать внутренний Git tree cap в
+  // пользовательское ограничение. При необходимости переносим самые крупные
+  // из них в object storage, пока pointer/text tree снова не станет компактным.
+  inlineCandidates.sort((left, right) => right.sizeBytes - left.sizeBytes);
+  for (const candidate of inlineCandidates) {
+    if (inlineTreeBytes <= TARGET_INLINE_GIT_TREE_BYTES) {
+      break;
+    }
+
+    const absolutePath = path.join(workspaceDirectory, candidate.filePath);
+    inspections.set(candidate.filePath, {
+      external: true,
+      ...(await hashFile(absolutePath)),
+    });
+    inlineTreeBytes -= candidate.sizeBytes;
+  }
+
+  for (const filePath of trackedPaths) {
+    // Эти control-plane файлы обязаны остаться обычным небольшим текстом.
+    // Backend отдельно запрещает их изменение и не примет pointer-обход.
+    if (isProtectedWorkspaceControlPath(filePath)) {
+      continue;
+    }
+
+    const inspection = inspections.get(filePath);
+
+    if (!inspection?.external) {
+      continue;
+    }
+
+    const object = await registerWorkspaceObject({
+      metadata,
+      origin,
+      token,
+      filePath,
+      inspection,
+    });
+    const hashResult = await run("git", ["hash-object", "-w", "--stdin"], {
+      cwd: workspaceDirectory,
+      input: object.pointer,
+    });
+    const pointerObjectId = hashResult.stdout.trim();
+    const indexResult = await run("git", ["ls-files", "-s", "--", filePath], {
       cwd: workspaceDirectory,
     });
+    const mode = indexResult.stdout.match(/^([0-7]{6})\s/)?.[1] || "100644";
+    await run(
+      "git",
+      ["update-index", "--add", "--cacheinfo", mode, pointerObjectId, filePath],
+      { cwd: workspaceDirectory },
+    );
+    candidateObjects.push({
+      filePath: object.filePath,
+      sha256: object.sha256,
+      sizeBytes: object.sizeBytes,
+      contentType: object.contentType,
+    });
+  }
+
+  return candidateObjects;
+};
+
+const hasStagedChanges = async (workspaceDirectory) => {
+  const result = await run("git", ["diff", "--cached", "--name-only", "-z"], {
+    cwd: workspaceDirectory,
+  });
+  return Boolean(result.stdout);
+};
+
+const submit = async (options) => withRun(async ({ metadata, metadataPath, origin, token }) => {
+  const workspaceDirectory = metadata.workspaceDirectory;
+  const gitStatus = await getGitStatus(workspaceDirectory, metadata.objects || []);
+  let candidateObjects = metadata.objects || [];
+
+  if (gitStatus) {
+    // Upload большого workspace object может занять заметное время, поэтому
+    // продлеваем lease до первого сетевого потока, а не только перед bundle.
+    await heartbeat();
+    candidateObjects = await prepareCandidateIndex({ metadata, origin, token });
+
+    if (await hasStagedChanges(workspaceDirectory)) {
+      await run("git", ["commit", "-m", String(options.message || "Подготовить результат Agent Run")], {
+        cwd: workspaceDirectory,
+      });
+    }
   }
 
   const headResult = await run("git", ["rev-parse", "HEAD"], { cwd: workspaceDirectory });
   const head = headResult.stdout.trim();
 
   if (head === metadata.baseHead) {
+    await setSkipWorktree(
+      workspaceDirectory,
+      (metadata.objects || []).map((object) => object.filePath),
+      true,
+    );
     throw new Error("В workspace нет изменений для отправки.");
   }
 
+  await setSkipWorktree(
+    workspaceDirectory,
+    candidateObjects.map((object) => object.filePath),
+    true,
+  );
+  await writeRunMetadata(metadataPath, {
+    ...metadata,
+    schemaVersion: 3,
+    objects: candidateObjects,
+    candidateHead: head,
+  });
   await heartbeat();
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-candidate-"));
   const bundlePath = path.join(temporaryDirectory, "candidate.bundle");
 
   try {
-    await run("git", ["bundle", "create", bundlePath, "refs/heads/trelio-candidate"], {
-      cwd: workspaceDirectory,
-    });
+    // Candidate bundle содержит только commits/trees/blobs после pinned base.
+    // Сервер уже хранит prerequisite objects в bare repository, поэтому старые
+    // бинарные blobs истории больше не повторяются в каждом submit.
+    await run(
+      "git",
+      [
+        "bundle",
+        "create",
+        bundlePath,
+        "refs/heads/trelio-candidate",
+        `^${metadata.baseHead}`,
+      ],
+      { cwd: workspaceDirectory },
+    );
     const bundleStat = await fs.stat(bundlePath);
     const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/candidate`, {
       method: "POST",

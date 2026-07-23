@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { buildRunContextSpecifications } from "../scripts/trelio-workspace.mjs";
+import {
+  buildRunContextSpecifications,
+  inspectWorkspaceFile,
+  isProtectedWorkspaceControlPath,
+  parseWorkspaceObjectPointer,
+} from "../scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -53,7 +60,51 @@ test("bridge rejects duplicate workspace ids and malformed pinned heads", () => 
 
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.2/);
+  assert.match(result.stdout, /Bridge 1\.3\.3/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
+});
+
+test("bridge recognizes exact object pointers and classifies binary bytes", async () => {
+  const digest = "a".repeat(64);
+  const pointer = [
+    "version https://trelio.ru/spec/workspace-object/v1",
+    `oid sha256:${digest}`,
+    "size 3",
+    "content-type application/octet-stream",
+    "",
+  ].join("\n");
+  assert.deepEqual(parseWorkspaceObjectPointer(pointer), {
+    sha256: digest,
+    sizeBytes: 3,
+    contentType: "application/octet-stream",
+  });
+  assert.equal(parseWorkspaceObjectPointer(`${pointer}\n`), null);
+
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-object-test-"));
+  const textPath = path.join(temporaryDirectory, "small.md");
+  const binaryPath = path.join(temporaryDirectory, "small.bin");
+
+  try {
+    await writeFile(textPath, "# Небольшой текст\n", "utf8");
+    await writeFile(binaryPath, Buffer.from([0, 1, 2]));
+    assert.deepEqual(await inspectWorkspaceFile(textPath), {
+      external: false,
+      sizeBytes: Buffer.byteLength("# Небольшой текст\n"),
+    });
+    const binary = await inspectWorkspaceFile(binaryPath);
+    assert.equal(binary.external, true);
+    assert.equal(binary.sizeBytes, 3);
+    assert.match(binary.sha256, /^[0-9a-f]{64}$/);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge keeps AGENTS.md, CLAUDE.md and .trelio as protected inline control files", () => {
+  assert.equal(isProtectedWorkspaceControlPath("AGENTS.md"), true);
+  assert.equal(isProtectedWorkspaceControlPath("CLAUDE.md"), true);
+  assert.equal(isProtectedWorkspaceControlPath(".trelio/workspace.json"), true);
+  assert.equal(isProtectedWorkspaceControlPath("PROJECT_CONTEXT.md"), false);
+  assert.equal(isProtectedWorkspaceControlPath("work/CLAUDE.md"), false);
 });
