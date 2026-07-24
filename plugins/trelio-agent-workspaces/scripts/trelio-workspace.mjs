@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.3.12";
+export const BRIDGE_VERSION = "1.3.13";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -46,10 +46,19 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
 export const AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN = "@AGENTS.md\n";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
-const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:agent-instructions:manage mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
-const KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
+// Legacy OAuth остаётся только как явный rollback для старого backend. Даже
+// там bridge не просит права на рабочие правила и чтение metadata секретов:
+// эти операции принадлежат уже авторизованному MCP control plane.
+const LEGACY_OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:write mcp:secrets:checkout";
+const LEGACY_KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
+const BRIDGE_SESSION_KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge.session";
+// Tests and explicitly sandboxed runtimes can force the private-file fallback
+// without touching the developer's real macOS Keychain.
+const USE_SYSTEM_KEYCHAIN = process.platform === "darwin"
+  && process.env.TRELIO_WORKSPACE_DISABLE_KEYCHAIN !== "1";
 const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
 const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
+const PAIRING_FILE = path.join(CONFIG_DIRECTORY, "pairings.json");
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
@@ -270,10 +279,11 @@ const parseRetryAfterMilliseconds = (rawValue, nowMs = Date.now()) => {
 };
 
 class TrelioApiError extends Error {
-  constructor(statusCode, message, retryAfterMilliseconds = null) {
+  constructor(statusCode, message, retryAfterMilliseconds = null, code = null) {
     super(`Trelio API ${statusCode}: ${String(message).slice(0, 1000)}`);
     this.statusCode = statusCode;
     this.retryAfterMilliseconds = retryAfterMilliseconds;
+    this.code = code;
   }
 }
 
@@ -285,10 +295,12 @@ const request = async (origin, token, pathname, options = {}) => {
   if (!response.ok) {
     const responseText = await response.text();
     let message = responseText;
+    let code = null;
 
     try {
       const parsed = JSON.parse(responseText);
       message = parsed.message || parsed.error_description || parsed.error || responseText;
+      code = typeof parsed.code === "string" ? parsed.code : null;
     } catch {
       // Не-JSON proxy response всё равно полезнее скрытой HTTP ошибки.
     }
@@ -297,6 +309,7 @@ const request = async (origin, token, pathname, options = {}) => {
       response.status,
       message,
       parseRetryAfterMilliseconds(response.headers.get("retry-after")),
+      code,
     );
   }
 
@@ -355,8 +368,8 @@ const requestWithRateLimitRetry = async ({
   }
 };
 
-const getKeychainToken = async (origin) => {
-  if (process.platform !== "darwin") {
+const getKeychainValue = async (service, origin) => {
+  if (!USE_SYSTEM_KEYCHAIN) {
     return null;
   }
 
@@ -364,7 +377,7 @@ const getKeychainToken = async (origin) => {
     const result = await execFileAsync("security", [
       "find-generic-password",
       "-s",
-      KEYCHAIN_SERVICE,
+      service,
       "-a",
       origin,
       "-w",
@@ -386,26 +399,52 @@ const readFallbackCredentials = async () => {
   }
 };
 
-const loadToken = async (origin) => {
-  const keychainToken = await getKeychainToken(origin);
+const writePrivateJsonFile = async (filePath, value) => {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
 
-  if (keychainToken) {
-    return keychainToken;
+  try {
+    await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    await fs.chmod(temporaryPath, 0o600);
+    await fs.rename(temporaryPath, filePath);
+    await fs.chmod(filePath, 0o600);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
-
-  const credentials = await readFallbackCredentials();
-  return credentials[origin]?.accessToken || null;
 };
 
-const saveToken = async (origin, accessToken) => {
+const loadBridgeSessionToken = async (origin) => {
+  const keychainToken = await getKeychainValue(
+    BRIDGE_SESSION_KEYCHAIN_SERVICE,
+    origin,
+  );
+
+  const credentials = await readFallbackCredentials();
+  return keychainToken || credentials[origin]?.bridgeSessionToken || null;
+};
+
+const loadLegacyOAuthToken = async (origin) => {
+  const keychainToken = await getKeychainValue(LEGACY_KEYCHAIN_SERVICE, origin);
+  const credentials = await readFallbackCredentials();
+  return keychainToken || credentials[origin]?.accessToken || null;
+};
+
+const loadToken = async (origin) => (
+  await loadBridgeSessionToken(origin)
+  || await loadLegacyOAuthToken(origin)
+);
+
+const saveCredential = async (origin, field, accessToken, keychainService) => {
   await fs.mkdir(CONFIG_DIRECTORY, { recursive: true, mode: 0o700 });
 
-  if (process.platform === "darwin") {
+  if (USE_SYSTEM_KEYCHAIN) {
     await run("security", [
       "add-generic-password",
       "-U",
       "-s",
-      KEYCHAIN_SERVICE,
+      keychainService,
       "-a",
       origin,
       "-w",
@@ -417,10 +456,193 @@ const saveToken = async (origin, accessToken) => {
   // Linux/Windows fallback остаётся закрытым правами текущего пользователя.
   // Token никогда не помещается в workspace, Git config или stdout.
   const credentials = await readFallbackCredentials();
-  credentials[origin] = { accessToken, savedAt: new Date().toISOString() };
-  await fs.writeFile(CREDENTIAL_FILE, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 });
-  await fs.chmod(CREDENTIAL_FILE, 0o600);
+  credentials[origin] = {
+    ...credentials[origin],
+    [field]: accessToken,
+    savedAt: new Date().toISOString(),
+  };
+  await writePrivateJsonFile(CREDENTIAL_FILE, credentials);
   return CREDENTIAL_FILE;
+};
+
+const saveLegacyOAuthToken = (origin, accessToken) => (
+  saveCredential(origin, "accessToken", accessToken, LEGACY_KEYCHAIN_SERVICE)
+);
+
+const saveBridgeSessionToken = (origin, accessToken) => (
+  saveCredential(
+    origin,
+    "bridgeSessionToken",
+    accessToken,
+    BRIDGE_SESSION_KEYCHAIN_SERVICE,
+  )
+);
+
+const readPendingPairings = async () => {
+  try {
+    return JSON.parse(await fs.readFile(PAIRING_FILE, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+};
+
+const writePendingPairings = async (pairings) => {
+  if (Object.keys(pairings).length === 0) {
+    await fs.rm(PAIRING_FILE, { force: true });
+    return;
+  }
+
+  await writePrivateJsonFile(PAIRING_FILE, pairings);
+};
+
+const getPendingPairing = async (origin) => {
+  const pairing = (await readPendingPairings())[origin];
+
+  if (
+    !pairing
+    || typeof pairing.pairingId !== "string"
+    || typeof pairing.userCode !== "string"
+    || typeof pairing.codeVerifier !== "string"
+    || typeof pairing.deviceName !== "string"
+    || typeof pairing.expiresAt !== "string"
+  ) {
+    return null;
+  }
+
+  return pairing;
+};
+
+const savePendingPairing = async (origin, pairing) => {
+  const pairings = await readPendingPairings();
+  pairings[origin] = pairing;
+  await writePendingPairings(pairings);
+};
+
+const deletePendingPairing = async (origin) => {
+  const pairings = await readPendingPairings();
+  delete pairings[origin];
+  await writePendingPairings(pairings);
+};
+
+class BridgePairingRequiredError extends Error {
+  constructor(pairing) {
+    super([
+      "TRELIO_BRIDGE_PAIRING_REQUIRED",
+      `Устройство: ${pairing.deviceName}`,
+      `Код: ${pairing.userCode}`,
+      `Pairing ID: ${pairing.pairingId}`,
+      `Код действует до ${pairing.expiresAt}.`,
+      "Покажите пользователю точное устройство и код. Только после его явного подтверждения вызовите MCP tool approve_agent_workspace_bridge_pairing с этим Pairing ID, кодом и confirmed=true, затем повторите исходную bridge-команду.",
+    ].join("\n"));
+    this.pairing = pairing;
+  }
+}
+
+const buildBridgeDeviceIdentity = () => ({
+  deviceName: String(os.hostname() || "Local device").trim().slice(0, 120),
+  platform: `${process.platform}/${process.arch}`.slice(0, 64),
+});
+
+const beginBridgePairing = async (origin) => {
+  const { verifier, challenge } = createPkce();
+  const device = buildBridgeDeviceIdentity();
+  const response = await request(origin, null, "/api/agent-workspaces/bridge-pairings", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      codeChallenge: challenge,
+      deviceName: device.deviceName,
+      platform: device.platform,
+    }),
+  });
+  const payload = await response.json();
+  const pairing = {
+    pairingId: String(payload.pairingId || ""),
+    userCode: String(payload.userCode || ""),
+    deviceName: String(payload.deviceName || device.deviceName),
+    platform: String(payload.platform || device.platform),
+    codeVerifier: verifier,
+    expiresAt: String(payload.expiresAt || ""),
+    createdAt: new Date().toISOString(),
+  };
+
+  if (
+    !UUID_PATTERN.test(pairing.pairingId)
+    || !/^[A-Z2-9]{4}-[A-Z2-9]{4}$/u.test(pairing.userCode)
+    || !Number.isFinite(Date.parse(pairing.expiresAt))
+  ) {
+    throw new Error("Trelio вернул некорректную pairing-заявку.");
+  }
+
+  // Verifier остаётся только в приватном локальном файле. В stdout/stderr
+  // публикуются лишь безопасные данные, которые пользователь должен сверить.
+  await savePendingPairing(origin, pairing);
+  throw new BridgePairingRequiredError(pairing);
+};
+
+const exchangePendingBridgePairing = async (origin) => {
+  const pairing = await getPendingPairing(origin);
+
+  if (!pairing) {
+    return null;
+  }
+
+  if (Date.parse(pairing.expiresAt) <= Date.now()) {
+    await deletePendingPairing(origin);
+    return null;
+  }
+
+  try {
+    const response = await request(
+      origin,
+      null,
+      `/api/agent-workspaces/bridge-pairings/${pairing.pairingId}/exchange`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ codeVerifier: pairing.codeVerifier }),
+      },
+    );
+    const payload = await response.json();
+    const accessToken = String(payload.accessToken || "");
+
+    if (!accessToken.startsWith("twb_")) {
+      throw new Error("Trelio вернул некорректную bridge device-session.");
+    }
+
+    const storage = await saveBridgeSessionToken(origin, accessToken);
+    await deletePendingPairing(origin);
+    process.stdout.write(
+      `Устройство ${pairing.deviceName} подключено к Trelio. Device-session сохранена в ${storage}.\n`,
+    );
+    return accessToken;
+  } catch (error) {
+    if (
+      error instanceof TrelioApiError
+      && error.code === "BRIDGE_PAIRING_PENDING"
+    ) {
+      throw new BridgePairingRequiredError(pairing);
+    }
+
+    if (
+      error instanceof TrelioApiError
+      && [
+        "BRIDGE_PAIRING_EXPIRED",
+        "BRIDGE_PAIRING_NOT_FOUND",
+        "BRIDGE_PAIRING_ALREADY_EXCHANGED",
+      ].includes(error.code)
+    ) {
+      // Expired/consumed requests are not reusable. Starting a fresh pairing
+      // is safer than keeping a local verifier that the server will reject.
+      await deletePendingPairing(origin);
+      return null;
+    }
+
+    throw error;
+  }
 };
 
 const openBrowser = async (url) => {
@@ -440,7 +662,7 @@ const createPkce = () => {
   return { verifier, challenge };
 };
 
-const login = async (origin) => {
+const legacyOAuthLogin = async (origin) => {
   const state = crypto.randomBytes(24).toString("base64url");
   const { verifier, challenge } = createPkce();
   let resolveCallback;
@@ -487,7 +709,7 @@ const login = async (origin) => {
       body: JSON.stringify({
         client_name: "Trelio Workspace Bridge",
         redirect_uris: [redirectUri],
-        scope: OAUTH_SCOPES,
+        scope: LEGACY_OAUTH_SCOPES,
         grant_types: ["authorization_code"],
         response_types: ["code"],
         token_endpoint_auth_method: "none",
@@ -500,7 +722,7 @@ const login = async (origin) => {
       response_type: "code",
       client_id: registration.client_id,
       redirect_uri: redirectUri,
-      scope: OAUTH_SCOPES,
+      scope: LEGACY_OAUTH_SCOPES,
       state,
       code_challenge: challenge,
       code_challenge_method: "S256",
@@ -531,8 +753,8 @@ const login = async (origin) => {
       }),
     });
     const tokenPayload = await tokenResponse.json();
-    const storage = await saveToken(origin, tokenPayload.access_token);
-    process.stdout.write(`Trelio подключён. Credential сохранён в ${storage}.\n`);
+    const storage = await saveLegacyOAuthToken(origin, tokenPayload.access_token);
+    process.stdout.write(`Legacy OAuth credential сохранён в ${storage}.\n`);
   } finally {
     server.close();
   }
@@ -541,11 +763,43 @@ const login = async (origin) => {
 const requireToken = async (origin) => {
   const token = await loadToken(origin);
 
-  if (!token) {
-    throw new Error(`Нет OAuth credential для ${origin}. Выполните trelio-workspace login.`);
+  if (token) {
+    return token;
   }
 
-  return token;
+  const pairedToken = await exchangePendingBridgePairing(origin);
+
+  if (pairedToken) {
+    return pairedToken;
+  }
+
+  return beginBridgePairing(origin);
+};
+
+const pairBridge = async (origin) => {
+  const existingSession = await loadBridgeSessionToken(origin);
+
+  if (existingSession) {
+    process.stdout.write("Trelio bridge уже подключён через device-session.\n");
+    return;
+  }
+
+  const pairedToken = await exchangePendingBridgePairing(origin);
+
+  if (pairedToken) {
+    return;
+  }
+
+  const legacyToken = await loadLegacyOAuthToken(origin);
+
+  if (legacyToken) {
+    process.stdout.write(
+      "Найден действующий legacy OAuth credential. Он продолжит работать; для новых устройств используется одноразовый pairing через уже авторизованный MCP.\n",
+    );
+    return;
+  }
+
+  await beginBridgePairing(origin);
 };
 
 const writeResponseToFile = async (response, destination) => {
@@ -2956,6 +3210,7 @@ const printHelp = () => {
   process.stdout.write(`Trelio Agent Workspace Bridge ${BRIDGE_VERSION}\n\n`);
   process.stdout.write("Команды:\n");
   process.stdout.write("  trelio-workspace login [--origin https://trelio.ru]\n");
+  process.stdout.write("  trelio-workspace login --legacy-oauth [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace open --workspace UUID [--run UUID] [--dir PATH]\n");
   process.stdout.write("  trelio-workspace status\n");
   process.stdout.write("  trelio-workspace heartbeat\n");
@@ -2977,7 +3232,11 @@ const main = async () => {
   const origin = normalizeOrigin(options.origin || DEFAULT_ORIGIN);
 
   if (command === "login") {
-    await login(origin);
+    if (options["legacy-oauth"] === true) {
+      await legacyOAuthLogin(origin);
+    } else {
+      await pairBridge(origin);
+    }
   } else if (command === "open") {
     await openWorkspace(origin, options);
   } else if (command === "status") {

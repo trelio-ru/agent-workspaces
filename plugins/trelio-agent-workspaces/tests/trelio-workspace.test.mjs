@@ -655,7 +655,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.3.12");
+  assert.equal(BRIDGE_VERSION, "1.3.13");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -680,6 +680,10 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Call `publish_agent_instructions` only after the user explicitly confirms/);
   assert.match(workerSkill, /never place instructions in `PROJECT_CONTEXT\.md`/);
   assert.match(workerSkill, /applies only to future Runs/);
+  assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
+  assert.match(workerSkill, /Pairing is expected only once per local device/);
+  assert.match(workerSkill, /never receives `mcp:agent-instructions:manage`/);
+  assert.match(workerSkill, /Do not start a second OAuth flow/);
   assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
 });
@@ -689,6 +693,167 @@ test("bridge adds its release version and bearer credential to every API request
   assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
+});
+
+test("bridge pairs once through MCP approval and reuses the narrow local device session", {
+  timeout: 15_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-pairing-test-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const pairingId = "44444444-4444-4444-8444-444444444444";
+  const userCode = "ABCD-2345";
+  const deviceName = "Test workstation";
+  let codeChallenge = "";
+  let createRequests = 0;
+  let exchangeRequests = 0;
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      const body = JSON.parse((await readRequestBody(request)).toString("utf8") || "{}");
+
+      if (
+        request.method === "POST"
+        && request.url === "/api/agent-workspaces/bridge-pairings"
+      ) {
+        createRequests += 1;
+        codeChallenge = body.codeChallenge;
+        assert.match(codeChallenge, /^[A-Za-z0-9_-]{43}$/u);
+        assert.equal(typeof body.deviceName, "string");
+        assert.equal(typeof body.platform, "string");
+        response.statusCode = 201;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          pairingId,
+          userCode,
+          deviceName,
+          platform: body.platform,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/bridge-pairings/${pairingId}/exchange`
+      ) {
+        exchangeRequests += 1;
+        assert.equal(
+          createHash("sha256").update(body.codeVerifier).digest("base64url"),
+          codeChallenge,
+          "exchange must prove possession of the verifier kept only on this device",
+        );
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          accessToken: "twb_integration-device-session",
+          tokenType: "Bearer",
+          sessionId: "55555555-5555-4555-8555-555555555555",
+          capabilities: ["workspace:read", "workspace:write"],
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          deviceName,
+        }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end("Not found");
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(String(error));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const origin = `http://127.0.0.1:${address.port}`;
+  const childEnvironment = {
+    ...process.env,
+    HOME: homeDirectory,
+    TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+  };
+
+  try {
+    let firstFailure;
+
+    try {
+      await execFileAsync(process.execPath, [
+        bridgePath,
+        "login",
+        "--origin",
+        origin,
+      ], {
+        encoding: "utf8",
+        env: childEnvironment,
+      });
+      assert.fail("First login must stop for explicit MCP pairing approval.");
+    } catch (error) {
+      firstFailure = error;
+    }
+
+    const firstOutput = `${firstFailure.stdout || ""}\n${firstFailure.stderr || ""}`;
+    assert.match(firstOutput, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
+    assert.match(firstOutput, new RegExp(pairingId));
+    assert.match(firstOutput, new RegExp(userCode));
+    assert.match(firstOutput, new RegExp(deviceName));
+    assert.match(firstOutput, /approve_agent_workspace_bridge_pairing/);
+
+    const pairingFile = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "pairings.json",
+    );
+    const pendingPairings = JSON.parse(await readFile(pairingFile, "utf8"));
+    const localVerifier = pendingPairings[origin].codeVerifier;
+    assert.equal(typeof localVerifier, "string");
+    assert.doesNotMatch(firstOutput, new RegExp(localVerifier));
+
+    const completed = await execFileAsync(process.execPath, [
+      bridgePath,
+      "login",
+      "--origin",
+      origin,
+    ], {
+      encoding: "utf8",
+      env: childEnvironment,
+    });
+    assert.match(completed.stdout, /подключено к Trelio/);
+    assert.equal(await pathExists(pairingFile), false);
+
+    const credentialFile = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "credentials.json",
+    );
+    const credentials = JSON.parse(await readFile(credentialFile, "utf8"));
+    assert.equal(
+      credentials[origin].bridgeSessionToken,
+      "twb_integration-device-session",
+    );
+    assert.equal(credentials[origin].accessToken, undefined);
+
+    const reused = await execFileAsync(process.execPath, [
+      bridgePath,
+      "login",
+      "--origin",
+      origin,
+    ], {
+      encoding: "utf8",
+      env: childEnvironment,
+    });
+    assert.match(reused.stdout, /уже подключён через device-session/);
+    assert.equal(createRequests, 1);
+    assert.equal(exchangeRequests, 1);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("bridge submit external object writes the pointer through stdin without hanging", {
@@ -1099,7 +1264,7 @@ test("bridge resumes external object registration from durable per-file progress
 
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.12/);
+  assert.match(result.stdout, /Bridge 1\.3\.13/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);
