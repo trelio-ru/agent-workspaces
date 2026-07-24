@@ -24,7 +24,10 @@ Trelio-монорепозитории быть не должно.
   версии и не переписывает Git-историю.
 - Codex в начале каждого Run читает защищённый `AGENTS.md` напрямую, а Claude
   Code нативно загружает защищённый корневой `CLAUDE.md`, содержащий только
-  канонический импорт `@AGENTS.md`. Затем агент читает закреплённый снимок
+  канонический импорт `@AGENTS.md`. Bridge создаёт оба файла из единого
+  plugin-шаблона при каждом `open`, держит их вне accepted Git/candidate и для
+  legacy tracked revision использует local exclude + skip-worktree до
+  server-side format-v4 migration. Затем агент читает закреплённый снимок
   company/project-правил в `../context/agent-instructions.md` и только после
   него `PROJECT_CONTEXT.md`. Публикация правил версионируется и действует
   только на будущие Run; MCP mutation требует точного preview/diff, отдельного

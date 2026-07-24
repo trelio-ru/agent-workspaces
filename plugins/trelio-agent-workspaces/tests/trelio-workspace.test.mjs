@@ -10,11 +10,14 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+  AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   inspectWorkspaceFile,
   isProtectedWorkspaceControlPath,
+  materializeRuntimeControlFiles,
   parseWorkspaceObjectPointer,
 } from "../scripts/trelio-workspace.mjs";
 
@@ -161,8 +164,6 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
   ].join("\n");
   const [baseExport, companyExport] = await Promise.all([
     createExportBundle(path.join(temporaryDirectory, "base"), {
-      "AGENTS.md": "# Test rules\n",
-      "CLAUDE.md": "@AGENTS.md\n",
       "PROJECT_CONTEXT.md": "# Task context\n",
     }),
     createExportBundle(path.join(temporaryDirectory, "company"), {
@@ -273,6 +274,29 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
 
     assert.equal(opened.stdout.trim(), path.join(rootDirectory, "workspace"));
+    assert.equal(
+      await readFile(path.join(rootDirectory, "workspace", "AGENTS.md"), "utf8"),
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    );
+    assert.equal(
+      await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
+      AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
+    );
+    assert.equal(
+      (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
+      "",
+      "runtime-generated control files must stay outside candidate Git state",
+    );
+    assert.equal(
+      (await runGit(path.join(rootDirectory, "workspace"), [
+        "ls-files",
+        "--",
+        "AGENTS.md",
+        "CLAUDE.md",
+      ])).stdout,
+      "",
+      "format-v4 accepted Git must not track runtime control files",
+    );
     assert.equal(
       await readFile(
         path.join(rootDirectory, "context", "company", "sources", "large-parent.pdf"),
@@ -631,7 +655,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.3.11");
+  assert.equal(BRIDGE_VERSION, "1.3.12");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1075,7 +1099,7 @@ test("bridge resumes external object registration from durable per-file progress
 
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.11/);
+  assert.match(result.stdout, /Bridge 1\.3\.12/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);
@@ -1115,6 +1139,50 @@ test("bridge recognizes exact object pointers and classifies binary bytes", asyn
     assert.match(binary.sha256, /^[0-9a-f]{64}$/);
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("runtime bootstrap replaces legacy tracked copies without entering a candidate", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-agents-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(
+      path.join(workspaceDirectory, "AGENTS.md"),
+      "# Устаревший серверный шаблон\n",
+      "utf8",
+    );
+    await writeFile(path.join(workspaceDirectory, "CLAUDE.md"), "@AGENTS.md\n", "utf8");
+    await writeFile(path.join(workspaceDirectory, "PROJECT_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Legacy workspace"]);
+
+    await materializeRuntimeControlFiles(workspaceDirectory);
+
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "AGENTS.md"), "utf8"),
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    );
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "CLAUDE.md"), "utf8"),
+      AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
+    );
+    assert.equal((await runGit(workspaceDirectory, ["status", "--porcelain"])).stdout, "");
+
+    await writeFile(path.join(workspaceDirectory, "result.md"), "# Результат\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    assert.equal(
+      (await runGit(workspaceDirectory, ["diff", "--cached", "--name-only"])).stdout,
+      "result.md\n",
+      "legacy tracked bootstrap must retain its base blobs until server migration removes them",
+    );
+  } finally {
+    if (process.platform !== "win32") {
+      await execFileAsync("chmod", ["-R", "u+w", workspaceDirectory]).catch(() => undefined);
+    }
+    await rm(workspaceDirectory, { recursive: true, force: true });
   }
 });
 
