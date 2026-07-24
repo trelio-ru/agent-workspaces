@@ -22,6 +22,7 @@ const MAX_WEB_URL = "https://web.max.ru/";
 const MAX_WEB_ORIGIN = new URL(MAX_WEB_URL).origin;
 const POLICY_MODES = new Set(["confirm", "autonomous", "read-only"]);
 const RUNTIME_VERSION = "1";
+const ADAPTER_VERSION = "1";
 
 const output = (payload) => process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 
@@ -166,6 +167,7 @@ const usage = () => `
 Usage:
   trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID bootstrap
   trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID doctor
+  trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID probe
   trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID policy show
   trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID policy set --send-mode autonomous
   trelio-max.mjs --company-id UUID --member-id UUID --connection-id UUID login
@@ -295,9 +297,11 @@ const openHome = async (page, options, allowLogin = false) => {
 
 const findSearchInput = async (page, timeoutMs) => {
   const candidates = [
-    page.getByPlaceholder(/поиск|search/iu).first(),
-    page.getByRole("textbox", { name: /поиск|search/iu }).first(),
-    page.locator('input[type="search"], input[placeholder*="поиск" i], input[placeholder*="search" i]').first(),
+    page.getByPlaceholder(/найти|поиск|find|search/iu).first(),
+    page.getByRole("textbox", { name: /найти|поиск|find|search/iu }).first(),
+    page.locator(
+      'input[type="search"], input[placeholder*="найти" i], input[placeholder*="поиск" i], input[placeholder*="find" i], input[placeholder*="search" i]',
+    ).first(),
   ];
   for (const candidate of candidates) {
     try {
@@ -309,7 +313,27 @@ const findSearchInput = async (page, timeoutMs) => {
       // MAX changes generated class names frequently; try an accessible fallback.
     }
   }
-  throw new Error("Could not find the MAX dialog search field.");
+
+  // Last-resort semantic fallback: on the authenticated MAX home screen the
+  // dialog search is normally the only visible input in the upper-left chat
+  // pane. Geometry keeps this fallback away from the message composer.
+  const visibleInputs = page.locator('input:not([type="hidden"])');
+  const fallbackCandidates = [];
+  for (let index = 0; index < await visibleInputs.count(); index += 1) {
+    const candidate = visibleInputs.nth(index);
+    if (!await candidate.isVisible().catch(() => false)) continue;
+    const box = await candidate.boundingBox();
+    if (!box || box.x > 600 || box.y > 400 || box.width < 80 || box.height < 20) continue;
+    fallbackCandidates.push(candidate);
+  }
+  if (fallbackCandidates.length === 1) {
+    await fallbackCandidates[0].click({ timeout: timeoutMs });
+    return fallbackCandidates[0];
+  }
+
+  throw new Error(
+    "Could not safely identify the MAX dialog search field. The runtime failed closed; inspect the current UI and publish a compatible plugin update before retrying.",
+  );
 };
 
 const fillLocator = async (locator, value, page) => {
@@ -327,14 +351,29 @@ const collectDialogResults = (page, query) => page.evaluate((needle) => {
   const nodes = Array.from(document.querySelectorAll('a, button, [role="button"], [role="option"], [role="listitem"]'));
   const results = [];
   for (const node of nodes) {
-    const text = (node.innerText || node.textContent || "").replace(/\s+/gu, " ").trim();
+    const visibleLines = String(node.innerText || "")
+      .split(/\n+/u)
+      .map((line) => line.replace(/\s+/gu, " ").trim())
+      .filter(Boolean);
+    const text = visibleLines.join(" ");
+    // MAX search can return several messages from one dialog. Match and
+    // de-duplicate by the visible dialog title so one chat is not reported as
+    // an ambiguous reference merely because several messages matched.
+    const titleNode = node.querySelector(
+      '[class*="title" i] [class*="name" i], [class*="title" i]',
+    );
+    const title = (
+      titleNode?.textContent
+      || visibleLines.find((line) => line.length <= 160)
+      || ""
+    ).replace(/\s+/gu, " ").trim();
     const rect = node.getBoundingClientRect();
     const style = window.getComputedStyle(node);
-    if (!text || text.length > 500 || !text.toLowerCase().includes(normalized)) continue;
+    if (!text || !title || text.length > 500 || !title.toLowerCase().includes(normalized)) continue;
     if (rect.width < 20 || rect.height < 10 || style.display === "none" || style.visibility === "hidden") continue;
-    if (results.some((item) => item.text.toLowerCase() === text.toLowerCase())) continue;
+    if (results.some((item) => item.title.toLowerCase() === title.toLowerCase())) continue;
     node.setAttribute("data-trelio-max-dialog", String(results.length));
-    results.push({ index: results.length, text });
+    results.push({ index: results.length, title, text });
     if (results.length >= 20) break;
   }
   return results;
@@ -376,7 +415,16 @@ const openChat = async (page, options) => {
   }
   await page.locator(`[data-trelio-max-dialog="${results[0].index}"]`).click({ timeout: options.timeoutMs });
   await page.waitForTimeout(2_000);
-  return { method: "search", matched: results[0].text, url: page.url() };
+  const openedUrl = page.url();
+  const chatUrlOpened = openedUrl !== MAX_WEB_URL && openedUrl !== MAX_WEB_ORIGIN;
+  const messageSurfaceVisible = (await visibleMessages(page, 1)).length > 0;
+  const composerVisible = await findComposer(page).then(() => true).catch(() => false);
+  if (!chatUrlOpened && !messageSurfaceVisible && !composerVisible) {
+    throw new Error(
+      "MAX dialog click had no verifiable effect. The runtime failed closed; do not send or retry automatically.",
+    );
+  }
+  return { method: "search", matched: results[0].title, url: openedUrl };
 };
 
 const visibleMessages = (page, limit) => page.evaluate((maxCount) => {
@@ -413,7 +461,39 @@ const findComposer = async (page) => {
       // Try the next accessible composer.
     }
   }
-  throw new Error("Could not find a visible MAX message composer.");
+
+  // Generated classes and accessibility metadata may change independently.
+  // A composer is still expected to be a sizeable editable element in the
+  // lower-right chat pane, unlike the dialog search in the upper-left pane.
+  const viewport = page.viewportSize() || { width: 1280, height: 900 };
+  const editable = page.locator(
+    'textarea, [contenteditable="true"], [role="textbox"], input:not([type="hidden"])',
+  );
+  const geometricCandidates = [];
+  for (let index = 0; index < await editable.count(); index += 1) {
+    const candidate = editable.nth(index);
+    if (!await candidate.isVisible().catch(() => false)) continue;
+    const box = await candidate.boundingBox();
+    if (!box) continue;
+    if (
+      box.x < Math.min(300, viewport.width * 0.28)
+      || box.y < viewport.height * 0.5
+      || box.width < 120
+      || box.height < 20
+    ) {
+      continue;
+    }
+    geometricCandidates.push({ candidate, box });
+  }
+  geometricCandidates.sort((left, right) => (
+    (right.box.y + right.box.height) - (left.box.y + left.box.height)
+    || right.box.x - left.box.x
+  ));
+  if (geometricCandidates.length > 0) return geometricCandidates[0].candidate;
+
+  throw new Error(
+    "Could not safely identify a visible MAX message composer. The runtime failed closed; inspect the current UI and publish a compatible plugin update before retrying.",
+  );
 };
 
 const outgoingMessage = (options) => {
@@ -452,6 +532,32 @@ const sendCurrentComposer = async (page, timeoutMs, hasText) => {
   return "enter";
 };
 
+const composerText = async (composer) => composer.evaluate((element) => {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+    return element.value;
+  }
+  return element.textContent || "";
+});
+
+const verifyTextSend = async (page, composer, message, timeoutMs) => {
+  const exactMessage = page.getByText(message, { exact: true }).last();
+  await exactMessage.waitFor({
+    state: "visible",
+    timeout: Math.min(timeoutMs, 15_000),
+  }).catch(() => {
+    throw new Error(
+      "MAX send result is ambiguous: the exact outgoing text did not appear in the open chat. Do not retry automatically.",
+    );
+  });
+  const remainingDraft = (await composerText(composer)).trim();
+  if (remainingDraft) {
+    throw new Error(
+      "MAX send result is ambiguous: the composer still contains text. Do not retry automatically.",
+    );
+  }
+  return "exact-text-visible-and-composer-cleared";
+};
+
 const withBrowser = async (options, callback) => withProfileLock(options, async () => {
   const { chromium } = loadPlaywright();
   ensurePrivateDirectory(profilePath(options));
@@ -475,12 +581,46 @@ const withBrowser = async (options, callback) => withProfileLock(options, async 
   }
 });
 
+const safeUiFingerprint = async (page) => page.evaluate(() => {
+  const visible = (element) => {
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width >= 1
+      && rect.height >= 1
+      && style.display !== "none"
+      && style.visibility !== "hidden";
+  };
+  const count = (selector) => Array.from(document.querySelectorAll(selector)).filter(visible).length;
+  const pathname = window.location.pathname;
+  return {
+    pageKind: pathname === "/" ? "home" : /^\/(?:\d+|u\/[A-Za-z0-9_-]+)\/?$/u.test(pathname) ? "chat" : "other",
+    visibleInputs: count('input:not([type="hidden"])'),
+    visibleTextareas: count("textarea"),
+    visibleEditables: count('[contenteditable="true"]'),
+    visibleButtons: count('button, [role="button"]'),
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+  };
+});
+
 const runBrowserCommand = async (options) => withBrowser(options, async (page) => {
   if (options.command === "login") {
     await openHome(page, options, true);
     if (!options.headed) throw new Error("MAX login requires --headed.");
     await page.waitForTimeout(options.holdMs);
     return { opened: true, profile: profilePath(options), heldMs: options.holdMs };
+  }
+  if (options.command === "probe") {
+    await openHome(page, options);
+    const searchReady = await findSearchInput(page, options.timeoutMs)
+      .then(() => true)
+      .catch(() => false);
+    return {
+      adapterVersion: ADAPTER_VERSION,
+      authenticated: true,
+      searchReady,
+      fingerprint: await safeUiFingerprint(page),
+      diagnosticPolicy: "No chat text, message text, cookies or credentials are included.",
+    };
   }
   if (options.command === "dialogs") {
     if (!options.query) throw new Error("dialogs requires --query.");
@@ -510,14 +650,19 @@ const runBrowserCommand = async (options) => withBrowser(options, async (page) =
     const policyMode = assertSendAllowed(options);
     const opened = await openChat(page, options);
     if (options.file) await uploadFile(page, options.file, options.timeoutMs);
-    if (message) await fillLocator(await findComposer(page), message, page);
+    const composer = message ? await findComposer(page) : null;
+    if (message) await fillLocator(composer, message, page);
     const method = await sendCurrentComposer(page, options.timeoutMs, Boolean(message));
     await page.waitForTimeout(1_200);
+    const verification = message
+      ? await verifyTextSend(page, composer, message, options.timeoutMs)
+      : "attachment-dispatched-without-text-verification";
     return {
       sent: true,
       opened,
       policyMode,
       method,
+      verification,
       retryPolicy: "Do not retry automatically after an ambiguous failure.",
     };
   }
@@ -551,6 +696,7 @@ const main = async () => {
       policy: loadPolicy(options),
       localRoot: connectionRoot(options),
       securityBoundary: "chat-only",
+      adapterVersion: ADAPTER_VERSION,
     });
     return;
   }
@@ -568,6 +714,7 @@ const main = async () => {
 };
 
 export {
+  ADAPTER_VERSION,
   assertSendAllowed,
   connectionRoot,
   loadPolicy,

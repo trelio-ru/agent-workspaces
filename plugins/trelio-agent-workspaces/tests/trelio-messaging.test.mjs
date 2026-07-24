@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  ADAPTER_VERSION,
   assertSendAllowed,
   connectionRoot,
   loadPolicy,
@@ -36,6 +37,12 @@ test("MAX local policy defaults to confirm and keeps state outside workspace", (
     else process.env.TRELIO_CONFIG_HOME = previousConfigHome;
     fs.rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+test("MAX exposes a versioned, content-free live probe command", () => {
+  const options = parseArguments([...identityArguments, "probe"]);
+  assert.equal(options.command, "probe");
+  assert.equal(ADAPTER_VERSION, "1");
 });
 
 test("MAX read-only and autonomous modes are enforced by runtime code", () => {
