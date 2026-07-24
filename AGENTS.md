@@ -108,10 +108,25 @@ Trelio-монорепозитории быть не должно.
   и не подменять MCP открытием карточки Trelio в браузере.
 - Локальный bridge не должен запускать второй OAuth в обычном onboarding.
   На новом устройстве он создаёт короткую PKCE-подобную pairing-заявку,
-  сохраняет verifier только локально и печатает безопасные device/code/id.
-  Агент показывает exact устройство и код пользователю, вызывает
-  `approve_agent_workspace_bridge_pairing` только после явного подтверждения и
-  повторяет исходную bridge-команду. Полученная узкая device-session
+  сохраняет verifier только локально и печатает безопасные device/request id.
+  Агент сразу вызывает `approve_agent_workspace_bridge_pairing` с exact
+  `pairingId` / `deviceName` и повторяет исходную bridge-команду: короткий код
+  человеку не показывается, отдельная фраза в чате не нужна, а единственная
+  штатная кнопка остаётся на усмотрение обычной approval-policy MCP-клиента.
+  После успешного exchange агент только уведомляет о подключении устройства.
+  Начиная с `1.4.1` полученная узкая device-session всегда хранится в
+  приватном локальном `credentials.json`, без зависимости от системной Связки
+  ключей: macOS/Linux используют
+  `~/.config/trelio/workspace-bridge/credentials.json` с owner-check,
+  каталогом `0700`, файлом `0600`, запретом symlink и атомарной записью;
+  Windows использует
+  `%LOCALAPPDATA%\Trelio\workspace-bridge\credentials.json` с exact ACL только
+  текущего пользователя. Небезопасный path даёт fail-closed ошибку. Legacy
+  macOS Keychain device-session один раз мягко переносится в файл, а legacy
+  OAuth остаётся отдельным backward-compatible контуром. Если exchange уже
+  выдал server session, но локальная запись не прошла, bridge немедленно
+  вызывает authenticated self-revoke; неуспешный cleanup показывается явной
+  ошибкой и не маскируется. Полученная узкая device-session
   переиспользуется между Run без постоянных MCP-запросов, не получает
   `mcp:agent-instructions:manage` или `mcp:secrets:read` и отзывается отдельно
   от основного MCP OAuth. Legacy bridge OAuth допустим только как временный

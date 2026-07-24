@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Production integration for scoped Agent Workspaces, Agent Secrets, live skill catalogs, and local email, Telegram, and MAX runtimes.",
   "author": {
     "name": "Trelio"

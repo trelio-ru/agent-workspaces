@@ -4,8 +4,9 @@
  * Локальный bridge для Trelio Agent Workspaces.
  *
  * Bridge намеренно не является MCP-сервером и не передаёт OAuth token агенту.
- * Он материализует закреплённые Git-ревизии, хранит credential в системном
- * хранилище и отправляет на сервер только candidate bundle текущего Run.
+ * Он материализует закреплённые Git-ревизии, хранит bridge device-session в
+ * приватном локальном файле и отправляет на сервер только candidate bundle
+ * текущего Run.
  */
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
@@ -21,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.0";
+export const BRIDGE_VERSION = "1.4.1";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -51,14 +52,36 @@ const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 // эти операции принадлежат уже авторизованному MCP control plane.
 const LEGACY_OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:secrets:write mcp:secrets:checkout";
 const LEGACY_KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge";
-const BRIDGE_SESSION_KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge.session";
-// Tests and explicitly sandboxed runtimes can force the private-file fallback
-// without touching the developer's real macOS Keychain.
-const USE_SYSTEM_KEYCHAIN = process.platform === "darwin"
+const LEGACY_BRIDGE_SESSION_KEYCHAIN_SERVICE = "ru.trelio.workspace-bridge.session";
+// Keychain остаётся только для чтения/записи legacy OAuth и однократной
+// миграции старой bridge device-session. Новые device-session туда не пишутся.
+const USE_LEGACY_MACOS_KEYCHAIN = process.platform === "darwin"
   && process.env.TRELIO_WORKSPACE_DISABLE_KEYCHAIN !== "1";
-const CONFIG_DIRECTORY = path.join(os.homedir(), ".config", "trelio", "workspace-bridge");
+
+export const resolveWorkspaceBridgeConfigDirectory = ({
+  platform = process.platform,
+  environment = process.env,
+  homeDirectory = os.homedir(),
+} = {}) => {
+  if (platform === "win32") {
+    const localAppData = environment.LOCALAPPDATA
+      || path.win32.join(environment.USERPROFILE || homeDirectory, "AppData", "Local");
+    return path.win32.join(localAppData, "Trelio", "workspace-bridge");
+  }
+
+  return path.join(homeDirectory, ".config", "trelio", "workspace-bridge");
+};
+
+const LEGACY_HOME_CONFIG_DIRECTORY = path.join(
+  os.homedir(),
+  ".config",
+  "trelio",
+  "workspace-bridge",
+);
+const CONFIG_DIRECTORY = resolveWorkspaceBridgeConfigDirectory();
 const CREDENTIAL_FILE = path.join(CONFIG_DIRECTORY, "credentials.json");
 const PAIRING_FILE = path.join(CONFIG_DIRECTORY, "pairings.json");
+const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "credentials.json");
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
@@ -387,8 +410,12 @@ const requestWithRateLimitRetry = async ({
   }
 };
 
-const getKeychainValue = async (service, origin) => {
-  if (!USE_SYSTEM_KEYCHAIN) {
+const getKeychainValue = async (
+  service,
+  origin,
+  { failOnUnexpectedError = false } = {},
+) => {
+  if (!USE_LEGACY_MACOS_KEYCHAIN) {
     return null;
   }
 
@@ -402,14 +429,201 @@ const getKeychainValue = async (service, origin) => {
       "-w",
     ], { encoding: "utf8" });
     return result.stdout.trim() || null;
-  } catch {
+  } catch (error) {
+    // `security` uses exit status 44 when the item is simply absent. During
+    // one-time device-session migration any other status is a real Keychain
+    // failure: do not mark migration complete or silently create a second
+    // session while an existing credential may still be recoverable.
+    if (failOnUnexpectedError && error.code !== 44) {
+      throw new Error(
+        "Не удалось проверить legacy bridge device-session в macOS Keychain; локальная миграция остановлена без создания новой сессии.",
+        { cause: error },
+      );
+    }
     return null;
   }
 };
 
-const readFallbackCredentials = async () => {
+const deleteKeychainValue = async (service, origin) => {
+  if (!USE_LEGACY_MACOS_KEYCHAIN) {
+    return;
+  }
+
+  await execFileAsync("security", [
+    "delete-generic-password",
+    "-s",
+    service,
+    "-a",
+    origin,
+  ], { encoding: "utf8" }).catch(() => undefined);
+};
+
+export const WINDOWS_PRIVATE_ACL_SCRIPT = String.raw`
+param([string]$TargetPath, [string]$TargetKind)
+$ErrorActionPreference = "Stop"
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+if ($TargetKind -eq "directory") {
+  $acl = New-Object System.Security.AccessControl.DirectorySecurity
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $sid,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    [System.Security.AccessControl.InheritanceFlags]"ContainerInherit, ObjectInherit",
+    [System.Security.AccessControl.PropagationFlags]::None,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+} else {
+  $acl = New-Object System.Security.AccessControl.FileSecurity
+  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+    $sid,
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    [System.Security.AccessControl.AccessControlType]::Allow
+  )
+}
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$acl.SetAccessRule($rule)
+Set-Acl -LiteralPath $TargetPath -AclObject $acl
+
+$verified = Get-Acl -LiteralPath $TargetPath
+$ownerSid = $verified.Owner
+try {
+  $ownerSid = ([System.Security.Principal.NTAccount]$verified.Owner).Translate(
+    [System.Security.Principal.SecurityIdentifier]
+  ).Value
+} catch {}
+if ($ownerSid -ne $sid.Value) {
+  throw "Private path owner verification failed."
+}
+$unexpected = @($verified.Access | Where-Object {
+  $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or
+  $_.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow -or
+  $_.IsInherited
+})
+if ($unexpected.Count -ne 0) {
+  throw "Private path ACL verification failed."
+}
+`;
+
+export const hardenWindowsPrivatePath = async (targetPath, targetKind) => {
+  await execFileAsync("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    targetPath,
+    targetKind,
+  ], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+};
+
+const assertPrivatePathKind = async (targetPath, targetKind) => {
+  const metadata = await fs.lstat(targetPath);
+  if (metadata.isSymbolicLink()) {
+    throw new Error(`Небезопасный локальный путь является symlink: ${targetPath}`);
+  }
+  if (targetKind === "directory" ? !metadata.isDirectory() : !metadata.isFile()) {
+    throw new Error(`Небезопасный тип локального пути: ${targetPath}`);
+  }
+
+  if (process.platform === "win32") {
+    await hardenWindowsPrivatePath(targetPath, targetKind);
+    return;
+  }
+
+  const currentUserId = typeof process.getuid === "function" ? process.getuid() : null;
+  if (currentUserId !== null && metadata.uid !== currentUserId) {
+    throw new Error(`Локальный путь принадлежит другому пользователю: ${targetPath}`);
+  }
+
+  const expectedMode = targetKind === "directory" ? 0o700 : 0o600;
+  if ((metadata.mode & 0o777) !== expectedMode) {
+    throw new Error(
+      `Небезопасные права ${targetPath}; требуются ${
+        targetKind === "directory" ? "0700" : "0600"
+      }.`,
+    );
+  }
+};
+
+const ensurePrivateDirectory = async (directoryPath) => {
+  let created = false;
   try {
-    return JSON.parse(await fs.readFile(CREDENTIAL_FILE, "utf8"));
+    const existing = await fs.lstat(directoryPath);
+    if (!existing.isDirectory() || existing.isSymbolicLink()) {
+      throw new Error(`Небезопасный локальный каталог: ${directoryPath}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await fs.mkdir(directoryPath, { recursive: true, mode: 0o700 });
+    created = true;
+  }
+
+  if (created && process.platform !== "win32") {
+    await fs.chmod(directoryPath, 0o700);
+  }
+  await assertPrivatePathKind(directoryPath, "directory");
+};
+
+const assertPrivateFileIfPresent = async (filePath) => {
+  try {
+    await assertPrivatePathKind(filePath, "file");
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const readPrivateJsonFile = async (filePath) => {
+  const exists = await assertPrivateFileIfPresent(filePath);
+  if (!exists) return {};
+
+  // На POSIX O_NOFOLLOW закрывает окно между lstat и read: даже если путь
+  // заменили symlink непосредственно перед open, token-файл не будет прочитан.
+  // После открытия повторно проверяем тип, владельца и mode уже по самому fd.
+  const flags = fsConstants.O_RDONLY
+    | (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW || 0));
+  let handle;
+  try {
+    handle = await fs.open(filePath, flags);
+  } catch (error) {
+    if (error.code === "ELOOP") {
+      throw new Error(`Небезопасный локальный путь является symlink: ${filePath}`);
+    }
+    throw error;
+  }
+
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) {
+      throw new Error(`Небезопасный тип локального пути: ${filePath}`);
+    }
+    if (process.platform !== "win32") {
+      const currentUserId = typeof process.getuid === "function" ? process.getuid() : null;
+      if (currentUserId !== null && metadata.uid !== currentUserId) {
+        throw new Error(`Локальный путь принадлежит другому пользователю: ${filePath}`);
+      }
+      if ((metadata.mode & 0o777) !== 0o600) {
+        throw new Error(`Небезопасные права ${filePath}; требуются 0600.`);
+      }
+    }
+    return JSON.parse(await handle.readFile("utf8"));
+  } finally {
+    await handle.close();
+  }
+};
+
+const readFallbackCredentials = async () => {
+  await ensurePrivateDirectory(CONFIG_DIRECTORY);
+  try {
+    return await readPrivateJsonFile(CREDENTIAL_FILE);
   } catch (error) {
     if (error.code === "ENOENT") {
       return {};
@@ -418,30 +632,113 @@ const readFallbackCredentials = async () => {
   }
 };
 
+const resolveKeychainMigrationMarkerFile = (origin) => path.join(
+  CONFIG_DIRECTORY,
+  `.keychain-device-session-migrated-${
+    crypto.createHash("sha256").update(origin).digest("hex").slice(0, 32)
+  }`,
+);
+
 const writePrivateJsonFile = async (filePath, value) => {
-  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(path.dirname(filePath));
+  await assertPrivateFileIfPresent(filePath);
   const temporaryPath = `${filePath}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
 
   try {
-    await fs.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    await fs.chmod(temporaryPath, 0o600);
+    const handle = await fs.open(temporaryPath, "wx", 0o600);
+    try {
+      await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (process.platform !== "win32") {
+      await fs.chmod(temporaryPath, 0o600);
+    }
+    await assertPrivatePathKind(temporaryPath, "file");
     await fs.rename(temporaryPath, filePath);
-    await fs.chmod(filePath, 0o600);
+    if (process.platform !== "win32") {
+      await fs.chmod(filePath, 0o600);
+    }
+    await assertPrivatePathKind(filePath, "file");
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
 };
 
+const writePrivateMarkerFile = async (filePath) => {
+  await ensurePrivateDirectory(path.dirname(filePath));
+  await fs.writeFile(filePath, `${new Date().toISOString()}\n`, {
+    flag: "wx",
+    encoding: "utf8",
+    mode: 0o600,
+  }).catch((error) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  if (process.platform !== "win32") {
+    await fs.chmod(filePath, 0o600);
+  }
+  await assertPrivatePathKind(filePath, "file");
+};
+
 const loadBridgeSessionToken = async (origin) => {
-  const keychainToken = await getKeychainValue(
-    BRIDGE_SESSION_KEYCHAIN_SERVICE,
-    origin,
-  );
+  let configDirectoryAlreadyExisted = true;
+  try {
+    await fs.lstat(CONFIG_DIRECTORY);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    configDirectoryAlreadyExisted = false;
+  }
 
   const credentials = await readFallbackCredentials();
-  return keychainToken || credentials[origin]?.bridgeSessionToken || null;
+  const fileToken = credentials[origin]?.bridgeSessionToken || null;
+  if (fileToken) return fileToken;
+
+  // Старые macOS-установки уже имеют config-каталог, но не credentials.json.
+  // Pending pairing означает новое подключение, для которого Keychain вообще
+  // не трогаем. В остальных случаях один раз читаем legacy item, переносим его
+  // в приватный файл и больше не зависим от `security`.
+  const hasPendingPairing = await assertPrivateFileIfPresent(PAIRING_FILE);
+  const keychainMigrationMarkerFile = resolveKeychainMigrationMarkerFile(origin);
+  const migrationAlreadyChecked = await assertPrivateFileIfPresent(
+    keychainMigrationMarkerFile,
+  );
+  if (
+    USE_LEGACY_MACOS_KEYCHAIN
+    && configDirectoryAlreadyExisted
+    && !hasPendingPairing
+    && !migrationAlreadyChecked
+  ) {
+    const keychainToken = await getKeychainValue(
+      LEGACY_BRIDGE_SESSION_KEYCHAIN_SERVICE,
+      origin,
+      { failOnUnexpectedError: true },
+    );
+    if (keychainToken) {
+      await saveBridgeSessionToken(origin, keychainToken);
+      await deleteKeychainValue(LEGACY_BRIDGE_SESSION_KEYCHAIN_SERVICE, origin);
+      await writePrivateMarkerFile(keychainMigrationMarkerFile);
+      return keychainToken;
+    }
+    await writePrivateMarkerFile(keychainMigrationMarkerFile);
+  }
+
+  // До 1.4.1 Windows использовал home-based `.config`. Переносим только
+  // проверенный обычный файл, затем сохраняем его в LOCALAPPDATA с exact ACL.
+  if (
+    process.platform === "win32"
+    && LEGACY_HOME_CREDENTIAL_FILE !== CREDENTIAL_FILE
+    && await assertPrivateFileIfPresent(LEGACY_HOME_CREDENTIAL_FILE)
+  ) {
+    const legacyCredentials = await readPrivateJsonFile(LEGACY_HOME_CREDENTIAL_FILE);
+    const legacyToken = legacyCredentials[origin]?.bridgeSessionToken || null;
+    if (legacyToken) {
+      await saveBridgeSessionToken(origin, legacyToken);
+      return legacyToken;
+    }
+  }
+
+  return null;
 };
 
 const loadLegacyOAuthToken = async (origin) => {
@@ -456,9 +753,9 @@ const loadToken = async (origin) => (
 );
 
 const saveCredential = async (origin, field, accessToken, keychainService) => {
-  await fs.mkdir(CONFIG_DIRECTORY, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(CONFIG_DIRECTORY);
 
-  if (USE_SYSTEM_KEYCHAIN) {
+  if (USE_LEGACY_MACOS_KEYCHAIN) {
     await run("security", [
       "add-generic-password",
       "-U",
@@ -489,23 +786,24 @@ const saveLegacyOAuthToken = (origin, accessToken) => (
 );
 
 const saveBridgeSessionToken = (origin, accessToken) => (
-  saveCredential(
-    origin,
-    "bridgeSessionToken",
-    accessToken,
-    BRIDGE_SESSION_KEYCHAIN_SERVICE,
-  )
+  (async () => {
+    // Device-session всегда хранится в одном кроссплатформенном файловом
+    // контракте. В отличие от legacy OAuth этот путь никогда не вызывает
+    // `security add-generic-password` на macOS.
+    const credentials = await readFallbackCredentials();
+    credentials[origin] = {
+      ...credentials[origin],
+      bridgeSessionToken: accessToken,
+      savedAt: new Date().toISOString(),
+    };
+    await writePrivateJsonFile(CREDENTIAL_FILE, credentials);
+    return CREDENTIAL_FILE;
+  })()
 );
 
 const readPendingPairings = async () => {
-  try {
-    return JSON.parse(await fs.readFile(PAIRING_FILE, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return {};
-    }
-    throw error;
-  }
+  await ensurePrivateDirectory(CONFIG_DIRECTORY);
+  return readPrivateJsonFile(PAIRING_FILE);
 };
 
 const writePendingPairings = async (pairings) => {
@@ -523,7 +821,6 @@ const getPendingPairing = async (origin) => {
   if (
     !pairing
     || typeof pairing.pairingId !== "string"
-    || typeof pairing.userCode !== "string"
     || typeof pairing.codeVerifier !== "string"
     || typeof pairing.deviceName !== "string"
     || typeof pairing.expiresAt !== "string"
@@ -551,10 +848,9 @@ class BridgePairingRequiredError extends Error {
     super([
       "TRELIO_BRIDGE_PAIRING_REQUIRED",
       `Устройство: ${pairing.deviceName}`,
-      `Код: ${pairing.userCode}`,
-      `Pairing ID: ${pairing.pairingId}`,
-      `Код действует до ${pairing.expiresAt}.`,
-      "Покажите пользователю точное устройство и код. Только после его явного подтверждения вызовите MCP tool approve_agent_workspace_bridge_pairing с этим Pairing ID, кодом и confirmed=true, затем повторите исходную bridge-команду.",
+      `Служебный Pairing ID: ${pairing.pairingId}`,
+      `Заявка действует до ${pairing.expiresAt}.`,
+      "Сразу вызовите MCP tool approve_agent_workspace_bridge_pairing с этим pairingId и deviceName, затем повторите исходную bridge-команду. Не показывайте пользователю код и не просите отдельную фразу подтверждения в чате: если MCP-клиент требует подтверждение tool-вызова, он сам покажет одну штатную кнопку.",
     ].join("\n"));
     this.pairing = pairing;
   }
@@ -580,7 +876,6 @@ const beginBridgePairing = async (origin) => {
   const payload = await response.json();
   const pairing = {
     pairingId: String(payload.pairingId || ""),
-    userCode: String(payload.userCode || ""),
     deviceName: String(payload.deviceName || device.deviceName),
     platform: String(payload.platform || device.platform),
     codeVerifier: verifier,
@@ -590,14 +885,14 @@ const beginBridgePairing = async (origin) => {
 
   if (
     !UUID_PATTERN.test(pairing.pairingId)
-    || !/^[A-Z2-9]{4}-[A-Z2-9]{4}$/u.test(pairing.userCode)
     || !Number.isFinite(Date.parse(pairing.expiresAt))
   ) {
     throw new Error("Trelio вернул некорректную pairing-заявку.");
   }
 
-  // Verifier остаётся только в приватном локальном файле. В stdout/stderr
-  // публикуются лишь безопасные данные, которые пользователь должен сверить.
+  // Verifier остаётся только в приватном локальном файле. В stderr публикуем
+  // лишь exact request id и имя устройства, нужные агенту для следующего MCP
+  // tool-вызова; отдельного человекочитаемого кода в UX больше нет.
   await savePendingPairing(origin, pairing);
   throw new BridgePairingRequiredError(pairing);
 };
@@ -632,7 +927,38 @@ const exchangePendingBridgePairing = async (origin) => {
       throw new Error("Trelio вернул некорректную bridge device-session.");
     }
 
-    const storage = await saveBridgeSessionToken(origin, accessToken);
+    let storage;
+    try {
+      storage = await saveBridgeSessionToken(origin, accessToken);
+    } catch (storageError) {
+      let cleanupError = null;
+      try {
+        await request(origin, accessToken, "/api/agent-workspaces/bridge-session/self-revoke", {
+          method: "POST",
+        });
+      } catch (error) {
+        cleanupError = error;
+      }
+
+      // Pairing уже exchanged и повторно использовать verifier нельзя даже
+      // после локальной ошибки. Удаляем pending row только после попытки
+      // компенсационного revoke, чтобы следующий запуск не создавал ещё одну
+      // server session из той же локальной заявки.
+      await deletePendingPairing(origin);
+
+      if (cleanupError) {
+        throw new Error(
+          "Не удалось безопасно сохранить bridge device-session и автоматически отозвать её на сервере. Сессия могла остаться активной; отзовите это устройство через list/revoke Agent Workspace bridge sessions перед повтором.",
+          { cause: new AggregateError([storageError, cleanupError]) },
+        );
+      }
+
+      throw new Error(
+        "Не удалось безопасно сохранить bridge device-session. Серверная сессия автоматически отозвана; исправьте права приватного config path и повторите подключение.",
+        { cause: storageError },
+      );
+    }
+
     await deletePendingPairing(origin);
     process.stdout.write(
       `Устройство ${pairing.deviceName} подключено к Trelio. Device-session сохранена в ${storage}.\n`,
