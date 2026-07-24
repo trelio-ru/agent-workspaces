@@ -33,6 +33,57 @@ class TrelioEmailTests(unittest.TestCase):
         )
         self.assertFalse(args.confirm)
 
+    def test_default_policy_requires_confirmation(self):
+        with mock.patch.object(MODULE, "email_policy_path", return_value=pathlib.Path("/missing/policy.json")):
+            self.assertEqual(MODULE.load_email_policy("work"), {"sendMode": "confirm"})
+
+    def test_read_only_policy_blocks_send_even_when_confirmed(self):
+        args = MODULE.build_parser().parse_args(
+            [
+                "send",
+                "--account",
+                "work",
+                "--to",
+                "a@example.com",
+                "--subject",
+                "Test",
+                "--confirm",
+            ]
+        )
+        with mock.patch.object(MODULE, "load_email_policy", return_value={"sendMode": "read-only"}):
+            with self.assertRaisesRegex(MODULE.MailboxError, "read-only"):
+                MODULE.command_send(args)
+
+    def test_autonomous_policy_does_not_require_confirm_flag(self):
+        args = MODULE.build_parser().parse_args(
+            ["send", "--account", "work", "--to", "a@example.com", "--subject", "Test"]
+        )
+        fake_account = MODULE.Account(
+            name="work",
+            email_address="person@example.com",
+            display_name="",
+            username="person@example.com",
+            imap_host="imap.example.com",
+            imap_port=993,
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            smtp_security="ssl",
+            credential_store="file",
+        )
+        smtp_client = mock.MagicMock()
+        smtp_client.send_message.return_value = {}
+        smtp_context = mock.MagicMock()
+        smtp_context.__enter__.return_value = smtp_client
+        with (
+            mock.patch.object(MODULE, "load_email_policy", return_value={"sendMode": "autonomous"}),
+            mock.patch.object(MODULE, "load_account", return_value=fake_account),
+            mock.patch.object(MODULE, "smtp_connection", return_value=smtp_context),
+        ):
+            result = MODULE.command_send(args)
+
+        self.assertTrue(result["sent"])
+        self.assertEqual(result["policyMode"], "autonomous")
+
     def test_broad_search_is_rejected(self):
         args = MODULE.build_parser().parse_args(["search", "--account", "work"])
         with self.assertRaisesRegex(MODULE.MailboxError, "at least one search filter"):

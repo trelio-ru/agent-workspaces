@@ -40,7 +40,9 @@ except ModuleNotFoundError as error:  # pragma: no cover - Python < 3.11 guard.
 CONFIG_DIR = Path.home() / ".config" / "trelio" / "email"
 CONFIG_PATH = CONFIG_DIR / "accounts.toml"
 SECRETS_DIR = CONFIG_DIR / "secrets"
+POLICIES_DIR = CONFIG_DIR / "policies"
 KEYCHAIN_SERVICE_PREFIX = "trelio-email"
+POLICY_MODES = ("confirm", "autonomous", "read-only")
 MAX_MESSAGE_BYTES = 25 * 1024 * 1024
 GOOGLE_APP_PASSWORDS_URL = "https://myaccount.google.com/apppasswords"
 GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
@@ -156,6 +158,42 @@ def ensure_private_file(path: Path) -> None:
     mode = path.stat().st_mode & 0o777
     if mode & 0o077:
         raise MailboxError(f"Unsafe permissions on {path}: expected 600, got {mode:o}.")
+
+
+def email_policy_path(account_name: str) -> Path:
+    """Keep one explicit local policy per configured sender account."""
+
+    return POLICIES_DIR / f"{normalize_account_name(account_name)}.json"
+
+
+def load_email_policy(account_name: str) -> dict[str, str]:
+    path = email_policy_path(account_name)
+    if not path.exists():
+        return {"sendMode": "confirm"}
+    ensure_private_file(path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise MailboxError(f"Cannot read local email policy {path}: {error}") from error
+    send_mode = payload.get("sendMode")
+    if send_mode not in POLICY_MODES:
+        raise MailboxError(f"Local email policy {path} has an unsupported sendMode.")
+    return {"sendMode": str(send_mode)}
+
+
+def write_email_policy(account_name: str, send_mode: str) -> None:
+    if send_mode not in POLICY_MODES:
+        raise MailboxError(f"sendMode must be one of: {', '.join(POLICY_MODES)}.")
+    path = email_policy_path(account_name)
+    ensure_private_directory(path.parent)
+    temporary_path = path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps({"sendMode": send_mode}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if os.name == "posix":
+        temporary_path.chmod(0o600)
+    temporary_path.replace(path)
 
 
 def toml_string(value: str) -> str:
@@ -733,7 +771,10 @@ def split_addresses(values: Iterable[str]) -> list[str]:
 
 
 def command_send(args: argparse.Namespace) -> dict[str, Any]:
-    if not args.confirm:
+    policy_mode = load_email_policy(args.account)["sendMode"]
+    if policy_mode == "read-only":
+        raise MailboxError("Local email policy is read-only; sending is disabled.")
+    if policy_mode == "confirm" and not args.confirm:
         raise MailboxError("Sending requires --confirm after the user approves the exact recipients, subject, and body.")
     account = load_account(args.account)
     to_addresses = split_addresses(args.to)
@@ -780,6 +821,7 @@ def command_send(args: argparse.Namespace) -> dict[str, Any]:
         "cc": cc_addresses,
         "bccCount": len(bcc_addresses),
         "subject": args.subject,
+        "policyMode": policy_mode,
         "refusedRecipients": sorted(refused),
         "retryPolicy": "Do not retry automatically after an ambiguous SMTP failure.",
     }
@@ -788,6 +830,16 @@ def command_send(args: argparse.Namespace) -> dict[str, Any]:
 def add_mailbox_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--account", required=True)
     parser.add_argument("--folder", default="INBOX")
+
+
+def command_policy(args: argparse.Namespace) -> dict[str, Any]:
+    if args.policy_command == "set":
+        write_email_policy(args.account, args.send_mode)
+    return {
+        "account": normalize_account_name(args.account),
+        "policy": load_email_policy(args.account),
+        "path": str(email_policy_path(args.account)),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -804,6 +856,15 @@ def build_parser() -> argparse.ArgumentParser:
     configure_parser.set_defaults(handler=command_configure)
     accounts_parser = subparsers.add_parser("accounts", help="List configured accounts without secrets")
     accounts_parser.set_defaults(handler=command_accounts)
+    policy_parser = subparsers.add_parser("policy", help="Read or update one account's local sending policy")
+    policy_subparsers = policy_parser.add_subparsers(dest="policy_command", required=True)
+    policy_show_parser = policy_subparsers.add_parser("show")
+    policy_show_parser.add_argument("--account", required=True)
+    policy_show_parser.set_defaults(handler=command_policy)
+    policy_set_parser = policy_subparsers.add_parser("set")
+    policy_set_parser.add_argument("--account", required=True)
+    policy_set_parser.add_argument("--send-mode", choices=POLICY_MODES, required=True)
+    policy_set_parser.set_defaults(handler=command_policy)
     doctor_parser = subparsers.add_parser("doctor", help="Check IMAP and SMTP authentication")
     doctor_parser.add_argument("--account", required=True)
     doctor_parser.set_defaults(handler=command_doctor)
