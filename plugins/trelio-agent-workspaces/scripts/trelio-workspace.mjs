@@ -21,7 +21,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.3.9";
+export const BRIDGE_VERSION = "1.3.10";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const OAUTH_SCOPES = "mcp:read mcp:workspaces:read mcp:workspaces:write mcp:agent-instructions:manage mcp:secrets:read mcp:secrets:write mcp:secrets:checkout";
@@ -47,6 +47,10 @@ const WORKSPACE_OBJECT_POINTER_VERSION = "https://trelio.ru/spec/workspace-objec
 const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
 const POINTER_MAX_BYTES = 1024;
+const MAX_RATE_LIMIT_RETRIES = 8;
+const MAX_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
+const FALLBACK_RATE_LIMIT_DELAY_MS = 1000;
+const MAX_FALLBACK_RATE_LIMIT_DELAY_MS = 30 * 1000;
 
 export const isProtectedWorkspaceControlPath = (filePath) => (
   filePath === "AGENTS.md"
@@ -227,10 +231,27 @@ export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
   return headers;
 };
 
+const parseRetryAfterMilliseconds = (rawValue, nowMs = Date.now()) => {
+  const value = String(rawValue || "").trim();
+
+  if (!value) {
+    return null;
+  }
+
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds * 1000 : null;
+  }
+
+  const retryAtMs = Date.parse(value);
+  return Number.isFinite(retryAtMs) ? Math.max(0, retryAtMs - nowMs) : null;
+};
+
 class TrelioApiError extends Error {
-  constructor(statusCode, message) {
+  constructor(statusCode, message, retryAfterMilliseconds = null) {
     super(`Trelio API ${statusCode}: ${String(message).slice(0, 1000)}`);
     this.statusCode = statusCode;
+    this.retryAfterMilliseconds = retryAfterMilliseconds;
   }
 }
 
@@ -250,10 +271,66 @@ const request = async (origin, token, pathname, options = {}) => {
       // Не-JSON proxy response всё равно полезнее скрытой HTTP ошибки.
     }
 
-    throw new TrelioApiError(response.status, message);
+    throw new TrelioApiError(
+      response.status,
+      message,
+      parseRetryAfterMilliseconds(response.headers.get("retry-after")),
+    );
   }
 
   return response;
+};
+
+const wait = (milliseconds) => new Promise((resolve) => {
+  setTimeout(resolve, milliseconds);
+});
+
+const requestWithRateLimitRetry = async ({
+  origin,
+  token,
+  pathname,
+  createOptions,
+}) => {
+  let retryCount = 0;
+
+  while (true) {
+    try {
+      // Upload body передаётся фабрикой, а не готовым stream: после ответа 429
+      // fetch уже мог прочитать исходный ReadStream, и повторно использовать его
+      // нельзя. Каждый retry обязан открыть файл заново с первого байта.
+      return await request(origin, token, pathname, createOptions());
+    } catch (error) {
+      if (
+        !(error instanceof TrelioApiError)
+        || error.statusCode !== 429
+        || retryCount >= MAX_RATE_LIMIT_RETRIES
+      ) {
+        throw error;
+      }
+
+      const retryAfterMilliseconds = error.retryAfterMilliseconds;
+      const fallbackDelay = Math.min(
+        FALLBACK_RATE_LIMIT_DELAY_MS * (2 ** retryCount),
+        MAX_FALLBACK_RATE_LIMIT_DELAY_MS,
+      ) + Math.floor(Math.random() * 251);
+      const delayMilliseconds = retryAfterMilliseconds ?? fallbackDelay;
+
+      if (delayMilliseconds > MAX_RATE_LIMIT_WAIT_MS) {
+        throw new Error(
+          "Trelio запросил слишком долгую паузу Retry-After; повторите submit позже.",
+          { cause: error },
+        );
+      }
+
+      retryCount += 1;
+      process.stdout.write(
+        `Trelio ограничил скорость запросов. Повтор ${retryCount}/${MAX_RATE_LIMIT_RETRIES} через ${
+          Math.ceil(delayMilliseconds / 1000)
+        } сек.\n`,
+      );
+      await wait(delayMilliseconds);
+    }
+  }
 };
 
 const getKeychainToken = async (origin) => {
@@ -1053,8 +1130,19 @@ const serializeMaterializedContexts = (contexts) => contexts.map((context) => ({
 }));
 
 const writeRunMetadata = async (metadataPath, metadata) => {
-  await fs.writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
-  await fs.chmod(metadataPath, 0o600);
+  const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+
+  try {
+    // Per-file object progress должен переживать остановку bridge. Пишем новый
+    // JSON рядом с metadata и публикуем rename-ом, чтобы процесс никогда не
+    // оставил обрезанный `.trelio-run.json` между двумя submit.
+    await fs.writeFile(temporaryPath, `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o600 });
+    await fs.chmod(temporaryPath, 0o600);
+    await fs.rename(temporaryPath, metadataPath);
+    await fs.chmod(metadataPath, 0o600);
+  } finally {
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
 };
 
 const readLocalSettings = async () => {
@@ -1902,13 +1990,13 @@ const registerWorkspaceObject = async ({
   token,
   filePath,
   inspection,
+  contentType,
 }) => {
-  const contentType = inferWorkspaceObjectContentType(filePath);
-  const registerResponse = await request(
+  const registerResponse = await requestWithRateLimitRetry({
     origin,
     token,
-    `/api/agent-workspaces/runs/${metadata.runId}/objects/register`,
-    {
+    pathname: `/api/agent-workspaces/runs/${metadata.runId}/objects/register`,
+    createOptions: () => ({
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1919,17 +2007,17 @@ const registerWorkspaceObject = async ({
         sizeBytes: inspection.sizeBytes,
         contentType,
       }),
-    },
-  );
+    }),
+  });
   let result = await registerResponse.json();
 
   if (result.uploadRequired) {
     const absolutePath = path.join(metadata.workspaceDirectory, filePath);
-    const uploadResponse = await request(
+    const uploadResponse = await requestWithRateLimitRetry({
       origin,
       token,
-      `/api/agent-workspaces/runs/${metadata.runId}/objects/${inspection.sha256}/content`,
-      {
+      pathname: `/api/agent-workspaces/runs/${metadata.runId}/objects/${inspection.sha256}/content`,
+      createOptions: () => ({
         method: "PUT",
         duplex: "half",
         headers: {
@@ -1941,8 +2029,8 @@ const registerWorkspaceObject = async ({
           "x-trelio-fencing-token": String(metadata.fencingToken),
         },
         body: createReadStream(absolutePath),
-      },
-    );
+      }),
+    });
     result = await uploadResponse.json();
   }
 
@@ -1965,7 +2053,31 @@ const registerWorkspaceObject = async ({
   };
 };
 
-const prepareCandidateIndex = async ({ metadata, origin, token }) => {
+const matchesWorkspaceObjectIdentity = (object, plannedObject) => (
+  object?.filePath === plannedObject.filePath
+  && object?.sha256 === plannedObject.inspection.sha256
+  && object?.sizeBytes === plannedObject.inspection.sizeBytes
+  && object?.contentType === plannedObject.contentType
+);
+
+const serializeObjectRegistrationProgress = (plannedObjects, progressByPath) => (
+  plannedObjects.flatMap((plannedObject) => {
+    const object = progressByPath.get(plannedObject.filePath);
+
+    if (!object) {
+      return [];
+    }
+
+    return [{
+      filePath: object.filePath,
+      sha256: object.sha256,
+      sizeBytes: object.sizeBytes,
+      contentType: object.contentType,
+    }];
+  })
+);
+
+const prepareCandidateIndex = async ({ metadata, metadataPath, origin, token }) => {
   const workspaceDirectory = metadata.workspaceDirectory;
   const knownObjectPaths = (metadata.objects || []).map((object) => object.filePath);
   await setSkipWorktree(workspaceDirectory, knownObjectPaths, false);
@@ -2006,6 +2118,41 @@ const prepareCandidateIndex = async ({ metadata, origin, token }) => {
     inlineTreeBytes -= candidate.sizeBytes;
   }
 
+  const plannedObjects = trackedPaths.flatMap((filePath) => {
+    if (isProtectedWorkspaceControlPath(filePath)) {
+      return [];
+    }
+
+    const inspection = inspections.get(filePath);
+
+    if (!inspection?.external) {
+      return [];
+    }
+
+    return [{
+      filePath,
+      inspection,
+      contentType: inferWorkspaceObjectContentType(filePath),
+    }];
+  });
+  const plannedObjectsByPath = new Map(
+    plannedObjects.map((plannedObject) => [plannedObject.filePath, plannedObject]),
+  );
+  const progressByPath = new Map();
+
+  // Progress относится не просто к пути, а к exact содержимому. Изменённый
+  // после неудачного submit файл обязан пройти регистрацию заново; совпавший
+  // exact object можно сразу вернуть в index без сетевого запроса.
+  for (const object of Array.isArray(metadata.objectRegistrationProgress)
+    ? metadata.objectRegistrationProgress
+    : []) {
+    const plannedObject = plannedObjectsByPath.get(object?.filePath);
+
+    if (plannedObject && matchesWorkspaceObjectIdentity(object, plannedObject)) {
+      progressByPath.set(object.filePath, object);
+    }
+  }
+
   for (const filePath of trackedPaths) {
     // Эти control-plane файлы обязаны остаться обычным небольшим текстом.
     // Backend отдельно запрещает их изменение и не примет pointer-обход.
@@ -2019,13 +2166,44 @@ const prepareCandidateIndex = async ({ metadata, origin, token }) => {
       continue;
     }
 
-    const object = await registerWorkspaceObject({
-      metadata,
-      origin,
-      token,
-      filePath,
-      inspection,
-    });
+    const plannedObject = plannedObjectsByPath.get(filePath);
+
+    if (!plannedObject) {
+      throw new Error(`Не удалось построить план workspace object для ${filePath}.`);
+    }
+
+    let object = progressByPath.get(filePath);
+
+    if (object) {
+      object = {
+        ...object,
+        pointer: serializeWorkspaceObjectPointer(object),
+      };
+    } else {
+      object = await registerWorkspaceObject({
+        metadata,
+        origin,
+        token,
+        filePath,
+        inspection,
+        contentType: plannedObject.contentType,
+      });
+      progressByPath.set(filePath, object);
+
+      // Checkpoint публикуется сразу после подтверждённой регистрации/upload.
+      // Если bridge остановится до update-index, следующий submit восстановит
+      // pointer из этого exact progress и продолжит с первого незавершённого.
+      await writeRunMetadata(metadataPath, {
+        ...metadata,
+        schemaVersion: 3,
+        objectRegistrationProgress: serializeObjectRegistrationProgress(
+          plannedObjects,
+          progressByPath,
+        ),
+        objectRegistrationProgressUpdatedAt: new Date().toISOString(),
+      });
+    }
+
     const hashResult = await run("git", ["hash-object", "-w", "--stdin"], {
       cwd: workspaceDirectory,
       input: object.pointer,
@@ -2067,7 +2245,12 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
     // Upload большого workspace object может занять заметное время, поэтому
     // продлеваем lease до первого сетевого потока, а не только перед bundle.
     await heartbeat();
-    candidateObjects = await prepareCandidateIndex({ metadata, origin, token });
+    candidateObjects = await prepareCandidateIndex({
+      metadata,
+      metadataPath,
+      origin,
+      token,
+    });
 
     if (await hasStagedChanges(workspaceDirectory)) {
       await run("git", ["commit", "-m", String(options.message || "Подготовить результат Agent Run")], {
@@ -2085,6 +2268,11 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
       (metadata.objects || []).map((object) => object.filePath),
       true,
     );
+    await writeRunMetadata(metadataPath, {
+      ...metadata,
+      objectRegistrationProgress: undefined,
+      objectRegistrationProgressUpdatedAt: undefined,
+    });
     throw new Error("В workspace нет изменений для отправки.");
   }
 
@@ -2093,12 +2281,15 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
     candidateObjects.map((object) => object.filePath),
     true,
   );
-  await writeRunMetadata(metadataPath, {
+  const candidateMetadata = {
     ...metadata,
     schemaVersion: 3,
     objects: candidateObjects,
     candidateHead: head,
-  });
+    objectRegistrationProgress: undefined,
+    objectRegistrationProgressUpdatedAt: undefined,
+  };
+  await writeRunMetadata(metadataPath, candidateMetadata);
   await heartbeat();
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-candidate-"));
   const bundlePath = path.join(temporaryDirectory, "candidate.bundle");
@@ -2137,7 +2328,7 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
     // Accepted Run остаётся на месте для проверки результата. Cleanup увидит
     // terminal mark, но удалит root только после server-confirmed retention.
     await writeRunMetadata(metadataPath, {
-      ...metadata,
+      ...candidateMetadata,
       schemaVersion: 3,
       candidateHead: head,
       terminalStatus: "accepted",

@@ -631,7 +631,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.3.9");
+  assert.equal(BRIDGE_VERSION, "1.3.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -685,6 +685,8 @@ test("bridge submit external object writes the pointer through stdin without han
     "",
   ].join("\n");
   const seenRequests = [];
+  let registerAttempts = 0;
+  let uploadAttempts = 0;
   let serverError = null;
 
   const server = createServer(async (request, response) => {
@@ -701,6 +703,16 @@ test("bridge submit external object writes the pointer through stdin without han
       }
 
       if (request.url?.endsWith("/objects/register")) {
+        registerAttempts += 1;
+
+        if (registerAttempts === 1) {
+          response.statusCode = 429;
+          response.setHeader("retry-after", "0");
+          response.setHeader("content-type", "application/json");
+          response.end(JSON.stringify({ message: "Retry register" }));
+          return;
+        }
+
         const registration = JSON.parse(body.toString("utf8"));
         assert.equal(registration.filePath, "sources/archive.bin");
         assert.equal(registration.sha256, binaryDigest);
@@ -711,6 +723,16 @@ test("bridge submit external object writes the pointer through stdin without han
       }
 
       if (request.method === "PUT" && request.url?.includes(`/objects/${binaryDigest}/content`)) {
+        uploadAttempts += 1;
+
+        if (uploadAttempts === 1) {
+          response.statusCode = 429;
+          response.setHeader("retry-after", "0");
+          response.setHeader("content-type", "application/json");
+          response.end(JSON.stringify({ message: "Retry upload" }));
+          return;
+        }
+
         assert.deepEqual(body, binaryBytes);
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ uploadRequired: false, pointer: expectedPointer }));
@@ -807,8 +829,14 @@ test("bridge submit external object writes the pointer through stdin without han
       2,
     );
     assert.equal(
-      seenRequests.some((request) => request.url?.endsWith("/objects/register")),
-      true,
+      registerAttempts,
+      2,
+      "register must retry once after Retry-After",
+    );
+    assert.equal(
+      uploadAttempts,
+      2,
+      "upload must reopen its stream and retry once after Retry-After",
     );
     assert.equal(
       seenRequests.some((request) => request.url?.endsWith("/candidate")),
@@ -825,9 +853,229 @@ test("bridge submit external object writes the pointer through stdin without han
   }
 });
 
+test("bridge resumes external object registration from durable per-file progress", {
+  timeout: 15_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-submit-resume-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const runDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  const objectDirectory = path.join(workspaceDirectory, "sources");
+  const objects = new Map([
+    ["sources/a.bin", Buffer.from([0, 1, 2])],
+    ["sources/b.bin", Buffer.from([3, 0, 5])],
+  ]);
+  const specifications = new Map(
+    [...objects.entries()].map(([filePath, bytes]) => {
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      return [filePath, {
+        bytes,
+        sha256,
+        pointer: [
+          "version https://trelio.ru/spec/workspace-object/v1",
+          `oid sha256:${sha256}`,
+          `size ${bytes.byteLength}`,
+          "content-type application/octet-stream",
+          "",
+        ].join("\n"),
+      }];
+    }),
+  );
+  const requests = [];
+  let phase = "interrupt";
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      const body = await readRequestBody(request);
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url?.endsWith("/heartbeat")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }));
+        return;
+      }
+
+      if (request.url?.endsWith("/objects/register")) {
+        const registration = JSON.parse(body.toString("utf8"));
+        requests.push({ phase, kind: "register", filePath: registration.filePath });
+
+        if (phase === "interrupt" && registration.filePath === "sources/b.bin") {
+          response.statusCode = 503;
+          response.setHeader("content-type", "application/json");
+          response.end(JSON.stringify({ message: "Synthetic interruption" }));
+          return;
+        }
+
+        if (phase === "resume" && registration.filePath === "sources/a.bin") {
+          throw new Error("Completed object a.bin must not be registered again");
+        }
+
+        const specification = specifications.get(registration.filePath);
+        assert.ok(specification);
+        assert.equal(registration.sha256, specification.sha256);
+        assert.equal(registration.sizeBytes, specification.bytes.byteLength);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ uploadRequired: true }));
+        return;
+      }
+
+      if (request.method === "PUT" && request.url?.includes("/objects/")) {
+        const filePath = decodeURIComponent(String(request.headers["x-trelio-file-path"] || ""));
+        requests.push({ phase, kind: "upload", filePath });
+
+        if (phase === "resume" && filePath === "sources/a.bin") {
+          throw new Error("Completed object a.bin must not be uploaded again");
+        }
+
+        const specification = specifications.get(filePath);
+        assert.ok(specification);
+        assert.deepEqual(body, specification.bytes);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          uploadRequired: false,
+          pointer: specification.pointer,
+        }));
+        return;
+      }
+
+      if (request.url?.endsWith("/candidate")) {
+        assert.equal(phase, "resume");
+        assert.ok(body.byteLength > 0, "resumed candidate bundle must reach the server");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: { status: "accepted" },
+          projection: { status: "projected" },
+        }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(objectDirectory, { recursive: true });
+    await mkdir(homeDirectory, { recursive: true });
+    await runGit(workspaceDirectory, ["init", "--initial-branch=trelio-candidate"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Bridge Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "bridge-test@trelio.local"]);
+    await writeFile(path.join(workspaceDirectory, "README.md"), "# Base\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "README.md"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Base"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+
+    for (const [filePath, specification] of specifications) {
+      await writeFile(path.join(workspaceDirectory, filePath), specification.bytes);
+    }
+
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const serverAddress = server.address();
+    assert.ok(serverAddress && typeof serverAddress === "object");
+    const origin = `http://127.0.0.1:${serverAddress.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    const metadataPath = path.join(runDirectory, ".trelio-run.json");
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify({
+        schemaVersion: 3,
+        origin,
+        pluginVersion: BRIDGE_VERSION,
+        workspaceId: "44444444-4444-4444-8444-444444444444",
+        runId,
+        leaseId: "55555555-5555-4555-8555-555555555555",
+        fencingToken: 7,
+        baseHead,
+        workspaceDirectory,
+        contextHeads: {},
+        contexts: [],
+        objects: [],
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [bridgePath, "submit", "--message", "Проверить interrupted object upload"],
+        {
+          cwd: workspaceDirectory,
+          encoding: "utf8",
+          timeout: 8_000,
+          env: { ...process.env, HOME: homeDirectory },
+        },
+      ),
+      (error) => /Trelio API 503: Synthetic interruption/.test(String(error.stderr)),
+    );
+
+    const interruptedMetadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    assert.deepEqual(
+      interruptedMetadata.objectRegistrationProgress?.map((object) => object.filePath),
+      ["sources/a.bin"],
+    );
+    assert.equal(
+      requests.filter((request) => request.phase === "interrupt" && request.kind === "upload").length,
+      1,
+    );
+
+    phase = "resume";
+    const resumed = await execFileAsync(
+      process.execPath,
+      [bridgePath, "submit", "--message", "Продолжить object upload"],
+      {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 8_000,
+        env: { ...process.env, HOME: homeDirectory },
+      },
+    );
+
+    assert.match(resumed.stdout, /Статус: принят автоматически/);
+    assert.deepEqual(
+      requests
+        .filter((request) => request.phase === "resume" && request.kind === "register")
+        .map((request) => request.filePath),
+      ["sources/b.bin"],
+    );
+    assert.deepEqual(
+      requests
+        .filter((request) => request.phase === "resume" && request.kind === "upload")
+        .map((request) => request.filePath),
+      ["sources/b.bin"],
+    );
+    assert.equal(
+      (await runGit(workspaceDirectory, ["show", "HEAD:sources/a.bin"])).stdout,
+      specifications.get("sources/a.bin").pointer,
+    );
+    assert.equal(
+      (await runGit(workspaceDirectory, ["show", "HEAD:sources/b.bin"])).stdout,
+      specifications.get("sources/b.bin").pointer,
+    );
+    const acceptedMetadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    assert.equal("objectRegistrationProgress" in acceptedMetadata, false);
+    assert.deepEqual(
+      acceptedMetadata.objects.map((object) => object.filePath),
+      ["sources/a.bin", "sources/b.bin"],
+    );
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.9/);
+  assert.match(result.stdout, /Bridge 1\.3\.10/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);

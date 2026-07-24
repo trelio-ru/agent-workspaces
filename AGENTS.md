@@ -48,6 +48,13 @@ Trelio-монорепозитории быть не должно.
   копируются через clonefile/reflink/copy без mutable hardlink. При submit в
   Git остаются небольшие безопасные UTF-8 материалы и точные pointers, а
   candidate bundle передаёт только delta после pinned base.
+- Пакетный submit external objects соблюдает server `Retry-After` при HTTP 429,
+  заново открывает upload stream на каждую попытку и атомарно сохраняет exact
+  per-file progress вне Git. Повторный submit восстанавливает pointers после
+  `git add --all`, не регистрирует уже завершённые path + SHA-256 + size +
+  content type и продолжает с первого незавершённого файла. Backend exact
+  register текущего Run остаётся идемпотентным на случай остановки между
+  server commit и локальным checkpoint.
 - Агент не должен предлагать оператору самостоятельно копировать или
   публиковать уже подготовленный комментарий.
 - `trelio-skill-catalog` всегда читает текущую опубликованную инструкцию через
@@ -123,8 +130,11 @@ Trelio-монорепозитории быть не должно.
 - External-object submit обязан иметь реальный Git regression test: binary
   загружается через fake HTTP API, pointer передаётся в `git hash-object
   --stdin` с явным закрытием stdin, candidate bundle доходит до сервера, а
-  рабочие bytes остаются materialized. `execFile` option `input` для этого
-  использовать нельзя: Node.js его не поддерживает и дочерний Git ждёт EOF.
+  рабочие bytes остаются materialized. Regression дополнительно покрывает 429
+  на register/upload, повторное открытие stream и продолжение после прерывания
+  без повторной регистрации уже завершённых файлов. `execFile` option `input`
+  для этого использовать нельзя: Node.js его не поддерживает и дочерний Git
+  ждёт EOF.
 - Pointer-first context обязан иметь regressions на нулевой object-byte
   download при `open`, exact single-path fetch, cache hit следующего Run,
   повторную загрузку после tamper и сохранение active/unknown/dirty roots при
