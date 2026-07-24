@@ -631,10 +631,27 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.3.8");
+  assert.equal(BRIDGE_VERSION, "1.3.9");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
+});
+
+test("workspace worker discovers the live skill catalog before substantive work", async () => {
+  const workerSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+  const catalogSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(workerSkill, /Call `list_agent_skills` once for the exact resolved context/);
+  assert.match(workerSkill, /Do not load every skill instruction speculatively/);
+  assert.match(workerSkill, /Immediately before using a relevant Trelio-provided skill, call `get_agent_skill`/);
+  assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
+  assert.match(catalogSkill, /project-scoped response already contains the additive union/);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {
@@ -804,7 +821,7 @@ test("bridge submit external object writes the pointer through stdin without han
 
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
-  assert.match(result.stdout, /Bridge 1\.3\.8/);
+  assert.match(result.stdout, /Bridge 1\.3\.9/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);

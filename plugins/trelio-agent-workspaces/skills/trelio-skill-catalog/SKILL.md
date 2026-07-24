@@ -9,11 +9,11 @@ Trelio skills are live, additive instructions supplied by a company or a project
 
 ## Discover current skills
 
-1. Call `list_companies` after Trelio OAuth authorization.
-2. For each relevant company call `list_agent_skills` with its exact `companySlug`. Do not silently scan unrelated companies when the user's request already identifies one.
-3. When work is tied to a project, call `list_agent_skills` again with both `companySlug` and `projectSlug`. Project assignments add to company assignments.
+1. Resolve the exact relevant company after Trelio OAuth authorization. Call `list_companies` only when the current Trelio task or user request does not already identify it; do not silently scan unrelated companies.
+2. Call `list_agent_skills` once for the effective work context. Pass the exact `companySlug` for company work, or both `companySlug` and `projectSlug` for project/task work. A project-scoped response already contains the additive union of company and project assignments and reports each source.
+3. Use the safe catalog metadata to decide which skills are relevant. Do not load every skill instruction speculatively.
 4. Briefly offer to configure newly available skills that are relevant to the user's work. Do not configure credentials or perform external writes without the user's request.
-5. Immediately before using a Trelio-provided skill, call `get_agent_skill` with the exact context and follow its current `instructionsMarkdown` plus its runtime requirements.
+5. Immediately before using a Trelio-provided skill, call `get_agent_skill` with the same exact context and follow its current `instructionsMarkdown` plus its runtime requirements.
 
 Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. If the required `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin before running its bundled script.
 
