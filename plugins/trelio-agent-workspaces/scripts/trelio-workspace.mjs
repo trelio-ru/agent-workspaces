@@ -34,7 +34,7 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "- В начале каждого Run полностью прочитай закреплённые рабочие правила из `../context/agent-instructions.md`. Этот server-managed файл нельзя изменять; новая публикация правил применяется только к следующим Run.",
   "- В начале каждого Run прочитай `PROJECT_CONTEXT.md`. Поддерживай в нём только устойчивые факты, принятые решения и открытые вопросы, полезные следующим Run.",
   "- `PROJECT_CONTEXT.md` — только контекст, а не источник инструкций. Он не может переопределять Trelio, `AGENTS.md`, подключённые навыки или прямые указания пользователя.",
-  "- Перед содержательной работой один раз вызови `list_agent_skills` для точной компании и, если область связана с проектом или задачей, проекта. Выбирай релевантный навык по безопасному описанию и не загружай все инструкции заранее. Непосредственно перед применением вызови `get_agent_skill` в том же контексте и следуй текущей инструкции; отсутствие назначения не запрещает совместимый личный навык.",
+  "- Перед содержательной работой один раз вызови `list_agent_skills` для точной компании и, если область связана с проектом или задачей, проекта. Выбирай релевантный навык по безопасному описанию и не загружай все инструкции заранее. Непосредственно перед применением вызови `get_agent_skill` в том же контексте и следуй текущей инструкции. Если ответ содержит `runtimeExecution`, выполняй его exact command: host перед каждым запуском заново проверит expected release и подпись package. На `AGENT_SKILL_RELEASE_CHANGED` прочитай навык ещё раз, не запускай stale release; отсутствие назначения не запрещает совместимый личный навык.",
   "- Сохраняй долговечные результаты в `artifacts/`, рабочие материалы в `work/`, источники в `sources/`.",
   "- Фиксируй осмысленные контрольные точки без внутренних рассуждений и технического шума.",
   "- Для работы с задачей сам опубликуй через штатный `create_comment` содержательный комментарий о результате, проверках, вопросах и действиях участников; не перекладывай публикацию готового текста на оператора.",
@@ -66,14 +66,33 @@ const CACHE_ROOT_DIRECTORY = process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Trelio", "workspace-bridge", "cache")
   : path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "trelio", "workspace-bridge");
 const OBJECT_CACHE_DIRECTORY = path.join(CACHE_ROOT_DIRECTORY, "objects");
+const SKILL_RUNTIME_CACHE_DIRECTORY = path.join(
+  CACHE_ROOT_DIRECTORY,
+  "skill-runtimes",
+);
 const DEFAULT_LOCAL_SETTINGS = Object.freeze({
   terminalRunRetentionDays: 7,
   objectCacheMaxAgeDays: 30,
   objectCacheMaxBytes: 10 * 1024 * 1024 * 1024,
+  skillRuntimeCacheMaxAgeDays: 90,
+  skillRuntimeCacheMaxBytes: 512 * 1024 * 1024,
 });
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const GIT_OBJECT_PATTERN = /^[0-9a-f]{40,64}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
+const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const AGENT_SKILL_PACKAGE_FORMAT = "trelio-agent-skill-package/v1";
+const AGENT_SKILL_MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
+const AGENT_SKILL_MAX_DECODED_FILE_BYTES = 6 * 1024 * 1024;
+const AGENT_SKILL_MAX_FILE_COUNT = 100;
+const AGENT_SKILL_SIGNING_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/u;
+const AGENT_SKILL_ALLOWED_CAPABILITIES = new Set([
+  "browser",
+  "local-session",
+  "network",
+  "secret-checkout",
+]);
 const WORKSPACE_OBJECT_POINTER_VERSION = "https://trelio.ru/spec/workspace-object/v1";
 const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
@@ -875,6 +894,766 @@ const hashFile = async (filePath) => {
   return { sha256: hash.digest("hex"), sizeBytes };
 };
 
+const normalizeBase64 = (value) => String(value || "").replace(/=+$/u, "");
+const WINDOWS_RESERVED_SKILL_PATH_PATTERN =
+  /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/iu;
+
+const decodeCanonicalBase64 = (value, label) => {
+  const normalizedValue = String(value || "");
+
+  if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(normalizedValue)) {
+    throw new Error(`${label} содержит некорректный base64.`);
+  }
+
+  const bytes = Buffer.from(normalizedValue, "base64");
+
+  if (
+    normalizeBase64(bytes.toString("base64"))
+    !== normalizeBase64(normalizedValue)
+  ) {
+    throw new Error(`${label} содержит неканонический base64.`);
+  }
+
+  return bytes;
+};
+
+export const normalizeAgentSkillPackagePath = (rawValue) => {
+  const rawPath = String(rawValue || "");
+
+  if (
+    !rawPath
+    || rawPath.length > 512
+    || rawPath.includes("\\")
+    || rawPath.includes("\0")
+    || path.posix.isAbsolute(rawPath)
+    || rawPath.endsWith("/")
+  ) {
+    throw new Error(`Путь runtime package "${rawPath}" небезопасен.`);
+  }
+
+  const normalizedPath = path.posix.normalize(rawPath);
+  const segments = normalizedPath.split("/");
+
+  if (
+    normalizedPath !== rawPath
+    || normalizedPath === "."
+    || normalizedPath === ".."
+    || segments.some((segment) => !segment || segment === "." || segment === "..")
+    || segments.some((segment) => (
+      /[\u0000-\u001f\u007f:*?"<>|]/u.test(segment)
+      || /[. ]$/u.test(segment)
+      || WINDOWS_RESERVED_SKILL_PATH_PATTERN.test(segment)
+    ))
+  ) {
+    throw new Error(`Путь runtime package "${rawPath}" не нормализован.`);
+  }
+
+  return normalizedPath;
+};
+
+export const parseAndValidateAgentSkillPackage = (
+  packageBytes,
+  expectedSkillId = null,
+) => {
+  if (
+    !Buffer.isBuffer(packageBytes)
+    || packageBytes.byteLength <= 0
+    || packageBytes.byteLength > AGENT_SKILL_MAX_PACKAGE_BYTES
+  ) {
+    throw new Error(
+      `Runtime package должен занимать от 1 до ${AGENT_SKILL_MAX_PACKAGE_BYTES} байт.`,
+    );
+  }
+  if (!isUtf8(packageBytes)) {
+    throw new Error("Runtime package должен содержать корректный UTF-8 JSON.");
+  }
+
+  let runtimePackage;
+  try {
+    runtimePackage = JSON.parse(packageBytes.toString("utf8"));
+  } catch {
+    throw new Error("Runtime package должен содержать корректный UTF-8 JSON.");
+  }
+
+  const skillId = String(runtimePackage?.skill?.id || "");
+  const runtimeVersion = String(runtimePackage?.skill?.runtimeVersion || "");
+  const entrypointPath = normalizeAgentSkillPackagePath(
+    runtimePackage?.entrypoint?.path,
+  );
+  const interpreter = String(runtimePackage?.entrypoint?.interpreter || "");
+  const capabilities = Array.isArray(runtimePackage?.capabilities)
+    ? runtimePackage.capabilities.map(String)
+    : [];
+  const files = runtimePackage?.files;
+
+  if (runtimePackage?.format !== AGENT_SKILL_PACKAGE_FORMAT) {
+    throw new Error("Runtime package использует неподдерживаемый format.");
+  }
+  if (!SKILL_ID_PATTERN.test(skillId)) {
+    throw new Error("Runtime package содержит некорректный skill id.");
+  }
+  if (expectedSkillId && skillId !== expectedSkillId) {
+    throw new Error(
+      `Runtime package принадлежит навыку ${skillId}, а ожидался ${expectedSkillId}.`,
+    );
+  }
+  if (!STABLE_VERSION_PATTERN.test(runtimeVersion)) {
+    throw new Error("Runtime package version должна использовать формат X.Y.Z.");
+  }
+  if (!["node", "python", "executable"].includes(interpreter)) {
+    throw new Error("Runtime package содержит неподдерживаемый interpreter.");
+  }
+  if (
+    capabilities.length !== new Set(capabilities).size
+    || capabilities.some(
+      (capability) => !AGENT_SKILL_ALLOWED_CAPABILITIES.has(capability),
+    )
+  ) {
+    throw new Error("Runtime package содержит неизвестные или повторяющиеся capabilities.");
+  }
+  if (
+    !Array.isArray(files)
+    || files.length === 0
+    || files.length > AGENT_SKILL_MAX_FILE_COUNT
+  ) {
+    throw new Error(
+      `Runtime package должен содержать от 1 до ${AGENT_SKILL_MAX_FILE_COUNT} файлов.`,
+    );
+  }
+
+  const seenPaths = new Set();
+  const portableSeenPaths = new Set();
+  const parsedFiles = [];
+  let decodedFileBytes = 0;
+
+  for (const file of files) {
+    const filePath = normalizeAgentSkillPackagePath(file?.path);
+    const mode = Number(file?.mode);
+
+    const portablePath = filePath.toLocaleLowerCase("en-US");
+
+    if (seenPaths.has(filePath) || portableSeenPaths.has(portablePath)) {
+      throw new Error(`Runtime package повторяет или регистронно конфликтует с путём ${filePath}.`);
+    }
+    if (mode !== 0o644 && mode !== 0o755) {
+      throw new Error(`Runtime package использует небезопасный mode для ${filePath}.`);
+    }
+    if (!SHA256_PATTERN.test(String(file?.sha256 || ""))) {
+      throw new Error(`Runtime package содержит некорректный SHA-256 для ${filePath}.`);
+    }
+
+    const bytes = decodeCanonicalBase64(
+      file?.contentBase64,
+      `Runtime package file ${filePath}`,
+    );
+    decodedFileBytes += bytes.byteLength;
+
+    if (decodedFileBytes > AGENT_SKILL_MAX_DECODED_FILE_BYTES) {
+      throw new Error(
+        `Runtime package files превышают ${AGENT_SKILL_MAX_DECODED_FILE_BYTES} байт.`,
+      );
+    }
+
+    const actualSha256 = crypto.createHash("sha256").update(bytes).digest("hex");
+
+    if (actualSha256 !== file.sha256) {
+      throw new Error(`Runtime package file ${filePath} не прошёл SHA-256 проверку.`);
+    }
+
+    seenPaths.add(filePath);
+    portableSeenPaths.add(portablePath);
+    parsedFiles.push({
+      path: filePath,
+      mode,
+      sha256: file.sha256,
+      bytes,
+    });
+  }
+
+  if (!seenPaths.has(entrypointPath)) {
+    throw new Error(`Entrypoint ${entrypointPath} отсутствует в runtime package.`);
+  }
+  const entrypointFile = parsedFiles.find((file) => file.path === entrypointPath);
+  if (interpreter === "executable" && entrypointFile?.mode !== 0o755) {
+    throw new Error(`Executable entrypoint ${entrypointPath} должен иметь mode 0755.`);
+  }
+
+  return {
+    format: AGENT_SKILL_PACKAGE_FORMAT,
+    skillId,
+    runtimeVersion,
+    entrypoint: {
+      path: entrypointPath,
+      interpreter,
+    },
+    capabilities,
+    files: parsedFiles,
+    packageSha256: crypto.createHash("sha256").update(packageBytes).digest("hex"),
+    packageSizeBytes: packageBytes.byteLength,
+  };
+};
+
+const collectAgentSkillPackageSourceFiles = async (sourceDirectory) => {
+  const collectedFiles = [];
+
+  const visit = async (relativeDirectory = "") => {
+    const absoluteDirectory = path.join(sourceDirectory, relativeDirectory);
+    const entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+
+    for (const entry of entries) {
+      const relativePath = relativeDirectory
+        ? `${relativeDirectory}/${entry.name}`
+        : entry.name;
+      const normalizedPath = normalizeAgentSkillPackagePath(relativePath);
+      const absolutePath = path.join(sourceDirectory, ...normalizedPath.split("/"));
+      const fileStat = await fs.lstat(absolutePath);
+
+      if (fileStat.isSymbolicLink()) {
+        throw new Error(`Symlink ${normalizedPath} нельзя включать в runtime package.`);
+      }
+      if (fileStat.isDirectory()) {
+        await visit(normalizedPath);
+        continue;
+      }
+      if (!fileStat.isFile()) {
+        throw new Error(`Runtime package source ${normalizedPath} не является обычным файлом.`);
+      }
+
+      collectedFiles.push({
+        path: normalizedPath,
+        absolutePath,
+        mode: fileStat.mode & 0o111 ? 0o755 : 0o644,
+      });
+
+      if (collectedFiles.length > AGENT_SKILL_MAX_FILE_COUNT) {
+        throw new Error(
+          `Runtime package содержит больше ${AGENT_SKILL_MAX_FILE_COUNT} файлов.`,
+        );
+      }
+    }
+  };
+
+  await visit();
+  return collectedFiles;
+};
+
+export const buildAgentSkillPackage = async ({
+  skillId,
+  runtimeVersion,
+  sourceDirectory,
+  entrypointPath,
+  interpreter,
+  capabilities = [],
+}) => {
+  if (!SKILL_ID_PATTERN.test(String(skillId || ""))) {
+    throw new Error("Параметр --skill должен содержать lowercase kebab-case id.");
+  }
+  if (!STABLE_VERSION_PATTERN.test(String(runtimeVersion || ""))) {
+    throw new Error("Параметр --runtime-version должен использовать формат X.Y.Z.");
+  }
+  if (!["node", "python", "executable"].includes(interpreter)) {
+    throw new Error("Параметр --interpreter должен быть node, python или executable.");
+  }
+
+  const normalizedEntrypoint = normalizeAgentSkillPackagePath(entrypointPath);
+  const uniqueCapabilities = [...new Set(capabilities.map(String))].sort();
+
+  if (
+    uniqueCapabilities.some(
+      (capability) => !AGENT_SKILL_ALLOWED_CAPABILITIES.has(capability),
+    )
+  ) {
+    throw new Error("Параметр --capability содержит неподдерживаемое значение.");
+  }
+
+  const sourceStat = await fs.lstat(sourceDirectory);
+
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink()) {
+    throw new Error("Параметр --source должен указывать на обычный каталог.");
+  }
+
+  const sourceFiles = await collectAgentSkillPackageSourceFiles(sourceDirectory);
+
+  if (!sourceFiles.some((file) => file.path === normalizedEntrypoint)) {
+    throw new Error(`Entrypoint ${normalizedEntrypoint} не найден внутри --source.`);
+  }
+
+  const packageFiles = [];
+  let decodedFileBytes = 0;
+
+  for (const file of sourceFiles) {
+    const bytes = await fs.readFile(file.absolutePath);
+    decodedFileBytes += bytes.byteLength;
+
+    if (decodedFileBytes > AGENT_SKILL_MAX_DECODED_FILE_BYTES) {
+      throw new Error(
+        `Runtime package files превышают ${AGENT_SKILL_MAX_DECODED_FILE_BYTES} байт.`,
+      );
+    }
+
+    packageFiles.push({
+      path: file.path,
+      mode: file.mode,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      contentBase64: bytes.toString("base64"),
+    });
+  }
+
+  const packageBytes = Buffer.from(`${JSON.stringify({
+    format: AGENT_SKILL_PACKAGE_FORMAT,
+    skill: {
+      id: skillId,
+      runtimeVersion,
+    },
+    entrypoint: {
+      path: normalizedEntrypoint,
+      interpreter,
+    },
+    capabilities: uniqueCapabilities,
+    files: packageFiles,
+  })}\n`, "utf8");
+
+  // Один и тот же validator используется для pack и run. Поэтому builder не
+  // сможет выпустить пакет, который новый host потом сам отвергнет.
+  parseAndValidateAgentSkillPackage(packageBytes, skillId);
+  return packageBytes;
+};
+
+const readVerifiedSkillRuntimeCache = async (artifact) => {
+  const artifactDirectory = path.join(
+    SKILL_RUNTIME_CACHE_DIRECTORY,
+    artifact.skillId,
+    artifact.runtimeVersion,
+    artifact.packageSha256,
+  );
+  const markerPath = path.join(artifactDirectory, ".trelio-verified.json");
+
+  try {
+    const markerStat = await fs.lstat(markerPath);
+
+    if (!markerStat.isFile() || markerStat.isSymbolicLink()) {
+      return null;
+    }
+
+    const marker = JSON.parse(await fs.readFile(markerPath, "utf8"));
+
+    if (
+      marker.packageSha256 !== artifact.packageSha256
+      || marker.artifactId !== artifact.id
+      || marker.runtimeVersion !== artifact.runtimeVersion
+    ) {
+      return null;
+    }
+
+    for (const file of artifact.parsedPackage.files) {
+      const absolutePath = path.join(
+        artifactDirectory,
+        ...file.path.split("/"),
+      );
+      const fileStat = await fs.lstat(absolutePath);
+
+      if (
+        !fileStat.isFile()
+        || fileStat.isSymbolicLink()
+        || fileStat.size !== file.bytes.byteLength
+      ) {
+        return null;
+      }
+
+      const digest = await hashFile(absolutePath);
+
+      if (digest.sha256 !== file.sha256) {
+        return null;
+      }
+    }
+
+    // Marker mtime является LRU-сигналом для безопасной cache cleanup. Само
+    // содержимое marker не меняется, поэтому параллельные запуски одного
+    // immutable package не могут повредить metadata.
+    const now = new Date();
+    await fs.utimes(markerPath, now, now).catch(() => undefined);
+    return artifactDirectory;
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) {
+      return null;
+    }
+    throw error;
+  }
+};
+
+const verifyAgentSkillPackageSignature = (packageBytes, artifact) => {
+  const publicKeyBytes = decodeCanonicalBase64(
+    artifact.signingPublicKeySpki,
+    "Signing public key",
+  );
+  const signatureBytes = decodeCanonicalBase64(
+    artifact.packageSignature,
+    "Runtime package signature",
+  );
+
+  const verified = crypto.verify(
+    null,
+    packageBytes,
+    {
+      key: publicKeyBytes,
+      format: "der",
+      type: "spki",
+    },
+    signatureBytes,
+  );
+
+  if (!verified) {
+    throw new Error("Runtime package не прошёл Ed25519 signature verification.");
+  }
+};
+
+const downloadAndMaterializeAgentSkillRuntime = async ({
+  origin,
+  token,
+  packageUrl,
+  artifact,
+}) => {
+  const response = await request(origin, token, packageUrl);
+  const packageBytes = Buffer.from(await response.arrayBuffer());
+
+  if (
+    packageBytes.byteLength !== artifact.packageSizeBytes
+    || crypto.createHash("sha256").update(packageBytes).digest("hex")
+      !== artifact.packageSha256
+  ) {
+    throw new Error("Загруженный runtime package не совпадает с resolve metadata.");
+  }
+
+  verifyAgentSkillPackageSignature(packageBytes, artifact);
+  artifact.parsedPackage = parseAndValidateAgentSkillPackage(
+    packageBytes,
+    artifact.skillId,
+  );
+
+  if (
+    artifact.parsedPackage.runtimeVersion !== artifact.runtimeVersion
+    || artifact.parsedPackage.packageSha256 !== artifact.packageSha256
+  ) {
+    throw new Error("Runtime package metadata не совпадает с подписанным содержимым.");
+  }
+
+  const existingDirectory = await readVerifiedSkillRuntimeCache(artifact);
+
+  if (existingDirectory) {
+    return { runtimeDirectory: existingDirectory, cacheHit: true };
+  }
+
+  const artifactParent = path.join(
+    SKILL_RUNTIME_CACHE_DIRECTORY,
+    artifact.skillId,
+    artifact.runtimeVersion,
+  );
+  const targetDirectory = path.join(artifactParent, artifact.packageSha256);
+  const temporaryDirectory = path.join(
+    artifactParent,
+    `.${artifact.packageSha256}.materialize-${crypto.randomUUID()}`,
+  );
+  await fs.mkdir(artifactParent, { recursive: true, mode: 0o700 });
+
+  try {
+    await fs.mkdir(temporaryDirectory, { mode: 0o700 });
+
+    for (const file of artifact.parsedPackage.files) {
+      const destination = path.join(
+        temporaryDirectory,
+        ...file.path.split("/"),
+      );
+      await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+      await fs.writeFile(destination, file.bytes, {
+        flag: "wx",
+        mode: file.mode,
+      });
+      await fs.chmod(destination, file.mode);
+    }
+
+    // Сохраняем exact подписанный envelope для проверки каждого будущего
+    // cache hit. Это не исполняемый дополнительный файл и он никогда не
+    // материализуется в workspace.
+    await fs.writeFile(
+      path.join(temporaryDirectory, ".trelio-package.json"),
+      packageBytes,
+      { flag: "wx", mode: 0o600 },
+    );
+
+    await fs.writeFile(
+      path.join(temporaryDirectory, ".trelio-verified.json"),
+      `${JSON.stringify({
+        artifactId: artifact.id,
+        skillId: artifact.skillId,
+        runtimeVersion: artifact.runtimeVersion,
+        packageSha256: artifact.packageSha256,
+        verifiedAt: new Date().toISOString(),
+      }, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 },
+    );
+
+    // Повреждённый cache никогда не чинится поверх существующих файлов:
+    // удаляем exact digest-directory и публикуем полностью проверенный snapshot
+    // одним rename.
+    await fs.rm(targetDirectory, { recursive: true, force: true });
+    await fs.rename(temporaryDirectory, targetDirectory);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true })
+      .catch(() => undefined);
+  }
+
+  const verifiedDirectory = await readVerifiedSkillRuntimeCache(artifact);
+
+  if (!verifiedDirectory) {
+    throw new Error("Runtime package не прошёл проверку после materialization.");
+  }
+
+  return { runtimeDirectory: verifiedDirectory, cacheHit: false };
+};
+
+const normalizeResolvedSkillRuntimeArtifact = (payload) => {
+  const artifact = payload?.artifact;
+
+  if (
+    !UUID_PATTERN.test(String(payload?.releaseId || ""))
+    || !UUID_PATTERN.test(String(artifact?.id || ""))
+    || !SKILL_ID_PATTERN.test(String(artifact?.skillId || ""))
+    || !STABLE_VERSION_PATTERN.test(String(artifact?.runtimeVersion || ""))
+    || artifact?.packageFormat !== AGENT_SKILL_PACKAGE_FORMAT
+    || !SHA256_PATTERN.test(String(artifact?.packageSha256 || ""))
+    || !Number.isSafeInteger(artifact?.packageSizeBytes)
+    || artifact.packageSizeBytes <= 0
+    || artifact.packageSizeBytes > AGENT_SKILL_MAX_PACKAGE_BYTES
+    || typeof artifact?.packageSignature !== "string"
+    || !AGENT_SKILL_SIGNING_KEY_ID_PATTERN.test(String(artifact?.signingKeyId || ""))
+    || typeof artifact?.signingPublicKeySpki !== "string"
+    || !STABLE_VERSION_PATTERN.test(String(artifact?.minimumHostVersion || ""))
+    || typeof payload?.packageUrl !== "string"
+    || !payload.packageUrl.startsWith("/api/agent-skills/runtime/package?")
+  ) {
+    throw new Error("Trelio вернул некорректную runtime resolution.");
+  }
+
+  return {
+    releaseId: payload.releaseId,
+    packageUrl: payload.packageUrl,
+    artifact: {
+      id: artifact.id,
+      skillId: artifact.skillId,
+      runtimeVersion: artifact.runtimeVersion,
+      packageFormat: artifact.packageFormat,
+      packageSha256: artifact.packageSha256,
+      packageSizeBytes: artifact.packageSizeBytes,
+      packageSignature: artifact.packageSignature,
+      signingKeyId: String(artifact.signingKeyId || ""),
+      signingPublicKeySpki: artifact.signingPublicKeySpki,
+      manifest: artifact.manifest,
+      minimumHostVersion: String(artifact.minimumHostVersion || ""),
+      parsedPackage: null,
+    },
+  };
+};
+
+const runMaterializedAgentSkill = async ({
+  artifact,
+  runtimeDirectory,
+  runtimeArguments,
+  executionContext,
+}) => {
+  const entrypointPath = path.join(
+    runtimeDirectory,
+    ...artifact.parsedPackage.entrypoint.path.split("/"),
+  );
+  const interpreter = artifact.parsedPackage.entrypoint.interpreter;
+  let executable = entrypointPath;
+  let args = runtimeArguments;
+
+  if (interpreter === "node") {
+    executable = process.execPath;
+    args = [entrypointPath, ...runtimeArguments];
+  } else if (interpreter === "python") {
+    executable = process.platform === "win32" ? "py" : "python3";
+    args = process.platform === "win32"
+      ? ["-3", entrypointPath, ...runtimeArguments]
+      : [entrypointPath, ...runtimeArguments];
+  }
+
+  const exitCode = await new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: runtimeDirectory,
+      env: {
+        ...process.env,
+        TRELIO_SKILL_ID: artifact.skillId,
+        TRELIO_SKILL_RUNTIME_VERSION: artifact.runtimeVersion,
+        TRELIO_SKILL_RUNTIME_ROOT: runtimeDirectory,
+        TRELIO_SKILL_RELEASE_ID: executionContext.releaseId,
+        TRELIO_SKILL_COMPANY_ID: executionContext.companyId,
+        ...(executionContext.projectId
+          ? { TRELIO_SKILL_PROJECT_ID: executionContext.projectId }
+          : {}),
+      },
+      shell: false,
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`Runtime процесса завершён сигналом ${signal}.`));
+        return;
+      }
+      resolve(code ?? 1);
+    });
+  });
+
+  if (exitCode !== 0) {
+    throw new Error(`Runtime навыка завершился с кодом ${exitCode}.`);
+  }
+};
+
+const skillCommand = async (origin, options, positional) => {
+  const skillSubcommand = positional[0];
+
+  if (skillSubcommand === "pack") {
+    const sourceDirectory = path.resolve(String(options.source || ""));
+    const outputPath = path.resolve(String(options.output || ""));
+
+    if (!options.source || !options.output) {
+      throw new Error("skill pack требует --source и --output.");
+    }
+
+    const rawCapabilities = options.capability === undefined
+      ? []
+      : Array.isArray(options.capability)
+        ? options.capability
+        : [options.capability];
+    const packageBytes = await buildAgentSkillPackage({
+      skillId: String(options.skill || ""),
+      runtimeVersion: String(options["runtime-version"] || ""),
+      sourceDirectory,
+      entrypointPath: String(options.entry || ""),
+      interpreter: String(options.interpreter || ""),
+      capabilities: rawCapabilities,
+    });
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await fs.writeFile(outputPath, packageBytes, { flag: "wx", mode: 0o644 });
+    process.stdout.write(`${outputPath}\n`);
+    return;
+  }
+
+  if (skillSubcommand !== "run") {
+    throw new Error("Поддерживаются `skill pack` и `skill run`.");
+  }
+
+  const companyId = requireUuid(options.company, "company");
+  const projectId = options.project
+    ? requireUuid(options.project, "project")
+    : null;
+  const releaseId = requireUuid(options.release, "release");
+  const skillId = String(options.skill || "");
+
+  if (!SKILL_ID_PATTERN.test(skillId)) {
+    throw new Error("Параметр --skill должен содержать lowercase kebab-case id.");
+  }
+
+  const token = await requireToken(origin);
+  await ensureBridgeCompatibility(origin, token);
+  const response = await request(
+    origin,
+    token,
+    "/api/agent-skills/runtime/resolve",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companyId,
+        ...(projectId ? { projectId } : {}),
+        skillId,
+        expectedReleaseId: releaseId,
+      }),
+    },
+  );
+  const resolution = normalizeResolvedSkillRuntimeArtifact(await response.json());
+
+  if (
+    resolution.releaseId !== releaseId
+    || resolution.artifact.skillId !== skillId
+  ) {
+    throw new Error("Trelio runtime resolution не совпадает с get_agent_skill.");
+  }
+
+  // Даже cache hit начинается с live resolve. Так агент не должен сам
+  // отслеживать обновления, а expected release закрывает гонку между чтением
+  // инструкции и запуском runtime.
+  const artifactForCache = {
+    ...resolution.artifact,
+  };
+  let cachedDirectory = null;
+
+  // Для проверки cache нужен signed package manifest. Маленький package
+  // скачивается только при miss; marker сам по себе не считается достаточным
+  // доказательством, поэтому cache metadata хранит content-free manifest.
+  const markerCandidate = path.join(
+    SKILL_RUNTIME_CACHE_DIRECTORY,
+    artifactForCache.skillId,
+    artifactForCache.runtimeVersion,
+    artifactForCache.packageSha256,
+    ".trelio-package.json",
+  );
+
+  try {
+    const cachedPackageBytes = await fs.readFile(markerCandidate);
+    if (
+      cachedPackageBytes.byteLength !== artifactForCache.packageSizeBytes
+      || crypto.createHash("sha256").update(cachedPackageBytes).digest("hex")
+        !== artifactForCache.packageSha256
+    ) {
+      throw new Error("Cached runtime package не совпадает с resolve metadata.");
+    }
+    verifyAgentSkillPackageSignature(cachedPackageBytes, artifactForCache);
+    artifactForCache.parsedPackage = parseAndValidateAgentSkillPackage(
+      cachedPackageBytes,
+      artifactForCache.skillId,
+    );
+    if (
+      artifactForCache.parsedPackage.runtimeVersion
+      !== artifactForCache.runtimeVersion
+    ) {
+      throw new Error("Cached runtime package version не совпадает с resolve metadata.");
+    }
+    cachedDirectory = await readVerifiedSkillRuntimeCache(artifactForCache);
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      cachedDirectory = null;
+    }
+  }
+
+  let runtimeDirectory;
+
+  if (cachedDirectory) {
+    runtimeDirectory = cachedDirectory;
+  } else {
+    const materialized = await downloadAndMaterializeAgentSkillRuntime({
+      origin,
+      token,
+      packageUrl: resolution.packageUrl,
+      artifact: artifactForCache,
+    });
+    runtimeDirectory = materialized.runtimeDirectory;
+  }
+
+  await runMaterializedAgentSkill({
+    artifact: artifactForCache,
+    runtimeDirectory,
+    runtimeArguments: positional.slice(1),
+    executionContext: {
+      companyId,
+      projectId,
+      releaseId,
+    },
+  });
+};
+
 const getCachedObjectPath = (sha256) => {
   if (!SHA256_PATTERN.test(String(sha256 || ""))) {
     throw new Error("Некорректный SHA-256 для локального cache.");
@@ -1550,6 +2329,18 @@ const readLocalSettings = async () => {
       DEFAULT_LOCAL_SETTINGS.objectCacheMaxBytes,
       256 * 1024 * 1024,
       1024 * 1024 * 1024 * 1024,
+    ),
+    skillRuntimeCacheMaxAgeDays: readBoundedInteger(
+      rawSettings.skillRuntimeCacheMaxAgeDays,
+      DEFAULT_LOCAL_SETTINGS.skillRuntimeCacheMaxAgeDays,
+      1,
+      3650,
+    ),
+    skillRuntimeCacheMaxBytes: readBoundedInteger(
+      rawSettings.skillRuntimeCacheMaxBytes,
+      DEFAULT_LOCAL_SETTINGS.skillRuntimeCacheMaxBytes,
+      64 * 1024 * 1024,
+      64 * 1024 * 1024 * 1024,
     ),
   };
 };
@@ -3076,6 +3867,93 @@ const planObjectCachePrune = async ({ roots, settings }) => {
   return candidates;
 };
 
+const listSkillRuntimeCacheEntries = async () => {
+  const entries = [];
+  let skillDirectories = [];
+
+  try {
+    skillDirectories = await fs.readdir(
+      SKILL_RUNTIME_CACHE_DIRECTORY,
+      { withFileTypes: true },
+    );
+  } catch (error) {
+    if (error.code === "ENOENT") return entries;
+    throw error;
+  }
+
+  for (const skillDirectory of skillDirectories) {
+    if (!skillDirectory.isDirectory() || !SKILL_ID_PATTERN.test(skillDirectory.name)) {
+      continue;
+    }
+    const skillPath = path.join(SKILL_RUNTIME_CACHE_DIRECTORY, skillDirectory.name);
+    const runtimeDirectories = await fs.readdir(skillPath, { withFileTypes: true });
+
+    for (const runtimeDirectory of runtimeDirectories) {
+      if (!runtimeDirectory.isDirectory() || !STABLE_VERSION_PATTERN.test(runtimeDirectory.name)) {
+        continue;
+      }
+      const runtimePath = path.join(skillPath, runtimeDirectory.name);
+      const digestDirectories = await fs.readdir(runtimePath, { withFileTypes: true });
+
+      for (const digestDirectory of digestDirectories) {
+        if (!digestDirectory.isDirectory() || !SHA256_PATTERN.test(digestDirectory.name)) {
+          continue;
+        }
+
+        const directoryPath = path.join(runtimePath, digestDirectory.name);
+        const markerPath = path.join(directoryPath, ".trelio-verified.json");
+
+        try {
+          const [directoryStat, markerStat, sizeBytes] = await Promise.all([
+            fs.lstat(directoryPath),
+            fs.lstat(markerPath),
+            calculateDirectoryBytes(directoryPath),
+          ]);
+
+          if (
+            directoryStat.isDirectory()
+            && !directoryStat.isSymbolicLink()
+            && markerStat.isFile()
+            && !markerStat.isSymbolicLink()
+          ) {
+            entries.push({
+              directoryPath,
+              sizeBytes,
+              lastUsedAtMs: Math.max(markerStat.atimeMs, markerStat.mtimeMs),
+            });
+          }
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+      }
+    }
+  }
+
+  return entries;
+};
+
+const planSkillRuntimeCachePrune = async ({ settings }) => {
+  const entries = (await listSkillRuntimeCacheEntries())
+    .sort((left, right) => left.lastUsedAtMs - right.lastUsedAtMs);
+  const maximumAgeMs =
+    settings.skillRuntimeCacheMaxAgeDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let retainedBytes = entries.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+  const candidates = [];
+
+  for (const entry of entries) {
+    if (
+      now - entry.lastUsedAtMs >= maximumAgeMs
+      || retainedBytes > settings.skillRuntimeCacheMaxBytes
+    ) {
+      candidates.push(entry);
+      retainedBytes -= entry.sizeBytes;
+    }
+  }
+
+  return candidates;
+};
+
 const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
   const resolvedRoot = path.resolve(root.rootDirectory);
   const defaultPrefix = `${path.resolve(DEFAULT_WORKSPACES_DIRECTORY)}${path.sep}`;
@@ -3158,9 +4036,13 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     roots: cleanupPlan.roots,
     settings,
   });
+  const skillRuntimeCacheCandidates = await planSkillRuntimeCachePrune({
+    settings,
+  });
   const reclaimableBytes = [
     ...cleanupPlan.candidates,
     ...cacheCandidates,
+    ...skillRuntimeCacheCandidates,
   ].reduce((sum, item) => sum + item.sizeBytes, 0);
 
   if (!automatic || dryRun) {
@@ -3174,11 +4056,20 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     for (const candidate of cacheCandidates) {
       process.stdout.write(`- ${candidate.filePath} · ${formatBytes(candidate.sizeBytes)}\n`);
     }
+    process.stdout.write(`Skill runtime packages: ${skillRuntimeCacheCandidates.length}\n`);
+    for (const candidate of skillRuntimeCacheCandidates) {
+      process.stdout.write(`- ${candidate.directoryPath} · ${formatBytes(candidate.sizeBytes)}\n`);
+    }
     process.stdout.write(`Можно освободить: ${formatBytes(reclaimableBytes)}\n`);
   }
 
   if (dryRun) {
-    return { deletedRuns: 0, deletedCacheObjects: 0, reclaimableBytes };
+    return {
+      deletedRuns: 0,
+      deletedCacheObjects: 0,
+      deletedSkillRuntimePackages: 0,
+      reclaimableBytes,
+    };
   }
 
   for (const candidate of cleanupPlan.candidates) {
@@ -3188,6 +4079,19 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
 
   for (const candidate of cacheCandidates) {
     await fs.rm(candidate.filePath, { force: true });
+  }
+
+  const skillRuntimeCachePrefix =
+    `${path.resolve(SKILL_RUNTIME_CACHE_DIRECTORY)}${path.sep}`;
+  for (const candidate of skillRuntimeCacheCandidates) {
+    const resolvedDirectory = path.resolve(candidate.directoryPath);
+
+    if (!resolvedDirectory.startsWith(skillRuntimeCachePrefix)) {
+      throw new Error(
+        `Skill runtime cache path не прошёл проверку: ${resolvedDirectory}`,
+      );
+    }
+    await fs.rm(resolvedDirectory, { recursive: true, force: true });
   }
 
   const deletedRootSet = new Set(cleanupPlan.candidates.map((item) => path.resolve(item.rootDirectory)));
@@ -3202,6 +4106,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
   return {
     deletedRuns: cleanupPlan.candidates.length,
     deletedCacheObjects: cacheCandidates.length,
+    deletedSkillRuntimePackages: skillRuntimeCacheCandidates.length,
     reclaimableBytes,
   };
 };
@@ -3222,6 +4127,8 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
+  process.stdout.write("  trelio-workspace skill pack --skill ID --runtime-version X.Y.Z --source DIR --entry PATH --interpreter node|python|executable --output FILE [--capability VALUE]\n");
+  process.stdout.write("  trelio-workspace skill run --company UUID [--project UUID] --skill ID --release UUID -- [ARGS...]\n");
   process.stdout.write("  trelio-workspace secret exec --grant UUID -- COMMAND [ARGS...]\n");
   process.stdout.write("  COMMAND | trelio-workspace secret set --secret UUID\n");
   process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH\n");
@@ -3257,6 +4164,8 @@ const main = async () => {
     await checkpoint(options);
   } else if (command === "submit") {
     await submit(options);
+  } else if (command === "skill") {
+    await skillCommand(origin, options, positional);
   } else if (command === "secret") {
     if (positional[0] === "set") {
       await setSecretValue(options, positional);

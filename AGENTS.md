@@ -67,9 +67,18 @@ Trelio-монорепозитории быть не должно.
   проекта обязан один раз получить через `list_agent_skills` актуальный
   объединённый каталог назначений. Он не загружает инструкции всех навыков
   заранее: только для релевантного задаче навыка непосредственно перед
-  применением вызывается `get_agent_skill`.
-- Исполняемые инструменты поставляются из этого проверяемого плагина, а не из
-  company-controlled Markdown. Email CLI работает только через TLS IMAP/SMTP,
+  применением вызывается `get_agent_skill`. Если ответ содержит
+  `runtimeExecution`, агент выполняет exact command; host перед каждым запуском
+  повторно разрешает expected release. `AGENT_SKILL_RELEASE_CHANGED` требует
+  нового `get_agent_skill`, а не принудительного запуска stale package.
+- Company-controlled Markdown не поставляет executable. Этот проверяемый
+  плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
+  навыка может приходить как immutable подписанный внутренний package. Команда
+  `skill pack` и backend используют один format validator; `skill run` делает
+  authenticated resolve перед каждым процессом, проверяет Ed25519 signature,
+  package/file SHA-256, content-addressed cache и запускает с `shell:false`.
+  Первый host release – `1.4.0`, package не должен активироваться в Trelio до
+  публикации этой версии в marketplace. Email CLI работает только через TLS IMAP/SMTP,
   хранит секреты вне Git/workspace и применяет локальную send-policy
   `confirm` / `autonomous` / `read-only`. Telegram/MAX используют тот же
   стабильный local namespace `skill/company/member/connection`; api_hash
@@ -134,7 +143,9 @@ Trelio-монорепозитории быть не должно.
   обязан показывать exact пути и reclaimable bytes; active, unknown и dirty Run
   не удаляются, а backend outage делает auto-prune полностью no-op. Object
   cache чистится по LRU/возрасту/лимиту и не затрагивает digest обнаруженных
-  Run. Успешный submit лишь помечает Run eligible, но не удаляет его сразу.
+  Run. Подписанные skill runtime packages имеют отдельные age/size limits и
+  удаляются только целыми проверенными digest-каталогами. Успешный submit лишь
+  помечает Run eligible, но не удаляет его сразу.
 
 ## Изменения и проверки
 

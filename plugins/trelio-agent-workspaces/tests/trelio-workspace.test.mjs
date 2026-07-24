@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -13,11 +13,14 @@ import {
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
+  buildAgentSkillPackage,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   inspectWorkspaceFile,
   isProtectedWorkspaceControlPath,
   materializeRuntimeControlFiles,
+  normalizeAgentSkillPackagePath,
+  parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
 } from "../scripts/trelio-workspace.mjs";
 
@@ -277,6 +280,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "AGENTS.md"), "utf8"),
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Если ответ содержит `runtimeExecution`, выполняй его exact command/u,
     );
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
@@ -674,6 +681,8 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Call `list_agent_skills` once for the exact resolved context/);
   assert.match(workerSkill, /Do not load every skill instruction speculatively/);
   assert.match(workerSkill, /Immediately before using a relevant Trelio-provided skill, call `get_agent_skill`/);
+  assert.match(workerSkill, /When the response includes `runtimeExecution`, execute its exact `command`/);
+  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
   assert.match(workerSkill, /when you independently identify a durable rule/);
   assert.match(workerSkill, /Call `get_agent_instructions` to read the current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
@@ -686,6 +695,8 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Do not start a second OAuth flow/);
   assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
+  assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
+  assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {
@@ -693,6 +704,215 @@ test("bridge adds its release version and bearer credential to every API request
   assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
+});
+
+test("skill package host rejects non-portable paths and case collisions", () => {
+  assert.throws(
+    () => normalizeAgentSkillPackagePath("runtime/CON"),
+    /не нормализован/u,
+  );
+  assert.throws(
+    () => normalizeAgentSkillPackagePath("runtime/file:stream"),
+    /не нормализован/u,
+  );
+
+  const runtimeBytes = Buffer.from("console.log('ok');\n", "utf8");
+  const packageBytes = Buffer.from(JSON.stringify({
+    format: "trelio-agent-skill-package/v1",
+    skill: {
+      id: "test-runtime",
+      runtimeVersion: "1.0.0",
+    },
+    entrypoint: {
+      path: "runtime/Main.mjs",
+      interpreter: "node",
+    },
+    capabilities: [],
+    files: ["runtime/Main.mjs", "runtime/main.mjs"].map((filePath) => ({
+      path: filePath,
+      mode: 0o644,
+      sha256: createHash("sha256").update(runtimeBytes).digest("hex"),
+      contentBase64: runtimeBytes.toString("base64"),
+    })),
+  }), "utf8");
+
+  assert.throws(
+    () => parseAndValidateAgentSkillPackage(packageBytes, "test-runtime"),
+    /регистронно конфликтует/u,
+  );
+});
+
+test("skill host resolves on every run, verifies signed package, caches it and repairs tampering", {
+  timeout: 15_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-skill-runtime-test-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const sourceDirectory = path.join(temporaryDirectory, "source");
+  const skillId = "test-runtime";
+  const releaseId = "77777777-7777-4777-8777-777777777777";
+  const artifactId = "88888888-8888-4888-8888-888888888888";
+  const companyId = "99999999-9999-4999-8999-999999999999";
+  let resolveCount = 0;
+  let packageDownloadCount = 0;
+  let serverError = null;
+
+  await mkdir(sourceDirectory, { recursive: true });
+  await writeFile(
+    path.join(sourceDirectory, "main.mjs"),
+    "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}\\n`);\n",
+    { mode: 0o755 },
+  );
+  const packageBytes = await buildAgentSkillPackage({
+    skillId,
+    runtimeVersion: "2.0.0",
+    sourceDirectory,
+    entrypointPath: "main.mjs",
+    interpreter: "node",
+    capabilities: ["network"],
+  });
+  const packageSha256 = createHash("sha256").update(packageBytes).digest("hex");
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const packageSignature = sign(null, packageBytes, privateKey).toString("base64");
+  const signingPublicKeySpki = publicKey.export({
+    format: "der",
+    type: "spki",
+  }).toString("base64");
+  const packageUrl = `/api/agent-skills/runtime/package?artifactId=${artifactId}`;
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          supported: true,
+          minimumVersion: BRIDGE_VERSION,
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === "/api/agent-skills/runtime/resolve"
+      ) {
+        resolveCount += 1;
+        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
+        assert.deepEqual(body, {
+          companyId,
+          skillId,
+          expectedReleaseId: releaseId,
+        });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          releaseId,
+          artifact: {
+            id: artifactId,
+            skillId,
+            runtimeVersion: "2.0.0",
+            packageFormat: "trelio-agent-skill-package/v1",
+            packageSha256,
+            packageSizeBytes: packageBytes.byteLength,
+            packageSignature,
+            signingKeyId: "test",
+            signingPublicKeySpki,
+            minimumHostVersion: BRIDGE_VERSION,
+            manifest: {},
+          },
+          packageUrl,
+        }));
+        return;
+      }
+
+      if (request.method === "GET" && request.url === packageUrl) {
+        packageDownloadCount += 1;
+        response.setHeader(
+          "content-type",
+          "application/vnd.trelio.agent-skill-package+json",
+        );
+        response.end(packageBytes);
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(homeDirectory, { recursive: true });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    const runSkill = () => execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "skill",
+        "run",
+        "--origin",
+        origin,
+        "--company",
+        companyId,
+        "--skill",
+        skillId,
+        "--release",
+        releaseId,
+        "--",
+        "--message",
+        "hello",
+      ],
+      {
+        cwd: temporaryDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          HOME: homeDirectory,
+          XDG_CACHE_HOME: path.join(homeDirectory, ".cache"),
+        },
+      },
+    );
+
+    const firstRun = await runSkill();
+    const secondRun = await runSkill();
+    assert.match(firstRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
+    assert.match(secondRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
+    assert.equal(resolveCount, 2, "every invocation must resolve the current release");
+    assert.equal(packageDownloadCount, 1, "second invocation must use verified cache");
+
+    const cachedEntrypoint = path.join(
+      homeDirectory,
+      ".cache",
+      "trelio",
+      "workspace-bridge",
+      "skill-runtimes",
+      skillId,
+      "2.0.0",
+      packageSha256,
+      "main.mjs",
+    );
+    await writeFile(cachedEntrypoint, "throw new Error('tampered');\n");
+
+    const repairedRun = await runSkill();
+    assert.match(repairedRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
+    assert.equal(resolveCount, 3);
+    assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("bridge pairs once through MCP approval and reuses the narrow local device session", {

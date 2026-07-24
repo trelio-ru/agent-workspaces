@@ -14,8 +14,9 @@ Trelio skills are live, additive instructions supplied by a company or a project
 3. Use the safe catalog metadata to decide which skills are relevant. Do not load every skill instruction speculatively.
 4. Briefly offer to configure newly available skills that are relevant to the user's work. Do not configure credentials or perform external writes without the user's request.
 5. Immediately before using a Trelio-provided skill, call `get_agent_skill` with the same exact context and follow its current `instructionsMarkdown` plus its runtime requirements.
+6. When `runtimeExecution` is present, invoke its exact `command`; append only the skill arguments allowed by the current instruction after the terminal `--`. Do not replace it with a plugin-bundled script or a cached executable path. The bridge resolves the expected release before every run, downloads only a missing exact package, verifies its Ed25519 signature and every file digest, then runs it with `shell:false`.
 
-Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. If the required `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin before running its bundled script.
+Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. The bridge may cache verified package bytes by digest, but it must still resolve the release on every invocation. If the server returns `AGENT_SKILL_RELEASE_CHANGED`, call `get_agent_skill` again once and use the new instruction and exact command; never force the stale release. If the required runtime host or `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin.
 
 ## Connected integrations
 
@@ -34,8 +35,9 @@ MAX first uses accessible names and semantic/geometry fallbacks. If the
 current web UI can no longer be identified safely, the runtime must fail
 closed. The agent may inspect the page with an available browser tool and
 complete the current task only while enforcing the same local send policy; it
-must not silently download or execute a patch from skill Markdown. Publish
-executable fixes through a new plugin version.
+must not silently download or execute a patch from skill Markdown. Executable
+fixes are published only as a new signed internal runtime release; changes to
+the stable package host itself still require a new plugin version.
 
 ## Resolve conflicts safely
 
