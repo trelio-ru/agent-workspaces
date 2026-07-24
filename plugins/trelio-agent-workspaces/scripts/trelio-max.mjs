@@ -23,6 +23,7 @@ const MAX_WEB_ORIGIN = new URL(MAX_WEB_URL).origin;
 const POLICY_MODES = new Set(["confirm", "autonomous", "read-only"]);
 const RUNTIME_VERSION = "1";
 const ADAPTER_VERSION = "1";
+const MAX_UI_READY_TIMEOUT_MS = 10_000;
 
 const output = (payload) => process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
 
@@ -289,10 +290,43 @@ const assertLoggedIn = async (page) => {
   }
 };
 
+const waitForVisibleMaxUi = async (page, timeoutMs) => {
+  const boundedTimeoutMs = Math.min(timeoutMs, MAX_UI_READY_TIMEOUT_MS);
+  return page.waitForFunction(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width >= 1
+        && rect.height >= 1
+        && style.display !== "none"
+        && style.visibility !== "hidden";
+    };
+    // MAX is a client-rendered application. `domcontentloaded` may fire while
+    // the persistent profile still shows an empty shell, so browser commands
+    // must wait for a visible interactive surface before probing selectors.
+    return Array.from(document.querySelectorAll(
+      'input:not([type="hidden"]), textarea, [contenteditable="true"], button, [role="button"]',
+    )).some(visible);
+  }, null, { timeout: boundedTimeoutMs }).then(() => true).catch(() => false);
+};
+
 const openHome = async (page, options, allowLogin = false) => {
   await page.goto(MAX_WEB_URL, { waitUntil: "domcontentloaded", timeout: options.timeoutMs });
-  await page.waitForTimeout(2_500);
+  let uiReady = await waitForVisibleMaxUi(page, options.timeoutMs);
+  if (!uiReady) {
+    // A copied or long-idle persistent profile can occasionally restore a
+    // blank SPA shell on the first navigation. One controlled reload recovers
+    // that state without weakening selector checks or repeating a user action.
+    await page.reload({ waitUntil: "domcontentloaded", timeout: options.timeoutMs });
+    uiReady = await waitForVisibleMaxUi(page, options.timeoutMs);
+  }
+  if (!uiReady && !allowLogin) {
+    throw new Error(
+      "MAX home rendered no visible interactive UI after one controlled reload. The runtime failed closed.",
+    );
+  }
   if (!allowLogin) await assertLoggedIn(page);
+  return { uiReady };
 };
 
 const findSearchInput = async (page, timeoutMs) => {
@@ -344,6 +378,33 @@ const fillLocator = async (locator, value, page) => {
     await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
     await page.keyboard.type(value);
   }
+};
+
+const normalizeDialogTitle = (value) => String(value || "")
+  .normalize("NFKC")
+  .replace(/\s+/gu, " ")
+  .trim()
+  .toLocaleLowerCase("ru-RU");
+
+const selectExactDialogResult = (results, reference) => {
+  const expected = normalizeDialogTitle(reference);
+  const exactMatches = results.filter((result) => normalizeDialogTitle(result.title) === expected);
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) {
+    throw new Error(
+      `Ambiguous exact MAX dialog title: ${reference}. Use an official chat URL.`,
+    );
+  }
+
+  const visibleCandidates = results
+    .slice(0, 5)
+    .map((result) => `"${result.title}"`)
+    .join(", ");
+  throw new Error(
+    visibleCandidates
+      ? `No exact visible MAX dialog matched: ${reference}. Visible partial matches: ${visibleCandidates}. Use the exact title or an official chat URL.`
+      : `No exact visible MAX dialog matched: ${reference}. Use the exact title or an official chat URL.`,
+  );
 };
 
 const collectDialogResults = (page, query) => page.evaluate((needle) => {
@@ -406,14 +467,12 @@ const openChat = async (page, options) => {
   await fillLocator(search, options.chat, page);
   await page.waitForTimeout(1_800);
   const results = await collectDialogResults(page, options.chat);
-  if (results.length !== 1) {
-    throw new Error(
-      results.length === 0
-        ? `No visible MAX dialog matched: ${options.chat}`
-        : `Ambiguous MAX dialog reference: ${options.chat}. Use a URL or a more exact title.`,
-    );
-  }
-  await page.locator(`[data-trelio-max-dialog="${results[0].index}"]`).click({ timeout: options.timeoutMs });
+  // Search results are intentionally substring-based for discovery, but an
+  // action must select one exact normalized title. A single partial result is
+  // still unsafe: it may be a different person or organization with a longer
+  // name, as in "ООО Вкус" versus "ООО Вкус моря".
+  const selected = selectExactDialogResult(results, options.chat);
+  await page.locator(`[data-trelio-max-dialog="${selected.index}"]`).click({ timeout: options.timeoutMs });
   await page.waitForTimeout(2_000);
   const openedUrl = page.url();
   const chatUrlOpened = openedUrl !== MAX_WEB_URL && openedUrl !== MAX_WEB_ORIGIN;
@@ -424,7 +483,7 @@ const openChat = async (page, options) => {
       "MAX dialog click had no verifiable effect. The runtime failed closed; do not send or retry automatically.",
     );
   }
-  return { method: "search", matched: results[0].title, url: openedUrl };
+  return { method: "search", matched: selected.title, url: openedUrl };
 };
 
 const visibleMessages = (page, limit) => page.evaluate((maxCount) => {
@@ -718,8 +777,11 @@ export {
   assertSendAllowed,
   connectionRoot,
   loadPolicy,
+  normalizeDialogTitle,
+  openHome,
   parseArguments,
   policyPath,
+  selectExactDialogResult,
   writePrivateJson,
 };
 

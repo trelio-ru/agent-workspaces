@@ -9,8 +9,11 @@ import {
   assertSendAllowed,
   connectionRoot,
   loadPolicy,
+  normalizeDialogTitle,
+  openHome,
   parseArguments,
   policyPath,
+  selectExactDialogResult,
   writePrivateJson,
 } from "../scripts/trelio-max.mjs";
 
@@ -43,6 +46,70 @@ test("MAX exposes a versioned, content-free live probe command", () => {
   const options = parseArguments([...identityArguments, "probe"]);
   assert.equal(options.command, "probe");
   assert.equal(ADAPTER_VERSION, "1");
+});
+
+test("MAX retries one blank SPA shell before probing the authenticated UI", async () => {
+  let readinessChecks = 0;
+  let reloads = 0;
+  const page = {
+    goto: async () => undefined,
+    reload: async () => {
+      reloads += 1;
+    },
+    waitForFunction: async () => {
+      readinessChecks += 1;
+      if (readinessChecks === 1) throw new Error("blank shell");
+    },
+    evaluate: async () => "чаты поиск",
+  };
+
+  const result = await openHome(page, { timeoutMs: 60_000 });
+  assert.deepEqual(result, { uiReady: true });
+  assert.equal(readinessChecks, 2);
+  assert.equal(reloads, 1);
+});
+
+test("MAX fails closed when the SPA stays blank after one controlled reload", async () => {
+  let reloads = 0;
+  const page = {
+    goto: async () => undefined,
+    reload: async () => {
+      reloads += 1;
+    },
+    waitForFunction: async () => {
+      throw new Error("blank shell");
+    },
+  };
+
+  await assert.rejects(
+    () => openHome(page, { timeoutMs: 60_000 }),
+    /MAX home rendered no visible interactive UI/u,
+  );
+  assert.equal(reloads, 1);
+});
+
+test("MAX action selection requires one exact normalized dialog title", () => {
+  const results = [
+    { index: 0, title: "ООО Вкус моря" },
+    { index: 1, title: "  ООО   ВКУС  " },
+  ];
+
+  assert.equal(normalizeDialogTitle(" ООО  Вкус "), "ооо вкус");
+  assert.equal(selectExactDialogResult(results, "ООО Вкус").index, 1);
+  assert.throws(
+    () => selectExactDialogResult([results[0]], "ООО Вкус"),
+    /No exact visible MAX dialog matched/u,
+  );
+  assert.throws(
+    () => selectExactDialogResult(
+      [
+        { index: 0, title: "ООО Вкус" },
+        { index: 1, title: "ооо вкус" },
+      ],
+      "ООО Вкус",
+    ),
+    /Ambiguous exact MAX dialog title/u,
+  );
 });
 
 test("MAX read-only and autonomous modes are enforced by runtime code", () => {
