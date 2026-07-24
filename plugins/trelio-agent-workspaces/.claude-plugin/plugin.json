@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.3.10",
+  "version": "1.3.11",
   "description": "Scoped Trelio Agent Workspaces, one-use local Agent Secrets, live skills, and local email, Telegram, and MAX runtimes.",
   "author": {
     "name": "Trelio"
