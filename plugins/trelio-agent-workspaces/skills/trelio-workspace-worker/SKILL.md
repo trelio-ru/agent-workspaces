@@ -1,6 +1,6 @@
 ---
 name: trelio-workspace-worker
-description: Work through Trelio company, project, or task Agent Workspaces with MCP and the local Git bridge. Use when the user asks Codex to take, continue, analyze, prepare materials for, complete, or restore work tied to a Trelio company/project/task, and the durable result must be checkpointed and saved with version-conflict protection.
+description: Work through Trelio company, project, or task Agent Workspaces with MCP and the local Git bridge. Use when the user asks Codex to take, continue, analyze, prepare materials for, complete, or restore work tied to a Trelio company/project/task, when the user requests a company/project working-rule change, or when the agent identifies a durable rule that should guide future Runs.
 ---
 
 # Trelio Workspace Worker
@@ -62,6 +62,18 @@ compatibility requirement in addition to, not instead of, server-side ACL and
 candidate validation.
 
 When a local tool needs a configured secret, call `prepare_agent_secret_checkout` for the current Run and exact executable, then execute the returned `trelio-workspace secret exec --grant ... -- COMMAND` command. The bridge retrieves the value once and delivers it locally using the server-authorized `stdin`, `env`, or private temporary-file mode. Trelio does not run the command. Never replace the executable with a shell, logger, `env`, `printenv`, `cat`, or another program whose purpose is to reveal the value.
+
+## Change company or project working rules
+
+Use the versioned Trelio working-rule flow both when the user requests a change and when you independently identify a durable rule that should guide future company or project Runs.
+
+1. Never edit `.trelio/**`, `AGENTS.md`, `CLAUDE.md`, or `context/agent-instructions.md`, and never place instructions in `PROJECT_CONTEXT.md`.
+2. Resolve the exact company and optional project scope. Call `get_agent_instructions` to read the current scoped and inherited rules.
+3. Prepare the complete replacement and exact diff with `plan_agent_instructions_update`. Show the full plan, rationale, and target scope to the user.
+4. Do not publish on your own initiative. Call `publish_agent_instructions` only after the user explicitly confirms that exact plan, using its exact `expectedRevisionId`, an audit summary, and a stable idempotency key.
+5. Tell the user that the new revision applies only to future Runs. The immutable snapshot of an already active Run does not change.
+
+If permission or the `mcp:agent-instructions:manage` scope is missing, report that blocker. Do not fall back to a workspace candidate or hide the proposed rule in another file.
 
 ## Resolve the work item before choosing a workspace
 

@@ -650,6 +650,12 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Call `list_agent_skills` once for the exact resolved context/);
   assert.match(workerSkill, /Do not load every skill instruction speculatively/);
   assert.match(workerSkill, /Immediately before using a relevant Trelio-provided skill, call `get_agent_skill`/);
+  assert.match(workerSkill, /when you independently identify a durable rule/);
+  assert.match(workerSkill, /Call `get_agent_instructions` to read the current scoped and inherited rules/);
+  assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
+  assert.match(workerSkill, /Call `publish_agent_instructions` only after the user explicitly confirms/);
+  assert.match(workerSkill, /never place instructions in `PROJECT_CONTEXT\.md`/);
+  assert.match(workerSkill, /applies only to future Runs/);
   assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
 });
