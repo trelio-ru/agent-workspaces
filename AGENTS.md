@@ -88,7 +88,12 @@ Trelio-монорепозитории быть не должно.
   не отзывает PAT у внешнего provider. Начиная с `1.4.3` Streamable HTTP host
   завершает exact JSON-RPC запрос сразу по первому matching SSE event, закрывает
   удерживаемое сервером соединение и применяет абсолютный wall-clock deadline,
-  который не продлевается heartbeat-трафиком.
+  который не продлевается heartbeat-трафиком. Начиная с `1.4.4` browser opener
+  считается успешным только после нулевого exit status, а Remote MCP handoff –
+  после exact GET одноразовой nonce-формы. На macOS неудачный или формально
+  успешный, но не доставленный default handoff приватно повторяется через
+  Google Chrome и Safari; URL/nonce не возвращаются агенту, а после всех
+  неудач listener закрывается с безопасной диагностикой.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда

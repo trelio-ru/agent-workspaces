@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.3";
+export const BRIDGE_VERSION = "1.4.4";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -995,23 +995,102 @@ const exchangePendingBridgePairing = async (
   }
 };
 
-export const openBrowser = async (url) => {
-  const candidates = process.platform === "darwin"
-    ? [["open", [url]]]
-    : process.platform === "win32"
-      ? [["cmd", ["/c", "start", "", url]]]
-      : [["xdg-open", [url]]];
-  const [command, args] = candidates[0];
+export class BrowserOpenError extends Error {
+  constructor(message, { cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "BrowserOpenError";
+    this.code = "BROWSER_OPEN_FAILED";
+  }
+}
+
+export const openBrowser = async (
+  url,
+  {
+    platform = process.platform,
+    application = null,
+    spawnProcess = spawn,
+    openerTimeoutMs = 5_000,
+  } = {},
+) => {
+  const [command, args] = platform === "darwin"
+    // Use the system binary by its absolute path. Besides avoiding a modified
+    // PATH, `-a` gives the Remote MCP setup flow a private fallback to a known
+    // local browser without ever returning its nonce-bearing URL to the agent.
+    ? ["/usr/bin/open", application ? ["-a", application, url] : [url]]
+    : platform === "win32"
+      ? ["cmd", ["/c", "start", "", url]]
+      : ["xdg-open", [url]];
+
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { detached: true, stdio: "ignore" });
-    // A headless Linux host may not provide xdg-open. Handle that as a normal
-    // setup error instead of letting an unhandled child-process error kill a
-    // stdio MCP server and corrupt its framing.
-    child.once("error", reject);
-    child.once("spawn", () => {
-      child.unref();
-      resolve();
+    let child;
+    try {
+      child = spawnProcess(command, args, {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+    } catch (error) {
+      reject(new BrowserOpenError(
+        "Не удалось запустить системное открытие браузера.",
+        { cause: error },
+      ));
+      return;
+    }
+
+    let settled = false;
+    let timeoutId = null;
+    const settle = (callback, value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      callback(value);
+    };
+
+    // `spawn` only proves that `/usr/bin/open` itself started. LaunchServices
+    // may still fail afterwards, so success is acknowledged only when the
+    // opener process closes with code 0. The URL is intentionally absent from
+    // every diagnostic because Remote MCP setup URLs contain a one-time nonce.
+    child.once("error", (error) => settle(
+      reject,
+      new BrowserOpenError(
+        "Не удалось запустить системное открытие браузера.",
+        { cause: error },
+      ),
+    ));
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        settle(resolve);
+        return;
+      }
+      const result = Number.isInteger(code)
+        ? `код ${code}`
+        : `сигнал ${signal || "unknown"}`;
+      settle(
+        reject,
+        new BrowserOpenError(
+          `Системное открытие браузера завершилось с ошибкой (${result}).`,
+        ),
+      );
     });
+    timeoutId = setTimeout(() => {
+      // A wedged OS opener must not turn into another invisible multi-minute
+      // wait. It is a short-lived child created by this function, so stopping
+      // only that child is safe; the browser, if already launched, is separate.
+      try {
+        child.kill();
+      } catch {
+        // The child may have exited between the timer firing and kill().
+      }
+      settle(
+        reject,
+        new BrowserOpenError(
+          "Системное открытие браузера не завершилось вовремя.",
+        ),
+      );
+    }, openerTimeoutMs);
   });
 };
 

@@ -146,7 +146,10 @@ Agent Secrets хранятся и расшифровываются на стор
 локальном integration namespace, привязанном к пользователю и fingerprint
 декларации. В чат, prompt, workspace, открытый config и MCP tool arguments PAT
 не попадает. SSE-ответ завершается по exact matching JSON-RPC `id`, а
-абсолютный deadline не продлевается heartbeat-трафиком.
+абсолютный deadline не продлевается heartbeat-трафиком. Локальный browser
+opener проверяет exit status, а handoff считается состоявшимся только после
+exact GET одноразовой формы. Если macOS не доставила default open, host сам
+проверяемо пробует Chrome и Safari; URL с nonce остаётся внутри процесса.
 
 Не добавляйте токены, локальные credentials и содержимое рабочих workspace в
 issues или pull requests. Для уязвимостей используйте приватное сообщение через

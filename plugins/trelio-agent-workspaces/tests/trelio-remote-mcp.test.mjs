@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -9,9 +10,11 @@ import {
   RemoteMcpHostError,
   assertExactReadOnlyToolList,
   buildRemoteMcpRequestHeaders,
+  collectCredentialThroughLoopback,
   doctorWithCredential,
   fingerprintRemoteMcpConfig,
   handleLocalMcpMessage,
+  openCredentialFormInBrowser,
   remoteMcpHttpRequest,
   resolveRemoteMcpCredentialFile,
   resolveSafeRemoteMcpEndpoint,
@@ -91,10 +94,183 @@ const closeTestServer = async (server) => {
   });
 };
 
+const requestLoopback = async (rawUrl, {
+  method = "GET",
+  headers = {},
+  body = "",
+} = {}) => new Promise((resolve, reject) => {
+  const request = http.request(rawUrl, { method, headers }, (response) => {
+    const chunks = [];
+    response.on("data", (chunk) => chunks.push(chunk));
+    response.once("end", () => resolve({
+      statusCode: response.statusCode,
+      body: Buffer.concat(chunks).toString("utf8"),
+    }));
+  });
+  request.once("error", reject);
+  request.end(body);
+});
+
 const createPinnedLoopbackResolver = () => async (rawEndpoint) => ({
   endpoint: new URL(rawEndpoint),
   address: "127.0.0.1",
   family: 4,
+});
+
+test("Remote MCP browser handoff verifies the form GET and uses a private macOS fallback", async () => {
+  const setupUrl = "http://127.0.0.1:45678/?nonce=must-stay-local";
+  const attempts = [];
+  let formOpened = false;
+
+  await openCredentialFormInBrowser(setupUrl, {
+    platform: "darwin",
+    handoffTimeoutMs: 5,
+    openBrowserFn: async (url, { application }) => {
+      attempts.push({ url, application });
+      if (application === "Google Chrome") {
+        formOpened = true;
+      }
+    },
+    waitForForm: async () => formOpened,
+  });
+
+  assert.deepEqual(
+    attempts.map(({ application }) => application),
+    [null, "Google Chrome"],
+  );
+  assert.deepEqual(
+    attempts.map(({ url }) => url),
+    [setupUrl, setupUrl],
+    "the protected URL stays inside the verified opener callback",
+  );
+});
+
+test("Remote MCP browser handoff fails safely without returning its nonce", async () => {
+  const setupUrl = "http://127.0.0.1:45678/?nonce=must-not-leak";
+
+  await assert.rejects(
+    openCredentialFormInBrowser(setupUrl, {
+      platform: "darwin",
+      handoffTimeoutMs: 1,
+      openBrowserFn: async () => {
+        throw new Error("browser unavailable");
+      },
+      waitForForm: async () => false,
+    }),
+    (error) => (
+      error instanceof RemoteMcpHostError
+      && error.code === "REMOTE_MCP_BROWSER_OPEN_FAILED"
+      && !error.message.includes(setupUrl)
+      && !error.message.includes("must-not-leak")
+    ),
+  );
+});
+
+test("Remote MCP connect closes the loopback listener when browser opening fails", async () => {
+  let listenerPort = null;
+
+  await assert.rejects(
+    collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+      browserPlatform: "linux",
+      handoffTimeoutMs: 1,
+      openBrowserFn: async () => {
+        throw new Error("xdg-open unavailable");
+      },
+      onListening: ({ port }) => {
+        listenerPort = port;
+      },
+    }),
+    (error) => (
+      error instanceof RemoteMcpHostError
+      && error.code === "REMOTE_MCP_BROWSER_OPEN_FAILED"
+    ),
+  );
+
+  assert.equal(Number.isInteger(listenerPort), true);
+  await new Promise((resolve, reject) => {
+    const socket = net.connect({
+      host: "127.0.0.1",
+      port: listenerPort,
+    });
+    socket.once("connect", () => {
+      socket.destroy();
+      reject(new Error("loopback listener remained reachable after failed handoff"));
+    });
+    socket.once("error", (error) => {
+      if (error.code === "ECONNREFUSED") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
+  });
+});
+
+test("Remote MCP loopback keeps nonce, Origin and content-type checks before persistence", async () => {
+  const credential = "personal-test-token";
+  const doctorCalls = [];
+  const persistedCredentials = [];
+
+  await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+    browserPlatform: "darwin",
+    handoffTimeoutMs: 100,
+    setupTimeoutMs: 500,
+    doctorCredential: async (_resolved, candidate) => {
+      doctorCalls.push(candidate);
+    },
+    persistCredential: async (_origin, _resolved, candidate) => {
+      persistedCredentials.push(candidate);
+    },
+    openBrowserFn: async (setupUrl) => {
+      const protectedUrl = new URL(setupUrl);
+      const expectedOrigin = protectedUrl.origin;
+      const nonce = protectedUrl.searchParams.get("nonce");
+
+      const wrongNonceUrl = new URL(protectedUrl);
+      wrongNonceUrl.searchParams.set("nonce", "wrong");
+      assert.equal((await requestLoopback(wrongNonceUrl)).statusCode, 404);
+
+      const page = await requestLoopback(protectedUrl);
+      assert.equal(page.statusCode, 200);
+      assert.doesNotMatch(page.body, new RegExp(credential, "u"));
+
+      const formBody = new URLSearchParams({ nonce, credential }).toString();
+      const wrongOrigin = await requestLoopback(`${expectedOrigin}/credential`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "http://127.0.0.1:1",
+        },
+        body: formBody,
+      });
+      assert.equal(wrongOrigin.statusCode, 404);
+      assert.equal(doctorCalls.length, 0);
+
+      const wrongContentType = await requestLoopback(`${expectedOrigin}/credential`, {
+        method: "POST",
+        headers: {
+          "content-type": "text/plain",
+          origin: expectedOrigin,
+        },
+        body: formBody,
+      });
+      assert.equal(wrongContentType.statusCode, 404);
+      assert.equal(doctorCalls.length, 0);
+
+      const accepted = await requestLoopback(`${expectedOrigin}/credential`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: expectedOrigin,
+        },
+        body: formBody,
+      });
+      assert.equal(accepted.statusCode, 200);
+    },
+  });
+
+  assert.deepEqual(doctorCalls, [credential]);
+  assert.deepEqual(persistedCredentials, [credential]);
 });
 
 test("Remote MCP declaration accepts the exact Dodo read-only contract", () => {
@@ -497,6 +673,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.3");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.4");
   assert.equal(frames[1].result.tools.length, 4);
 });

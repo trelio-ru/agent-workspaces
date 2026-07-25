@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   chmod,
   mkdir,
@@ -23,6 +24,7 @@ import {
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
+  BrowserOpenError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   buildAgentSkillPackage,
   buildRunContextSpecifications,
@@ -32,6 +34,7 @@ import {
   isProtectedWorkspaceControlPath,
   materializeRuntimeControlFiles,
   normalizeAgentSkillPackagePath,
+  openBrowser,
   parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
   resolveWorkspaceBridgeConfigDirectory,
@@ -130,6 +133,65 @@ const pathExists = async (filePath) => {
     throw error;
   }
 };
+
+test("browser opener waits for a successful process exit instead of spawn", async () => {
+  const child = new EventEmitter();
+  let invocation;
+  let resolved = false;
+  const opening = openBrowser("http://127.0.0.1:45678/?nonce=private", {
+    platform: "darwin",
+    spawnProcess: (command, args, options) => {
+      invocation = { command, args, options };
+      return child;
+    },
+  }).then(() => {
+    resolved = true;
+  });
+
+  child.emit("spawn");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resolved, false, "spawn alone must not acknowledge browser handoff");
+
+  child.emit("close", 0, null);
+  await opening;
+  assert.equal(resolved, true);
+  assert.equal(invocation.command, "/usr/bin/open");
+  assert.deepEqual(invocation.args, ["http://127.0.0.1:45678/?nonce=private"]);
+  assert.equal(invocation.options.detached, undefined);
+});
+
+test("browser opener rejects a non-zero exit without exposing its URL", async () => {
+  const child = new EventEmitter();
+  const secretUrl = "http://127.0.0.1:45678/?nonce=must-not-leak";
+  const opening = openBrowser(secretUrl, {
+    platform: "darwin",
+    spawnProcess: () => child,
+  });
+  child.emit("close", 1, null);
+
+  await assert.rejects(opening, (error) => (
+    error instanceof BrowserOpenError
+    && error.code === "BROWSER_OPEN_FAILED"
+    && /код 1/u.test(error.message)
+    && !error.message.includes(secretUrl)
+    && !error.message.includes("must-not-leak")
+  ));
+});
+
+test("browser opener converts a spawn error to a nonce-safe diagnostic", async () => {
+  const child = new EventEmitter();
+  const opening = openBrowser("http://127.0.0.1:45678/?nonce=must-not-leak", {
+    platform: "darwin",
+    spawnProcess: () => child,
+  });
+  child.emit("error", new Error("LaunchServices unavailable"));
+
+  await assert.rejects(opening, (error) => (
+    error instanceof BrowserOpenError
+    && error.code === "BROWSER_OPEN_FAILED"
+    && !error.message.includes("must-not-leak")
+  ));
+});
 
 test("bridge maps parent and related contexts to stable read-only paths", () => {
   const contexts = buildRunContextSpecifications(runId, {
@@ -682,7 +744,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.3");
+  assert.equal(BRIDGE_VERSION, "1.4.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

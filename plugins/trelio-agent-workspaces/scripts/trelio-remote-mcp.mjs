@@ -40,6 +40,7 @@ const MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const REMOTE_REQUEST_TIMEOUT_MS = 20_000;
 const CREDENTIAL_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS = 7_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
@@ -1158,9 +1159,82 @@ const writeLoopbackHtml = (outgoing, statusCode, html) => {
   outgoing.end(html);
 };
 
-const collectCredentialThroughLoopback = async (origin, resolved) => {
+const waitForPromiseSignal = (promise, timeoutMs) => new Promise((resolve) => {
+  let settled = false;
+  const finish = (value) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeoutId);
+    resolve(value);
+  };
+  const timeoutId = setTimeout(() => finish(false), timeoutMs);
+  promise.then(() => finish(true), () => finish(false));
+});
+
+export const openCredentialFormInBrowser = async (
+  setupUrl,
+  {
+    platform = process.platform,
+    openBrowserFn = openBrowser,
+    waitForForm,
+    handoffTimeoutMs = CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS,
+  } = {},
+) => {
+  if (typeof waitForForm !== "function") {
+    throw new TypeError("waitForForm обязателен для verified browser handoff.");
+  }
+
+  // A zero exit code means only that the OS accepted the open request. The
+  // exact nonce-bearing GET is the proof that the protected form actually
+  // reached a browser. On macOS we can safely retry known local browsers
+  // because the URL remains inside this process and never enters MCP output.
+  const candidates = platform === "darwin"
+    ? [null, "Google Chrome", "Safari"]
+    : [null];
+
+  for (const application of candidates) {
+    try {
+      await openBrowserFn(setupUrl, { platform, application });
+    } catch {
+      // A missing browser application or non-zero LaunchServices result is
+      // expected during fallback. Keep the underlying diagnostic private: it
+      // may contain local process details and cannot help the agent open the
+      // one-time form.
+      continue;
+    }
+
+    if (await waitForForm(handoffTimeoutMs)) {
+      return;
+    }
+  }
+
+  throw new RemoteMcpHostError(
+    "REMOTE_MCP_BROWSER_OPEN_FAILED",
+    "Не удалось открыть защищённую локальную форму в браузере. Проверьте настройки системного браузера и повторите подключение. Адрес формы и одноразовый nonce намеренно не показываются в чате.",
+  );
+};
+
+export const collectCredentialThroughLoopback = async (
+  origin,
+  resolved,
+  {
+    browserPlatform = process.platform,
+    openBrowserFn = openBrowser,
+    handoffTimeoutMs = CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS,
+    setupTimeoutMs = CREDENTIAL_SETUP_TIMEOUT_MS,
+    doctorCredential = doctorWithCredential,
+    persistCredential = savePersonalCredential,
+    onListening = () => {},
+  } = {},
+) => {
   const nonce = crypto.randomBytes(32).toString("base64url");
   let expectedOrigin = "";
+  let markFormOpened;
+  const formOpened = new Promise((resolve) => {
+    markFormOpened = resolve;
+  });
   let finish;
   let fail;
   const completion = new Promise((resolve, reject) => {
@@ -1177,6 +1251,9 @@ const collectCredentialThroughLoopback = async (origin, resolved) => {
         && requestUrl.searchParams.get("nonce") === nonce
       ) {
         writeLoopbackHtml(outgoing, 200, renderCredentialPage({ resolved, nonce }));
+        // Resolve only after the exact nonce has selected the protected page.
+        // Merely opening another loopback tab must never count as delivery.
+        markFormOpened();
         return;
       }
       if (
@@ -1199,8 +1276,8 @@ const collectCredentialThroughLoopback = async (origin, resolved) => {
       const credential = String(form.get("credential") || "").trim();
 
       try {
-        await doctorWithCredential(resolved, credential);
-        await savePersonalCredential(origin, resolved, credential);
+        await doctorCredential(resolved, credential);
+        await persistCredential(origin, resolved, credential);
       } catch (error) {
         writeLoopbackHtml(outgoing, 400, renderCredentialPage({
           resolved,
@@ -1236,7 +1313,13 @@ const collectCredentialThroughLoopback = async (origin, resolved) => {
     }
     expectedOrigin = `http://127.0.0.1:${address.port}`;
     const setupUrl = `${expectedOrigin}/?${new URLSearchParams({ nonce }).toString()}`;
-    await openBrowser(setupUrl);
+    onListening({ port: address.port });
+    await openCredentialFormInBrowser(setupUrl, {
+      platform: browserPlatform,
+      openBrowserFn,
+      handoffTimeoutMs,
+      waitForForm: (timeoutMs) => waitForPromiseSignal(formOpened, timeoutMs),
+    });
 
     let timeoutId;
     const timeout = new Promise((_, reject) => {
@@ -1245,7 +1328,7 @@ const collectCredentialThroughLoopback = async (origin, resolved) => {
           "REMOTE_MCP_CREDENTIAL_SETUP_TIMEOUT",
           "Время ожидания локального ввода credential истекло.",
         )),
-        CREDENTIAL_SETUP_TIMEOUT_MS,
+        setupTimeoutMs,
       );
     });
     await Promise.race([completion, timeout]).finally(() => clearTimeout(timeoutId));
