@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.1";
+export const BRIDGE_VERSION = "1.4.2";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -215,7 +215,7 @@ const parseArguments = (rawArguments) => {
   return { command, options, positional };
 };
 
-const normalizeOrigin = (value) => {
+export const normalizeOrigin = (value) => {
   const parsed = new URL(String(value || DEFAULT_ORIGIN));
 
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
@@ -329,7 +329,7 @@ class TrelioApiError extends Error {
   }
 }
 
-const request = async (origin, token, pathname, options = {}) => {
+export const request = async (origin, token, pathname, options = {}) => {
   const headers = buildBridgeRequestHeaders(token, options.headers || {});
 
   const response = await fetch(new URL(pathname, `${origin}/`), { ...options, headers });
@@ -550,7 +550,7 @@ const assertPrivatePathKind = async (targetPath, targetKind) => {
   }
 };
 
-const ensurePrivateDirectory = async (directoryPath) => {
+export const ensurePrivateDirectory = async (directoryPath) => {
   let created = false;
   try {
     const existing = await fs.lstat(directoryPath);
@@ -581,7 +581,7 @@ const assertPrivateFileIfPresent = async (filePath) => {
   }
 };
 
-const readPrivateJsonFile = async (filePath) => {
+export const readPrivateJsonFile = async (filePath) => {
   const exists = await assertPrivateFileIfPresent(filePath);
   if (!exists) return {};
 
@@ -639,7 +639,7 @@ const resolveKeychainMigrationMarkerFile = (origin) => path.join(
   }`,
 );
 
-const writePrivateJsonFile = async (filePath, value) => {
+export const writePrivateJsonFile = async (filePath, value) => {
   await ensurePrivateDirectory(path.dirname(filePath));
   await assertPrivateFileIfPresent(filePath);
   const temporaryPath = `${filePath}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`;
@@ -747,7 +747,7 @@ const loadLegacyOAuthToken = async (origin) => {
   return keychainToken || credentials[origin]?.accessToken || null;
 };
 
-const loadToken = async (origin) => (
+export const loadToken = async (origin) => (
   await loadBridgeSessionToken(origin)
   || await loadLegacyOAuthToken(origin)
 );
@@ -897,7 +897,12 @@ const beginBridgePairing = async (origin) => {
   throw new BridgePairingRequiredError(pairing);
 };
 
-const exchangePendingBridgePairing = async (origin) => {
+const exchangePendingBridgePairing = async (
+  origin,
+  {
+    onStatus = (message) => process.stdout.write(message),
+  } = {},
+) => {
   const pairing = await getPendingPairing(origin);
 
   if (!pairing) {
@@ -960,7 +965,7 @@ const exchangePendingBridgePairing = async (origin) => {
     }
 
     await deletePendingPairing(origin);
-    process.stdout.write(
+    onStatus(
       `Устройство ${pairing.deviceName} подключено к Trelio. Device-session сохранена в ${storage}.\n`,
     );
     return accessToken;
@@ -990,15 +995,24 @@ const exchangePendingBridgePairing = async (origin) => {
   }
 };
 
-const openBrowser = async (url) => {
+export const openBrowser = async (url) => {
   const candidates = process.platform === "darwin"
     ? [["open", [url]]]
     : process.platform === "win32"
       ? [["cmd", ["/c", "start", "", url]]]
       : [["xdg-open", [url]]];
   const [command, args] = candidates[0];
-  const child = spawn(command, args, { detached: true, stdio: "ignore" });
-  child.unref();
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    // A headless Linux host may not provide xdg-open. Handle that as a normal
+    // setup error instead of letting an unhandled child-process error kill a
+    // stdio MCP server and corrupt its framing.
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
 };
 
 const createPkce = () => {
@@ -1105,14 +1119,14 @@ const legacyOAuthLogin = async (origin) => {
   }
 };
 
-const requireToken = async (origin) => {
+export const requireToken = async (origin, options = {}) => {
   const token = await loadToken(origin);
 
   if (token) {
     return token;
   }
 
-  const pairedToken = await exchangePendingBridgePairing(origin);
+  const pairedToken = await exchangePendingBridgePairing(origin, options);
 
   if (pairedToken) {
     return pairedToken;
@@ -2782,7 +2796,7 @@ const writeContextIndex = async (rootDirectory, contexts, rawAgentInstructionsSn
 
 const readJsonResponse = async (response) => response.json();
 
-const ensureBridgeCompatibility = async (origin, token) => {
+export const ensureBridgeCompatibility = async (origin, token) => {
   try {
     const compatibility = await readJsonResponse(await request(
       origin,

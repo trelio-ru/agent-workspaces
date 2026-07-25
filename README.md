@@ -11,6 +11,9 @@
   компании и проекта через MCP без фиксации версии в Run;
 - стабильный host подписанных внутренних runtime-пакетов навыков: live resolve,
   Ed25519-проверка, content-addressed cache и запуск без shell;
+- универсальный локальный host декларативных Remote MCP навыков: защищённый
+  персональный credential, HTTPS/SSRF guard, protocol doctor и exact read-only
+  allowlist перед каждым вызовом;
 - локальный Git bridge для открытия workspace, checkpoint и атомарной записи
   candidate revision с защитой от конфликтов версий;
 - один scoped MCP-вызов для массового обычного поиска задач по отдельным
@@ -138,6 +141,12 @@ Agent Secrets хранятся и расшифровываются на стор
 передаёт значение локальной программе через `stdin`, переменную окружения или
 закрытый временный файл.
 
+Персональный Remote MCP PAT, напротив, вообще не передаётся Trelio: пользователь
+вводит его в одноразовой loopback-форме, а plugin хранит значение в приватном
+локальном integration namespace, привязанном к пользователю и fingerprint
+декларации. В чат, prompt, workspace, открытый config и MCP tool arguments PAT
+не попадает.
+
 Не добавляйте токены, локальные credentials и содержимое рабочих workspace в
 issues или pull requests. Для уязвимостей используйте приватное сообщение через
 GitHub Security Advisory.
@@ -146,8 +155,8 @@ GitHub Security Advisory.
 
 Версия плагина и публичный Git tag выпускаются вместе. Новый plugin release
 нужен для изменений MCP/bootstrap/bridge host, но не для обычных исправлений
-инструкции или исполняемого runtime конкретного навыка: такие версии выходят
-во внутреннем каталоге Trelio. Production backend требует совместимую
+инструкции, Remote MCP декларации или исполняемого runtime конкретного навыка:
+такие версии выходят во внутреннем каталоге Trelio. Production backend требует совместимую
 опубликованную стабильную версию host для bridge-запросов. Поэтому обычный
 marketplace подключается без `--ref` и перед новой работой обновляется командой:
 

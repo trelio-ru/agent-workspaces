@@ -670,6 +670,10 @@ test("bridge release version stays synchronized across executable and manifests"
     path.join(pluginDirectory, ".claude-plugin", "plugin.json"),
     "utf8",
   ));
+  const mcpManifest = JSON.parse(await readFile(
+    path.join(pluginDirectory, ".mcp.json"),
+    "utf8",
+  ));
   const claudeMarketplace = JSON.parse(await readFile(
     path.resolve(pluginDirectory, "..", "..", ".claude-plugin", "marketplace.json"),
     "utf8",
@@ -678,10 +682,16 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.1");
+  assert.equal(BRIDGE_VERSION, "1.4.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
+  assert.deepEqual(mcpManifest.mcpServers["trelio-remote-skills"], {
+    command: "node",
+    args: ["./scripts/trelio-remote-mcp.mjs"],
+    cwd: ".",
+    tool_timeout_sec: 660,
+  });
 });
 
 test("bridge private credential path and Windows ACL are explicit and user-scoped", () => {

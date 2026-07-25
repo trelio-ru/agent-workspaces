@@ -152,6 +152,48 @@ trelio-workspace skill pack \
 только exact `runtimeExecution.command`, который вернул актуальный
 `get_agent_skill`; вручную составлять UUID релиза не нужно.
 
+### Декларативный Remote MCP
+
+Company-private навык может использовать общий trusted host плагина без
+собственного `.skillpkg`. Администратор публикует только фиксированный HTTPS
+Streamable HTTP endpoint, протокол `2025-03-26`, перечислимый тип авторизации,
+безопасные несекретные headers, exact read-only allowlist и публичную ссылку с
+подсказкой, где пользователь сам получает credential.
+
+Сейчас host поддерживает `none` и `personal_bearer_pat`. Это версионируемый
+перечислимый контракт: новые схемы авторизации можно добавить следующим
+релизом host, но Markdown компании не может выбрать произвольный secret header
+или executable URL.
+
+PAT не передаётся агенту или Trelio. По просьбе пользователя локальный tool
+открывает одноразовую форму на `127.0.0.1`; после успешного `doctor` значение
+попадает только в:
+
+```text
+<trelio-config-home>/integrations/<skill>/<company>/<member>/remote-mcp/secrets/personal-credential.json
+```
+
+Каталог и файл имеют приватные owner/ACL/mode checks, не находятся в workspace
+и не попадают в Git. Credential привязан к fingerprint endpoint, auth, headers
+и allowlist: любое изменение декларации требует повторного локального ввода.
+Удаление через local tool стирает только эту копию и не отзывает PAT у
+провайдера.
+
+Перед каждой фактической операцией host заново получает current release у
+Trelio, разрешает DNS, блокирует private/reserved адреса, закрепляет проверенный
+IP на соединение, выполняет `initialize` и требует точного совпадения
+`tools/list` с опубликованным allowlist. Лишний, неизвестный, destructive или
+write-like tool блокирует всё подключение. `Mcp-Mode: Write` и
+`Mcp-Write-Spaces` host не отправляет.
+
+Первый готовый preset – «База знаний Додо»:
+
+- endpoint `https://knowledgebase.dodois.io/mcp`;
+- токен пользователь получает по
+  [`dodopizza.info/next/settings/mcp-tokens`](https://dodopizza.info/next/settings/mcp-tokens);
+- allowlist: `current_user`, `get_announcements`, `get_content`,
+  `get_space_content`, `get_spaces`, `preview_content`, `search_content`.
+
 MAX использует версионированный browser adapter: accessibility-селекторы,
 текстовые и геометрические fallback, дедупликацию результатов и проверку
 результата отправки. Поиск может показывать частичные совпадения, но чтение и

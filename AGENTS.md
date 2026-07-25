@@ -71,6 +71,21 @@ Trelio-монорепозитории быть не должно.
   `runtimeExecution`, агент выполняет exact command; host перед каждым запуском
   повторно разрешает expected release. `AGENT_SKILL_RELEASE_CHANGED` требует
   нового `get_agent_skill`, а не принудительного запуска stale package.
+- Начиная с plugin `1.4.2` company-private навык может дополнительно содержать
+  декларативный `remoteMcpExecution`: фиксированный HTTPS Streamable HTTP
+  endpoint, протокол `2025-03-26`, перечислимый auth (`none` либо
+  `personal_bearer_pat`), безопасные несекретные headers и exact read-only
+  allowlist. Исполняемый код остаётся только в универсальном проверяемом
+  `trelio-remote-skills` host этого плагина. Host делает live resolve перед
+  каждым действием, DNS/IP SSRF-проверку с pinning, `initialize`, exact
+  `tools/list` и fail-closed write-проверку. Он никогда не отправляет
+  `Mcp-Mode: Write` или `Mcp-Write-Spaces`. Персональный PAT вводится только в
+  одноразовой loopback-форме на `127.0.0.1`, хранится вне workspace в
+  `integrations/<skill>/<company>/<member>/remote-mcp/secrets/` с приватными
+  правами и привязывается к fingerprint endpoint/auth/headers/allowlist.
+  `credentialHelp` является только публичной HTTPS-подсказкой; агент может
+  показать ссылку, но не просит присылать token в чат. Удаление локальной копии
+  не отзывает PAT у внешнего provider.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда

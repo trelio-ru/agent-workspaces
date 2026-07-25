@@ -2,6 +2,14 @@
   "mcpServers": {
     "trelio": {
       "url": "https://trelio.ru/mcp"
+    },
+    "trelio-remote-skills": {
+      "command": "node",
+      "args": [
+        "./scripts/trelio-remote-mcp.mjs"
+      ],
+      "cwd": ".",
+      "tool_timeout_sec": 660
     }
   }
 }

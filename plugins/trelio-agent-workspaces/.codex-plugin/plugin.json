@@ -1,7 +1,7 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.4.1",
-  "description": "Production integration for scoped Agent Workspaces, Agent Secrets, live skill catalogs, and local email, Telegram, and MAX runtimes.",
+  "version": "1.4.2",
+  "description": "Production integration for scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and local communication runtimes.",
   "author": {
     "name": "Trelio"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",
-    "longDescription": "Подключает Trelio MCP, поиск задач и workspace, закреплённый read-only контекст, безопасный Agent Workspace, одноразовое локальное применение Agent Secrets и актуальные навыки компаний и проектов, включая email, Telegram и MAX.",
+    "longDescription": "Подключает Trelio MCP, поиск задач и workspace, закреплённый read-only контекст, безопасный Agent Workspace, одноразовое локальное применение Agent Secrets и актуальные навыки компаний и проектов, включая декларативный Remote MCP, email, Telegram и MAX.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],

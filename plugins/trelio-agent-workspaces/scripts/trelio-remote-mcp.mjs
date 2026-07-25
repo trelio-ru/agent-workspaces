@@ -1,0 +1,1351 @@
+#!/usr/bin/env node
+
+/**
+ * Universal local host for declarative company Remote MCP skills.
+ *
+ * The process exposes a small static MCP facade to Codex. Every operation
+ * resolves the immutable declaration from Trelio again, while personal PAT
+ * bytes stay in a private local file and are sent only to the exact validated
+ * HTTPS endpoint. Remote content is always returned as untrusted tool data.
+ */
+import crypto from "node:crypto";
+import dns from "node:dns/promises";
+import fs from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline";
+import { pathToFileURL } from "node:url";
+
+import {
+  BRIDGE_VERSION,
+  ensureBridgeCompatibility,
+  ensurePrivateDirectory,
+  normalizeOrigin,
+  openBrowser,
+  readPrivateJsonFile,
+  request,
+  requireToken,
+  writePrivateJsonFile,
+} from "./trelio-workspace.mjs";
+
+const DEFAULT_ORIGIN = "https://trelio.ru";
+const REMOTE_MCP_CONFIG_SCHEMA_VERSION = 1;
+const REMOTE_MCP_PROTOCOL_VERSION = "2025-03-26";
+const REMOTE_MCP_CREDENTIAL_SCHEMA_VERSION = 1;
+const MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_CREDENTIAL_BYTES = 16 * 1024;
+const REMOTE_REQUEST_TIMEOUT_MS = 20_000;
+const CREDENTIAL_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
+const WRITE_TOOL_NAME_PATTERN = /(?:^|[_:.-])(?:add|archive|create|delete|edit|invite|move|publish|remove|rename|restore|revoke|send|set|update|upload|write)(?:$|[_:.-])/iu;
+const FORBIDDEN_HEADERS = new Set([
+  "accept",
+  "authorization",
+  "connection",
+  "content-length",
+  "content-type",
+  "cookie",
+  "forwarded",
+  "host",
+  "mcp-mode",
+  "mcp-protocol-version",
+  "mcp-session-id",
+  "mcp-write-spaces",
+  "origin",
+  "proxy-authorization",
+  "referer",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "via",
+]);
+
+const blockedNetworkAddresses = new net.BlockList();
+[
+  ["0.0.0.0", 8],
+  ["10.0.0.0", 8],
+  ["100.64.0.0", 10],
+  ["127.0.0.0", 8],
+  ["169.254.0.0", 16],
+  ["172.16.0.0", 12],
+  ["192.0.0.0", 24],
+  ["192.0.2.0", 24],
+  ["192.168.0.0", 16],
+  ["198.18.0.0", 15],
+  ["198.51.100.0", 24],
+  ["203.0.113.0", 24],
+  ["224.0.0.0", 4],
+  ["240.0.0.0", 4],
+].forEach(([address, prefix]) => blockedNetworkAddresses.addSubnet(address, prefix, "ipv4"));
+[
+  ["::", 128],
+  ["::1", 128],
+  ["::ffff:0:0", 96],
+  // NAT64 and 6to4 addresses can tunnel an apparently public IPv6 target to
+  // an embedded private IPv4 destination, so they are never valid Remote MCP
+  // endpoints for the trusted host.
+  ["64:ff9b::", 96],
+  ["64:ff9b:1::", 48],
+  ["100::", 64],
+  ["2001:db8::", 32],
+  ["2002::", 16],
+  ["fc00::", 7],
+  ["fe80::", 10],
+  ["ff00::", 8],
+].forEach(([address, prefix]) => blockedNetworkAddresses.addSubnet(address, prefix, "ipv6"));
+
+export class RemoteMcpHostError extends Error {
+  constructor(code, message, details = null) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+}
+
+const resolveTrelioConfigHome = ({
+  platform = process.platform,
+  environment = process.env,
+  homeDirectory = os.homedir(),
+} = {}) => {
+  const pathModule = platform === "win32" ? path.win32 : path;
+  if (environment.TRELIO_CONFIG_HOME) {
+    return pathModule.resolve(String(environment.TRELIO_CONFIG_HOME));
+  }
+  return platform === "win32"
+    ? path.win32.join(
+        environment.LOCALAPPDATA
+          || path.win32.join(environment.USERPROFILE || homeDirectory, "AppData", "Local"),
+        "Trelio",
+      )
+    : path.join(homeDirectory, ".config", "trelio");
+};
+
+export const resolveRemoteMcpCredentialFile = (identity, options = {}) => {
+  const companyId = requireUuid(identity?.companyId, "companyId");
+  const memberId = requireUuid(identity?.memberId, "memberId");
+  const skillId = String(identity?.skillId || "").trim();
+  if (!SKILL_ID_PATTERN.test(skillId)) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_INPUT",
+      "skillId должен содержать lowercase kebab-case id.",
+    );
+  }
+  const pathModule = (options.platform ?? process.platform) === "win32"
+    ? path.win32
+    : path;
+  return pathModule.join(
+    resolveTrelioConfigHome(options),
+    "integrations",
+    skillId,
+    companyId,
+    memberId,
+    "remote-mcp",
+    "secrets",
+    "personal-credential.json",
+  );
+};
+
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+export const fingerprintRemoteMcpConfig = (config) => (
+  crypto.createHash("sha256").update(canonicalJson(config)).digest("hex")
+);
+
+const normalizeRemoteMcpConfigForFingerprint = (config) => ({
+  schemaVersion: config.schemaVersion,
+  transport: config.transport,
+  endpoint: config.endpoint,
+  protocolVersion: config.protocolVersion,
+  authentication: config.authentication,
+  // Tool names are ASCII. Locale-independent UTF-16 ordering must match the
+  // backend's canonical hash on every workstation.
+  allowedTools: [...config.allowedTools].sort(),
+  headers: Object.fromEntries(
+    Object.entries(config.headers).sort(
+      ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
+    ),
+  ),
+  credentialHelp: config.credentialHelp,
+});
+
+export const validateResolvedRemoteMcp = (payload) => {
+  const remoteMcp = payload?.remoteMcp;
+  const config = remoteMcp?.config;
+
+  if (
+    !payload
+    || typeof payload !== "object"
+    || !UUID_PATTERN.test(String(payload.releaseId || ""))
+    || !remoteMcp
+    || typeof remoteMcp !== "object"
+    || !config
+    || typeof config !== "object"
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_DECLARATION",
+      "Trelio вернул неполную декларацию Remote MCP.",
+    );
+  }
+  if (
+    config.schemaVersion !== REMOTE_MCP_CONFIG_SCHEMA_VERSION
+    || config.transport !== "streamable_http"
+    || config.protocolVersion !== REMOTE_MCP_PROTOCOL_VERSION
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_UNSUPPORTED_DECLARATION",
+      "Версия декларации, transport или протокол Remote MCP не поддерживаются установленным host.",
+    );
+  }
+  if (!["none", "personal_bearer_pat"].includes(config.authentication?.type)) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_UNSUPPORTED_AUTH",
+      "Remote MCP использует неподдерживаемый тип авторизации.",
+    );
+  }
+  if (
+    !Array.isArray(config.allowedTools)
+    || config.allowedTools.length < 1
+    || config.allowedTools.length > 64
+    || config.allowedTools.some((name) => !TOOL_NAME_PATTERN.test(String(name || "")))
+    || new Set(config.allowedTools).size !== config.allowedTools.length
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_ALLOWLIST",
+      "Remote MCP allowlist не прошёл локальную проверку.",
+    );
+  }
+  if (config.allowedTools.some((name) => WRITE_TOOL_NAME_PATTERN.test(name))) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_WRITE_TOOL_BLOCKED",
+      "Remote MCP allowlist содержит инструмент с write-семантикой в имени.",
+    );
+  }
+
+  const headers = config.headers && typeof config.headers === "object"
+    ? config.headers
+    : {};
+  if (Object.keys(headers).length > 16) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_UNSAFE_HEADER",
+      "Remote MCP declaration содержит слишком много headers.",
+    );
+  }
+  for (const [rawName, rawValue] of Object.entries(headers)) {
+    const name = rawName.toLowerCase();
+    if (
+      !HTTP_HEADER_NAME_PATTERN.test(name)
+      || FORBIDDEN_HEADERS.has(name)
+      || name.startsWith("proxy-")
+      || name.startsWith("sec-")
+      || name.startsWith("x-forwarded-")
+      || typeof rawValue !== "string"
+      || !rawValue
+      || rawValue.length > 512
+      || /[\r\n\0]/u.test(rawValue)
+    ) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_UNSAFE_HEADER",
+        `Remote MCP header ${rawName} запрещён локальным trusted host.`,
+      );
+    }
+  }
+
+  const credentialHelp = config.credentialHelp;
+  if (credentialHelp !== null) {
+    let helpUrl;
+    try {
+      helpUrl = new URL(String(credentialHelp?.url || ""));
+    } catch {
+      helpUrl = null;
+    }
+    if (
+      !helpUrl
+      || helpUrl.protocol !== "https:"
+      || helpUrl.username
+      || helpUrl.password
+      || helpUrl.hash
+      || typeof credentialHelp?.label !== "string"
+      || !credentialHelp.label
+      || credentialHelp.label.length > 120
+      || typeof credentialHelp?.instructions !== "string"
+      || !credentialHelp.instructions
+      || credentialHelp.instructions.length > 2_000
+    ) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_INVALID_CREDENTIAL_HELP",
+        "Remote MCP credentialHelp не прошёл локальную проверку.",
+      );
+    }
+  }
+  if (config.authentication.type === "none" && credentialHelp !== null) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_CREDENTIAL_HELP",
+      "Remote MCP без авторизации не должен запрашивать credential.",
+    );
+  }
+
+  const normalized = normalizeRemoteMcpConfigForFingerprint(config);
+  const fingerprint = fingerprintRemoteMcpConfig(normalized);
+  if (fingerprint !== remoteMcp.configFingerprint) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_CONFIG_FINGERPRINT_MISMATCH",
+      "Remote MCP declaration fingerprint не совпал с нормализованной конфигурацией.",
+    );
+  }
+
+  return {
+    ...payload,
+    remoteMcp: {
+      ...remoteMcp,
+      config: normalized,
+    },
+  };
+};
+
+const requireUuid = (value, label) => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!UUID_PATTERN.test(normalized)) {
+    throw new RemoteMcpHostError("REMOTE_MCP_INVALID_INPUT", `${label} должен содержать UUID.`);
+  }
+  return normalized;
+};
+
+const normalizeToolInput = (rawInput) => {
+  const input = rawInput && typeof rawInput === "object" ? rawInput : {};
+  const skillId = String(input.skillId || "").trim();
+
+  if (!SKILL_ID_PATTERN.test(skillId)) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_INPUT",
+      "skillId должен содержать lowercase kebab-case id.",
+    );
+  }
+
+  return {
+    companyId: requireUuid(input.companyId, "companyId"),
+    projectId: input.projectId ? requireUuid(input.projectId, "projectId") : null,
+    skillId,
+    releaseId: requireUuid(input.releaseId, "releaseId"),
+  };
+};
+
+const resolveRemoteMcpDeclaration = async (origin, rawInput) => {
+  const input = normalizeToolInput(rawInput);
+  // stdout is reserved for stdio JSON-RPC framing. A successful pending
+  // pairing may normally print a status line, so the local MCP host supplies
+  // a silent status sink and returns all diagnostics as structured tool data.
+  const token = await requireToken(origin, { onStatus: () => undefined });
+  await ensureBridgeCompatibility(origin, token);
+  const response = await request(
+    origin,
+    token,
+    "/api/agent-skills/remote-mcp/resolve",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companyId: input.companyId,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        skillId: input.skillId,
+        expectedReleaseId: input.releaseId,
+      }),
+    },
+  );
+  const resolved = validateResolvedRemoteMcp(await response.json());
+
+  if (
+    resolved.releaseId !== input.releaseId
+    || resolved.localIdentity?.companyId !== input.companyId
+    || resolved.localIdentity?.projectId !== input.projectId
+    || resolved.localIdentity?.skillId !== input.skillId
+    || !UUID_PATTERN.test(String(resolved.localIdentity?.memberId || ""))
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_IDENTITY_MISMATCH",
+      "Remote MCP declaration не совпала с запрошенным Trelio-контекстом.",
+    );
+  }
+
+  return resolved;
+};
+
+const savePersonalCredential = async (origin, resolved, secret) => {
+  const credential = String(secret || "").trim();
+  if (
+    credential.length < 8
+    || Buffer.byteLength(credential, "utf8") > MAX_CREDENTIAL_BYTES
+    || /[\r\n\0]/u.test(credential)
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_CREDENTIAL_INVALID",
+      "Credential должен быть непустой однострочной строкой допустимого размера.",
+    );
+  }
+
+  const credentialFile = resolveRemoteMcpCredentialFile(resolved.localIdentity);
+  const storedCredential = {
+    schemaVersion: REMOTE_MCP_CREDENTIAL_SCHEMA_VERSION,
+    trelioOrigin: origin,
+    authType: resolved.remoteMcp.config.authentication.type,
+    secret: credential,
+    configFingerprint: resolved.remoteMcp.configFingerprint,
+    endpointOrigin: new URL(resolved.remoteMcp.config.endpoint).origin,
+    companyId: resolved.localIdentity.companyId,
+    memberId: resolved.localIdentity.memberId,
+    skillId: resolved.localIdentity.skillId,
+    savedAt: new Date().toISOString(),
+  };
+  await ensurePrivateDirectory(path.dirname(credentialFile));
+  await writePrivateJsonFile(credentialFile, storedCredential);
+};
+
+const loadPersonalCredential = async (origin, resolved) => {
+  if (resolved.remoteMcp.config.authentication.type === "none") {
+    return null;
+  }
+
+  const credentialFile = resolveRemoteMcpCredentialFile(resolved.localIdentity);
+  const credential = await readPrivateJsonFile(credentialFile);
+
+  if (Object.keys(credential).length === 0 || typeof credential.secret !== "string") {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_PERSONAL_TOKEN_REQUIRED",
+      "Для Remote MCP нужен персональный credential на этом устройстве.",
+      { credentialHelp: resolved.remoteMcp.config.credentialHelp },
+    );
+  }
+  if (
+    credential.schemaVersion !== REMOTE_MCP_CREDENTIAL_SCHEMA_VERSION
+    || credential.trelioOrigin !== origin
+    || credential.companyId !== resolved.localIdentity.companyId
+    || credential.memberId !== resolved.localIdentity.memberId
+    || credential.skillId !== resolved.localIdentity.skillId
+    || credential.authType !== resolved.remoteMcp.config.authentication.type
+    || credential.configFingerprint !== resolved.remoteMcp.configFingerprint
+    || credential.endpointOrigin !== new URL(resolved.remoteMcp.config.endpoint).origin
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_CREDENTIAL_RECONFIRMATION_REQUIRED",
+      "Remote MCP endpoint, auth, headers или allowlist изменились. Сохраните credential заново.",
+      { credentialHelp: resolved.remoteMcp.config.credentialHelp },
+    );
+  }
+  if (
+    credential.secret.length < 8
+    || Buffer.byteLength(credential.secret, "utf8") > MAX_CREDENTIAL_BYTES
+    || /[\r\n\0]/u.test(credential.secret)
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_CREDENTIAL_STORE_INVALID",
+      "Сохранённый Remote MCP credential не прошёл локальную проверку.",
+    );
+  }
+
+  return credential.secret;
+};
+
+const forgetPersonalCredential = async (origin, resolved) => {
+  const credentialFile = resolveRemoteMcpCredentialFile(resolved.localIdentity);
+  const credential = await readPrivateJsonFile(credentialFile);
+  const existed = Object.keys(credential).length > 0;
+
+  if (existed) {
+    // The private reader above already rejected symlinks and unsafe owner/mode.
+    // unlink removes only this user's exact credential file.
+    await fs.rm(credentialFile);
+  }
+  return existed;
+};
+
+const isUnsafeNetworkAddress = (address, family) => (
+  blockedNetworkAddresses.check(address, family === 6 ? "ipv6" : "ipv4")
+);
+
+export const resolveSafeRemoteMcpEndpoint = async (
+  rawEndpoint,
+  {
+    lookup = dns.lookup,
+    allowInsecureTestEndpoint = false,
+  } = {},
+) => {
+  let endpoint;
+  try {
+    endpoint = new URL(String(rawEndpoint || ""));
+  } catch {
+    throw new RemoteMcpHostError("REMOTE_MCP_ENDPOINT_INVALID", "Remote MCP endpoint некорректен.");
+  }
+
+  if (
+    (endpoint.protocol !== "https:" && !allowInsecureTestEndpoint)
+    || !["https:", "http:"].includes(endpoint.protocol)
+    || endpoint.username
+    || endpoint.password
+    || endpoint.hash
+    || (!allowInsecureTestEndpoint && endpoint.port && endpoint.port !== "443")
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_ENDPOINT_BLOCKED",
+      "Remote MCP endpoint должен быть обычным HTTPS URL на порту 443.",
+    );
+  }
+
+  const hostname = endpoint.hostname.toLowerCase().replace(/\.$/u, "");
+  if (
+    !allowInsecureTestEndpoint
+    && (
+      net.isIP(hostname) !== 0
+      || hostname === "localhost"
+      || hostname.endsWith(".localhost")
+      || hostname.endsWith(".local")
+      || hostname.endsWith(".internal")
+    )
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_SSRF_BLOCKED",
+      "Remote MCP endpoint использует локальный hostname или IP.",
+    );
+  }
+
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (
+    !Array.isArray(addresses)
+    || addresses.length < 1
+    || addresses.some(({ address, family }) => (
+      net.isIP(address) === 0
+      || (!allowInsecureTestEndpoint && isUnsafeNetworkAddress(address, family))
+    ))
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_SSRF_BLOCKED",
+      "Remote MCP DNS вернул пустой, локальный или служебный адрес.",
+    );
+  }
+
+  return {
+    endpoint,
+    address: addresses[0].address,
+    family: addresses[0].family,
+  };
+};
+
+const parseSseJson = (bodyText, expectedId = null) => {
+  const events = bodyText.split(/\r?\n\r?\n/u);
+  const messages = [];
+
+  for (const event of events) {
+    const data = event
+      .split(/\r?\n/u)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("\n");
+    if (data && data !== "[DONE]") {
+      messages.push(JSON.parse(data));
+    }
+  }
+  if (expectedId !== null) {
+    const matchingResponse = messages.find((message) => message?.id === expectedId);
+    if (matchingResponse) {
+      return matchingResponse;
+    }
+  } else if (messages.length > 0) {
+    return messages[0];
+  }
+  throw new RemoteMcpHostError(
+    "REMOTE_MCP_INVALID_RESPONSE",
+    "Remote MCP вернул SSE без ожидаемого JSON-RPC response.",
+  );
+};
+
+const parseRemoteJsonRpcResponse = (contentType, body, expectedId = null) => {
+  if (body.length === 0) {
+    return null;
+  }
+  const bodyText = body.toString("utf8");
+
+  try {
+    return contentType.includes("text/event-stream")
+      ? parseSseJson(bodyText, expectedId)
+      : JSON.parse(bodyText);
+  } catch (error) {
+    if (error instanceof RemoteMcpHostError) {
+      throw error;
+    }
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_INVALID_RESPONSE",
+      "Remote MCP вернул некорректный JSON-RPC ответ.",
+    );
+  }
+};
+
+export const buildRemoteMcpRequestHeaders = ({
+  config,
+  credential,
+  body,
+  sessionId,
+}) => ({
+  accept: "application/json, text/event-stream",
+  "mcp-protocol-version": config.protocolVersion,
+  ...config.headers,
+  ...(body ? {
+    "content-type": "application/json",
+    "content-length": String(body.byteLength),
+  } : {}),
+  ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+  ...(config.authentication.type === "personal_bearer_pat"
+    ? { authorization: `Bearer ${credential}` }
+    : {}),
+});
+
+const remoteMcpHttpRequest = async ({
+  config,
+  credential,
+  method = "POST",
+  payload = null,
+  sessionId = null,
+}) => {
+  const safeEndpoint = await resolveSafeRemoteMcpEndpoint(config.endpoint);
+  const body = payload === null ? null : Buffer.from(JSON.stringify(payload), "utf8");
+  const headers = buildRemoteMcpRequestHeaders({
+    config,
+    credential,
+    body,
+    sessionId,
+  });
+  const requestModule = safeEndpoint.endpoint.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const outgoing = requestModule.request({
+      protocol: safeEndpoint.endpoint.protocol,
+      hostname: safeEndpoint.endpoint.hostname,
+      port: safeEndpoint.endpoint.port || undefined,
+      path: `${safeEndpoint.endpoint.pathname}${safeEndpoint.endpoint.search}`,
+      method,
+      headers,
+      servername: safeEndpoint.endpoint.hostname,
+      lookup: (_hostname, options, callback) => {
+        if (options?.all) {
+          callback(null, [{
+            address: safeEndpoint.address,
+            family: safeEndpoint.family,
+          }]);
+          return;
+        }
+        callback(null, safeEndpoint.address, safeEndpoint.family);
+      },
+      timeout: REMOTE_REQUEST_TIMEOUT_MS,
+    }, (incoming) => {
+      const chunks = [];
+      let receivedBytes = 0;
+
+      incoming.on("data", (chunk) => {
+        receivedBytes += chunk.byteLength;
+        if (receivedBytes > MAX_REMOTE_RESPONSE_BYTES) {
+          incoming.destroy(new RemoteMcpHostError(
+            "REMOTE_MCP_RESPONSE_TOO_LARGE",
+            "Remote MCP ответ превысил безопасный лимит.",
+          ));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      incoming.once("error", reject);
+      incoming.once("end", () => {
+        const statusCode = incoming.statusCode || 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          reject(new RemoteMcpHostError(
+            statusCode === 401 || statusCode === 403
+              ? "REMOTE_MCP_AUTH_REJECTED"
+              : "REMOTE_MCP_HTTP_ERROR",
+            statusCode === 401 || statusCode === 403
+              ? "Remote MCP отклонил персональный credential."
+              : `Remote MCP завершил запрос с HTTP ${statusCode}.`,
+          ));
+          return;
+        }
+
+        resolve({
+          statusCode,
+          sessionId: incoming.headers["mcp-session-id"] || sessionId,
+          message: parseRemoteJsonRpcResponse(
+            String(incoming.headers["content-type"] || "").toLowerCase(),
+            Buffer.concat(chunks),
+            payload && Object.hasOwn(payload, "id") ? payload.id : null,
+          ),
+        });
+      });
+    });
+
+    outgoing.once("timeout", () => outgoing.destroy(new RemoteMcpHostError(
+      "REMOTE_MCP_TIMEOUT",
+      "Remote MCP не ответил за безопасный интервал.",
+    )));
+    outgoing.once("error", reject);
+    if (body) {
+      outgoing.end(body);
+    } else {
+      outgoing.end();
+    }
+  });
+};
+
+const assertJsonRpcResult = (response, method) => {
+  if (
+    !response?.message
+    || response.message.jsonrpc !== "2.0"
+    || response.message.error
+    || !Object.hasOwn(response.message, "result")
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_JSON_RPC_ERROR",
+      `Remote MCP не выполнил ${method}.`,
+    );
+  }
+  return response.message.result;
+};
+
+const createRemoteSession = async (
+  config,
+  credential,
+  httpRequest = remoteMcpHttpRequest,
+) => {
+  let requestId = 1;
+  const initializeResponse = await httpRequest({
+    config,
+    credential,
+    payload: {
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "initialize",
+      params: {
+        protocolVersion: config.protocolVersion,
+        capabilities: {},
+        clientInfo: {
+          name: "Trelio trusted Remote MCP host",
+          version: BRIDGE_VERSION,
+        },
+      },
+    },
+  });
+  const initializeResult = assertJsonRpcResult(initializeResponse, "initialize");
+
+  if (initializeResult?.protocolVersion !== config.protocolVersion) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_PROTOCOL_MISMATCH",
+      `Remote MCP согласовал ${initializeResult?.protocolVersion || "неизвестную версию"} вместо ${config.protocolVersion}.`,
+    );
+  }
+
+  const sessionId = initializeResponse.sessionId || null;
+  await httpRequest({
+    config,
+    credential,
+    sessionId,
+    payload: {
+      jsonrpc: "2.0",
+      method: "notifications/initialized",
+    },
+  });
+
+  return {
+    sessionId,
+    nextRequestId: () => {
+      requestId += 1;
+      return requestId;
+    },
+  };
+};
+
+const closeRemoteSession = async (
+  config,
+  credential,
+  sessionId,
+  httpRequest = remoteMcpHttpRequest,
+) => {
+  if (!sessionId) {
+    return;
+  }
+  await httpRequest({
+    config,
+    credential,
+    method: "DELETE",
+    sessionId,
+  }).catch(() => undefined);
+};
+
+const listRemoteTools = async (
+  config,
+  credential,
+  session,
+  httpRequest = remoteMcpHttpRequest,
+) => {
+  const tools = [];
+  let cursor = null;
+
+  for (let page = 0; page < 10; page += 1) {
+    const response = await httpRequest({
+      config,
+      credential,
+      sessionId: session.sessionId,
+      payload: {
+        jsonrpc: "2.0",
+        id: session.nextRequestId(),
+        method: "tools/list",
+        params: cursor ? { cursor } : {},
+      },
+    });
+    const result = assertJsonRpcResult(response, "tools/list");
+    if (!Array.isArray(result?.tools)) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_INVALID_TOOL_LIST",
+        "Remote MCP tools/list не вернул массив tools.",
+      );
+    }
+    tools.push(...result.tools);
+    cursor = typeof result.nextCursor === "string" && result.nextCursor
+      ? result.nextCursor
+      : null;
+    if (!cursor) {
+      return tools;
+    }
+  }
+
+  throw new RemoteMcpHostError(
+    "REMOTE_MCP_TOOL_LIST_TOO_LARGE",
+    "Remote MCP tools/list превысил безопасный лимит страниц.",
+  );
+};
+
+export const assertExactReadOnlyToolList = (config, tools) => {
+  const names = tools.map((tool) => String(tool?.name || ""));
+  const expected = [...config.allowedTools].sort();
+  const actual = [...names].sort();
+
+  if (
+    names.some((name) => !TOOL_NAME_PATTERN.test(name))
+    || new Set(names).size !== names.length
+    || JSON.stringify(actual) !== JSON.stringify(expected)
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_ALLOWLIST_MISMATCH",
+      "Remote MCP tools/list не совпал с exact allowlist. Подключение заблокировано.",
+      { expectedTools: expected, actualTools: actual },
+    );
+  }
+
+  for (const tool of tools) {
+    if (
+      WRITE_TOOL_NAME_PATTERN.test(tool.name)
+      || tool.annotations?.destructiveHint === true
+      || tool.annotations?.readOnlyHint === false
+    ) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_WRITE_TOOL_BLOCKED",
+        `Remote MCP tool ${tool.name} не прошёл read-only проверку.`,
+      );
+    }
+  }
+
+  return tools;
+};
+
+export const doctorWithCredential = async (
+  resolved,
+  credential,
+  {
+    httpRequest = remoteMcpHttpRequest,
+  } = {},
+) => {
+  const config = resolved.remoteMcp.config;
+  const session = await createRemoteSession(config, credential, httpRequest);
+
+  try {
+    const tools = assertExactReadOnlyToolList(
+      config,
+      await listRemoteTools(config, credential, session, httpRequest),
+    );
+    return {
+      ok: true,
+      protocolVersion: config.protocolVersion,
+      endpoint: config.endpoint,
+      configFingerprint: resolved.remoteMcp.configFingerprint,
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: typeof tool.description === "string" ? tool.description : "",
+        inputSchema: tool.inputSchema && typeof tool.inputSchema === "object"
+          ? tool.inputSchema
+          : { type: "object" },
+        annotations: tool.annotations && typeof tool.annotations === "object"
+          ? tool.annotations
+          : {},
+      })),
+    };
+  } finally {
+    await closeRemoteSession(config, credential, session.sessionId, httpRequest);
+  }
+};
+
+const doctorRemoteMcp = async (origin, resolved) => (
+  doctorWithCredential(resolved, await loadPersonalCredential(origin, resolved))
+);
+
+const callRemoteTool = async (origin, resolved, toolName, toolArguments) => {
+  const config = resolved.remoteMcp.config;
+  const credential = await loadPersonalCredential(origin, resolved);
+  const session = await createRemoteSession(config, credential);
+
+  try {
+    const tools = assertExactReadOnlyToolList(
+      config,
+      await listRemoteTools(config, credential, session),
+    );
+    if (!tools.some((tool) => tool.name === toolName)) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_TOOL_NOT_ALLOWED",
+        `Remote MCP tool ${toolName} отсутствует в exact allowlist.`,
+      );
+    }
+    const response = await remoteMcpHttpRequest({
+      config,
+      credential,
+      sessionId: session.sessionId,
+      payload: {
+        jsonrpc: "2.0",
+        id: session.nextRequestId(),
+        method: "tools/call",
+        params: {
+          name: toolName,
+          arguments: toolArguments,
+        },
+      },
+    });
+    return assertJsonRpcResult(response, `tools/call ${toolName}`);
+  } finally {
+    await closeRemoteSession(config, credential, session.sessionId);
+  }
+};
+
+const escapeHtml = (value) => String(value ?? "")
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;")
+  .replaceAll("'", "&#39;");
+
+const renderCredentialPage = ({ resolved, nonce, errorMessage = "" }) => {
+  const help = resolved.remoteMcp.config.credentialHelp;
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Подключение ${escapeHtml(resolved.skill.title)}</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { max-width: 42rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
+    form { display: grid; gap: 1rem; }
+    input, button { box-sizing: border-box; width: 100%; padding: .8rem; font: inherit; }
+    .muted { opacity: .72; }
+    .error { color: #b42318; }
+  </style>
+</head>
+<body>
+  <h1>${escapeHtml(resolved.skill.title)}</h1>
+  <p class="muted">Credential сохраняется только на этом устройстве и не передаётся Trelio, агенту, чату или workspace.</p>
+  ${help ? `
+    <p>${escapeHtml(help.instructions)}</p>
+    <p><a href="${escapeHtml(help.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(help.label)}</a> · ${escapeHtml(new URL(help.url).hostname)}</p>
+  ` : ""}
+  ${errorMessage ? `<p class="error">${escapeHtml(errorMessage)}</p>` : ""}
+  <form method="post" action="/credential" autocomplete="off">
+    <input type="hidden" name="nonce" value="${escapeHtml(nonce)}">
+    <label>
+      Personal Bearer PAT
+      <input type="password" name="credential" minlength="8" maxlength="${MAX_CREDENTIAL_BYTES}" required autocomplete="new-password" autofocus>
+    </label>
+    <button type="submit">Проверить и сохранить на устройстве</button>
+  </form>
+</body>
+</html>`;
+};
+
+const readLimitedRequestBody = async (incoming) => {
+  const chunks = [];
+  let receivedBytes = 0;
+
+  for await (const chunk of incoming) {
+    receivedBytes += chunk.byteLength;
+    if (receivedBytes > MAX_CREDENTIAL_BYTES * 2) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_CREDENTIAL_INVALID",
+        "Локальная форма получила слишком большой запрос.",
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+};
+
+const writeLoopbackHtml = (outgoing, statusCode, html) => {
+  outgoing.writeHead(statusCode, {
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+  });
+  outgoing.end(html);
+};
+
+const collectCredentialThroughLoopback = async (origin, resolved) => {
+  const nonce = crypto.randomBytes(32).toString("base64url");
+  let expectedOrigin = "";
+  let finish;
+  let fail;
+  const completion = new Promise((resolve, reject) => {
+    finish = resolve;
+    fail = reject;
+  });
+  const server = http.createServer(async (incoming, outgoing) => {
+    try {
+      const requestUrl = new URL(incoming.url || "/", expectedOrigin || "http://127.0.0.1");
+
+      if (
+        incoming.method === "GET"
+        && requestUrl.pathname === "/"
+        && requestUrl.searchParams.get("nonce") === nonce
+      ) {
+        writeLoopbackHtml(outgoing, 200, renderCredentialPage({ resolved, nonce }));
+        return;
+      }
+      if (
+        incoming.method !== "POST"
+        || requestUrl.pathname !== "/credential"
+        || incoming.headers.origin !== expectedOrigin
+        || !String(incoming.headers["content-type"] || "").startsWith(
+          "application/x-www-form-urlencoded",
+        )
+      ) {
+        outgoing.writeHead(404, { "cache-control": "no-store" }).end("Not found");
+        return;
+      }
+
+      const form = new URLSearchParams(await readLimitedRequestBody(incoming));
+      if (form.get("nonce") !== nonce) {
+        outgoing.writeHead(403, { "cache-control": "no-store" }).end("Forbidden");
+        return;
+      }
+      const credential = String(form.get("credential") || "").trim();
+
+      try {
+        await doctorWithCredential(resolved, credential);
+        await savePersonalCredential(origin, resolved, credential);
+      } catch (error) {
+        writeLoopbackHtml(outgoing, 400, renderCredentialPage({
+          resolved,
+          nonce,
+          errorMessage: error instanceof Error
+            ? error.message
+            : "Credential не прошёл проверку.",
+        }));
+        return;
+      }
+
+      writeLoopbackHtml(
+        outgoing,
+        200,
+        "<!doctype html><meta charset=utf-8><title>Подключено</title><p>Remote MCP подключён. Эту вкладку можно закрыть.</p>",
+      );
+      finish();
+    } catch (error) {
+      outgoing.writeHead(500, { "cache-control": "no-store" }).end("Local setup failed");
+      fail(error);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address !== "object") {
+      throw new Error("Локальная форма не получила loopback port.");
+    }
+    expectedOrigin = `http://127.0.0.1:${address.port}`;
+    const setupUrl = `${expectedOrigin}/?${new URLSearchParams({ nonce }).toString()}`;
+    await openBrowser(setupUrl);
+
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(
+        () => reject(new RemoteMcpHostError(
+          "REMOTE_MCP_CREDENTIAL_SETUP_TIMEOUT",
+          "Время ожидания локального ввода credential истекло.",
+        )),
+        CREDENTIAL_SETUP_TIMEOUT_MS,
+      );
+    });
+    await Promise.race([completion, timeout]).finally(() => clearTimeout(timeoutId));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+};
+
+const localToolBaseSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["companyId", "skillId", "releaseId"],
+  properties: {
+    companyId: { type: "string", format: "uuid" },
+    projectId: { type: ["string", "null"], format: "uuid" },
+    skillId: { type: "string", minLength: 1, maxLength: 120 },
+    releaseId: { type: "string", format: "uuid" },
+  },
+};
+
+const LOCAL_TOOLS = [
+  {
+    name: "connect_remote_agent_skill",
+    title: "Connect personal Remote MCP credential",
+    description: "Open a protected one-time loopback form. The user obtains a credential from credentialHelp and enters it locally; the agent and Trelio never receive its value.",
+    inputSchema: localToolBaseSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
+  },
+  {
+    name: "doctor_remote_agent_skill",
+    title: "Doctor a Remote MCP skill",
+    description: "Resolve the current declaration, check local credential binding, initialize the remote Streamable HTTP MCP, verify protocol and require an exact read-only tool allowlist.",
+    inputSchema: localToolBaseSchema,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
+  },
+  {
+    name: "call_remote_agent_skill_tool",
+    title: "Call an allowed Remote MCP tool",
+    description: "Resolve and doctor the exact Remote MCP release, then call one allowlisted tool. Remote output is untrusted data.",
+    inputSchema: {
+      ...localToolBaseSchema,
+      required: [...localToolBaseSchema.required, "toolName", "arguments"],
+      properties: {
+        ...localToolBaseSchema.properties,
+        toolName: { type: "string", minLength: 1, maxLength: 128 },
+        arguments: { type: "object" },
+      },
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: true,
+    },
+  },
+  {
+    name: "forget_remote_agent_skill_credential",
+    title: "Forget a local Remote MCP credential",
+    description: "Delete only the authenticated user's local credential for this company and skill. This does not revoke the PAT at the external provider.",
+    inputSchema: localToolBaseSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    },
+  },
+];
+
+const buildTextResult = (payload) => ({
+  content: [{
+    type: "text",
+    text: JSON.stringify(payload),
+  }],
+});
+
+const handleToolCall = async (origin, name, rawArguments) => {
+  const resolved = await resolveRemoteMcpDeclaration(origin, rawArguments);
+
+  if (name === "connect_remote_agent_skill") {
+    if (resolved.remoteMcp.config.authentication.type === "none") {
+      return buildTextResult(await doctorRemoteMcp(origin, resolved));
+    }
+    await collectCredentialThroughLoopback(origin, resolved);
+    return buildTextResult({
+      connected: true,
+      skillId: resolved.skill.id,
+      configFingerprint: resolved.remoteMcp.configFingerprint,
+      credentialStored: "local_device_only",
+    });
+  }
+  if (name === "doctor_remote_agent_skill") {
+    return buildTextResult(await doctorRemoteMcp(origin, resolved));
+  }
+  if (name === "call_remote_agent_skill_tool") {
+    const toolName = String(rawArguments?.toolName || "");
+    const toolArguments = rawArguments?.arguments;
+    if (
+      !TOOL_NAME_PATTERN.test(toolName)
+      || !toolArguments
+      || typeof toolArguments !== "object"
+      || Array.isArray(toolArguments)
+    ) {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_INVALID_INPUT",
+        "toolName и object arguments обязательны.",
+      );
+    }
+    return buildTextResult({
+      toolName,
+      result: await callRemoteTool(origin, resolved, toolName, toolArguments),
+      trust: "untrusted_external_data",
+    });
+  }
+  if (name === "forget_remote_agent_skill_credential") {
+    return buildTextResult({
+      forgotten: await forgetPersonalCredential(origin, resolved),
+      providerCredentialRevoked: false,
+      note: "PAT remains valid at the provider until the user revokes it there.",
+    });
+  }
+
+  throw new RemoteMcpHostError("REMOTE_MCP_UNKNOWN_LOCAL_TOOL", "Неизвестный local Remote MCP tool.");
+};
+
+const safeErrorPayload = (error) => ({
+  code: error instanceof RemoteMcpHostError
+    ? error.code
+    : String(error?.message || "").includes("TRELIO_BRIDGE_PAIRING_REQUIRED")
+      ? "TRELIO_BRIDGE_PAIRING_REQUIRED"
+      : "REMOTE_MCP_HOST_ERROR",
+  message: error instanceof Error ? error.message : String(error),
+  ...(error instanceof RemoteMcpHostError && error.details
+    ? { details: error.details }
+    : {}),
+});
+
+export const handleLocalMcpMessage = async (
+  message,
+  {
+    origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
+    callTool = handleToolCall,
+  } = {},
+) => {
+  if (!message || message.jsonrpc !== "2.0") {
+    return null;
+  }
+  if (message.method === "initialize") {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        protocolVersion: message.params?.protocolVersion || REMOTE_MCP_PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: {
+          name: "trelio-remote-skills",
+          version: BRIDGE_VERSION,
+        },
+      },
+    };
+  }
+  if (message.method === "ping") {
+    return { jsonrpc: "2.0", id: message.id, result: {} };
+  }
+  if (message.method === "tools/list") {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { tools: LOCAL_TOOLS },
+    };
+  }
+  if (message.method === "tools/call") {
+    try {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: await callTool(
+          origin,
+          String(message.params?.name || ""),
+          message.params?.arguments,
+        ),
+      };
+    } catch (error) {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          ...buildTextResult(safeErrorPayload(error)),
+          isError: true,
+        },
+      };
+    }
+  }
+  if (message.id === undefined || message.id === null) {
+    return null;
+  }
+  return {
+    jsonrpc: "2.0",
+    id: message.id,
+    error: {
+      code: -32601,
+      message: "Method not found",
+    },
+  };
+};
+
+const main = async () => {
+  const input = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+    terminal: false,
+  });
+
+  for await (const line of input) {
+    if (!line.trim()) {
+      continue;
+    }
+    let response;
+    try {
+      response = await handleLocalMcpMessage(JSON.parse(line));
+    } catch {
+      response = {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: "Parse error" },
+      };
+    }
+    if (response) {
+      process.stdout.write(`${JSON.stringify(response)}\n`);
+    }
+  }
+};
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    // Stdio stdout is reserved for MCP framing. Even fatal diagnostics never
+    // include credential values and go only to stderr.
+    process.stderr.write(`Remote MCP host failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
