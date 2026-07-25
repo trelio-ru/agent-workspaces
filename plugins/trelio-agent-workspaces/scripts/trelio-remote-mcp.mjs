@@ -17,6 +17,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -545,18 +546,29 @@ export const resolveSafeRemoteMcpEndpoint = async (
   };
 };
 
+const parseSseEventJson = (eventText) => {
+  const data = eventText
+    .split(/\r\n|\r|\n/u)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+
+  if (!data || data === "[DONE]") {
+    // SSE comments (including heartbeat lines beginning with ":") and events
+    // without a data field carry no JSON-RPC response.
+    return null;
+  }
+  return JSON.parse(data);
+};
+
 const parseSseJson = (bodyText, expectedId = null) => {
-  const events = bodyText.split(/\r?\n\r?\n/u);
+  const events = bodyText.split(/\r\n\r\n|\n\n|\r\r/u);
   const messages = [];
 
   for (const event of events) {
-    const data = event
-      .split(/\r?\n/u)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .join("\n");
-    if (data && data !== "[DONE]") {
-      messages.push(JSON.parse(data));
+    const message = parseSseEventJson(event);
+    if (message !== null) {
+      messages.push(message);
     }
   }
   if (expectedId !== null) {
@@ -613,14 +625,16 @@ export const buildRemoteMcpRequestHeaders = ({
     : {}),
 });
 
-const remoteMcpHttpRequest = async ({
+export const remoteMcpHttpRequest = ({
   config,
   credential,
   method = "POST",
   payload = null,
   sessionId = null,
-}) => {
-  const safeEndpoint = await resolveSafeRemoteMcpEndpoint(config.endpoint);
+}, {
+  resolveEndpoint = resolveSafeRemoteMcpEndpoint,
+  timeoutMs = REMOTE_REQUEST_TIMEOUT_MS,
+} = {}) => {
   const body = payload === null ? null : Buffer.from(JSON.stringify(payload), "utf8");
   const headers = buildRemoteMcpRequestHeaders({
     config,
@@ -628,48 +642,88 @@ const remoteMcpHttpRequest = async ({
     body,
     sessionId,
   });
-  const requestModule = safeEndpoint.endpoint.protocol === "https:" ? https : http;
+  const expectedId = payload && Object.hasOwn(payload, "id")
+    ? payload.id
+    : null;
+  const absoluteTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : REMOTE_REQUEST_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
-    const outgoing = requestModule.request({
-      protocol: safeEndpoint.endpoint.protocol,
-      hostname: safeEndpoint.endpoint.hostname,
-      port: safeEndpoint.endpoint.port || undefined,
-      path: `${safeEndpoint.endpoint.pathname}${safeEndpoint.endpoint.search}`,
-      method,
-      headers,
-      servername: safeEndpoint.endpoint.hostname,
-      lookup: (_hostname, options, callback) => {
-        if (options?.all) {
-          callback(null, [{
-            address: safeEndpoint.address,
-            family: safeEndpoint.family,
-          }]);
-          return;
-        }
-        callback(null, safeEndpoint.address, safeEndpoint.family);
-      },
-      timeout: REMOTE_REQUEST_TIMEOUT_MS,
-    }, (incoming) => {
-      const chunks = [];
-      let receivedBytes = 0;
+    let outgoing = null;
+    let incoming = null;
+    let settled = false;
 
-      incoming.on("data", (chunk) => {
-        receivedBytes += chunk.byteLength;
-        if (receivedBytes > MAX_REMOTE_RESPONSE_BYTES) {
-          incoming.destroy(new RemoteMcpHostError(
-            "REMOTE_MCP_RESPONSE_TOO_LARGE",
-            "Remote MCP ответ превысил безопасный лимит.",
-          ));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      incoming.once("error", reject);
-      incoming.once("end", () => {
+    const destroyTransport = () => {
+      // A matching SSE response is a complete response for this JSON-RPC
+      // request even if the server intends to keep the HTTP stream open.
+      // Destroying both wrappers releases the pinned socket immediately.
+      incoming?.destroy();
+      outgoing?.destroy();
+    };
+    const settle = (callback, value, { destroy = false } = {}) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(deadline);
+      if (destroy) {
+        destroyTransport();
+      }
+      callback(value);
+    };
+    const fail = (error) => settle(reject, error, { destroy: true });
+    const succeed = (value, options = {}) => settle(resolve, value, options);
+    const deadline = setTimeout(() => fail(new RemoteMcpHostError(
+      "REMOTE_MCP_TIMEOUT",
+      "Remote MCP не ответил за безопасный абсолютный интервал.",
+    )), absoluteTimeoutMs);
+
+    void (async () => {
+      // The wall-clock deadline starts before DNS validation. If resolution
+      // itself stalls, its late result cannot start a request after timeout.
+      const safeEndpoint = await resolveEndpoint(config.endpoint);
+      if (settled) {
+        return;
+      }
+      const requestModule = safeEndpoint.endpoint.protocol === "https:" ? https : http;
+
+      outgoing = requestModule.request({
+        protocol: safeEndpoint.endpoint.protocol,
+        hostname: safeEndpoint.endpoint.hostname,
+        port: safeEndpoint.endpoint.port || undefined,
+        path: `${safeEndpoint.endpoint.pathname}${safeEndpoint.endpoint.search}`,
+        method,
+        headers,
+        servername: safeEndpoint.endpoint.hostname,
+        lookup: (_hostname, options, callback) => {
+          // Use only the public address validated for this exact call. The
+          // socket cannot perform a second DNS lookup and pivot to an SSRF
+          // target between validation and connection.
+          if (options?.all) {
+            callback(null, [{
+              address: safeEndpoint.address,
+              family: safeEndpoint.family,
+            }]);
+            return;
+          }
+          callback(null, safeEndpoint.address, safeEndpoint.family);
+        },
+      }, (response) => {
+        incoming = response;
         const statusCode = incoming.statusCode || 0;
+        const responseSessionId = incoming.headers["mcp-session-id"] || sessionId;
+        const contentType = String(
+          incoming.headers["content-type"] || "",
+        ).toLowerCase();
+        const isEventStream = contentType.includes("text/event-stream");
+        const chunks = [];
+        const decoder = new StringDecoder("utf8");
+        let sseBuffer = "";
+        let receivedBytes = 0;
+
         if (statusCode < 200 || statusCode >= 300) {
-          reject(new RemoteMcpHostError(
+          fail(new RemoteMcpHostError(
             statusCode === 401 || statusCode === 403
               ? "REMOTE_MCP_AUTH_REJECTED"
               : "REMOTE_MCP_HTTP_ERROR",
@@ -680,28 +734,118 @@ const remoteMcpHttpRequest = async ({
           return;
         }
 
-        resolve({
-          statusCode,
-          sessionId: incoming.headers["mcp-session-id"] || sessionId,
-          message: parseRemoteJsonRpcResponse(
-            String(incoming.headers["content-type"] || "").toLowerCase(),
-            Buffer.concat(chunks),
-            payload && Object.hasOwn(payload, "id") ? payload.id : null,
-          ),
+        const completeSseEvent = (eventText) => {
+          const message = parseSseEventJson(eventText);
+          if (
+            message !== null
+            && (expectedId === null || message?.id === expectedId)
+          ) {
+            succeed({
+              statusCode,
+              sessionId: responseSessionId,
+              message,
+            }, { destroy: true });
+            return true;
+          }
+          return false;
+        };
+        const consumeCompleteSseEvents = ({ flush = false } = {}) => {
+          while (!settled) {
+            const boundary = /\r\n\r\n|\n\n|\r\r/u.exec(sseBuffer);
+            if (!boundary) {
+              break;
+            }
+            const eventText = sseBuffer.slice(0, boundary.index);
+            sseBuffer = sseBuffer.slice(boundary.index + boundary[0].length);
+            if (completeSseEvent(eventText)) {
+              return true;
+            }
+          }
+          if (flush && sseBuffer && !settled) {
+            const finalEvent = sseBuffer;
+            sseBuffer = "";
+            return completeSseEvent(finalEvent);
+          }
+          return settled;
+        };
+
+        incoming.on("data", (chunk) => {
+          if (settled) {
+            return;
+          }
+          receivedBytes += chunk.byteLength;
+          if (receivedBytes > MAX_REMOTE_RESPONSE_BYTES) {
+            fail(new RemoteMcpHostError(
+              "REMOTE_MCP_RESPONSE_TOO_LARGE",
+              "Remote MCP ответ превысил безопасный лимит.",
+            ));
+            return;
+          }
+          if (!isEventStream) {
+            chunks.push(chunk);
+            return;
+          }
+
+          try {
+            sseBuffer += decoder.write(chunk);
+            consumeCompleteSseEvents();
+          } catch {
+            fail(new RemoteMcpHostError(
+              "REMOTE_MCP_INVALID_RESPONSE",
+              "Remote MCP вернул некорректный JSON-RPC ответ.",
+            ));
+          }
+        });
+        incoming.once("aborted", () => fail(new RemoteMcpHostError(
+          "REMOTE_MCP_CONNECTION_CLOSED",
+          "Remote MCP закрыл соединение до полного JSON-RPC ответа.",
+        )));
+        incoming.once("error", fail);
+        incoming.once("end", () => {
+          if (settled) {
+            return;
+          }
+          try {
+            if (isEventStream) {
+              sseBuffer += decoder.end();
+              if (consumeCompleteSseEvents({ flush: true })) {
+                return;
+              }
+              if (expectedId !== null) {
+                throw new RemoteMcpHostError(
+                  "REMOTE_MCP_INVALID_RESPONSE",
+                  "Remote MCP завершил SSE без ожидаемого JSON-RPC response.",
+                );
+              }
+              succeed({
+                statusCode,
+                sessionId: responseSessionId,
+                message: null,
+              });
+              return;
+            }
+            succeed({
+              statusCode,
+              sessionId: responseSessionId,
+              message: parseRemoteJsonRpcResponse(
+                contentType,
+                Buffer.concat(chunks),
+                expectedId,
+              ),
+            });
+          } catch (error) {
+            fail(error);
+          }
         });
       });
-    });
 
-    outgoing.once("timeout", () => outgoing.destroy(new RemoteMcpHostError(
-      "REMOTE_MCP_TIMEOUT",
-      "Remote MCP не ответил за безопасный интервал.",
-    )));
-    outgoing.once("error", reject);
-    if (body) {
-      outgoing.end(body);
-    } else {
-      outgoing.end();
-    }
+      outgoing.once("error", fail);
+      if (body) {
+        outgoing.end(body);
+      } else {
+        outgoing.end();
+      }
+    })().catch(fail);
   });
 };
 

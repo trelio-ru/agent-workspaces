@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import http from "node:http";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,6 +12,7 @@ import {
   doctorWithCredential,
   fingerprintRemoteMcpConfig,
   handleLocalMcpMessage,
+  remoteMcpHttpRequest,
   resolveRemoteMcpCredentialFile,
   resolveSafeRemoteMcpEndpoint,
   validateResolvedRemoteMcp,
@@ -59,7 +61,7 @@ const resolvedDodo = {
   remoteMcp: {
     config: dodoConfig,
     configFingerprint: fingerprintRemoteMcpConfig(dodoConfig),
-    minimumHostVersion: "1.4.2",
+    minimumHostVersion: "1.4.3",
   },
 };
 
@@ -72,6 +74,28 @@ const dodoTools = dodoConfig.allowedTools.map((name) => ({
     destructiveHint: false,
   },
 }));
+
+const listenOnLoopback = async (handler) => {
+  const server = http.createServer(handler);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return server;
+};
+
+const closeTestServer = async (server) => {
+  server.closeAllConnections();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+};
+
+const createPinnedLoopbackResolver = () => async (rawEndpoint) => ({
+  endpoint: new URL(rawEndpoint),
+  address: "127.0.0.1",
+  family: 4,
+});
 
 test("Remote MCP declaration accepts the exact Dodo read-only contract", () => {
   const validated = validateResolvedRemoteMcp(resolvedDodo);
@@ -285,6 +309,115 @@ test("request headers add only bearer auth and host-controlled MCP metadata", ()
   assert.equal(headers["mcp-write-spaces"], undefined);
 });
 
+test("Remote MCP request completes on a matching SSE response without waiting for stream end", {
+  timeout: 2_000,
+}, async () => {
+  let markStreamClosed;
+  const streamClosed = new Promise((resolve) => {
+    markStreamClosed = resolve;
+  });
+  const server = await listenOnLoopback((_request, response) => {
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "mcp-session-id": "session-sse",
+    });
+    response.write(": ready\n\n");
+    response.write("event: message\n");
+    response.write('data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\n\n');
+    const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 10);
+    response.once("close", () => {
+      clearInterval(heartbeat);
+      markStreamClosed();
+    });
+  });
+
+  try {
+    const { port } = server.address();
+    const startedAt = Date.now();
+    const result = await remoteMcpHttpRequest({
+      config: {
+        ...dodoConfig,
+        endpoint: `http://remote-mcp.test:${port}/mcp`,
+      },
+      credential: "personal-test-token",
+      payload: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      },
+    }, {
+      // Production always uses resolveSafeRemoteMcpEndpoint. This injected
+      // resolver only lets the regression exercise the real HTTP parser on a
+      // local server while still verifying connection pinning.
+      resolveEndpoint: createPinnedLoopbackResolver(),
+      timeoutMs: 1_000,
+    });
+
+    assert.equal(result.sessionId, "session-sse");
+    assert.deepEqual(result.message, {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { ok: true },
+    });
+    assert.ok(Date.now() - startedAt < 500);
+    await streamClosed;
+  } finally {
+    await closeTestServer(server);
+  }
+});
+
+test("Remote MCP absolute deadline is not extended by SSE heartbeats", {
+  timeout: 2_000,
+}, async () => {
+  let markStreamClosed;
+  const streamClosed = new Promise((resolve) => {
+    markStreamClosed = resolve;
+  });
+  const server = await listenOnLoopback((_request, response) => {
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(": ready\n\n");
+    const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 10);
+    response.once("close", () => {
+      clearInterval(heartbeat);
+      markStreamClosed();
+    });
+  });
+
+  try {
+    const { port } = server.address();
+    const startedAt = Date.now();
+    await assert.rejects(
+      remoteMcpHttpRequest({
+        config: {
+          ...dodoConfig,
+          endpoint: `http://remote-mcp.test:${port}/mcp`,
+        },
+        credential: "personal-test-token",
+        payload: {
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/list",
+          params: {},
+        },
+      }, {
+        resolveEndpoint: createPinnedLoopbackResolver(),
+        timeoutMs: 120,
+      }),
+      (error) => (
+        error instanceof RemoteMcpHostError
+        && error.code === "REMOTE_MCP_TIMEOUT"
+      ),
+    );
+    const elapsedMs = Date.now() - startedAt;
+    assert.ok(elapsedMs >= 100, `deadline fired too early after ${elapsedMs}ms`);
+    assert.ok(elapsedMs < 600, `heartbeats extended deadline to ${elapsedMs}ms`);
+    await streamClosed;
+  } finally {
+    await closeTestServer(server);
+  }
+});
+
 test("personal credential path follows the stable local integration namespace", () => {
   const identity = resolvedDodo.localIdentity;
   assert.equal(
@@ -364,6 +497,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.2");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.3");
   assert.equal(frames[1].result.tools.length, 4);
 });

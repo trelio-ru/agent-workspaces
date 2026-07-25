@@ -145,7 +145,8 @@ Agent Secrets хранятся и расшифровываются на стор
 вводит его в одноразовой loopback-форме, а plugin хранит значение в приватном
 локальном integration namespace, привязанном к пользователю и fingerprint
 декларации. В чат, prompt, workspace, открытый config и MCP tool arguments PAT
-не попадает.
+не попадает. SSE-ответ завершается по exact matching JSON-RPC `id`, а
+абсолютный deadline не продлевается heartbeat-трафиком.
 
 Не добавляйте токены, локальные credentials и содержимое рабочих workspace в
 issues или pull requests. Для уязвимостей используйте приватное сообщение через

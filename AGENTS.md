@@ -85,7 +85,10 @@ Trelio-монорепозитории быть не должно.
   правами и привязывается к fingerprint endpoint/auth/headers/allowlist.
   `credentialHelp` является только публичной HTTPS-подсказкой; агент может
   показать ссылку, но не просит присылать token в чат. Удаление локальной копии
-  не отзывает PAT у внешнего provider.
+  не отзывает PAT у внешнего provider. Начиная с `1.4.3` Streamable HTTP host
+  завершает exact JSON-RPC запрос сразу по первому matching SSE event, закрывает
+  удерживаемое сервером соединение и применяет абсолютный wall-clock deadline,
+  который не продлевается heartbeat-трафиком.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда
