@@ -93,7 +93,13 @@ Trelio-монорепозитории быть не должно.
   после exact GET одноразовой nonce-формы. На macOS неудачный или формально
   успешный, но не доставленный default handoff приватно повторяется через
   Google Chrome и Safari; URL/nonce не возвращаются агенту, а после всех
-  неудач listener закрывается с безопасной диагностикой.
+  неудач listener закрывается с безопасной диагностикой. Начиная с `1.4.5`
+  loopback submit принимает Chrome-вариант `Origin: null` или отсутствующий
+  Origin только при полном same-origin document-navigation наборе
+  `Sec-Fetch-*`, exact Host/port, loopback socket и одноразовом nonce. Любой
+  отказ завершает tool безопасной категорийной диагностикой без URL, тела,
+  nonce или credential, а listener закрывает оставшиеся keep-alive соединения
+  после отправки ответа.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда

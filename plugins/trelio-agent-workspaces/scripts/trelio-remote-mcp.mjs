@@ -1147,9 +1147,13 @@ const readLimitedRequestBody = async (incoming) => {
   return Buffer.concat(chunks).toString("utf8");
 };
 
-const writeLoopbackHtml = (outgoing, statusCode, html) => {
+const writeLoopbackHtml = (outgoing, statusCode, html, { onFinished } = {}) => {
+  if (typeof onFinished === "function") {
+    outgoing.once("finish", onFinished);
+  }
   outgoing.writeHead(statusCode, {
     "cache-control": "no-store",
+    "connection": "close",
     "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "content-type": "text/html; charset=utf-8",
     "referrer-policy": "no-referrer",
@@ -1157,6 +1161,80 @@ const writeLoopbackHtml = (outgoing, statusCode, html) => {
     "x-frame-options": "DENY",
   });
   outgoing.end(html);
+};
+
+const readRequestHeader = (incoming, name) => {
+  const value = incoming.headers[name];
+  return typeof value === "string" ? value : "";
+};
+
+export const classifyLoopbackCredentialRequest = (
+  incoming,
+  requestUrl,
+  expectedOrigin,
+) => {
+  const method = String(incoming.method || "").toUpperCase();
+  const originHeader = readRequestHeader(incoming, "origin");
+  const contentType = readRequestHeader(incoming, "content-type").toLowerCase();
+
+  // Diagnostics intentionally expose only bounded categories. In particular,
+  // they never copy a raw URL, Host, Origin, query, form body, nonce or
+  // credential into MCP output or stderr.
+  return {
+    method: method === "POST" ? "post" : method === "GET" ? "get" : "other",
+    path: requestUrl.pathname === "/credential"
+      ? "credential"
+      : requestUrl.pathname === "/"
+        ? "root"
+        : "other",
+    origin: originHeader === expectedOrigin
+      ? "exact"
+      : originHeader === "null"
+        ? "null"
+        : originHeader
+          ? "other"
+          : "absent",
+    contentType: contentType.startsWith("application/x-www-form-urlencoded")
+      ? "urlencoded"
+      : contentType
+        ? "other"
+        : "absent",
+  };
+};
+
+const isLoopbackRemoteAddress = (address) => (
+  address === "127.0.0.1"
+  || address === "::1"
+  || address === "::ffff:127.0.0.1"
+);
+
+const hasExactLoopbackSocket = (incoming, expectedPort) => (
+  isLoopbackRemoteAddress(incoming.socket.remoteAddress)
+  && incoming.socket.localAddress === "127.0.0.1"
+  && incoming.socket.localPort === expectedPort
+);
+
+const hasAuthorizedCredentialOrigin = (incoming, expectedOrigin) => {
+  const originHeader = readRequestHeader(incoming, "origin");
+  if (originHeader === expectedOrigin) {
+    return true;
+  }
+  if (originHeader !== "" && originHeader !== "null") {
+    return false;
+  }
+
+  // Chrome can deliberately serialize a same-origin loopback form POST as
+  // `Origin: null` under the page's no-referrer policy. Accepting opaque or
+  // absent Origin is therefore limited to a user-activated, same-origin,
+  // top-level document navigation. Together with exact Host/port, the bound
+  // loopback socket and the nonce in the bounded body, this preserves CSRF
+  // protection without depending on one browser's Origin serialization.
+  return (
+    readRequestHeader(incoming, "sec-fetch-site") === "same-origin"
+    && readRequestHeader(incoming, "sec-fetch-mode") === "navigate"
+    && readRequestHeader(incoming, "sec-fetch-dest") === "document"
+    && readRequestHeader(incoming, "sec-fetch-user") === "?1"
+  );
 };
 
 const waitForPromiseSignal = (promise, timeoutMs) => new Promise((resolve) => {
@@ -1231,6 +1309,10 @@ export const collectCredentialThroughLoopback = async (
 ) => {
   const nonce = crypto.randomBytes(32).toString("base64url");
   let expectedOrigin = "";
+  let expectedHost = "";
+  let expectedPort = 0;
+  let credentialSubmissionInFlight = false;
+  let credentialStored = false;
   let markFormOpened;
   const formOpened = new Promise((resolve) => {
     markFormOpened = resolve;
@@ -1241,13 +1323,51 @@ export const collectCredentialThroughLoopback = async (
     finish = resolve;
     fail = reject;
   });
+  // A rejected POST can arrive while the verified opener is still awaiting
+  // the browser navigation response. Attach a handler immediately so Node
+  // never reports that intentional fail-closed signal as an unhandled
+  // rejection before Promise.race begins observing the original promise.
+  completion.catch(() => {});
+  const rejectCredentialRequest = (
+    incoming,
+    outgoing,
+    requestUrl,
+    { drainBody = true } = {},
+  ) => {
+    const diagnostics = classifyLoopbackCredentialRequest(
+      incoming,
+      requestUrl,
+      expectedOrigin,
+    );
+    // Do not inspect or retain a rejected request body. Draining it only lets
+    // Node release the socket cleanly while the diagnostic stays metadata-only.
+    if (drainBody) {
+      incoming.resume();
+    }
+    writeLoopbackHtml(
+      outgoing,
+      403,
+      "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Защитная проверка локальной формы не пройдена. Закройте вкладку и повторите подключение.</p>",
+    );
+    fail(new RemoteMcpHostError(
+      "REMOTE_MCP_CREDENTIAL_REQUEST_REJECTED",
+      "Локальная форма отклонила credential submit: запрос не соответствует защищённому loopback-контракту.",
+      diagnostics,
+    ));
+  };
   const server = http.createServer(async (incoming, outgoing) => {
     try {
       const requestUrl = new URL(incoming.url || "/", expectedOrigin || "http://127.0.0.1");
+      const exactLoopbackTarget = (
+        requestUrl.origin === expectedOrigin
+        && readRequestHeader(incoming, "host") === expectedHost
+        && hasExactLoopbackSocket(incoming, expectedPort)
+      );
 
       if (
         incoming.method === "GET"
         && requestUrl.pathname === "/"
+        && exactLoopbackTarget
         && requestUrl.searchParams.get("nonce") === nonce
       ) {
         writeLoopbackHtml(outgoing, 200, renderCredentialPage({ resolved, nonce }));
@@ -1256,29 +1376,48 @@ export const collectCredentialThroughLoopback = async (
         markFormOpened();
         return;
       }
+      if (requestUrl.pathname !== "/credential") {
+        outgoing.writeHead(404, {
+          "cache-control": "no-store",
+          "connection": "close",
+        }).end("Not found");
+        return;
+      }
+
+      const contentType = readRequestHeader(incoming, "content-type").toLowerCase();
       if (
         incoming.method !== "POST"
-        || requestUrl.pathname !== "/credential"
-        || incoming.headers.origin !== expectedOrigin
-        || !String(incoming.headers["content-type"] || "").startsWith(
-          "application/x-www-form-urlencoded",
-        )
+        || requestUrl.search !== ""
+        || !exactLoopbackTarget
+        || !contentType.startsWith("application/x-www-form-urlencoded")
+        || !hasAuthorizedCredentialOrigin(incoming, expectedOrigin)
       ) {
-        outgoing.writeHead(404, { "cache-control": "no-store" }).end("Not found");
+        rejectCredentialRequest(incoming, outgoing, requestUrl);
         return;
       }
 
       const form = new URLSearchParams(await readLimitedRequestBody(incoming));
       if (form.get("nonce") !== nonce) {
-        outgoing.writeHead(403, { "cache-control": "no-store" }).end("Forbidden");
+        rejectCredentialRequest(incoming, outgoing, requestUrl, { drainBody: false });
+        return;
+      }
+      if (credentialSubmissionInFlight || credentialStored) {
+        writeLoopbackHtml(
+          outgoing,
+          409,
+          "<!doctype html><meta charset=utf-8><title>Запрос уже принят</title><p>Проверка credential уже выполняется. Эту вкладку можно закрыть.</p>",
+        );
         return;
       }
       const credential = String(form.get("credential") || "").trim();
+      credentialSubmissionInFlight = true;
 
       try {
         await doctorCredential(resolved, credential);
         await persistCredential(origin, resolved, credential);
+        credentialStored = true;
       } catch (error) {
+        credentialSubmissionInFlight = false;
         writeLoopbackHtml(outgoing, 400, renderCredentialPage({
           resolved,
           nonce,
@@ -1293,10 +1432,13 @@ export const collectCredentialThroughLoopback = async (
         outgoing,
         200,
         "<!doctype html><meta charset=utf-8><title>Подключено</title><p>Remote MCP подключён. Эту вкладку можно закрыть.</p>",
+        { onFinished: finish },
       );
-      finish();
     } catch (error) {
-      outgoing.writeHead(500, { "cache-control": "no-store" }).end("Local setup failed");
+      outgoing.writeHead(500, {
+        "cache-control": "no-store",
+        "connection": "close",
+      }).end("Local setup failed");
       fail(error);
     }
   });
@@ -1312,6 +1454,8 @@ export const collectCredentialThroughLoopback = async (
       throw new Error("Локальная форма не получила loopback port.");
     }
     expectedOrigin = `http://127.0.0.1:${address.port}`;
+    expectedHost = `127.0.0.1:${address.port}`;
+    expectedPort = address.port;
     const setupUrl = `${expectedOrigin}/?${new URLSearchParams({ nonce }).toString()}`;
     onListening({ port: address.port });
     await openCredentialFormInBrowser(setupUrl, {
@@ -1333,7 +1477,14 @@ export const collectCredentialThroughLoopback = async (
     });
     await Promise.race([completion, timeout]).finally(() => clearTimeout(timeoutId));
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    // Chromium may keep an otherwise idle loopback connection alive after the
+    // response. The completion signal above fires only once the response has
+    // been flushed, so remaining sockets can now be closed deterministically
+    // without truncating the success page or extending the tool indefinitely.
+    await new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    });
   }
 };
 

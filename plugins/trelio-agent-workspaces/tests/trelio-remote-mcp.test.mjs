@@ -104,6 +104,7 @@ const requestLoopback = async (rawUrl, {
     response.on("data", (chunk) => chunks.push(chunk));
     response.once("end", () => resolve({
       statusCode: response.statusCode,
+      headers: response.headers,
       body: Buffer.concat(chunks).toString("utf8"),
     }));
   });
@@ -206,8 +207,17 @@ test("Remote MCP connect closes the loopback listener when browser opening fails
   });
 });
 
-test("Remote MCP loopback keeps nonce, Origin and content-type checks before persistence", async () => {
-  const credential = "personal-test-token";
+const chromeDocumentNavigationHeaders = (origin) => ({
+  "content-type": "application/x-www-form-urlencoded",
+  ...(origin === undefined ? {} : { origin }),
+  "sec-fetch-site": "same-origin",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-dest": "document",
+  "sec-fetch-user": "?1",
+});
+
+const submitAcceptedLoopbackCredential = async (originMode) => {
+  const credential = "loopback-accepted-test-value";
   const doctorCalls = [];
   const persistedCredentials = [];
 
@@ -232,45 +242,161 @@ test("Remote MCP loopback keeps nonce, Origin and content-type checks before per
 
       const page = await requestLoopback(protectedUrl);
       assert.equal(page.statusCode, 200);
-      assert.doesNotMatch(page.body, new RegExp(credential, "u"));
+      assert.match(
+        String(page.headers["content-security-policy"]),
+        /form-action 'self'/u,
+      );
+      assert.equal(page.headers.connection, "close");
+      assert.equal(page.body.includes(credential), false);
 
-      const formBody = new URLSearchParams({ nonce, credential }).toString();
-      const wrongOrigin = await requestLoopback(`${expectedOrigin}/credential`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded",
-          origin: "http://127.0.0.1:1",
-        },
-        body: formBody,
-      });
-      assert.equal(wrongOrigin.statusCode, 404);
-      assert.equal(doctorCalls.length, 0);
-
-      const wrongContentType = await requestLoopback(`${expectedOrigin}/credential`, {
-        method: "POST",
-        headers: {
-          "content-type": "text/plain",
-          origin: expectedOrigin,
-        },
-        body: formBody,
-      });
-      assert.equal(wrongContentType.statusCode, 404);
-      assert.equal(doctorCalls.length, 0);
-
+      const origin = originMode === "exact"
+        ? expectedOrigin
+        : originMode === "null"
+          ? "null"
+          : undefined;
       const accepted = await requestLoopback(`${expectedOrigin}/credential`, {
         method: "POST",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded",
-          origin: expectedOrigin,
-        },
-        body: formBody,
+        headers: chromeDocumentNavigationHeaders(origin),
+        body: new URLSearchParams({ nonce, credential }).toString(),
       });
       assert.equal(accepted.statusCode, 200);
+      assert.equal(accepted.headers.connection, "close");
     },
   });
 
   assert.deepEqual(doctorCalls, [credential]);
   assert.deepEqual(persistedCredentials, [credential]);
+};
+
+test("Remote MCP loopback accepts exact and Chrome null/absent Origin submits", async () => {
+  // Exact Origin remains the preferred path. Chrome's opaque and missing
+  // variants are accepted only with all same-origin document-navigation
+  // metadata, exact Host/port, loopback socket and the one-time nonce.
+  for (const originMode of ["exact", "null", "absent"]) {
+    await submitAcceptedLoopbackCredential(originMode);
+  }
+});
+
+const assertRejectedLoopbackCredential = async ({
+  expectedDiagnostics,
+  makeBody,
+  makeHeaders,
+}) => {
+  const credential = "loopback-rejected-test-value";
+  const doctorCalls = [];
+  const persistedCredentials = [];
+  let protectedNonce = "";
+
+  await assert.rejects(
+    collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+      browserPlatform: "darwin",
+      handoffTimeoutMs: 100,
+      setupTimeoutMs: 500,
+      doctorCredential: async (_resolved, candidate) => {
+        doctorCalls.push(candidate);
+      },
+      persistCredential: async (_origin, _resolved, candidate) => {
+        persistedCredentials.push(candidate);
+      },
+      openBrowserFn: async (setupUrl) => {
+        const protectedUrl = new URL(setupUrl);
+        protectedNonce = protectedUrl.searchParams.get("nonce");
+        assert.equal((await requestLoopback(protectedUrl)).statusCode, 200);
+
+        const rejected = await requestLoopback(
+          `${protectedUrl.origin}/credential`,
+          {
+            method: "POST",
+            headers: makeHeaders(protectedUrl.origin),
+            body: makeBody({ nonce: protectedNonce, credential }),
+          },
+        );
+        assert.equal(rejected.statusCode, 403);
+      },
+    }),
+    (error) => {
+      assert.equal(error instanceof RemoteMcpHostError, true);
+      assert.equal(error.code, "REMOTE_MCP_CREDENTIAL_REQUEST_REJECTED");
+      assert.deepEqual(error.details, expectedDiagnostics);
+      const safeDiagnostic = JSON.stringify({
+        message: error.message,
+        details: error.details,
+      });
+      assert.equal(safeDiagnostic.includes(credential), false);
+      assert.equal(safeDiagnostic.includes(protectedNonce), false);
+      return true;
+    },
+  );
+
+  assert.deepEqual(doctorCalls, []);
+  assert.deepEqual(persistedCredentials, []);
+};
+
+test("Remote MCP loopback rejects wrong Host, nonce and content type", async () => {
+  await assertRejectedLoopbackCredential({
+    expectedDiagnostics: {
+      method: "post",
+      path: "credential",
+      origin: "exact",
+      contentType: "urlencoded",
+    },
+    makeHeaders: (origin) => ({
+      ...chromeDocumentNavigationHeaders(origin),
+      host: "127.0.0.1:1",
+    }),
+    makeBody: ({ nonce, credential }) => (
+      new URLSearchParams({ nonce, credential }).toString()
+    ),
+  });
+
+  await assertRejectedLoopbackCredential({
+    expectedDiagnostics: {
+      method: "post",
+      path: "credential",
+      origin: "exact",
+      contentType: "urlencoded",
+    },
+    makeHeaders: (origin) => chromeDocumentNavigationHeaders(origin),
+    makeBody: ({ credential }) => (
+      new URLSearchParams({ nonce: "wrong", credential }).toString()
+    ),
+  });
+
+  await assertRejectedLoopbackCredential({
+    expectedDiagnostics: {
+      method: "post",
+      path: "credential",
+      origin: "exact",
+      contentType: "other",
+    },
+    makeHeaders: (origin) => ({
+      ...chromeDocumentNavigationHeaders(origin),
+      "content-type": "text/plain",
+    }),
+    makeBody: ({ nonce, credential }) => (
+      new URLSearchParams({ nonce, credential }).toString()
+    ),
+  });
+});
+
+test("Remote MCP loopback rejects null/absent Origin without strict Fetch Metadata", async () => {
+  for (const origin of ["null", undefined]) {
+    await assertRejectedLoopbackCredential({
+      expectedDiagnostics: {
+        method: "post",
+        path: "credential",
+        origin: origin === undefined ? "absent" : "null",
+        contentType: "urlencoded",
+      },
+      makeHeaders: () => ({
+        "content-type": "application/x-www-form-urlencoded",
+        ...(origin === undefined ? {} : { origin }),
+      }),
+      makeBody: ({ nonce, credential }) => (
+        new URLSearchParams({ nonce, credential }).toString()
+      ),
+    });
+  }
 });
 
 test("Remote MCP declaration accepts the exact Dodo read-only contract", () => {
@@ -673,6 +799,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.4");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.5");
   assert.equal(frames[1].result.tools.length, 4);
 });
