@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.5";
+export const BRIDGE_VERSION = "1.4.6";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -861,7 +861,7 @@ const buildBridgeDeviceIdentity = () => ({
   platform: `${process.platform}/${process.arch}`.slice(0, 64),
 });
 
-const beginBridgePairing = async (origin) => {
+const beginBridgePairing = async (origin, { signal } = {}) => {
   const { verifier, challenge } = createPkce();
   const device = buildBridgeDeviceIdentity();
   const response = await request(origin, null, "/api/agent-workspaces/bridge-pairings", {
@@ -872,6 +872,7 @@ const beginBridgePairing = async (origin) => {
       deviceName: device.deviceName,
       platform: device.platform,
     }),
+    signal,
   });
   const payload = await response.json();
   const pairing = {
@@ -901,6 +902,7 @@ const exchangePendingBridgePairing = async (
   origin,
   {
     onStatus = (message) => process.stdout.write(message),
+    signal,
   } = {},
 ) => {
   const pairing = await getPendingPairing(origin);
@@ -923,6 +925,7 @@ const exchangePendingBridgePairing = async (
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ codeVerifier: pairing.codeVerifier }),
+        signal,
       },
     );
     const payload = await response.json();
@@ -1010,6 +1013,7 @@ export const openBrowser = async (
     application = null,
     spawnProcess = spawn,
     openerTimeoutMs = 5_000,
+    signal,
   } = {},
 ) => {
   const [command, args] = platform === "darwin"
@@ -1046,8 +1050,28 @@ export const openBrowser = async (
       if (timeoutId) {
         clearTimeout(timeoutId);
       }
+      signal?.removeEventListener("abort", handleAbort);
       callback(value);
     };
+    const handleAbort = () => {
+      try {
+        child.kill();
+      } catch {
+        // The short-lived opener may already have exited.
+      }
+      settle(
+        reject,
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Открытие браузера отменено."),
+      );
+    };
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    signal?.addEventListener("abort", handleAbort, { once: true });
 
     // `spawn` only proves that `/usr/bin/open` itself started. LaunchServices
     // may still fail afterwards, so success is acknowledged only when the
@@ -1211,7 +1235,7 @@ export const requireToken = async (origin, options = {}) => {
     return pairedToken;
   }
 
-  return beginBridgePairing(origin);
+  return beginBridgePairing(origin, options);
 };
 
 const pairBridge = async (origin) => {
@@ -2875,12 +2899,17 @@ const writeContextIndex = async (rootDirectory, contexts, rawAgentInstructionsSn
 
 const readJsonResponse = async (response) => response.json();
 
-export const ensureBridgeCompatibility = async (origin, token) => {
+export const ensureBridgeCompatibility = async (
+  origin,
+  token,
+  { signal } = {},
+) => {
   try {
     const compatibility = await readJsonResponse(await request(
       origin,
       token,
       "/api/agent-workspaces/bridge-compatibility",
+      { signal },
     ));
 
     if (compatibility?.supported === true) {

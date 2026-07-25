@@ -39,6 +39,7 @@ const REMOTE_MCP_CREDENTIAL_SCHEMA_VERSION = 1;
 const MAX_REMOTE_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const REMOTE_REQUEST_TIMEOUT_MS = 20_000;
+const TRELIO_RESOLVE_TIMEOUT_MS = 20_000;
 const CREDENTIAL_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 const CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS = 7_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -110,6 +111,61 @@ export class RemoteMcpHostError extends Error {
     this.details = details;
   }
 }
+
+const createCancellationError = () => new RemoteMcpHostError(
+  "REMOTE_MCP_TOOL_CALL_CANCELLED",
+  "Вызов Remote MCP отменён.",
+);
+
+const normalizeAbortReason = (signal) => (
+  signal?.reason instanceof Error
+    ? signal.reason
+    : createCancellationError()
+);
+
+const throwIfAborted = (signal) => {
+  if (signal?.aborted) {
+    throw normalizeAbortReason(signal);
+  }
+};
+
+/**
+ * Links a caller cancellation signal with an absolute operation deadline.
+ *
+ * Promise.race is intentional even though fetch and the Remote MCP transport
+ * also receive the linked signal. It guarantees that the stdio request can
+ * complete promptly if an injected dependency or platform API ignores AbortSignal.
+ */
+const runWithAbortDeadline = async ({
+  signal,
+  timeoutMs,
+  timeoutError,
+  operation,
+}) => {
+  throwIfAborted(signal);
+  const controller = new AbortController();
+  const forwardAbort = () => controller.abort(normalizeAbortReason(signal));
+  signal?.addEventListener("abort", forwardAbort, { once: true });
+  const deadline = setTimeout(() => {
+    controller.abort(timeoutError());
+  }, timeoutMs);
+  let rejectOnAbort;
+  const aborted = new Promise((_, reject) => {
+    rejectOnAbort = () => reject(normalizeAbortReason(controller.signal));
+    controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+  });
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      aborted,
+    ]);
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener("abort", forwardAbort);
+    controller.signal.removeEventListener("abort", rejectOnAbort);
+  }
+};
 
 const resolveTrelioConfigHome = ({
   platform = process.platform,
@@ -348,29 +404,49 @@ const normalizeToolInput = (rawInput) => {
   };
 };
 
-const resolveRemoteMcpDeclaration = async (origin, rawInput) => {
+const resolveRemoteMcpDeclaration = async (
+  origin,
+  rawInput,
+  { signal } = {},
+) => {
   const input = normalizeToolInput(rawInput);
-  // stdout is reserved for stdio JSON-RPC framing. A successful pending
-  // pairing may normally print a status line, so the local MCP host supplies
-  // a silent status sink and returns all diagnostics as structured tool data.
-  const token = await requireToken(origin, { onStatus: () => undefined });
-  await ensureBridgeCompatibility(origin, token);
-  const response = await request(
-    origin,
-    token,
-    "/api/agent-skills/remote-mcp/resolve",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        companyId: input.companyId,
-        ...(input.projectId ? { projectId: input.projectId } : {}),
-        skillId: input.skillId,
-        expectedReleaseId: input.releaseId,
-      }),
+  const resolved = await runWithAbortDeadline({
+    signal,
+    timeoutMs: TRELIO_RESOLVE_TIMEOUT_MS,
+    timeoutError: () => new RemoteMcpHostError(
+      "REMOTE_MCP_TRELIO_TIMEOUT",
+      "Trelio не вернул декларацию Remote MCP за безопасный абсолютный интервал.",
+    ),
+    operation: async (operationSignal) => {
+      // stdout is reserved for stdio JSON-RPC framing. A successful pending
+      // pairing may normally print a status line, so the local MCP host supplies
+      // a silent status sink and returns all diagnostics as structured tool data.
+      const token = await requireToken(origin, {
+        onStatus: () => undefined,
+        signal: operationSignal,
+      });
+      await ensureBridgeCompatibility(origin, token, {
+        signal: operationSignal,
+      });
+      const response = await request(
+        origin,
+        token,
+        "/api/agent-skills/remote-mcp/resolve",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            companyId: input.companyId,
+            ...(input.projectId ? { projectId: input.projectId } : {}),
+            skillId: input.skillId,
+            expectedReleaseId: input.releaseId,
+          }),
+          signal: operationSignal,
+        },
+      );
+      return validateResolvedRemoteMcp(await response.json());
     },
-  );
-  const resolved = validateResolvedRemoteMcp(await response.json());
+  });
 
   if (
     resolved.releaseId !== input.releaseId
@@ -388,7 +464,13 @@ const resolveRemoteMcpDeclaration = async (origin, rawInput) => {
   return resolved;
 };
 
-const savePersonalCredential = async (origin, resolved, secret) => {
+const savePersonalCredential = async (
+  origin,
+  resolved,
+  secret,
+  { signal } = {},
+) => {
+  throwIfAborted(signal);
   const credential = String(secret || "").trim();
   if (
     credential.length < 8
@@ -414,17 +496,21 @@ const savePersonalCredential = async (origin, resolved, secret) => {
     skillId: resolved.localIdentity.skillId,
     savedAt: new Date().toISOString(),
   };
+  throwIfAborted(signal);
   await ensurePrivateDirectory(path.dirname(credentialFile));
+  throwIfAborted(signal);
   await writePrivateJsonFile(credentialFile, storedCredential);
 };
 
-const loadPersonalCredential = async (origin, resolved) => {
+const loadPersonalCredential = async (origin, resolved, { signal } = {}) => {
+  throwIfAborted(signal);
   if (resolved.remoteMcp.config.authentication.type === "none") {
     return null;
   }
 
   const credentialFile = resolveRemoteMcpCredentialFile(resolved.localIdentity);
   const credential = await readPrivateJsonFile(credentialFile);
+  throwIfAborted(signal);
 
   if (Object.keys(credential).length === 0 || typeof credential.secret !== "string") {
     throw new RemoteMcpHostError(
@@ -463,9 +549,11 @@ const loadPersonalCredential = async (origin, resolved) => {
   return credential.secret;
 };
 
-const forgetPersonalCredential = async (origin, resolved) => {
+const forgetPersonalCredential = async (origin, resolved, { signal } = {}) => {
+  throwIfAborted(signal);
   const credentialFile = resolveRemoteMcpCredentialFile(resolved.localIdentity);
   const credential = await readPrivateJsonFile(credentialFile);
+  throwIfAborted(signal);
   const existed = Object.keys(credential).length > 0;
 
   if (existed) {
@@ -635,6 +723,7 @@ export const remoteMcpHttpRequest = ({
 }, {
   resolveEndpoint = resolveSafeRemoteMcpEndpoint,
   timeoutMs = REMOTE_REQUEST_TIMEOUT_MS,
+  signal,
 } = {}) => {
   const body = payload === null ? null : Buffer.from(JSON.stringify(payload), "utf8");
   const headers = buildRemoteMcpRequestHeaders({
@@ -654,6 +743,8 @@ export const remoteMcpHttpRequest = ({
     let outgoing = null;
     let incoming = null;
     let settled = false;
+    let deadline = null;
+    const handleAbort = () => fail(normalizeAbortReason(signal));
 
     const destroyTransport = () => {
       // A matching SSE response is a complete response for this JSON-RPC
@@ -667,7 +758,10 @@ export const remoteMcpHttpRequest = ({
         return;
       }
       settled = true;
-      clearTimeout(deadline);
+      if (deadline) {
+        clearTimeout(deadline);
+      }
+      signal?.removeEventListener("abort", handleAbort);
       if (destroy) {
         destroyTransport();
       }
@@ -675,7 +769,12 @@ export const remoteMcpHttpRequest = ({
     };
     const fail = (error) => settle(reject, error, { destroy: true });
     const succeed = (value, options = {}) => settle(resolve, value, options);
-    const deadline = setTimeout(() => fail(new RemoteMcpHostError(
+    if (signal?.aborted) {
+      fail(normalizeAbortReason(signal));
+      return;
+    }
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    deadline = setTimeout(() => fail(new RemoteMcpHostError(
       "REMOTE_MCP_TIMEOUT",
       "Remote MCP не ответил за безопасный абсолютный интервал.",
     )), absoluteTimeoutMs);
@@ -869,7 +968,9 @@ const createRemoteSession = async (
   config,
   credential,
   httpRequest = remoteMcpHttpRequest,
+  { signal } = {},
 ) => {
+  throwIfAborted(signal);
   let requestId = 1;
   const initializeResponse = await httpRequest({
     config,
@@ -887,7 +988,7 @@ const createRemoteSession = async (
         },
       },
     },
-  });
+  }, { signal });
   const initializeResult = assertJsonRpcResult(initializeResponse, "initialize");
 
   if (initializeResult?.protocolVersion !== config.protocolVersion) {
@@ -906,7 +1007,7 @@ const createRemoteSession = async (
       jsonrpc: "2.0",
       method: "notifications/initialized",
     },
-  });
+  }, { signal });
 
   return {
     sessionId,
@@ -922,8 +1023,9 @@ const closeRemoteSession = async (
   credential,
   sessionId,
   httpRequest = remoteMcpHttpRequest,
+  { signal } = {},
 ) => {
-  if (!sessionId) {
+  if (!sessionId || signal?.aborted) {
     return;
   }
   await httpRequest({
@@ -931,7 +1033,7 @@ const closeRemoteSession = async (
     credential,
     method: "DELETE",
     sessionId,
-  }).catch(() => undefined);
+  }, { signal }).catch(() => undefined);
 };
 
 const listRemoteTools = async (
@@ -939,6 +1041,7 @@ const listRemoteTools = async (
   credential,
   session,
   httpRequest = remoteMcpHttpRequest,
+  { signal } = {},
 ) => {
   const tools = [];
   let cursor = null;
@@ -954,7 +1057,7 @@ const listRemoteTools = async (
         method: "tools/list",
         params: cursor ? { cursor } : {},
       },
-    });
+    }, { signal });
     const result = assertJsonRpcResult(response, "tools/list");
     if (!Array.isArray(result?.tools)) {
       throw new RemoteMcpHostError(
@@ -1015,15 +1118,28 @@ export const doctorWithCredential = async (
   credential,
   {
     httpRequest = remoteMcpHttpRequest,
+    signal,
   } = {},
 ) => {
+  throwIfAborted(signal);
   const config = resolved.remoteMcp.config;
-  const session = await createRemoteSession(config, credential, httpRequest);
+  const session = await createRemoteSession(
+    config,
+    credential,
+    httpRequest,
+    { signal },
+  );
 
   try {
     const tools = assertExactReadOnlyToolList(
       config,
-      await listRemoteTools(config, credential, session, httpRequest),
+      await listRemoteTools(
+        config,
+        credential,
+        session,
+        httpRequest,
+        { signal },
+      ),
     );
     return {
       ok: true,
@@ -1042,23 +1158,51 @@ export const doctorWithCredential = async (
       })),
     };
   } finally {
-    await closeRemoteSession(config, credential, session.sessionId, httpRequest);
+    await closeRemoteSession(
+      config,
+      credential,
+      session.sessionId,
+      httpRequest,
+      { signal },
+    );
   }
 };
 
-const doctorRemoteMcp = async (origin, resolved) => (
-  doctorWithCredential(resolved, await loadPersonalCredential(origin, resolved))
+const doctorRemoteMcp = async (origin, resolved, { signal } = {}) => (
+  doctorWithCredential(
+    resolved,
+    await loadPersonalCredential(origin, resolved, { signal }),
+    { signal },
+  )
 );
 
-const callRemoteTool = async (origin, resolved, toolName, toolArguments) => {
+const callRemoteTool = async (
+  origin,
+  resolved,
+  toolName,
+  toolArguments,
+  { signal } = {},
+) => {
+  throwIfAborted(signal);
   const config = resolved.remoteMcp.config;
-  const credential = await loadPersonalCredential(origin, resolved);
-  const session = await createRemoteSession(config, credential);
+  const credential = await loadPersonalCredential(origin, resolved, { signal });
+  const session = await createRemoteSession(
+    config,
+    credential,
+    remoteMcpHttpRequest,
+    { signal },
+  );
 
   try {
     const tools = assertExactReadOnlyToolList(
       config,
-      await listRemoteTools(config, credential, session),
+      await listRemoteTools(
+        config,
+        credential,
+        session,
+        remoteMcpHttpRequest,
+        { signal },
+      ),
     );
     if (!tools.some((tool) => tool.name === toolName)) {
       throw new RemoteMcpHostError(
@@ -1079,10 +1223,16 @@ const callRemoteTool = async (origin, resolved, toolName, toolArguments) => {
           arguments: toolArguments,
         },
       },
-    });
+    }, { signal });
     return assertJsonRpcResult(response, `tools/call ${toolName}`);
   } finally {
-    await closeRemoteSession(config, credential, session.sessionId);
+    await closeRemoteSession(
+      config,
+      credential,
+      session.sessionId,
+      remoteMcpHttpRequest,
+      { signal },
+    );
   }
 };
 
@@ -1237,7 +1387,7 @@ const hasAuthorizedCredentialOrigin = (incoming, expectedOrigin) => {
   );
 };
 
-const waitForPromiseSignal = (promise, timeoutMs) => new Promise((resolve) => {
+const waitForPromiseSignal = (promise, timeoutMs, signal) => new Promise((resolve, reject) => {
   let settled = false;
   const finish = (value) => {
     if (settled) {
@@ -1245,9 +1395,23 @@ const waitForPromiseSignal = (promise, timeoutMs) => new Promise((resolve) => {
     }
     settled = true;
     clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", handleAbort);
     resolve(value);
   };
+  const handleAbort = () => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    clearTimeout(timeoutId);
+    reject(normalizeAbortReason(signal));
+  };
   const timeoutId = setTimeout(() => finish(false), timeoutMs);
+  if (signal?.aborted) {
+    handleAbort();
+    return;
+  }
+  signal?.addEventListener("abort", handleAbort, { once: true });
   promise.then(() => finish(true), () => finish(false));
 });
 
@@ -1258,6 +1422,7 @@ export const openCredentialFormInBrowser = async (
     openBrowserFn = openBrowser,
     waitForForm,
     handoffTimeoutMs = CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS,
+    signal,
   } = {},
 ) => {
   if (typeof waitForForm !== "function") {
@@ -1273,9 +1438,13 @@ export const openCredentialFormInBrowser = async (
     : [null];
 
   for (const application of candidates) {
+    throwIfAborted(signal);
     try {
-      await openBrowserFn(setupUrl, { platform, application });
-    } catch {
+      await openBrowserFn(setupUrl, { platform, application, signal });
+    } catch (error) {
+      if (signal?.aborted) {
+        throw normalizeAbortReason(signal);
+      }
       // A missing browser application or non-zero LaunchServices result is
       // expected during fallback. Keep the underlying diagnostic private: it
       // may contain local process details and cannot help the agent open the
@@ -1305,8 +1474,10 @@ export const collectCredentialThroughLoopback = async (
     doctorCredential = doctorWithCredential,
     persistCredential = savePersonalCredential,
     onListening = () => {},
+    signal,
   } = {},
 ) => {
+  throwIfAborted(signal);
   const nonce = crypto.randomBytes(32).toString("base64url");
   let expectedOrigin = "";
   let expectedHost = "";
@@ -1413,10 +1584,19 @@ export const collectCredentialThroughLoopback = async (
       credentialSubmissionInFlight = true;
 
       try {
-        await doctorCredential(resolved, credential);
-        await persistCredential(origin, resolved, credential);
+        await doctorCredential(resolved, credential, { signal });
+        // A cancelled tool call must never turn a completed remote doctor into
+        // a late local secret write after Codex has already abandoned the call.
+        throwIfAborted(signal);
+        await persistCredential(origin, resolved, credential, { signal });
+        throwIfAborted(signal);
         credentialStored = true;
       } catch (error) {
+        if (signal?.aborted) {
+          outgoing.destroy();
+          fail(normalizeAbortReason(signal));
+          return;
+        }
         credentialSubmissionInFlight = false;
         writeLoopbackHtml(outgoing, 400, renderCredentialPage({
           resolved,
@@ -1435,10 +1615,19 @@ export const collectCredentialThroughLoopback = async (
         { onFinished: finish },
       );
     } catch (error) {
-      outgoing.writeHead(500, {
-        "cache-control": "no-store",
-        "connection": "close",
-      }).end("Local setup failed");
+      if (signal?.aborted) {
+        outgoing.destroy();
+        fail(normalizeAbortReason(signal));
+        return;
+      }
+      if (!outgoing.headersSent && !outgoing.destroyed) {
+        outgoing.writeHead(500, {
+          "cache-control": "no-store",
+          "connection": "close",
+        }).end("Local setup failed");
+      } else {
+        outgoing.destroy();
+      }
       fail(error);
     }
   });
@@ -1448,7 +1637,36 @@ export const collectCredentialThroughLoopback = async (
     server.listen(0, "127.0.0.1", resolve);
   });
 
+  let closeServerPromise = null;
+  const closeLoopbackServer = () => {
+    if (closeServerPromise) {
+      return closeServerPromise;
+    }
+    closeServerPromise = new Promise((resolve) => {
+      if (!server.listening) {
+        server.closeAllConnections();
+        resolve();
+        return;
+      }
+      // Stop accepting new sockets before destroying existing browser
+      // keep-alives. Reusing this exact Promise makes abort and finally
+      // idempotent even when they run in the same event-loop turn.
+      server.close(resolve);
+      server.closeAllConnections();
+    });
+    return closeServerPromise;
+  };
+  const handleAbort = () => {
+    // Destroy browser keep-alive and an in-flight form POST immediately. The
+    // surrounding await observes completion rejection and reaches finally,
+    // where the listening socket is closed deterministically.
+    void closeLoopbackServer();
+    fail(normalizeAbortReason(signal));
+  };
+  signal?.addEventListener("abort", handleAbort, { once: true });
+
   try {
+    throwIfAborted(signal);
     const address = server.address();
     if (!address || typeof address !== "object") {
       throw new Error("Локальная форма не получила loopback port.");
@@ -1462,7 +1680,8 @@ export const collectCredentialThroughLoopback = async (
       platform: browserPlatform,
       openBrowserFn,
       handoffTimeoutMs,
-      waitForForm: (timeoutMs) => waitForPromiseSignal(formOpened, timeoutMs),
+      waitForForm: (timeoutMs) => waitForPromiseSignal(formOpened, timeoutMs, signal),
+      signal,
     });
 
     let timeoutId;
@@ -1477,14 +1696,12 @@ export const collectCredentialThroughLoopback = async (
     });
     await Promise.race([completion, timeout]).finally(() => clearTimeout(timeoutId));
   } finally {
+    signal?.removeEventListener("abort", handleAbort);
     // Chromium may keep an otherwise idle loopback connection alive after the
     // response. The completion signal above fires only once the response has
     // been flushed, so remaining sockets can now be closed deterministically
     // without truncating the success page or extending the tool indefinitely.
-    await new Promise((resolve) => {
-      server.close(resolve);
-      server.closeAllConnections();
-    });
+    await closeLoopbackServer();
   }
 };
 
@@ -1562,14 +1779,24 @@ const buildTextResult = (payload) => ({
   }],
 });
 
-const handleToolCall = async (origin, name, rawArguments) => {
-  const resolved = await resolveRemoteMcpDeclaration(origin, rawArguments);
+export const handleToolCall = async (
+  origin,
+  name,
+  rawArguments,
+  { signal } = {},
+) => {
+  throwIfAborted(signal);
+  const resolved = await resolveRemoteMcpDeclaration(
+    origin,
+    rawArguments,
+    { signal },
+  );
 
   if (name === "connect_remote_agent_skill") {
     if (resolved.remoteMcp.config.authentication.type === "none") {
-      return buildTextResult(await doctorRemoteMcp(origin, resolved));
+      return buildTextResult(await doctorRemoteMcp(origin, resolved, { signal }));
     }
-    await collectCredentialThroughLoopback(origin, resolved);
+    await collectCredentialThroughLoopback(origin, resolved, { signal });
     return buildTextResult({
       connected: true,
       skillId: resolved.skill.id,
@@ -1578,7 +1805,7 @@ const handleToolCall = async (origin, name, rawArguments) => {
     });
   }
   if (name === "doctor_remote_agent_skill") {
-    return buildTextResult(await doctorRemoteMcp(origin, resolved));
+    return buildTextResult(await doctorRemoteMcp(origin, resolved, { signal }));
   }
   if (name === "call_remote_agent_skill_tool") {
     const toolName = String(rawArguments?.toolName || "");
@@ -1596,13 +1823,19 @@ const handleToolCall = async (origin, name, rawArguments) => {
     }
     return buildTextResult({
       toolName,
-      result: await callRemoteTool(origin, resolved, toolName, toolArguments),
+      result: await callRemoteTool(
+        origin,
+        resolved,
+        toolName,
+        toolArguments,
+        { signal },
+      ),
       trust: "untrusted_external_data",
     });
   }
   if (name === "forget_remote_agent_skill_credential") {
     return buildTextResult({
-      forgotten: await forgetPersonalCredential(origin, resolved),
+      forgotten: await forgetPersonalCredential(origin, resolved, { signal }),
       providerCredentialRevoked: false,
       note: "PAT remains valid at the provider until the user revokes it there.",
     });
@@ -1628,6 +1861,7 @@ export const handleLocalMcpMessage = async (
   {
     origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
     callTool = handleToolCall,
+    signal,
   } = {},
 ) => {
   if (!message || message.jsonrpc !== "2.0") {
@@ -1666,6 +1900,7 @@ export const handleLocalMcpMessage = async (
           origin,
           String(message.params?.name || ""),
           message.params?.arguments,
+          { signal },
         ),
       };
     } catch (error) {
@@ -1692,32 +1927,112 @@ export const handleLocalMcpMessage = async (
   };
 };
 
-const main = async () => {
+export const runStdioHost = async ({
+  inputStream = process.stdin,
+  outputStream = process.stdout,
+  origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
+  callTool = handleToolCall,
+  handleMessage = handleLocalMcpMessage,
+} = {}) => {
   const input = readline.createInterface({
-    input: process.stdin,
+    input: inputStream,
     crlfDelay: Infinity,
     terminal: false,
   });
+  const activeToolCalls = new Map();
+  const inFlightDispatches = new Set();
+  let outputQueue = Promise.resolve();
+
+  const enqueueResponse = (response) => {
+    if (!response) {
+      return outputQueue;
+    }
+    // Multiple tools/call requests may now finish concurrently. Serializing
+    // complete frames prevents byte interleaving while preserving JSON-RPC's
+    // legitimate out-of-order response semantics.
+    outputQueue = outputQueue.then(() => {
+      outputStream.write(`${JSON.stringify(response)}\n`);
+    });
+    return outputQueue;
+  };
+
+  const dispatch = async (message) => {
+    if (
+      message?.jsonrpc === "2.0"
+      && (
+        message.method === "notifications/cancelled"
+        || message.method === "$/cancelRequest"
+      )
+    ) {
+      const requestId = message.method === "notifications/cancelled"
+        ? message.params?.requestId
+        : message.params?.id;
+      activeToolCalls.get(requestId)?.abort(createCancellationError());
+      return;
+    }
+
+    const isToolCall = (
+      message?.jsonrpc === "2.0"
+      && message.method === "tools/call"
+      && message.id !== undefined
+      && message.id !== null
+    );
+    const controller = isToolCall ? new AbortController() : null;
+    if (controller) {
+      // Duplicate live JSON-RPC ids are invalid. Cancelling the older call is
+      // safer than allowing one future notification to target two listeners.
+      activeToolCalls.get(message.id)?.abort(createCancellationError());
+      activeToolCalls.set(message.id, controller);
+    }
+
+    try {
+      await enqueueResponse(await handleMessage(message, {
+        origin,
+        callTool,
+        signal: controller?.signal,
+      }));
+    } finally {
+      if (controller && activeToolCalls.get(message.id) === controller) {
+        activeToolCalls.delete(message.id);
+      }
+    }
+  };
+
+  const startDispatch = (promise) => {
+    inFlightDispatches.add(promise);
+    promise.finally(() => inFlightDispatches.delete(promise)).catch(() => {});
+  };
 
   for await (const line of input) {
     if (!line.trim()) {
       continue;
     }
-    let response;
+    let message;
     try {
-      response = await handleLocalMcpMessage(JSON.parse(line));
+      message = JSON.parse(line);
     } catch {
-      response = {
+      await enqueueResponse({
         jsonrpc: "2.0",
         id: null,
         error: { code: -32700, message: "Parse error" },
-      };
+      });
+      continue;
     }
-    if (response) {
-      process.stdout.write(`${JSON.stringify(response)}\n`);
-    }
+    // Do not await here. In particular, a cancellation notification must be
+    // read while the corresponding tools/call is waiting for a human form.
+    startDispatch(dispatch(message));
   }
+
+  // EOF means the MCP transport disappeared. Abort every active operation so
+  // loopback listeners, sockets and opener children cannot outlive the host.
+  for (const controller of activeToolCalls.values()) {
+    controller.abort(createCancellationError());
+  }
+  await Promise.allSettled([...inFlightDispatches]);
+  await outputQueue;
 };
+
+const main = () => runStdioHost();
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {

@@ -150,6 +150,9 @@ Agent Secrets хранятся и расшифровываются на стор
 opener проверяет exit status, а handoff считается состоявшимся только после
 exact GET одноразовой формы. Если macOS не доставила default open, host сам
 проверяемо пробует Chrome и Safari; URL с nonce остаётся внутри процесса.
+Долгое ожидание формы не блокирует другие JSON-RPC запросы этого stdio host:
+клиентская отмена немедленно прерывает opener/HTTP, закрывает loopback listener
+и не допускает позднюю запись credential.
 
 Не добавляйте токены, локальные credentials и содержимое рабочих workspace в
 issues или pull requests. Для уязвимостей используйте приватное сообщение через

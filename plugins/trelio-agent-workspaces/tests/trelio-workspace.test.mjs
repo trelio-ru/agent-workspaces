@@ -193,6 +193,26 @@ test("browser opener converts a spawn error to a nonce-safe diagnostic", async (
   ));
 });
 
+test("browser opener cancellation stops its short-lived child immediately", async () => {
+  const child = new EventEmitter();
+  let killCalls = 0;
+  child.kill = () => {
+    killCalls += 1;
+  };
+  const controller = new AbortController();
+  const cancellation = new Error("test cancellation");
+  const opening = openBrowser("http://127.0.0.1:45678/?nonce=must-not-leak", {
+    platform: "darwin",
+    spawnProcess: () => child,
+    openerTimeoutMs: 10_000,
+    signal: controller.signal,
+  });
+  controller.abort(cancellation);
+
+  await assert.rejects(opening, (error) => error === cancellation);
+  assert.equal(killCalls, 1);
+});
+
 test("bridge maps parent and related contexts to stable read-only paths", () => {
   const contexts = buildRunContextSpecifications(runId, {
     company: { workspaceId: companyWorkspaceId, head: companyHead },
@@ -744,7 +764,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.5");
+  assert.equal(BRIDGE_VERSION, "1.4.6");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

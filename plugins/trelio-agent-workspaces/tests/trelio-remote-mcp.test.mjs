@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,7 @@ import {
   remoteMcpHttpRequest,
   resolveRemoteMcpCredentialFile,
   resolveSafeRemoteMcpEndpoint,
+  runStdioHost,
   validateResolvedRemoteMcp,
 } from "../scripts/trelio-remote-mcp.mjs";
 
@@ -118,6 +120,89 @@ const createPinnedLoopbackResolver = () => async (rawEndpoint) => ({
   family: 4,
 });
 
+const assertLoopbackPortClosed = async (port) => new Promise((resolve, reject) => {
+  const socket = net.connect({
+    host: "127.0.0.1",
+    port,
+  });
+  socket.once("connect", () => {
+    socket.destroy();
+    reject(new Error("loopback listener remained reachable"));
+  });
+  socket.once("error", (error) => {
+    if (error.code === "ECONNREFUSED") {
+      resolve();
+      return;
+    }
+    reject(error);
+  });
+});
+
+const createStdioHarness = (callTool) => {
+  const inputStream = new PassThrough();
+  const outputStream = new PassThrough();
+  const frames = [];
+  const waiters = new Set();
+  let outputBuffer = "";
+  outputStream.setEncoding("utf8");
+  outputStream.on("data", (chunk) => {
+    outputBuffer += chunk;
+    while (outputBuffer.includes("\n")) {
+      const boundary = outputBuffer.indexOf("\n");
+      const line = outputBuffer.slice(0, boundary);
+      outputBuffer = outputBuffer.slice(boundary + 1);
+      if (!line) {
+        continue;
+      }
+      const frame = JSON.parse(line);
+      frames.push(frame);
+      for (const waiter of waiters) {
+        if (waiter.predicate(frame)) {
+          waiters.delete(waiter);
+          clearTimeout(waiter.timeout);
+          waiter.resolve(frame);
+        }
+      }
+    }
+  });
+  const host = runStdioHost({
+    inputStream,
+    outputStream,
+    origin: "https://trelio.test",
+    callTool,
+  });
+
+  return {
+    frames,
+    host,
+    send: (message) => {
+      inputStream.write(`${JSON.stringify(message)}\n`);
+    },
+    waitForFrame: (predicate, timeoutMs = 1_000) => {
+      const existing = frames.find(predicate);
+      if (existing) {
+        return Promise.resolve(existing);
+      }
+      return new Promise((resolve, reject) => {
+        const waiter = {
+          predicate,
+          resolve,
+          timeout: setTimeout(() => {
+            waiters.delete(waiter);
+            reject(new Error("stdio MCP response timeout"));
+          }, timeoutMs),
+        };
+        waiters.add(waiter);
+      });
+    },
+    close: async () => {
+      inputStream.end();
+      await host;
+      outputStream.end();
+    },
+  };
+};
+
 test("Remote MCP browser handoff verifies the form GET and uses a private macOS fallback", async () => {
   const setupUrl = "http://127.0.0.1:45678/?nonce=must-stay-local";
   const attempts = [];
@@ -188,23 +273,7 @@ test("Remote MCP connect closes the loopback listener when browser opening fails
   );
 
   assert.equal(Number.isInteger(listenerPort), true);
-  await new Promise((resolve, reject) => {
-    const socket = net.connect({
-      host: "127.0.0.1",
-      port: listenerPort,
-    });
-    socket.once("connect", () => {
-      socket.destroy();
-      reject(new Error("loopback listener remained reachable after failed handoff"));
-    });
-    socket.once("error", (error) => {
-      if (error.code === "ECONNREFUSED") {
-        resolve();
-        return;
-      }
-      reject(error);
-    });
-  });
+  await assertLoopbackPortClosed(listenerPort);
 });
 
 const chromeDocumentNavigationHeaders = (origin) => ({
@@ -275,6 +344,278 @@ test("Remote MCP loopback accepts exact and Chrome null/absent Origin submits", 
   for (const originMode of ["exact", "null", "absent"]) {
     await submitAcceptedLoopbackCredential(originMode);
   }
+});
+
+test("stdio connect returns only after submit doctor and local persistence complete", async () => {
+  const credential = "stdio-connect-test-credential";
+  const doctorCalls = [];
+  const persistedCredentials = [];
+  const harness = createStdioHarness(async (
+    _origin,
+    toolName,
+    _arguments,
+    { signal },
+  ) => {
+    assert.equal(toolName, "connect_remote_agent_skill");
+    await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+      browserPlatform: "darwin",
+      handoffTimeoutMs: 100,
+      setupTimeoutMs: 1_000,
+      signal,
+      doctorCredential: async (_resolved, candidate) => {
+        doctorCalls.push(candidate);
+      },
+      persistCredential: async (_originValue, _resolved, candidate) => {
+        persistedCredentials.push(candidate);
+      },
+      openBrowserFn: async (setupUrl) => {
+        const protectedUrl = new URL(setupUrl);
+        const page = await requestLoopback(protectedUrl);
+        assert.equal(page.statusCode, 200);
+        const accepted = await requestLoopback(
+          `${protectedUrl.origin}/credential`,
+          {
+            method: "POST",
+            headers: chromeDocumentNavigationHeaders(protectedUrl.origin),
+            body: new URLSearchParams({
+              nonce: protectedUrl.searchParams.get("nonce"),
+              credential,
+            }).toString(),
+          },
+        );
+        assert.equal(accepted.statusCode, 200);
+      },
+    });
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ connected: true }),
+      }],
+    };
+  });
+
+  try {
+    harness.send({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "tools/call",
+      params: {
+        name: "connect_remote_agent_skill",
+        arguments: {},
+      },
+    });
+    const response = await harness.waitForFrame(({ id }) => id === 10);
+    assert.equal(response.result.isError, undefined);
+    assert.deepEqual(
+      JSON.parse(response.result.content[0].text),
+      { connected: true },
+    );
+    assert.deepEqual(doctorCalls, [credential]);
+    assert.deepEqual(persistedCredentials, [credential]);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("cancelled connect aborts an in-flight doctor before persistence", async () => {
+  const credential = "cancelled-doctor-test-credential";
+  const controller = new AbortController();
+  const persistedCredentials = [];
+  let listenerPort = null;
+  let markDoctorStarted;
+  const doctorStarted = new Promise((resolve) => {
+    markDoctorStarted = resolve;
+  });
+  let submittedRequest = null;
+
+  const connection = collectCredentialThroughLoopback(
+    "https://trelio.test",
+    resolvedDodo,
+    {
+      browserPlatform: "darwin",
+      handoffTimeoutMs: 100,
+      setupTimeoutMs: 10_000,
+      signal: controller.signal,
+      onListening: ({ port }) => {
+        listenerPort = port;
+      },
+      doctorCredential: async (_resolved, candidate, { signal }) => {
+        assert.equal(candidate, credential);
+        markDoctorStarted();
+        await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      },
+      persistCredential: async (_origin, _resolved, candidate) => {
+        persistedCredentials.push(candidate);
+      },
+      openBrowserFn: async (setupUrl) => {
+        const protectedUrl = new URL(setupUrl);
+        assert.equal((await requestLoopback(protectedUrl)).statusCode, 200);
+        submittedRequest = requestLoopback(
+          `${protectedUrl.origin}/credential`,
+          {
+            method: "POST",
+            headers: chromeDocumentNavigationHeaders(protectedUrl.origin),
+            body: new URLSearchParams({
+              nonce: protectedUrl.searchParams.get("nonce"),
+              credential,
+            }).toString(),
+          },
+        ).catch(() => null);
+      },
+    },
+  );
+
+  await doctorStarted;
+  controller.abort(new RemoteMcpHostError(
+    "REMOTE_MCP_TOOL_CALL_CANCELLED",
+    "Вызов Remote MCP отменён.",
+  ));
+  await assert.rejects(
+    connection,
+    (error) => (
+      error instanceof RemoteMcpHostError
+      && error.code === "REMOTE_MCP_TOOL_CALL_CANCELLED"
+    ),
+  );
+  await submittedRequest;
+  assert.deepEqual(persistedCredentials, []);
+  assert.equal(Number.isInteger(listenerPort), true);
+  await assertLoopbackPortClosed(listenerPort);
+});
+
+test("stdio doctor is not blocked by connect and cancellation closes its listener", async () => {
+  let listenerPort = null;
+  let markListening;
+  const listening = new Promise((resolve) => {
+    markListening = resolve;
+  });
+  const harness = createStdioHarness(async (
+    _origin,
+    toolName,
+    _arguments,
+    { signal },
+  ) => {
+    if (toolName === "doctor_remote_agent_skill") {
+      throw new RemoteMcpHostError(
+        "REMOTE_MCP_PERSONAL_TOKEN_REQUIRED",
+        "Для Remote MCP нужен персональный credential на этом устройстве.",
+      );
+    }
+    assert.equal(toolName, "connect_remote_agent_skill");
+    await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+      browserPlatform: "darwin",
+      handoffTimeoutMs: 100,
+      setupTimeoutMs: 10_000,
+      signal,
+      onListening: ({ port }) => {
+        listenerPort = port;
+        markListening();
+      },
+      openBrowserFn: async (setupUrl) => {
+        assert.equal((await requestLoopback(setupUrl)).statusCode, 200);
+      },
+    });
+    throw new Error("cancelled connect unexpectedly completed");
+  });
+
+  try {
+    harness.send({
+      jsonrpc: "2.0",
+      id: 20,
+      method: "tools/call",
+      params: {
+        name: "connect_remote_agent_skill",
+        arguments: {},
+      },
+    });
+    await listening;
+
+    const doctorStartedAt = Date.now();
+    harness.send({
+      jsonrpc: "2.0",
+      id: 21,
+      method: "tools/call",
+      params: {
+        name: "doctor_remote_agent_skill",
+        arguments: {},
+      },
+    });
+    const doctorResponse = await harness.waitForFrame(({ id }) => id === 21);
+    assert.ok(
+      Date.now() - doctorStartedAt < 500,
+      "doctor remained serialized behind the human setup wait",
+    );
+    assert.equal(
+      JSON.parse(doctorResponse.result.content[0].text).code,
+      "REMOTE_MCP_PERSONAL_TOKEN_REQUIRED",
+    );
+
+    harness.send({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: {
+        requestId: 20,
+        reason: "client interrupted the tool call",
+      },
+    });
+    const connectResponse = await harness.waitForFrame(({ id }) => id === 20);
+    assert.equal(
+      JSON.parse(connectResponse.result.content[0].text).code,
+      "REMOTE_MCP_TOOL_CALL_CANCELLED",
+    );
+    assert.equal(Number.isInteger(listenerPort), true);
+    await assertLoopbackPortClosed(listenerPort);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("stdio transport EOF aborts connect and closes its listener", async () => {
+  let listenerPort = null;
+  let markListening;
+  const listening = new Promise((resolve) => {
+    markListening = resolve;
+  });
+  const harness = createStdioHarness(async (
+    _origin,
+    _toolName,
+    _arguments,
+    { signal },
+  ) => collectCredentialThroughLoopback(
+    "https://trelio.test",
+    resolvedDodo,
+    {
+      browserPlatform: "darwin",
+      handoffTimeoutMs: 100,
+      setupTimeoutMs: 10_000,
+      signal,
+      onListening: ({ port }) => {
+        listenerPort = port;
+        markListening();
+      },
+      openBrowserFn: async (setupUrl) => {
+        assert.equal((await requestLoopback(setupUrl)).statusCode, 200);
+      },
+    },
+  ));
+
+  harness.send({
+    jsonrpc: "2.0",
+    id: 30,
+    method: "tools/call",
+    params: {
+      name: "connect_remote_agent_skill",
+      arguments: {},
+    },
+  });
+  await listening;
+  await harness.close();
+  assert.equal(Number.isInteger(listenerPort), true);
+  await assertLoopbackPortClosed(listenerPort);
 });
 
 const assertRejectedLoopbackCredential = async ({
@@ -720,6 +1061,67 @@ test("Remote MCP absolute deadline is not extended by SSE heartbeats", {
   }
 });
 
+test("Remote MCP external cancellation destroys a heartbeat SSE request", {
+  timeout: 2_000,
+}, async () => {
+  let markStreamStarted;
+  const streamStarted = new Promise((resolve) => {
+    markStreamStarted = resolve;
+  });
+  let markStreamClosed;
+  const streamClosed = new Promise((resolve) => {
+    markStreamClosed = resolve;
+  });
+  const server = await listenOnLoopback((_request, response) => {
+    markStreamStarted();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(": ready\n\n");
+    const heartbeat = setInterval(() => response.write(": heartbeat\n\n"), 10);
+    response.once("close", () => {
+      clearInterval(heartbeat);
+      markStreamClosed();
+    });
+  });
+
+  try {
+    const { port } = server.address();
+    const controller = new AbortController();
+    const pendingRequest = remoteMcpHttpRequest({
+      config: {
+        ...dodoConfig,
+        endpoint: `http://remote-mcp.test:${port}/mcp`,
+      },
+      credential: "personal-test-token",
+      payload: {
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/list",
+        params: {},
+      },
+    }, {
+      resolveEndpoint: createPinnedLoopbackResolver(),
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    await streamStarted;
+    controller.abort(new RemoteMcpHostError(
+      "REMOTE_MCP_TOOL_CALL_CANCELLED",
+      "Вызов Remote MCP отменён.",
+    ));
+
+    await assert.rejects(
+      pendingRequest,
+      (error) => (
+        error instanceof RemoteMcpHostError
+        && error.code === "REMOTE_MCP_TOOL_CALL_CANCELLED"
+      ),
+    );
+    await streamClosed;
+  } finally {
+    await closeTestServer(server);
+  }
+});
+
 test("personal credential path follows the stable local integration namespace", () => {
   const identity = resolvedDodo.localIdentity;
   assert.equal(
@@ -799,6 +1201,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.5");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.6");
   assert.equal(frames[1].result.tools.length, 4);
 });

@@ -183,6 +183,10 @@ Streamable HTTP обрабатывается как поток: host завер�
 запрос сразу после первого SSE event с exact matching `id`, даже если сервер
 оставляет соединение открытым и продолжает heartbeat. Соединение после ответа
 закрывается, а абсолютный deadline запроса не сбрасывается входящим трафиком.
+Сам stdio host продолжает читать JSON-RPC во время ожидания формы или сети,
+поэтому `notifications/cancelled` не застревает за активным `tools/call`.
+Отмена протягивается до Trelio resolve, opener, loopback listener и Remote MCP
+socket; закрытие stdin отменяет все активные вызовы и освобождает те же ресурсы.
 
 Одноразовая форма считается открытой только после нулевого exit status
 системного browser opener и фактического GET exact nonce URL. Если macOS

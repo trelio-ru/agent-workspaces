@@ -99,7 +99,13 @@ Trelio-монорепозитории быть не должно.
   `Sec-Fetch-*`, exact Host/port, loopback socket и одноразовом nonce. Любой
   отказ завершает tool безопасной категорийной диагностикой без URL, тела,
   nonce или credential, а listener закрывает оставшиеся keep-alive соединения
-  после отправки ответа.
+  после отправки ответа. Начиная с `1.4.6` stdio host не сериализует долгий
+  `tools/call` с последующими запросами: он обязан продолжать читать framing,
+  немедленно обрабатывать `notifications/cancelled` и протягивать
+  `AbortSignal` через browser opener, loopback listener, Trelio resolve и
+  Remote MCP HTTP. Отмена или закрытие stdin закрывает listener и сокеты, не
+  сохраняет credential после отменённого doctor и не блокирует следующий
+  `doctor`.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда
