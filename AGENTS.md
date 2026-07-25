@@ -105,7 +105,10 @@ Trelio-монорепозитории быть не должно.
   `AbortSignal` через browser opener, loopback listener, Trelio resolve и
   Remote MCP HTTP. Отмена или закрытие stdin закрывает listener и сокеты, не
   сохраняет credential после отменённого doctor и не блокирует следующий
-  `doctor`.
+  `doctor`. Начиная с `1.4.7` SSRF guard хранит IPv4 и IPv6 диапазоны в
+  раздельных `net.BlockList`: публичный IPv4 больше не совпадает с
+  `::ffff:0:0/96`, тогда как private IPv4, IPv4-mapped IPv6, NAT64 и 6to4
+  по-прежнему блокируются fail-closed.
 - Company-controlled Markdown не поставляет executable. Этот проверяемый
   плагин поставляет bootstrap skills и стабильный host, а runtime конкретного
   навыка может приходить как immutable подписанный внутренний package. Команда

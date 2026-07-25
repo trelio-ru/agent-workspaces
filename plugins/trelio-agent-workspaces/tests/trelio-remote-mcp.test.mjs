@@ -902,19 +902,19 @@ test("Remote MCP doctor verifies initialize and exact allowlist", async () => {
   ]);
 });
 
-test("SSRF guard rejects private DNS answers and pins a public address", async () => {
-  await assert.rejects(
-    resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
-      lookup: async () => [{ address: "127.0.0.1", family: 4 }],
-    }),
-    (error) => (
-      error instanceof RemoteMcpHostError
-      && error.code === "REMOTE_MCP_SSRF_BLOCKED"
-    ),
+test("SSRF guard allows public IPv4 and rejects private or mismatched IPv4 answers", async () => {
+  const safe = await resolveSafeRemoteMcpEndpoint(
+    "https://knowledgebase.dodois.io/mcp",
+    {
+      lookup: async () => [{ address: "91.221.165.34", family: 4 }],
+    },
   );
+  assert.equal(safe.address, "91.221.165.34");
+  assert.equal(safe.family, 4);
+
   await assert.rejects(
     resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
-      lookup: async () => [{ address: "64:ff9b::7f00:1", family: 6 }],
+      lookup: async () => [{ address: "10.20.30.40", family: 4 }],
     }),
     (error) => (
       error instanceof RemoteMcpHostError
@@ -922,16 +922,48 @@ test("SSRF guard rejects private DNS answers and pins a public address", async (
     ),
   );
 
+  await assert.rejects(
+    resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
+      lookup: async () => [{ address: "91.221.165.34", family: 6 }],
+    }),
+    (error) => (
+      error instanceof RemoteMcpHostError
+      && error.code === "REMOTE_MCP_SSRF_BLOCKED"
+    ),
+  );
+});
+
+test("SSRF guard rejects IPv4-mapped, NAT64 and 6to4 IPv6 answers", async () => {
+  const blockedAddresses = [
+    "::ffff:5bdd:a522",
+    "64:ff9b::5bdd:a522",
+    "64:ff9b:1::5bdd:a522",
+    "2002:5bdd:a522::",
+  ];
+
+  for (const address of blockedAddresses) {
+    await assert.rejects(
+      resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
+        lookup: async () => [{ address, family: 6 }],
+      }),
+      (error) => (
+        error instanceof RemoteMcpHostError
+        && error.code === "REMOTE_MCP_SSRF_BLOCKED"
+      ),
+      `expected ${address} to be rejected`,
+    );
+  }
+});
+
+test("SSRF guard still permits explicit insecure test endpoints", async () => {
   const safe = await resolveSafeRemoteMcpEndpoint(
-    "https://knowledgebase.dodois.io/mcp",
+    "http://127.0.0.1:4567/mcp",
     {
-      lookup: async () => [{ address: "203.0.113.10", family: 4 }],
-      // TEST-NET is intentionally blocked in production. This explicit unit
-      // test override never participates in the runtime request path.
+      lookup: async () => [{ address: "127.0.0.1", family: 4 }],
       allowInsecureTestEndpoint: true,
     },
   );
-  assert.equal(safe.address, "203.0.113.10");
+  assert.equal(safe.address, "127.0.0.1");
 });
 
 test("request headers add only bearer auth and host-controlled MCP metadata", () => {
@@ -1201,6 +1233,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.6");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.7");
   assert.equal(frames[1].result.tools.length, 4);
 });

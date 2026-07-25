@@ -70,7 +70,11 @@ const FORBIDDEN_HEADERS = new Set([
   "via",
 ]);
 
-const blockedNetworkAddresses = new net.BlockList();
+// Keep IPv4 and IPv6 ranges in separate BlockList instances. Node internally
+// represents IPv4 values as IPv4-mapped IPv6 addresses in parts of BlockList;
+// mixing `::ffff:0:0/96` into the same instance therefore makes every public
+// IPv4 value match even when `check(..., "ipv4")` is used.
+const blockedIpv4Addresses = new net.BlockList();
 [
   ["0.0.0.0", 8],
   ["10.0.0.0", 8],
@@ -86,7 +90,9 @@ const blockedNetworkAddresses = new net.BlockList();
   ["203.0.113.0", 24],
   ["224.0.0.0", 4],
   ["240.0.0.0", 4],
-].forEach(([address, prefix]) => blockedNetworkAddresses.addSubnet(address, prefix, "ipv4"));
+].forEach(([address, prefix]) => blockedIpv4Addresses.addSubnet(address, prefix, "ipv4"));
+
+const blockedIpv6Addresses = new net.BlockList();
 [
   ["::", 128],
   ["::1", 128],
@@ -102,7 +108,7 @@ const blockedNetworkAddresses = new net.BlockList();
   ["fc00::", 7],
   ["fe80::", 10],
   ["ff00::", 8],
-].forEach(([address, prefix]) => blockedNetworkAddresses.addSubnet(address, prefix, "ipv6"));
+].forEach(([address, prefix]) => blockedIpv6Addresses.addSubnet(address, prefix, "ipv6"));
 
 export class RemoteMcpHostError extends Error {
   constructor(code, message, details = null) {
@@ -564,9 +570,20 @@ const forgetPersonalCredential = async (origin, resolved, { signal } = {}) => {
   return existed;
 };
 
-const isUnsafeNetworkAddress = (address, family) => (
-  blockedNetworkAddresses.check(address, family === 6 ? "ipv6" : "ipv4")
-);
+const isUnsafeNetworkAddress = (address, family) => {
+  const detectedFamily = net.isIP(address);
+
+  // dns.lookup() normally returns matching numeric family metadata, but a
+  // custom resolver or platform defect must not be able to select the wrong
+  // allow/block namespace. Treat malformed or mismatched answers as unsafe.
+  if (detectedFamily === 4) {
+    return family !== 4 || blockedIpv4Addresses.check(address, "ipv4");
+  }
+  if (detectedFamily === 6) {
+    return family !== 6 || blockedIpv6Addresses.check(address, "ipv6");
+  }
+  return true;
+};
 
 export const resolveSafeRemoteMcpEndpoint = async (
   rawEndpoint,
