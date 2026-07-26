@@ -213,11 +213,11 @@ INVENTORY_REFERENCE_TERMS = {
     "warehouse": ("Склад",),
 }
 INVENTORY_DOCUMENT_TERMS = {
-    "purchase": ("Поступлен", "Закуп"),
+    "purchase": ("Приобрет", "Поступлен", "Закуп"),
     "sale": ("Реализац", "Продаж"),
     "receipt": ("Приход", "Оприход"),
     "return": ("Возврат",),
-    "transfer": ("Перемещ",),
+    "transfer": ("Передач", "Перемещ"),
 }
 INVENTORY_STOCK_TERMS = ("Остат", "Склад", "Товар", "Номенклатур")
 INVENTORY_PREFERRED_ENTITIES = {
