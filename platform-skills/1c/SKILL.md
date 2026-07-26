@@ -89,8 +89,12 @@ validator, every call remains a full verification. A changed relevant mapping
 returns `capability_schema_changed` and must not be bypassed. An unrelated
 schema addition may change the full schema digest without changing an already
 verified capability digest. `schema.validation` reports only the safe mode,
-validator kind and whether the private projection was used; never expose
-validator values, URL, response headers or body.
+validator kind, fixed metadata response encoding and whether the private
+projection was used; never expose validator values, URL, response headers or
+body. The fixed metadata request advertises only standard gzip compression;
+both compressed input and decompressed XML are independently bounded, and the
+complete decompressed schema is still parsed and verified before the business
+query.
 
 `get-links` can return bounded normalized EDO document references, but it never
 returns or downloads EDO files. Use `1c-edo` `list-files` / `download-file`

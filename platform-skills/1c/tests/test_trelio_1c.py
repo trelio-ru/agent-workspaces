@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import gzip
+import io
 import json
 import os
 import subprocess
@@ -588,6 +590,69 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
                 },
             ),
             (None, None),
+        )
+
+    def test_metadata_gzip_is_fully_decoded_and_independently_bounded(self) -> None:
+        raw = production_metadata()
+        compressed = gzip.compress(raw)
+
+        self.assertEqual(
+            runtime._safe_metadata_content_encoding(
+                {"Content-Encoding": "gzip"},
+            ),
+            "gzip",
+        )
+        self.assertEqual(
+            runtime._read_gzip_limited(io.BytesIO(compressed), len(raw)),
+            raw,
+        )
+        with self.assertRaisesRegex(
+            runtime.OneCEdoError,
+            "Распакованный metadata",
+        ):
+            runtime._read_gzip_limited(
+                io.BytesIO(compressed),
+                len(raw) - 1,
+            )
+        with self.assertRaisesRegex(
+            runtime.OneCEdoError,
+            "неподдерживаемое кодирование",
+        ):
+            runtime._safe_metadata_content_encoding(
+                {"Content-Encoding": "br"},
+            )
+
+    def test_metadata_request_advertises_and_decodes_only_gzip(self) -> None:
+        class Response(io.BytesIO):
+            status = 200
+            headers = {"Content-Encoding": "gzip"}
+
+            def getcode(self) -> int:
+                return self.status
+
+        raw = production_metadata()
+        response = Response(gzip.compress(raw))
+        config = mock.Mock()
+        credentials = runtime.Credentials("user", "password")
+        with (
+            mock.patch.object(runtime, "_require_x_odata", return_value="secret"),
+            mock.patch.object(
+                runtime,
+                "_http_open",
+                return_value=response,
+            ) as http_open,
+        ):
+            resource = runtime._request_metadata_resource(
+                config,
+                credentials,
+            )
+
+        self.assertEqual(resource.status, 200)
+        self.assertEqual(resource.body, raw)
+        self.assertEqual(resource.content_encoding, "gzip")
+        self.assertEqual(
+            http_open.call_args.kwargs["accept_encoding"],
+            "gzip",
         )
 
     def test_schema_cache_survives_separate_one_shot_process(self) -> None:

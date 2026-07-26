@@ -42,6 +42,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
@@ -52,7 +53,7 @@ SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
 # The backend resolves the same 1c-edo connection id for `1c`, so existing
 # personal Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.9"
+RUNTIME_VERSION = "1.0.10"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -166,6 +167,7 @@ MAX_GENERAL_SCHEMA_CACHE_BYTES = 256 * 1024
 MAX_METADATA_ETAG_CHARS = 512
 MAX_METADATA_LAST_MODIFIED_CHARS = 128
 METADATA_ETAG_RE = re.compile(r'^(?:W/)?"[\x21\x23-\x7e]*"$')
+METADATA_ACCEPT_ENCODING = "gzip"
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
@@ -755,6 +757,7 @@ class MetadataResource:
     body: bytes | None
     etag: str | None
     last_modified: str | None
+    content_encoding: str = "identity"
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -1383,6 +1386,7 @@ def _http_open(
     x_odata: str | None,
     diagnostic_stage: str,
     accept: str | None = None,
+    accept_encoding: str | None = None,
     conditional_headers: Mapping[str, str] | None = None,
     allow_not_modified: bool = False,
 ) -> Any:
@@ -1425,6 +1429,16 @@ def _http_open(
     }
     if x_odata is not None:
         headers["X-OData"] = x_odata
+    if accept_encoding is not None:
+        # Compression is allowed only for the fixed metadata route. Keep the
+        # accepted token closed so this helper cannot become an arbitrary
+        # content-negotiation surface.
+        if accept_encoding != METADATA_ACCEPT_ENCODING:
+            raise OneCEdoError(
+                "query_builder_error",
+                "Runtime отклонила неподдерживаемое кодирование ответа.",
+            )
+        headers["Accept-Encoding"] = accept_encoding
     for name, value in (conditional_headers or {}).items():
         # Conditional headers can originate only from the private,
         # integrity-protected metadata cache. Repeat a strict allowlist and
@@ -1575,6 +1589,85 @@ def _safe_metadata_validators(headers: Any) -> tuple[str | None, str | None]:
     return etag or None, last_modified or None
 
 
+def _safe_metadata_content_encoding(headers: Any) -> str:
+    """Return a fixed transfer-encoding enum or fail closed.
+
+    The runtime deliberately requests only gzip. Unknown, chained or malformed
+    content encodings are not guessed and the raw header value never leaves
+    this function.
+    """
+
+    raw = headers.get("Content-Encoding") if headers is not None else None
+    if raw is None:
+        return "identity"
+    value = str(raw).strip().lower()
+    if value in {"", "identity"}:
+        return "identity"
+    if value == METADATA_ACCEPT_ENCODING:
+        return "gzip"
+    raise OneCEdoError(
+        "invalid_metadata_response",
+        "1С вернула неподдерживаемое кодирование metadata.",
+    )
+
+
+def _read_gzip_limited(stream: BinaryIO, limit: int) -> bytes:
+    """Decode one gzip member with independent wire and output limits."""
+
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    output = bytearray()
+    compressed_bytes = 0
+    while True:
+        chunk = stream.read(64 * 1024)
+        if not chunk:
+            break
+        compressed_bytes += len(chunk)
+        if compressed_bytes > limit:
+            raise OneCEdoError(
+                "response_too_large",
+                "Сжатый metadata-ответ превысил безопасный лимит.",
+            )
+        remaining = limit + 1 - len(output)
+        try:
+            output.extend(decompressor.decompress(chunk, remaining))
+        except zlib.error as error:
+            raise OneCEdoError(
+                "invalid_metadata_response",
+                "1С вернула повреждённый gzip metadata.",
+            ) from error
+        if len(output) > limit or decompressor.unconsumed_tail:
+            raise OneCEdoError(
+                "response_too_large",
+                "Распакованный metadata-ответ превысил безопасный лимит.",
+            )
+        if decompressor.unused_data:
+            # HTTP Content-Encoding should describe one representation. Reject
+            # concatenated members/trailing bytes instead of silently ignoring
+            # an ambiguous second payload.
+            raise OneCEdoError(
+                "invalid_metadata_response",
+                "1С вернула неоднозначный gzip metadata.",
+            )
+    try:
+        output.extend(decompressor.flush(limit + 1 - len(output)))
+    except zlib.error as error:
+        raise OneCEdoError(
+            "invalid_metadata_response",
+            "1С вернула повреждённый gzip metadata.",
+        ) from error
+    if not decompressor.eof:
+        raise OneCEdoError(
+            "invalid_metadata_response",
+            "1С вернула незавершённый gzip metadata.",
+        )
+    if len(output) > limit:
+        raise OneCEdoError(
+            "response_too_large",
+            "Распакованный metadata-ответ превысил безопасный лимит.",
+        )
+    return bytes(output)
+
+
 def _request_metadata_resource(
     config: CompanyConfig,
     credentials: Credentials,
@@ -1598,6 +1691,7 @@ def _request_metadata_resource(
         x_odata=_require_x_odata(),
         diagnostic_stage=diagnostic_stage,
         accept="application/xml",
+        accept_encoding=METADATA_ACCEPT_ENCODING,
         conditional_headers=conditional_headers,
         allow_not_modified=bool(conditional_headers),
     )
@@ -1608,18 +1702,26 @@ def _request_metadata_resource(
             or response.getcode(),
         )
         etag, last_modified = _safe_metadata_validators(response.headers)
+        content_encoding = _safe_metadata_content_encoding(response.headers)
         if status_code == 304:
             return MetadataResource(
                 status=304,
                 body=None,
                 etag=etag,
                 last_modified=last_modified,
+                content_encoding="identity",
             )
+        body = (
+            _read_gzip_limited(response, MAX_METADATA_RESPONSE_BYTES)
+            if content_encoding == "gzip"
+            else _read_limited(response, MAX_METADATA_RESPONSE_BYTES)
+        )
         return MetadataResource(
             status=status_code,
-            body=_read_limited(response, MAX_METADATA_RESPONSE_BYTES),
+            body=body,
             etag=etag,
             last_modified=last_modified,
+            content_encoding=content_encoding,
         )
 
 
@@ -3594,6 +3696,7 @@ def _verify_general_schema(
                     last_modified,
                 ),
                 "cacheProjectionUsed": True,
+                "metadataResponseEncoding": "not_modified",
             }
         elif resource.status == 200 and resource.body is not None:
             schema_digest = (
@@ -3625,6 +3728,7 @@ def _verify_general_schema(
                     resource.last_modified,
                 ),
                 "cacheProjectionUsed": False,
+                "metadataResponseEncoding": resource.content_encoding,
             }
         else:
             raise OneCEdoError(
