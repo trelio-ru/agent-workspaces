@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -8,6 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  AGENT_SKILL_ROUTING_INSTRUCTIONS,
   RemoteMcpHostError,
   assertExactReadOnlyToolList,
   buildRemoteMcpRequestHeaders,
@@ -79,6 +81,46 @@ const dodoTools = dodoConfig.allowedTools.map((name) => ({
     destructiveHint: false,
   },
 }));
+
+/**
+ * Small catalog fixture evaluator used only to make the routing contract
+ * concrete in regression tests. The evaluator deliberately matches by
+ * declared purpose and execution field, never by a known integration id.
+ */
+const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
+  const relevantSkill = catalog.find(
+    (skill) => Array.isArray(skill.purposes) && skill.purposes.includes(purpose),
+  );
+  if (!relevantSkill) {
+    return { type: "fallback", reason: "no_relevant_skill" };
+  }
+  if (relevantSkill.configured === false) {
+    return { type: "fallback", reason: "not_configured" };
+  }
+  if (
+    Array.isArray(relevantSkill.supportedOperations)
+    && !relevantSkill.supportedOperations.includes(purpose)
+  ) {
+    return { type: "fallback", reason: "unsupported_operation" };
+  }
+  if (relevantSkill.runtimeExecution) {
+    return { type: "runtimeExecution", skillId: relevantSkill.id };
+  }
+  if (relevantSkill.remoteMcpExecution) {
+    return { type: "remoteMcpExecution", skillId: relevantSkill.id };
+  }
+  return { type: "fallback", reason: "unsupported_operation" };
+};
+
+const readRoutingInstructionsFromInitialize = async () => {
+  const response = await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-03-26" },
+  });
+  return response.result.instructions;
+};
 
 const listenOnLoopback = async (handler) => {
   const server = http.createServer(handler);
@@ -1191,6 +1233,137 @@ test("local MCP exposes only the four static trusted-host tools", async () => {
   assert.doesNotMatch(JSON.stringify(response), /personal-test-token/u);
 });
 
+test("local MCP initialize publishes the universal skill-first routing gate", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+
+  assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
+  assert.match(instructions, /call `list_agent_skills` for that exact company and project/u);
+  assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
+  assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
+  assert.match(instructions, /Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
+  assert.match(instructions, /State that exact reason before using a fallback/u);
+  assert.match(instructions, /does not weaken any existing secret-delivery rule, personal-session boundary, approval policy, or confirmation requirement/u);
+});
+
+test("platform routing sends 1c-edo through runtimeExecution", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const oneCEdoSkill = await readFile(
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../platform-skills/1c-edo/SKILL.md",
+    ),
+    "utf8",
+  );
+  const route = resolveCatalogFixtureRoute({
+    purpose: "search_edo_documents",
+    catalog: [{
+      id: "1c-edo",
+      purposes: ["search_edo_documents"],
+      supportedOperations: ["search_edo_documents"],
+      configured: true,
+      runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
+    }],
+  });
+
+  assert.deepEqual(route, { type: "runtimeExecution", skillId: "1c-edo" });
+  assert.match(instructions, /contains `runtimeExecution`, run only its exact command/u);
+  assert.match(oneCEdoSkill, /Use only the signed `runtimeExecution\.command`/u);
+});
+
+test("platform routing sends the Dodo knowledge base through remoteMcpExecution", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const route = resolveCatalogFixtureRoute({
+    purpose: "search_company_knowledge",
+    catalog: [{
+      id: resolvedDodo.skill.id,
+      purposes: ["search_company_knowledge"],
+      supportedOperations: ["search_company_knowledge"],
+      configured: true,
+      remoteMcpExecution: {
+        identity: resolvedDodo.localIdentity,
+        releaseId: resolvedDodo.releaseId,
+      },
+    }],
+  });
+
+  assert.deepEqual(route, {
+    type: "remoteMcpExecution",
+    skillId: "dodo-knowledge-base",
+  });
+  assert.match(instructions, /contains `remoteMcpExecution`, use only the declared local `trelio-remote-skills` host tools/u);
+});
+
+test("platform routing discovers Telegram even without a separate Telegram tool", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const toolsResponse = await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/list",
+    params: {},
+  });
+  const activeToolNames = toolsResponse.result.tools.map(({ name }) => name);
+  const route = resolveCatalogFixtureRoute({
+    purpose: "read_team_chat",
+    catalog: [{
+      id: "telegram-mtproto",
+      purposes: ["read_team_chat"],
+      supportedOperations: ["read_team_chat"],
+      configured: true,
+      runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
+    }],
+  });
+
+  assert.equal(activeToolNames.some((name) => /telegram/iu.test(name)), false);
+  assert.deepEqual(route, {
+    type: "runtimeExecution",
+    skillId: "telegram-mtproto",
+  });
+  assert.match(instructions, /even when no integration-specific tool appears in the active tool list/u);
+});
+
+test("platform routing is purpose-based and works for an unknown future skill", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const route = resolveCatalogFixtureRoute({
+    purpose: "inspect_orbital_inventory",
+    catalog: [{
+      id: "future-orbital-inventory",
+      purposes: ["inspect_orbital_inventory"],
+      supportedOperations: ["inspect_orbital_inventory"],
+      configured: true,
+      remoteMcpExecution: {
+        identity: { skillId: "future-orbital-inventory" },
+        releaseId: "44444444-4444-4444-8444-444444444444",
+      },
+    }],
+  });
+
+  assert.deepEqual(route, {
+    type: "remoteMcpExecution",
+    skillId: "future-orbital-inventory",
+  });
+  assert.match(instructions, /Select a relevant assigned skill by its purpose/u);
+  assert.doesNotMatch(
+    instructions,
+    /1c-edo|dodo-knowledge-base|telegram-mtproto|future-orbital-inventory/iu,
+  );
+});
+
+test("platform routing allows a named fallback only when no relevant skill exists", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const route = resolveCatalogFixtureRoute({
+    purpose: "read_unsupported_service",
+    catalog: [],
+  });
+
+  assert.deepEqual(route, {
+    type: "fallback",
+    reason: "no_relevant_skill",
+  });
+  assert.match(instructions, /Fallback is allowed only when the exact catalog has no relevant skill/u);
+  assert.match(instructions, /the relevant skill or required connection is not configured/u);
+  assert.match(instructions, /the current skill does not support the requested operation/u);
+});
+
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   const scriptPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -1233,6 +1406,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.11");
+  assert.equal(frames[0].result.serverInfo.version, "1.5.0");
+  assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.equal(frames[1].result.tools.length, 4);
 });

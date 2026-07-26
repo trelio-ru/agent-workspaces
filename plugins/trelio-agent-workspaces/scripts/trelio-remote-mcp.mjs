@@ -47,6 +47,22 @@ const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 const WRITE_TOOL_NAME_PATTERN = /(?:^|[_:.-])(?:add|archive|create|delete|edit|invite|move|publish|remove|rename|restore|revoke|send|set|update|upload|write)(?:$|[_:.-])/iu;
+
+/**
+ * MCP `initialize.instructions` is the always-on routing layer for this plugin.
+ *
+ * Unlike a task skill, these instructions are available before the model picks
+ * an integration tool. Keep the first paragraph self-contained because MCP
+ * clients may prioritize the beginning of server-wide instructions while
+ * deciding which tool family should handle the request.
+ */
+export const AGENT_SKILL_ROUTING_INSTRUCTIONS = [
+  "Trelio Agent Skill routing gate: In any resolved Trelio company or project context, before accessing corporate data, a connected service, or an external system, call `list_agent_skills` for that exact company and project. Select a relevant assigned skill by its purpose, then immediately before the action call `get_agent_skill` for the same context. Do this even when no integration-specific tool appears in the active tool list; a missing active tool is not evidence that the integration is unavailable.",
+  "If the current skill response contains `runtimeExecution`, run only its exact command. If it contains `remoteMcpExecution`, use only the declared local `trelio-remote-skills` host tools with the returned identity and release. Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script.",
+  "Fallback is allowed only when the exact catalog has no relevant skill, the relevant skill or required connection is not configured, or the current skill does not support the requested operation. State that exact reason before using a fallback. If `list_agent_skills` or `get_agent_skill` is unavailable, report that the Trelio skill control plane is unavailable; do not claim the integration itself is absent and do not replace Trelio MCP with browser access.",
+  "This routing gate does not weaken any existing secret-delivery rule, personal-session boundary, approval policy, or confirmation requirement.",
+].join("\n\n");
+
 const FORBIDDEN_HEADERS = new Set([
   "accept",
   "authorization",
@@ -1895,6 +1911,10 @@ export const handleLocalMcpMessage = async (
           name: "trelio-remote-skills",
           version: BRIDGE_VERSION,
         },
+        // Server-wide instructions are intentionally returned by the static
+        // local host: this makes skill-first routing visible before Codex
+        // decides that a browser or another currently exposed tool is easier.
+        instructions: AGENT_SKILL_ROUTING_INSTRUCTIONS,
       },
     };
   }

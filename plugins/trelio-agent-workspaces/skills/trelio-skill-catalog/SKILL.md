@@ -17,6 +17,21 @@ Trelio skills are live, additive instructions supplied by a company or a project
 6. When `runtimeExecution` is present, invoke its exact `command`; append only the skill arguments allowed by the current instruction after the terminal `--`. Do not replace it with a plugin-bundled script or a cached executable path. The bridge resolves the expected release before every run, downloads only a missing exact package, verifies its Ed25519 signature and every file digest, then runs it with `shell:false`.
 7. When `remoteMcpExecution` is present, use only the named tools from the local `trelio-remote-skills` MCP server and pass the exact returned `identity` plus `releaseId`. Never connect the remote endpoint directly and never invent headers. The local host resolves the release before every action; `call_remote_agent_skill_tool` initializes the server, verifies protocol `2025-03-26`, requires exact equality with the published read-only allowlist, and only then calls the selected tool.
 
+The plugin's bundled `trelio-remote-skills` MCP server publishes this routing
+gate through `initialize.instructions`, so it applies before this catalog skill
+is selected and before the model chooses an integration tool. In an exact
+Trelio company/project context, never bypass a matching assigned skill with a
+browser, Computer Use, direct HTTP, another MCP server, or a local script.
+Absence of a dedicated tool from the current active tool list is not evidence
+that the integration is unavailable.
+
+Fallback is allowed only when the exact catalog has no relevant skill, the
+relevant skill or its required connection is not configured, or its current
+release does not support the requested operation. State the exact reason before
+using the fallback. If `list_agent_skills` or `get_agent_skill` itself is
+unavailable, report an unavailable Trelio skill control plane instead of
+claiming that the integration is absent or opening Trelio in a browser.
+
 Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. The bridge may cache verified package bytes by digest, but it must still resolve the release on every invocation. If the server returns `AGENT_SKILL_RELEASE_CHANGED`, call `get_agent_skill` again once and use the new instruction and exact command; never force the stale release. If the required runtime host or `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin.
 
 ## Connected integrations

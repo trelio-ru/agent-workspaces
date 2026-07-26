@@ -390,7 +390,16 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Если ответ содержит `runtimeExecution`, выполняй его exact command/u,
+      /перед обращением к корпоративным данным, подключённому сервису или внешней системе обязательно вызови `list_agent_skills`/u,
+    );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Не обходи найденный навык через браузер, Computer Use, прямой HTTP, альтернативный MCP или локальный скрипт/u,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Fallback допустим только когда подходящего навыка действительно нет/u,
     );
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
@@ -783,7 +792,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.11");
+  assert.equal(BRIDGE_VERSION, "1.5.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -988,10 +997,13 @@ test("workspace worker discovers the live skill catalog before substantive work"
     "utf8",
   );
 
-  assert.match(workerSkill, /Call `list_agent_skills` once for the exact resolved context/);
+  assert.match(workerSkill, /call `list_agent_skills` once for the exact resolved context/);
   assert.match(workerSkill, /Do not load every skill instruction speculatively/);
   assert.match(workerSkill, /Immediately before using a relevant Trelio-provided skill, call `get_agent_skill`/);
-  assert.match(workerSkill, /When the response includes `runtimeExecution`, execute its exact `command`/);
+  assert.match(workerSkill, /When the response includes `runtimeExecution`, execute only its exact `command`/);
+  assert.match(workerSkill, /When it includes `remoteMcpExecution`/);
+  assert.match(workerSkill, /Never bypass a matching assigned skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/);
+  assert.match(workerSkill, /Fallback is allowed only when the exact catalog has no relevant skill/);
   assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
   assert.match(workerSkill, /when you independently identify a durable rule/);
   assert.match(workerSkill, /Call `get_agent_instructions` to read the current scoped and inherited rules/);

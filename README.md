@@ -14,6 +14,10 @@
 - универсальный локальный host декларативных Remote MCP навыков: защищённый
   персональный credential, HTTPS/SSRF guard, protocol doctor и exact read-only
   allowlist перед каждым вызовом;
+- постоянный skill-first routing gate через MCP `initialize.instructions`,
+  который до выбора integration tool требует проверить exact company/project
+  каталог и запрещает обход найденного навыка браузером или альтернативным
+  транспортом;
 - локальный Git bridge для открытия workspace, checkpoint и атомарной записи
   candidate revision с защитой от конфликтов версий;
 - один scoped MCP-вызов для массового обычного поиска задач по отдельным
@@ -175,6 +179,12 @@ marketplace подключается без `--ref` и перед новой р�
 ```bash
 codex plugin marketplace upgrade trelio-plugins
 ```
+
+Minor release `1.5.0` переносит обязательную маршрутизацию Agent Skills на
+постоянный bundled MCP слой. Навык каталога остаётся подробной инструкцией, а
+защищённый runtime `AGENTS.md` повторяет gate внутри открытого Agent Workspace.
+Секреты, локальные личные сессии и подтверждение отправки этим релизом не
+изменяются.
 
 После обновления полностью перезапустите Codex или Claude и начните новую
 задачу. Источник, закреплённый на `--ref vX.Y.Z`, перестанет открывать Agent
