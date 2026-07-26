@@ -43,7 +43,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.2"
+RUNTIME_VERSION = "1.0.3"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -102,14 +102,19 @@ DOCUMENT_SELECT_FIELDS = (
     "Date",
     "ВидДокумента_Key",
     "ДатаДокумента",
+    "ДатаПодписания",
     "ДоговорКонтрагента",
     "Комментарий",
     "Контрагент",
     "НомерДокумента",
+    "ОбменБезПодписи",
     "Организация_Key",
+    "Остановлен",
     "СуммаДокумента",
 )
 DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
+DOCUMENT_SIGNATURE_BASIS = "document_signing_date"
+EDO_STATUS_UNAVAILABLE_REASON = "register_not_published"
 CONTRACT_RELATION_DIAGNOSTIC_STAGES = {
     "НаправлениеДеятельности_Key": "search.contracts.by-business-direction",
     "Подразделение_Key": "search.contracts.by-subdivision",
@@ -904,6 +909,79 @@ def _record_uuid(value: dict[str, Any]) -> str | None:
     return str(uuid.UUID(reference))
 
 
+def _normalized_boolean(value: Any) -> bool | None:
+    """Return a semantic boolean only when 1C actually supplied a JSON bool.
+
+    Coercing strings or numbers here would make fields such as ``"false"`` or
+    ``1`` look authoritative even though their meaning would depend on a
+    non-standard serializer. A missing/unexpected value therefore remains
+    ``null`` instead of being mixed with the document signature.
+    """
+
+    return value if isinstance(value, bool) else None
+
+
+def _normalized_signing_date(value: Any) -> str | None:
+    """Normalize the published 1C signing date without inventing a status.
+
+    1C serializes an unset date as the minimum platform timestamp
+    ``0001-01-01T00:00:00``. Empty and minimum timestamps mean that the
+    document has no signing date. A malformed non-empty value is rejected
+    instead of being silently converted to ``isSigned=false``: otherwise an
+    upstream schema/serializer regression could produce a false business
+    statement.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректную дату подписания документа.",
+        )
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректную дату подписания документа.",
+        ) from error
+    if parsed == dt.datetime.min.replace(tzinfo=parsed.tzinfo):
+        return None
+    return normalized
+
+
+def _normalize_document(value: dict[str, Any]) -> dict[str, Any]:
+    """Add stable document semantics while preserving safe source scalars.
+
+    The full EDO workflow status is deliberately *not* inferred from document
+    flags or attachment metadata. The confirmed state register is absent from
+    the published OData schema, and ``file.ПодписанЭП`` describes only one
+    concrete attachment (live documents contain mixed true/false files).
+    """
+
+    result = dict(value)
+    signed_at = _normalized_signing_date(result.get("ДатаПодписания"))
+    result["signature"] = {
+        "isSigned": signed_at is not None,
+        "signedAt": signed_at,
+        "basis": DOCUMENT_SIGNATURE_BASIS,
+    }
+    result["edoStatus"] = "unknown"
+    result["statusAvailability"] = {
+        "available": False,
+        "reason": EDO_STATUS_UNAVAILABLE_REASON,
+    }
+    result["isStopped"] = _normalized_boolean(result.get("Остановлен"))
+    result["exchangeWithoutSignature"] = _normalized_boolean(
+        result.get("ОбменБезПодписи"),
+    )
+    return result
+
+
 def _search_term(value: Any) -> str:
     """Validate user text before it can enter a fixed OData string literal."""
 
@@ -1282,7 +1360,9 @@ def _add_document(
     raw_row: dict[str, Any],
     match: dict[str, str],
 ) -> None:
-    safe_row = _safe_selected_record(raw_row, DOCUMENT_SELECT_FIELDS)
+    safe_row = _normalize_document(
+        _safe_selected_record(raw_row, DOCUMENT_SELECT_FIELDS),
+    )
     reference = _record_uuid(safe_row)
     if reference is None:
         return
@@ -1502,7 +1582,11 @@ def command_get_document(args: argparse.Namespace) -> dict[str, Any]:
         raise
     return {
         "direction": direction[0],
-        "document": _safe_scalar_record(rows[0]) if rows else None,
+        "document": (
+            _normalize_document(_safe_scalar_record(rows[0]))
+            if rows
+            else None
+        ),
     }
 
 

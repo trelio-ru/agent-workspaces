@@ -32,6 +32,8 @@ BUSINESS_ID = "77777777-7777-4777-8777-777777777777"
 ORG_SUBDIVISION_ID = "99999999-9999-4999-8999-999999999999"
 CONTRACT_ID = "982a385d-df58-11f0-a58a-047c16799dce"
 OUTGOING_DOCUMENT_ID = "88888888-8888-4888-8888-888888888888"
+LIVE_OUTGOING_DOCUMENT_ID = "90adbd07-868e-11f1-a591-047c16799dce"
+LIVE_INCOMING_DOCUMENT_ID = "55a667b1-874c-11f1-a591-047c16799dce"
 
 
 def company_config(**overrides: object) -> dict[str, object]:
@@ -283,6 +285,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             {},
             io.BytesIO(b"proxy echoed X-OData and a private server path"),
         )
+        self.addCleanup(remote_error.close)
         opener = mock.Mock()
         opener.open.side_effect = remote_error
         with (
@@ -322,6 +325,146 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             "private server path",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_live_document_signature_samples_are_normalized_from_date_only(self) -> None:
+        """The document signing date, not an attachment flag, is authoritative."""
+
+        outgoing = MODULE._normalize_document(
+            {
+                "Ref_Key": LIVE_OUTGOING_DOCUMENT_ID,
+                "Number": "00000002110",
+                "НомерДокумента": "2110",
+                "ДатаПодписания": "2026-07-23T15:04:00",
+                "ДатаОтправки": "2026-07-23T15:04:04",
+                "Остановлен": False,
+                "ОбменБезПодписи": False,
+                "УдалитьСостояниеЭДО": "",
+            },
+        )
+        incoming = MODULE._normalize_document(
+            {
+                "Ref_Key": LIVE_INCOMING_DOCUMENT_ID,
+                "Number": "00000064205",
+                "НомерДокумента": "32668",
+                "ДатаПодписания": "0001-01-01T00:00:00",
+                "ДатаПолучения": "2026-07-24T13:42:22",
+                "Остановлен": False,
+                "ОбменБезПодписи": False,
+                "УдалитьСостояниеЭДО": "",
+            },
+        )
+
+        self.assertEqual(
+            outgoing["signature"],
+            {
+                "isSigned": True,
+                "signedAt": "2026-07-23T15:04:00",
+                "basis": "document_signing_date",
+            },
+        )
+        self.assertEqual(
+            incoming["signature"],
+            {
+                "isSigned": False,
+                "signedAt": None,
+                "basis": "document_signing_date",
+            },
+        )
+        for document in (outgoing, incoming):
+            self.assertEqual(document["edoStatus"], "unknown")
+            self.assertEqual(
+                document["statusAvailability"],
+                {
+                    "available": False,
+                    "reason": "register_not_published",
+                },
+            )
+            self.assertFalse(document["isStopped"])
+            self.assertFalse(document["exchangeWithoutSignature"])
+
+    def test_empty_sentinel_and_malformed_signing_dates_fail_closed(self) -> None:
+        for unset in (None, "", "   ", "0001-01-01T00:00:00", "0001-01-01T00:00:00Z"):
+            normalized = MODULE._normalize_document({"ДатаПодписания": unset})
+            self.assertFalse(normalized["signature"]["isSigned"])
+            self.assertIsNone(normalized["signature"]["signedAt"])
+
+        for malformed in (False, 1, "not-a-timestamp"):
+            with self.assertRaisesRegex(
+                MODULE.OneCEdoError,
+                "некорректную дату подписания",
+            ):
+                MODULE._normalize_document({"ДатаПодписания": malformed})
+
+    def test_mixed_file_signature_flags_never_change_document_signature(self) -> None:
+        """Mixed new/old attachment flags must stay file-local."""
+
+        _, config, credentials = self.store_connected_credentials()
+
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
+            if entity == MODULE.NEW_FILE_ENTITY:
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": FILE_ID,
+                            "ПодписанЭП": False,
+                            "Description": "Визуальная PDF-копия",
+                        },
+                    ],
+                }
+            if entity == MODULE.OLD_MESSAGE_ENTITY:
+                return {"value": [{"Ref_Key": MESSAGE_ID}]}
+            if entity == MODULE.OLD_FILE_ENTITY:
+                return {
+                    "value": [
+                        {"Ref_Key": FILE_ID, "ПодписанЭП": True},
+                        {
+                            "Ref_Key": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                            "ПодписанЭП": True,
+                        },
+                        {
+                            "Ref_Key": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                            "ПодписанЭП": False,
+                        },
+                    ],
+                }
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            files = [
+                *MODULE._new_files(
+                    config,
+                    credentials,
+                    LIVE_OUTGOING_DOCUMENT_ID,
+                    MODULE.DOCUMENT_ENTITIES["outgoing"],
+                ),
+                *MODULE._old_files(
+                    config,
+                    credentials,
+                    LIVE_INCOMING_DOCUMENT_ID,
+                    MODULE.DOCUMENT_ENTITIES["incoming"],
+                ),
+            ]
+
+        self.assertEqual(
+            [item["file"]["ПодписанЭП"] for item in files],
+            [False, True, True, False],
+        )
+        signed_document = MODULE._normalize_document(
+            {"ДатаПодписания": "2026-07-23T15:04:00"},
+        )
+        unsigned_document = MODULE._normalize_document(
+            {"ДатаПодписания": "0001-01-01T00:00:00"},
+        )
+        self.assertTrue(signed_document["signature"]["isSigned"])
+        self.assertFalse(unsigned_document["signature"]["isSigned"])
 
     def test_download_is_atomic_bounded_and_reports_sha256(self) -> None:
         self.store_connected_credentials()
@@ -413,6 +556,9 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Ref_Key": DOCUMENT_ID,
                             "Number": "IN-120",
                             "Комментарий": "Мурманск-4",
+                            "ДатаПодписания": "0001-01-01T00:00:00",
+                            "Остановлен": False,
+                            "ОбменБезПодписи": False,
                             "ServerIgnoredSelect": "blocked",
                         },
                     ],
@@ -424,6 +570,9 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Ref_Key": OUTGOING_DOCUMENT_ID,
                             "Number": "OUT-120",
                             "Комментарий": "Мурманск-4",
+                            "ДатаПодписания": "2026-07-23T15:04:00",
+                            "Остановлен": False,
+                            "ОбменБезПодписи": False,
                         },
                     ],
                 }
@@ -448,6 +597,17 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertNotIn(
             "ServerIgnoredSelect",
             result["documents"][0]["document"],
+        )
+        signatures = {
+            item["direction"]: item["document"]["signature"]
+            for item in result["documents"]
+        }
+        self.assertFalse(signatures["incoming"]["isSigned"])
+        self.assertIsNone(signatures["incoming"]["signedAt"])
+        self.assertTrue(signatures["outgoing"]["isSigned"])
+        self.assertEqual(
+            signatures["outgoing"]["signedAt"],
+            "2026-07-23T15:04:00",
         )
         for item in result["documents"]:
             self.assertEqual(
@@ -480,6 +640,52 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertIn(
             "search.contracts.by-subdivision",
             {stage for _, stage in contract_calls},
+        )
+        document_calls = [
+            dict(parameters)
+            for entity, parameters, _stage in calls
+            if entity in MODULE.DOCUMENT_ENTITIES.values()
+        ]
+        self.assertTrue(document_calls)
+        self.assertTrue(
+            all(
+                "ДатаПодписания" in parameters["$select"]
+                and "Остановлен" in parameters["$select"]
+                and "ОбменБезПодписи" in parameters["$select"]
+                for parameters in document_calls
+            ),
+        )
+
+    def test_get_document_returns_the_same_normalized_signature_contract(self) -> None:
+        self.store_connected_credentials()
+        raw_document = {
+            "Ref_Key": LIVE_OUTGOING_DOCUMENT_ID,
+            "Number": "00000002110",
+            "НомерДокумента": "2110",
+            "ДатаПодписания": "2026-07-23T15:04:00",
+            "Остановлен": False,
+            "ОбменБезПодписи": False,
+        }
+        with mock.patch.object(
+            MODULE,
+            "_request_odata",
+            return_value={"value": [raw_document]},
+        ):
+            result = MODULE.command_get_document(
+                argparse.Namespace(
+                    direction="outgoing",
+                    document_id=LIVE_OUTGOING_DOCUMENT_ID,
+                ),
+            )
+        self.assertEqual(result["document"]["signature"]["isSigned"], True)
+        self.assertEqual(
+            result["document"]["signature"]["signedAt"],
+            "2026-07-23T15:04:00",
+        )
+        self.assertEqual(result["document"]["edoStatus"], "unknown")
+        self.assertEqual(
+            result["document"]["statusAvailability"]["reason"],
+            "register_not_published",
         )
 
     def test_search_escapes_apostrophe_unicode_and_percent_20(self) -> None:
