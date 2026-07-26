@@ -189,12 +189,19 @@ Trelio-монорепозитории быть не должно.
   значения по-прежнему приходят только через одноразовый Agent Secret grant.
   Канонический platform skill `platform-skills/1c-edo` использует этот контур:
   company `X-OData` не смешивается с личным Basic Auth, персональные credentials
-  остаются в `integrations/1c-edo/<company>/<member>/<connection>/`, а runtime
-  разрешает только фиксированные GET/HEAD цепочки новой и старой схемы ЭДО.
-  Отдельная пользовательская поверхность `platform-skills/1c` использует
-  общий source `platform-skills/1c-runtime`: provider connection, X-OData и
-  локальный credential namespace по-прежнему принадлежат `1c-edo`, но команды
-  широкого read-only навыка и его capability registry изолированы от ЭДО.
+  остаются в `integrations/1c-edo/<company>/<member>/<connection>/`, а
+  самостоятельный EDO runtime разрешает только фиксированные GET/HEAD цепочки
+  новой и старой схемы ЭДО. Начиная с patch `1.0.13`, его package снова
+  основан на проверенном release `1.0.6` / runtime `1.0.5` и не содержит
+  broad handlers, capability registry или metadata cache.
+  Company-private пользовательская поверхность
+  `platform-skills/1c-vkus` принадлежит только компании «Вкус» и имеет
+  самостоятельный signed package/release cycle. Backend безопасно разрешает
+  ей provider connection `1c-edo`: X-OData, stable connection id и локальный
+  credential namespace остаются прежними, но runtime source и package с EDO
+  больше не общие. Старый platform skill `1c` архивирован после переключения
+  project assignment и не должен возвращаться каталогом или
+  `get_agent_skill`.
   Реестр строится только после signed `$metadata` inventory и bounded sample
   GET, фиксирует digest релевантной схемы и fail-closed блокирует изменившийся
   capability. Произвольные entity/URL/OData, персональные/зарплатные,

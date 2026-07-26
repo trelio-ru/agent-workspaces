@@ -16,12 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = (
-    Path(__file__).parents[2]
-    / "1c-runtime"
-    / "scripts"
-    / "trelio_one_c_runtime.py"
-)
+SCRIPT = Path(__file__).parents[1] / "scripts" / "trelio-1c-edo.py"
 SPEC = importlib.util.spec_from_file_location("trelio_1c_edo", SCRIPT)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)

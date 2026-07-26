@@ -16,12 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 
-SCRIPT = (
-    Path(__file__).parents[2]
-    / "1c-runtime"
-    / "scripts"
-    / "trelio_one_c_runtime.py"
-)
+SCRIPT = Path(__file__).parents[1] / "scripts" / "trelio_one_c_vkus_runtime.py"
 SPEC = importlib.util.spec_from_file_location("trelio_one_c_runtime_general_test", SCRIPT)
 assert SPEC and SPEC.loader
 runtime = importlib.util.module_from_spec(SPEC)
@@ -159,7 +154,9 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.environment = mock.patch.dict(
             os.environ,
             {
-                "TRELIO_SKILL_ID": "1c",
+                "TRELIO_SKILL_ID": (
+                    "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus"
+                ),
                 "TRELIO_SKILL_COMPANY_ID": COMPANY_ID,
                 "TRELIO_SKILL_MEMBER_ID": MEMBER_ID,
                 "TRELIO_SKILL_CONNECTION_ID": CONNECTION_ID,
@@ -276,7 +273,7 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.assertNotIn("/integrations/1c/", root.as_posix())
 
     def test_general_parser_has_no_raw_odata_arguments(self) -> None:
-        parser = runtime.build_parser("1c")
+        parser = runtime.build_parser(runtime.VKUS_SKILL_ID)
         with self.assertRaises(SystemExit):
             parser.parse_args(["developer-inventory-metadata"])
         with self.assertRaises(SystemExit):

@@ -48,12 +48,13 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
 
 
-SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
-# Both user-facing surfaces intentionally use the legacy provider namespace.
-# The backend resolves the same 1c-edo connection id for `1c`, so existing
-# personal Basic Auth credentials remain usable without copying or migration.
+VKUS_SKILL_ID = "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus"
+SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
+# The Vkus-private broad surface intentionally uses the universal EDO provider
+# namespace. The backend resolves the existing 1c-edo connection id, so local
+# Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.12"
+RUNTIME_VERSION = "1.0.13"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -4920,9 +4921,7 @@ def build_general_parser() -> argparse.ArgumentParser:
 
 def build_parser(skill_id: str | None = None) -> argparse.ArgumentParser:
     resolved_skill_id = skill_id or current_skill_id()
-    if resolved_skill_id == "1c-edo":
-        return build_edo_parser()
-    if resolved_skill_id == "1c":
+    if resolved_skill_id == VKUS_SKILL_ID:
         return build_general_parser()
     raise OneCEdoError(
         "invalid_host_context",

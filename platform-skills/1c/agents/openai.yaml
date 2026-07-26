@@ -1,4 +1,0 @@
-interface:
-  display_name: "1С"
-  short_description: "Безопасный read-only доступ к бизнес-данным 1С"
-  default_prompt: "Используй $1c только через текущий подписанный runtime и его фиксированные read-only команды."

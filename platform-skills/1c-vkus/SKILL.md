@@ -1,18 +1,19 @@
 ---
-name: 1c
-description: Safely search and inspect the fixed read-only business reference, document and relationship capabilities published by a company's 1C through Trelio's signed runtime.
+name: 1c-vkus
+description: Safely search and inspect the fixed read-only business reference, document and relationship capabilities published by the Vkus company's 1C through Trelio's signed runtime.
 ---
 
-# 1С
+# 1С — Вкус
 
 Use only the exact signed `runtimeExecution.command` from the current
 `get_agent_skill` response. The runtime is read-only and accepts no arbitrary
 URL, entity, field, `$filter`, `$select`, `$orderby`, OData expression or HTTP
 method.
 
-This skill is intended for the project
-`vkus/avtomatizatsiya-upravleniya`. Do not widen it to the whole company
-without an explicit assignment change.
+This company-private skill belongs only to company `vkus` and is initially
+assigned only to project `vkus/avtomatizatsiya-upravleniya`. Do not widen it
+to the whole company without an explicit assignment change, and never copy,
+publish or enable it in another company.
 
 ## Shared connection and personal access
 
