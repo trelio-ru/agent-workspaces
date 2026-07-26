@@ -645,7 +645,6 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
             resource = runtime._request_metadata_resource(
                 config,
                 credentials,
-                validators={"etag": '"schema-v1"'},
             )
 
         self.assertEqual(resource.status, 200)
@@ -655,119 +654,6 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
             http_open.call_args.kwargs["accept_encoding"],
             "gzip",
         )
-
-    def test_metadata_ranges_cover_one_exact_body_without_overlap(self) -> None:
-        raw = production_metadata()
-        calls: list[tuple[str, tuple[int, int] | None]] = []
-
-        class Response(io.BytesIO):
-            def __init__(
-                self,
-                body: bytes,
-                *,
-                status: int,
-                headers: dict[str, str],
-            ) -> None:
-                super().__init__(body)
-                self.status = status
-                self.headers = headers
-
-            def getcode(self) -> int:
-                return self.status
-
-        def http_open(method, _url, **kwargs):
-            byte_range = kwargs.get("byte_range")
-            calls.append((method, byte_range))
-            if method == "HEAD":
-                return Response(
-                    b"",
-                    status=200,
-                    headers={"Content-Length": str(len(raw))},
-                )
-            assert byte_range is not None
-            start, end = byte_range
-            return Response(
-                raw[start : end + 1],
-                status=206,
-                headers={
-                    "Content-Length": str(end - start + 1),
-                    "Content-Range": f"bytes {start}-{end}/{len(raw)}",
-                },
-            )
-
-        with (
-            mock.patch.object(runtime, "_require_x_odata", return_value="secret"),
-            mock.patch.object(runtime, "_http_open", side_effect=http_open),
-        ):
-            resource = runtime._request_metadata_resource(
-                mock.Mock(request_timeout_seconds=20),
-                runtime.Credentials("user", "password"),
-            )
-
-        self.assertEqual(resource.body, raw)
-        self.assertEqual(resource.transfer_mode, "parallel_ranges")
-        self.assertEqual(resource.range_probe, "supported")
-        requested = sorted(
-            byte_range
-            for method, byte_range in calls
-            if method == "GET" and byte_range is not None
-        )
-        self.assertLessEqual(len(requested), 4)
-        self.assertEqual(requested[0], (0, 0))
-        self.assertEqual(
-            sum(end - start + 1 for start, end in requested),
-            len(raw),
-        )
-        for previous, current in zip(requested, requested[1:]):
-            self.assertEqual(previous[1] + 1, current[0])
-
-    def test_metadata_range_probe_fails_without_a_second_full_get(self) -> None:
-        calls: list[tuple[str, tuple[int, int] | None]] = []
-
-        class Response(io.BytesIO):
-            def __init__(
-                self,
-                body: bytes,
-                *,
-                status: int,
-                headers: dict[str, str],
-            ) -> None:
-                super().__init__(body)
-                self.status = status
-                self.headers = headers
-
-            def getcode(self) -> int:
-                return self.status
-
-        def http_open(method, _url, **kwargs):
-            byte_range = kwargs.get("byte_range")
-            calls.append((method, byte_range))
-            if method == "HEAD":
-                return Response(
-                    b"",
-                    status=200,
-                    headers={"Content-Length": "100"},
-                )
-            return Response(
-                b"x" * 100,
-                status=200,
-                headers={"Content-Length": "100"},
-            )
-
-        with (
-            mock.patch.object(runtime, "_require_x_odata", return_value="secret"),
-            mock.patch.object(runtime, "_http_open", side_effect=http_open),
-            self.assertRaisesRegex(
-                runtime.OneCEdoError,
-                "не подтвердила byte ranges",
-            ),
-        ):
-            runtime._request_metadata_resource(
-                mock.Mock(request_timeout_seconds=20),
-                runtime.Credentials("user", "password"),
-            )
-
-        self.assertEqual(calls, [("HEAD", None), ("GET", (0, 0))])
 
     def test_schema_cache_survives_separate_one_shot_process(self) -> None:
         config = mock.Mock(fingerprint="test-connection-fingerprint")

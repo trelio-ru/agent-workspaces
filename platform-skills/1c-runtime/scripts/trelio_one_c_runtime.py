@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import concurrent.futures
 import contextlib
 import datetime as dt
 import email.utils
@@ -54,7 +53,7 @@ SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
 # The backend resolves the same 1c-edo connection id for `1c`, so existing
 # personal Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.11"
+RUNTIME_VERSION = "1.0.10"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -169,10 +168,6 @@ MAX_METADATA_ETAG_CHARS = 512
 MAX_METADATA_LAST_MODIFIED_CHARS = 128
 METADATA_ETAG_RE = re.compile(r'^(?:W/)?"[\x21\x23-\x7e]*"$')
 METADATA_ACCEPT_ENCODING = "gzip"
-MAX_METADATA_RANGE_REQUESTS = 4
-METADATA_CONTENT_RANGE_RE = re.compile(
-    r"^bytes ([0-9]+)-([0-9]+)/([0-9]+)$",
-)
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
@@ -763,8 +758,6 @@ class MetadataResource:
     etag: str | None
     last_modified: str | None
     content_encoding: str = "identity"
-    transfer_mode: str = "full_get"
-    range_probe: str = "not_attempted"
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -1396,9 +1389,6 @@ def _http_open(
     accept_encoding: str | None = None,
     conditional_headers: Mapping[str, str] | None = None,
     allow_not_modified: bool = False,
-    byte_range: tuple[int, int] | None = None,
-    if_range: str | None = None,
-    allowed_error_statuses: frozenset[int] = frozenset(),
 ) -> Any:
     if diagnostic_stage not in DIAGNOSTIC_STAGES:
         raise OneCEdoError(
@@ -1443,53 +1433,12 @@ def _http_open(
         # Compression is allowed only for the fixed metadata route. Keep the
         # accepted token closed so this helper cannot become an arbitrary
         # content-negotiation surface.
-        if accept_encoding not in {METADATA_ACCEPT_ENCODING, "identity"}:
+        if accept_encoding != METADATA_ACCEPT_ENCODING:
             raise OneCEdoError(
                 "query_builder_error",
                 "Runtime отклонила неподдерживаемое кодирование ответа.",
             )
         headers["Accept-Encoding"] = accept_encoding
-    if byte_range is not None:
-        start, end = byte_range
-        if (
-            not isinstance(start, int)
-            or not isinstance(end, int)
-            or start < 0
-            or end < start
-            or end >= MAX_METADATA_RESPONSE_BYTES
-        ):
-            raise OneCEdoError(
-                "query_builder_error",
-                "Runtime отклонила небезопасный byte range.",
-            )
-        headers["Range"] = f"bytes={start}-{end}"
-        if if_range is not None:
-            valid_date = False
-            if (
-                len(if_range) <= MAX_METADATA_LAST_MODIFIED_CHARS
-                and "\r" not in if_range
-                and "\n" not in if_range
-            ):
-                try:
-                    valid_date = (
-                        email.utils.parsedate_to_datetime(if_range) is not None
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    valid_date = False
-            valid_if_range = (
-                (
-                    len(if_range) <= MAX_METADATA_ETAG_CHARS
-                    and METADATA_ETAG_RE.fullmatch(if_range) is not None
-                    and not if_range.startswith("W/")
-                )
-                or valid_date
-            )
-            if not valid_if_range:
-                raise OneCEdoError(
-                    "invalid_local_state",
-                    "Metadata If-Range validator повреждён.",
-                )
-            headers["If-Range"] = if_range
     for name, value in (conditional_headers or {}).items():
         # Conditional headers can originate only from the private,
         # integrity-protected metadata cache. Repeat a strict allowlist and
@@ -1525,8 +1474,6 @@ def _http_open(
             # The caller receives only the status and safe validator
             # availability; neither header values nor request details are
             # serialized to the agent.
-            return error
-        if error.code in allowed_error_statuses:
             return error
         if error.code in {401, 403}:
             raise AuthenticationError(
@@ -1721,300 +1668,6 @@ def _read_gzip_limited(stream: BinaryIO, limit: int) -> bytes:
     return bytes(output)
 
 
-def _response_status(response: Any) -> int:
-    return int(
-        getattr(response, "status", None)
-        or getattr(response, "code", None)
-        or response.getcode(),
-    )
-
-
-def _safe_metadata_content_length(headers: Any) -> int | None:
-    """Return a bounded positive length without exposing the raw header."""
-
-    raw = headers.get("Content-Length") if headers is not None else None
-    if raw is None:
-        return None
-    value = str(raw).strip()
-    if not re.fullmatch(r"[0-9]+", value):
-        return None
-    length = int(value)
-    if length <= 0:
-        return None
-    if length > MAX_METADATA_RESPONSE_BYTES:
-        raise OneCEdoError(
-            "response_too_large",
-            "Metadata-ответ превысил безопасный лимит.",
-        )
-    return length
-
-
-def _require_metadata_content_range(
-    headers: Any,
-    *,
-    expected_start: int,
-    expected_end: int,
-    expected_total: int,
-) -> None:
-    """Validate one exact non-overlapping range response."""
-
-    raw = headers.get("Content-Range") if headers is not None else None
-    match = METADATA_CONTENT_RANGE_RE.fullmatch(
-        str(raw).strip() if raw is not None else "",
-    )
-    if match is None:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С не подтвердила точный Content-Range metadata.",
-        )
-    start, end, total = (int(value) for value in match.groups())
-    if (
-        start != expected_start
-        or end != expected_end
-        or total != expected_total
-    ):
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула несогласованный Content-Range metadata.",
-        )
-
-
-def _read_exact_metadata_range(
-    response: BinaryIO,
-    *,
-    start: int,
-    end: int,
-) -> bytes:
-    expected = end - start + 1
-    body = _read_limited(response, expected)
-    if len(body) != expected:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула неполный byte range metadata.",
-        )
-    return body
-
-
-def _metadata_remaining_ranges(total: int) -> tuple[tuple[int, int], ...]:
-    """Split bytes after the one-byte probe into at most three ranges."""
-
-    remaining = total - 1
-    if remaining <= 0:
-        return ()
-    count = min(MAX_METADATA_RANGE_REQUESTS - 1, remaining)
-    base, extra = divmod(remaining, count)
-    ranges: list[tuple[int, int]] = []
-    start = 1
-    for index in range(count):
-        length = base + (1 if index < extra else 0)
-        end = start + length - 1
-        ranges.append((start, end))
-        start = end + 1
-    if start != total:
-        raise OneCEdoError(
-            "query_builder_error",
-            "Runtime не смогла безопасно разбить metadata на ranges.",
-        )
-    return tuple(ranges)
-
-
-def _coherent_validator(
-    values: Iterable[str | None],
-    *,
-    label: str,
-) -> str | None:
-    present = {value for value in values if value is not None}
-    if len(present) > 1:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            f"1С вернула несогласованный {label} для metadata ranges.",
-        )
-    return next(iter(present), None)
-
-
-def _request_metadata_ranges(
-    config: CompanyConfig,
-    credentials: Credentials,
-    *,
-    diagnostic_stage: str,
-) -> MetadataResource:
-    """Read the complete metadata body via at most four exact byte ranges.
-
-    HEAD must first provide a bounded total length. A one-byte GET then proves
-    actual 206 support and exact Content-Range semantics. Only after that proof
-    are the remaining disjoint ranges fetched in parallel. If proof is absent
-    or any part is inconsistent, the probe fails closed and never downloads a
-    second full representation.
-    """
-
-    url = _metadata_url(config)
-    x_odata = _require_x_odata()
-    head_response = _http_open(
-        "HEAD",
-        url,
-        credentials=credentials,
-        timeout=config.request_timeout_seconds,
-        x_odata=x_odata,
-        diagnostic_stage=diagnostic_stage,
-        accept="application/xml",
-        accept_encoding="identity",
-        allowed_error_statuses=frozenset({405, 501}),
-    )
-    with head_response:
-        if _response_status(head_response) != 200:
-            raise OneCEdoError(
-                "metadata_range_unsupported",
-                "1С не поддержала безопасный HEAD для metadata ranges.",
-            )
-        if _safe_metadata_content_encoding(head_response.headers) != "identity":
-            raise OneCEdoError(
-                "metadata_range_unsupported",
-                "1С не подтвердила identity-кодирование metadata HEAD.",
-            )
-        total = _safe_metadata_content_length(head_response.headers)
-        if total is None:
-            raise OneCEdoError(
-                "metadata_range_unsupported",
-                "1С не вернула надёжный total length для metadata ranges.",
-            )
-        head_etag, head_last_modified = _safe_metadata_validators(
-            head_response.headers,
-        )
-
-    if_range = (
-        head_etag
-        if head_etag and not head_etag.startswith("W/")
-        else head_last_modified
-    )
-    probe_response = _http_open(
-        "GET",
-        url,
-        credentials=credentials,
-        timeout=config.request_timeout_seconds,
-        x_odata=x_odata,
-        diagnostic_stage=diagnostic_stage,
-        accept="application/xml",
-        accept_encoding="identity",
-        byte_range=(0, 0),
-        if_range=if_range,
-        allowed_error_statuses=frozenset({416}),
-    )
-    with probe_response:
-        probe_status = _response_status(probe_response)
-        if probe_status in {200, 416}:
-            # A 200 means the server ignored Range. Do not consume that body
-            # and do not follow it with a second full download.
-            raise OneCEdoError(
-                "metadata_range_unsupported",
-                "1С не подтвердила byte ranges для metadata.",
-            )
-        if probe_status != 206:
-            raise OneCEdoError(
-                "metadata_range_unsupported",
-                "1С не подтвердила byte ranges для metadata.",
-            )
-        if _safe_metadata_content_encoding(probe_response.headers) != "identity":
-            raise OneCEdoError(
-                "invalid_metadata_response",
-                "1С применила кодирование к byte range metadata.",
-            )
-        _require_metadata_content_range(
-            probe_response.headers,
-            expected_start=0,
-            expected_end=0,
-            expected_total=total,
-        )
-        probe_etag, probe_last_modified = _safe_metadata_validators(
-            probe_response.headers,
-        )
-        first_byte = _read_exact_metadata_range(
-            probe_response,
-            start=0,
-            end=0,
-        )
-
-    def fetch_part(byte_range: tuple[int, int]) -> tuple[
-        int,
-        bytes,
-        str | None,
-        str | None,
-    ]:
-        start, end = byte_range
-        response = _http_open(
-            "GET",
-            url,
-            credentials=credentials,
-            timeout=config.request_timeout_seconds,
-            x_odata=x_odata,
-            diagnostic_stage=diagnostic_stage,
-            accept="application/xml",
-            accept_encoding="identity",
-            byte_range=byte_range,
-            if_range=if_range,
-        )
-        with response:
-            if _response_status(response) != 206:
-                raise OneCEdoError(
-                    "invalid_metadata_response",
-                    "1С перестала поддерживать подтверждённый metadata range.",
-                )
-            if _safe_metadata_content_encoding(response.headers) != "identity":
-                raise OneCEdoError(
-                    "invalid_metadata_response",
-                    "1С применила кодирование к byte range metadata.",
-                )
-            _require_metadata_content_range(
-                response.headers,
-                expected_start=start,
-                expected_end=end,
-                expected_total=total,
-            )
-            etag, last_modified = _safe_metadata_validators(response.headers)
-            body = _read_exact_metadata_range(
-                response,
-                start=start,
-                end=end,
-            )
-        return start, body, etag, last_modified
-
-    ranges = _metadata_remaining_ranges(total)
-    parts: list[tuple[int, bytes, str | None, str | None]] = []
-    if ranges:
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=len(ranges),
-            thread_name_prefix="trelio-metadata-range",
-        ) as executor:
-            futures = [executor.submit(fetch_part, item) for item in ranges]
-            for future in futures:
-                parts.append(future.result())
-
-    assembled = bytearray(total)
-    assembled[0:1] = first_byte
-    for start, body, _, _ in parts:
-        assembled[start : start + len(body)] = body
-    etag = _coherent_validator(
-        [head_etag, probe_etag, *(part[2] for part in parts)],
-        label="ETag",
-    )
-    last_modified = _coherent_validator(
-        [
-            head_last_modified,
-            probe_last_modified,
-            *(part[3] for part in parts),
-        ],
-        label="Last-Modified",
-    )
-    return MetadataResource(
-        status=200,
-        body=bytes(assembled),
-        etag=etag,
-        last_modified=last_modified,
-        content_encoding="identity",
-        transfer_mode="parallel_ranges",
-        range_probe="supported",
-    )
-
-
 def _request_metadata_resource(
     config: CompanyConfig,
     credentials: Credentials,
@@ -2030,12 +1683,6 @@ def _request_metadata_resource(
             conditional_headers["If-None-Match"] = etag
         if last_modified:
             conditional_headers["If-Modified-Since"] = last_modified
-    if not conditional_headers:
-        return _request_metadata_ranges(
-            config,
-            credentials,
-            diagnostic_stage=diagnostic_stage,
-        )
     response = _http_open(
         "GET",
         _metadata_url(config),
@@ -2049,7 +1696,11 @@ def _request_metadata_resource(
         allow_not_modified=bool(conditional_headers),
     )
     with response:
-        status_code = _response_status(response)
+        status_code = int(
+            getattr(response, "status", None)
+            or getattr(response, "code", None)
+            or response.getcode(),
+        )
         etag, last_modified = _safe_metadata_validators(response.headers)
         content_encoding = _safe_metadata_content_encoding(response.headers)
         if status_code == 304:
@@ -2059,8 +1710,6 @@ def _request_metadata_resource(
                 etag=etag,
                 last_modified=last_modified,
                 content_encoding="identity",
-                transfer_mode="conditional_get",
-                range_probe="not_attempted",
             )
         body = (
             _read_gzip_limited(response, MAX_METADATA_RESPONSE_BYTES)
@@ -2073,16 +1722,6 @@ def _request_metadata_resource(
             etag=etag,
             last_modified=last_modified,
             content_encoding=content_encoding,
-            transfer_mode=(
-                "conditional_get"
-                if conditional_headers
-                else "full_get"
-            ),
-            range_probe=(
-                "not_attempted"
-                if conditional_headers
-                else "unsupported"
-            ),
         )
 
 
@@ -4058,8 +3697,6 @@ def _verify_general_schema(
                 ),
                 "cacheProjectionUsed": True,
                 "metadataResponseEncoding": "not_modified",
-                "metadataTransferMode": resource.transfer_mode,
-                "metadataRangeProbe": resource.range_probe,
             }
         elif resource.status == 200 and resource.body is not None:
             schema_digest = (
@@ -4092,8 +3729,6 @@ def _verify_general_schema(
                 ),
                 "cacheProjectionUsed": False,
                 "metadataResponseEncoding": resource.content_encoding,
-                "metadataTransferMode": resource.transfer_mode,
-                "metadataRangeProbe": resource.range_probe,
             }
         else:
             raise OneCEdoError(
