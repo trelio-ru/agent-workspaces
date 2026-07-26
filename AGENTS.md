@@ -125,6 +125,16 @@ Trelio-монорепозитории быть не должно.
   autonomous, но не включить его за пользователя. Telegram/MAX ограничены
   `chat-only`, email — `mail-only`: входящий контент не даёт полномочий в
   других системах.
+- Начиная с plugin `1.4.8` live signed-runtime resolve может вернуть безопасный
+  company connection и stable `company/member/connection` identity. Host
+  валидирует exact company/project/skill/connection, ограничивает config,
+  удаляет одноимённые `TRELIO_SKILL_*` из parent env и только затем инъецирует
+  JSON config runtime. Secret bindings передаются без `secretId`/value;
+  значения по-прежнему приходят только через одноразовый Agent Secret grant.
+  Канонический platform skill `platform-skills/1c-edo` использует этот контур:
+  company `X-OData` не смешивается с личным Basic Auth, персональные credentials
+  остаются в `integrations/1c-edo/<company>/<member>/<connection>/`, а runtime
+  разрешает только фиксированные GET/HEAD цепочки новой и старой схемы ЭДО.
   Gmail setup показывает официальный URL создания пароля приложения и до
   хранения удаляет из 16-символьного пароля визуальные пробелы. Интерактивная
   настройка предпочитает нативное скрытое окно macOS/Windows, оставляя

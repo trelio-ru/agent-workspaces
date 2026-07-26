@@ -764,7 +764,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.7");
+  assert.equal(BRIDGE_VERSION, "1.4.8");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1013,6 +1013,32 @@ test("skill package host rejects non-portable paths and case collisions", () => 
   );
 });
 
+test("skill pack rejects machine-specific Python bytecode cache", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "trelio-skill-pack-cache-test-"),
+  );
+  try {
+    await mkdir(path.join(temporaryDirectory, "__pycache__"));
+    await writeFile(path.join(temporaryDirectory, "main.py"), "print('ok')\n");
+    await writeFile(
+      path.join(temporaryDirectory, "__pycache__", "main.cpython-314.pyc"),
+      Buffer.from([0, 1, 2, 3]),
+    );
+    await assert.rejects(
+      buildAgentSkillPackage({
+        skillId: "test-runtime",
+        runtimeVersion: "1.0.0",
+        sourceDirectory: temporaryDirectory,
+        entrypointPath: "main.py",
+        interpreter: "python",
+      }),
+      /generated cache/u,
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("skill host resolves on every run, verifies signed package, caches it and repairs tampering", {
   timeout: 15_000,
 }, async () => {
@@ -1023,6 +1049,8 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   const releaseId = "77777777-7777-4777-8777-777777777777";
   const artifactId = "88888888-8888-4888-8888-888888888888";
   const companyId = "99999999-9999-4999-8999-999999999999";
+  const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const connectionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   let resolveCount = 0;
   let packageDownloadCount = 0;
   let serverError = null;
@@ -1030,7 +1058,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   await mkdir(sourceDirectory, { recursive: true });
   await writeFile(
     path.join(sourceDirectory, "main.mjs"),
-    "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}\\n`);\n",
+    "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}:${process.env.TRELIO_SKILL_MEMBER_ID}:${process.env.TRELIO_SKILL_CONNECTION_ID}:${process.env.TRELIO_SKILL_CONNECTION_CONFIG_JSON}:project=${process.env.TRELIO_SKILL_PROJECT_ID || 'none'}\\n`);\n",
     { mode: 0o755 },
   );
   const packageBytes = await buildAgentSkillPackage({
@@ -1078,6 +1106,29 @@ test("skill host resolves on every run, verifies signed package, caches it and r
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
           releaseId,
+          localIdentity: {
+            companyId,
+            projectId: null,
+            memberId,
+            skillId,
+            connectionId,
+          },
+          companyConnection: {
+            id: connectionId,
+            status: "configured",
+            configured: true,
+            config: {
+              schemaVersion: 1,
+              baseUrl: "https://example.test/",
+            },
+            secretBindings: [
+              {
+                key: "x_odata",
+                status: "active",
+                hasValue: true,
+              },
+            ],
+          },
           artifact: {
             id: artifactId,
             skillId,
@@ -1151,14 +1202,18 @@ test("skill host resolves on every run, verifies signed package, caches it and r
           ...process.env,
           HOME: homeDirectory,
           XDG_CACHE_HOME: path.join(homeDirectory, ".cache"),
+          // A caller cannot smuggle stale host-owned context into a run that
+          // was live-resolved without a project.
+          TRELIO_SKILL_PROJECT_ID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         },
       },
     );
 
     const firstRun = await runSkill();
     const secondRun = await runSkill();
-    assert.match(firstRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
-    assert.match(secondRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
+    const expectedRuntimeOutput = `runtime:--message,hello:${releaseId}:${memberId}:${connectionId}:{"schemaVersion":1,"baseUrl":"https://example.test/"}:project=none`;
+    assert.match(firstRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+    assert.match(secondRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.equal(resolveCount, 2, "every invocation must resolve the current release");
     assert.equal(packageDownloadCount, 1, "second invocation must use verified cache");
 
@@ -1176,7 +1231,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
     await writeFile(cachedEntrypoint, "throw new Error('tampered');\n");
 
     const repairedRun = await runSkill();
-    assert.match(repairedRun.stdout, new RegExp(`runtime:--message,hello:${releaseId}`));
+    assert.match(repairedRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.equal(resolveCount, 3);
     assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
     assert.ifError(serverError);

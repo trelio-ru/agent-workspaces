@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.7";
+export const BRIDGE_VERSION = "1.4.8";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -1545,6 +1545,19 @@ const collectAgentSkillPackageSourceFiles = async (sourceDirectory) => {
     entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
 
     for (const entry of entries) {
+      // Bytecode/cache files are machine-specific build residue, not runtime
+      // source. Reject instead of silently skipping them: an operator sees the
+      // dirty source tree and cannot accidentally sign a package that differs
+      // by the workstation/Python version used for validation.
+      if (
+        entry.name === "__pycache__"
+        || entry.name === ".DS_Store"
+        || /\.(?:pyc|pyo)$/iu.test(entry.name)
+      ) {
+        throw new Error(
+          `Runtime package source содержит generated cache ${entry.name}; очистите --source перед pack.`,
+        );
+      }
       const relativePath = relativeDirectory
         ? `${relativeDirectory}/${entry.name}`
         : entry.name;
@@ -1857,6 +1870,14 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
 
 const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   const artifact = payload?.artifact;
+  // `null` is the canonical "skill has no company connection" value. The
+  // nullish fallback keeps a short compatibility window with backend releases
+  // that predate connection injection and omitted both fields.
+  const localIdentity = payload?.localIdentity ?? null;
+  const companyConnection = payload?.companyConnection ?? null;
+  const connectionConfigJson = companyConnection === null
+    ? null
+    : JSON.stringify(companyConnection?.config);
 
   if (
     !UUID_PATTERN.test(String(payload?.releaseId || ""))
@@ -1874,6 +1895,48 @@ const normalizeResolvedSkillRuntimeArtifact = (payload) => {
     || !STABLE_VERSION_PATTERN.test(String(artifact?.minimumHostVersion || ""))
     || typeof payload?.packageUrl !== "string"
     || !payload.packageUrl.startsWith("/api/agent-skills/runtime/package?")
+    || (
+      localIdentity !== null
+      && (
+        !UUID_PATTERN.test(String(localIdentity?.companyId || ""))
+        || !UUID_PATTERN.test(String(localIdentity?.memberId || ""))
+        || !SKILL_ID_PATTERN.test(String(localIdentity?.skillId || ""))
+        || !UUID_PATTERN.test(String(localIdentity?.connectionId || ""))
+        || (
+          localIdentity?.projectId !== null
+          && !UUID_PATTERN.test(String(localIdentity?.projectId || ""))
+        )
+      )
+    )
+    || (
+      companyConnection !== null
+      && (
+        !UUID_PATTERN.test(String(companyConnection?.id || ""))
+        || !["configured", "needs_secret", "disabled"].includes(companyConnection?.status)
+        || typeof companyConnection?.configured !== "boolean"
+        || !companyConnection?.config
+        || typeof companyConnection.config !== "object"
+        || Array.isArray(companyConnection.config)
+        || typeof connectionConfigJson !== "string"
+        || Buffer.byteLength(connectionConfigJson, "utf8") > 64 * 1024
+        || !Array.isArray(companyConnection?.secretBindings)
+        || companyConnection.secretBindings.length > 16
+        || companyConnection.secretBindings.some((binding) => (
+          typeof binding?.key !== "string"
+          || !/^[a-z][a-z0-9_]{0,63}$/u.test(binding.key)
+          || typeof binding?.status !== "string"
+          || typeof binding?.hasValue !== "boolean"
+        ))
+      )
+    )
+    || (localIdentity === null) !== (companyConnection === null)
+    || (
+      localIdentity !== null
+      && (
+        localIdentity.skillId !== artifact?.skillId
+        || localIdentity.connectionId !== companyConnection?.id
+      )
+    )
   ) {
     throw new Error("Trelio вернул некорректную runtime resolution.");
   }
@@ -1881,6 +1944,20 @@ const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   return {
     releaseId: payload.releaseId,
     packageUrl: payload.packageUrl,
+    localIdentity,
+    companyConnection: companyConnection === null
+      ? null
+      : {
+          id: companyConnection.id,
+          status: companyConnection.status,
+          configured: companyConnection.configured,
+          config: companyConnection.config,
+          secretBindings: companyConnection.secretBindings.map((binding) => ({
+            key: binding.key,
+            status: binding.status,
+            hasValue: binding.hasValue,
+          })),
+        },
     artifact: {
       id: artifact.id,
       skillId: artifact.skillId,
@@ -1922,11 +1999,30 @@ const runMaterializedAgentSkill = async ({
       : [entrypointPath, ...runtimeArguments];
   }
 
+  // Эти переменные являются доверенной границей package host. Удаляем
+  // одноимённые значения из родительского окружения, чтобы старый shell или
+  // вызывающая программа не могли подменить company identity/config. Затем
+  // добавляем только данные свежего live resolve для exact release.
+  const {
+    TRELIO_SKILL_ID: _staleSkillId,
+    TRELIO_SKILL_RUNTIME_VERSION: _staleRuntimeVersion,
+    TRELIO_SKILL_RUNTIME_ROOT: _staleRuntimeRoot,
+    TRELIO_SKILL_RELEASE_ID: _staleReleaseId,
+    TRELIO_SKILL_COMPANY_ID: _staleCompanyId,
+    TRELIO_SKILL_PROJECT_ID: _staleProjectId,
+    TRELIO_SKILL_MEMBER_ID: _staleMemberId,
+    TRELIO_SKILL_CONNECTION_ID: _staleConnectionId,
+    TRELIO_SKILL_CONNECTION_CONFIG_JSON: _staleConnectionConfig,
+    ...inheritedEnvironment
+  } = process.env;
+  const connectionConfigJson = executionContext.companyConnection
+    ? JSON.stringify(executionContext.companyConnection.config)
+    : null;
   const exitCode = await new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd: runtimeDirectory,
       env: {
-        ...process.env,
+        ...inheritedEnvironment,
         TRELIO_SKILL_ID: artifact.skillId,
         TRELIO_SKILL_RUNTIME_VERSION: artifact.runtimeVersion,
         TRELIO_SKILL_RUNTIME_ROOT: runtimeDirectory,
@@ -1934,6 +2030,13 @@ const runMaterializedAgentSkill = async ({
         TRELIO_SKILL_COMPANY_ID: executionContext.companyId,
         ...(executionContext.projectId
           ? { TRELIO_SKILL_PROJECT_ID: executionContext.projectId }
+          : {}),
+        ...(executionContext.localIdentity
+          ? {
+              TRELIO_SKILL_MEMBER_ID: executionContext.localIdentity.memberId,
+              TRELIO_SKILL_CONNECTION_ID: executionContext.localIdentity.connectionId,
+              TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
+            }
           : {}),
       },
       shell: false,
@@ -2021,6 +2124,13 @@ const skillCommand = async (origin, options, positional) => {
   if (
     resolution.releaseId !== releaseId
     || resolution.artifact.skillId !== skillId
+    || (
+      resolution.localIdentity
+      && (
+        resolution.localIdentity.companyId !== companyId
+        || resolution.localIdentity.projectId !== projectId
+      )
+    )
   ) {
     throw new Error("Trelio runtime resolution не совпадает с get_agent_skill.");
   }
@@ -2093,6 +2203,8 @@ const skillCommand = async (origin, options, positional) => {
       companyId,
       projectId,
       releaseId,
+      localIdentity: resolution.localIdentity,
+      companyConnection: resolution.companyConnection,
     },
   });
 };

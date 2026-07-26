@@ -107,7 +107,7 @@ scope `mcp:agent-instructions:manage`; старому OAuth-подключени
 
 ## Подключаемые навыки
 
-Каталог Trelio может выдать актуальные навыки email, Telegram и MAX. Обычные
+Каталог Trelio может выдать актуальные навыки email, Telegram, MAX и 1С ЭДО. Обычные
 параметры подключения хранятся в настройках компании, secret values — только в
 Agent Secrets, а личные session/cookies и `policy.json` — локально:
 
@@ -118,6 +118,11 @@ Agent Secrets, а личные session/cookies и `policy.json` — локаль
 Telegram `api_hash` не передаётся через MCP или чат: bridge получает его
 одноразовым grant и передаёт только в environment точного executable. Телефон,
 код входа, 2FA и MAX login пользователь вводит напрямую в локальном клиенте.
+Для `1c-edo` тем же способом доставляется общий company `X-OData`, а личные
+логин/пароль 1С вводятся только в защищённом локальном окне и остаются в
+персональном namespace. Host `1.4.8` после live resolve инъецирует подписанному
+runtime только нормализованные URL/лимиты и stable identity, предварительно
+удаляя одноимённые значения из parent env.
 
 Для коммуникационных runtime доступны локальные режимы:
 
