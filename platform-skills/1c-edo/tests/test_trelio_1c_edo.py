@@ -29,6 +29,7 @@ DOCUMENT_ID = "44444444-4444-4444-8444-444444444444"
 MESSAGE_ID = "55555555-5555-4555-8555-555555555555"
 FILE_ID = "66666666-6666-4666-8666-666666666666"
 BUSINESS_ID = "77777777-7777-4777-8777-777777777777"
+ORG_SUBDIVISION_ID = "99999999-9999-4999-8999-999999999999"
 CONTRACT_ID = "982a385d-df58-11f0-a58a-047c16799dce"
 OUTGOING_DOCUMENT_ID = "88888888-8888-4888-8888-888888888888"
 
@@ -195,7 +196,15 @@ class OneCEdoRuntimeTest(unittest.TestCase):
 
         calls: list[tuple[str, tuple[tuple[str, object], ...]]] = []
 
-        def fake_request(_config, _credentials, entity, parameters=()):
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage=None,
+        ):
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
             parameters = tuple(parameters)
             calls.append((entity, parameters))
             if entity == MODULE.NEW_FILE_ENTITY:
@@ -236,6 +245,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 credentials=MODULE.Credentials("u", "p"),
                 timeout=1,
                 x_odata=None,
+                diagnostic_stage="doctor.probe",
             )
         with self.assertRaisesRegex(MODULE.OneCEdoError, "new и old"):
             MODULE._file_url(config, "custom", FILE_ID)
@@ -255,7 +265,63 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 credentials=MODULE.Credentials("u", "p"),
                 timeout=1,
                 x_odata=None,
+                diagnostic_stage="doctor.probe",
             )
+
+    def test_http_400_reports_only_fixed_stage_and_status(self) -> None:
+        """A rejected OData expression must be diagnosable without echoing it."""
+
+        sensitive_url = (
+            "https://private.example.test/odata/"
+            "Catalog_ДоговорыКонтрагентов?"
+            "$filter=substringof('secret-client',Description)"
+        )
+        remote_error = urllib.error.HTTPError(
+            sensitive_url,
+            400,
+            "query contains secret-client",
+            {},
+            io.BytesIO(b"proxy echoed X-OData and a private server path"),
+        )
+        opener = mock.Mock()
+        opener.open.side_effect = remote_error
+        with (
+            mock.patch.object(
+                MODULE.socket,
+                "getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+            ),
+            mock.patch.object(MODULE.urllib.request, "build_opener", return_value=opener),
+            self.assertRaises(MODULE.NetworkError) as raised,
+        ):
+            MODULE._http_open(
+                "GET",
+                sensitive_url,
+                credentials=MODULE.Credentials("private-user", "private-password"),
+                timeout=1,
+                x_odata="private-x-odata",
+                diagnostic_stage="search.contracts.by-subdivision",
+            )
+
+        payload = MODULE._safe_error_payload(raised.exception)
+        self.assertEqual(payload["code"], "http_error")
+        self.assertEqual(
+            payload["details"],
+            {
+                "stage": "search.contracts.by-subdivision",
+                "httpStatus": 400,
+            },
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for forbidden in (
+            sensitive_url,
+            "secret-client",
+            "private-user",
+            "private-password",
+            "private-x-odata",
+            "private server path",
+        ):
+            self.assertNotIn(forbidden, serialized)
 
     def test_download_is_atomic_bounded_and_reports_sha256(self) -> None:
         self.store_connected_credentials()
@@ -281,14 +347,30 @@ class OneCEdoRuntimeTest(unittest.TestCase):
 
     def test_search_follows_business_contract_chain_for_both_directions(self) -> None:
         self.store_connected_credentials()
-        calls: list[tuple[str, tuple[tuple[str, object], ...]]] = []
+        calls: list[tuple[str, tuple[tuple[str, object], ...], str]] = []
 
-        def fake_request(_config, _credentials, entity, parameters=()):
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
             parameters = tuple(parameters)
-            calls.append((entity, parameters))
+            calls.append((entity, parameters, diagnostic_stage))
             query = dict(parameters)
             filter_value = str(query.get("$filter", ""))
             if entity == "Catalog_ПодразделенияОрганизаций":
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": ORG_SUBDIVISION_ID,
+                            "Description": "Мурманск-4",
+                        },
+                    ],
+                }
+            if entity == "Catalog_СтруктураПредприятия":
                 return {
                     "value": [
                         {
@@ -360,9 +442,9 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertEqual(len(result["contracts"]), 1)
         self.assertEqual(
             {match["kind"] for match in result["contracts"][0]["matchedBy"]},
-            {"subdivision", "contract_text"},
+            {"enterprise_structure", "contract_text"},
         )
-        self.assertEqual(len(result["businessObjects"]), 1)
+        self.assertEqual(len(result["businessObjects"]), 2)
         self.assertNotIn(
             "ServerIgnoredSelect",
             result["documents"][0]["document"],
@@ -375,7 +457,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
 
         contract_document_calls = [
             (entity, dict(parameters))
-            for entity, parameters in calls
+            for entity, parameters, _stage in calls
             if entity in MODULE.DOCUMENT_ENTITIES.values()
             and "ДоговорКонтрагента eq cast" in str(dict(parameters).get("$filter"))
         ]
@@ -386,12 +468,33 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 for _, parameters in contract_document_calls
             ),
         )
+        contract_calls = [
+            (dict(parameters), stage)
+            for entity, parameters, stage in calls
+            if entity == MODULE.CONTRACT_ENTITY
+        ]
+        self.assertTrue(contract_calls)
+        self.assertTrue(
+            all(parameters["$orderby"] == "Дата desc" for parameters, _ in contract_calls),
+        )
+        self.assertIn(
+            "search.contracts.by-subdivision",
+            {stage for _, stage in contract_calls},
+        )
 
     def test_search_escapes_apostrophe_unicode_and_percent_20(self) -> None:
         self.store_connected_credentials()
         filters: list[str] = []
 
-        def fake_request(config, _credentials, entity, parameters=()):
+        def fake_request(
+            config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
             query = dict(parameters)
             if "$filter" in query:
                 filters.append(str(query["$filter"]))
@@ -423,7 +526,15 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             for index in range(100)
         ]
 
-        def fake_request(_config, _credentials, _entity, parameters=()):
+        def fake_request(
+            _config,
+            _credentials,
+            _entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertEqual(diagnostic_stage, "search.business.subdivision")
             requests.append(dict(parameters))
             return {"value": excessive_rows}
 
@@ -437,6 +548,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                     ("$filter", "substringof('Мурманск',Description)"),
                 ),
                 limit=50,
+                diagnostic_stage="search.business.subdivision",
             )
         self.assertEqual(len(rows), 4)
         self.assertEqual(len(requests), 2)
@@ -461,7 +573,15 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.store_connected_credentials()
         calls: list[tuple[str, dict[str, object]]] = []
 
-        def browse_request(_config, _credentials, entity, parameters=()):
+        def browse_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
             query = dict(parameters)
             calls.append((entity, query))
             if entity == MODULE.DOCUMENT_ENTITIES["incoming"]:

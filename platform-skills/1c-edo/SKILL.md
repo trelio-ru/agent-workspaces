@@ -77,8 +77,11 @@ Use these runtime commands:
 - `search-documents --direction incoming|outgoing|both [--query TEXT]`
   without a query returns a bounded recent list. With a query it first searches
   the fixed business-object and contract fields, follows only the confirmed
-  subdivision/business-direction → contract → `ДоговорКонтрагента` relation,
-  and merges that result with fixed direct document-card text matches.
+  `Catalog_СтруктураПредприятия` (`Подразделение_Key`) or business-direction →
+  contract → `ДоговорКонтрагента` relation, and merges that result with fixed
+  direct document-card text matches. `Catalog_ПодразделенияОрганизаций` is
+  still a searchable business-object catalog, but its UUID is not substituted
+  for the separate `Catalog_СтруктураПредприятия` relation.
   Results include normalized `businessObjects`, `contracts`, document
   `matchedBy` reasons and the effective limits. The runtime escapes OData
   string literals itself; never pre-escape the text or add OData syntax.
@@ -104,3 +107,8 @@ If the runtime reports a company limit, blocked redirect/URL/entity/method,
 unsafe local storage, release mismatch or host-version gate, stop and report
 that exact safe error. Do not bypass the runtime with `curl`, direct OData
 requests, browser navigation or a locally edited copy.
+
+For an HTTP/network rejection, report `error.details.stage` and
+`error.details.httpStatus` when present. These values are fixed safe
+diagnostics; the runtime deliberately never exposes the endpoint URL, OData
+expression, response body, headers or credentials.

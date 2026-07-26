@@ -43,7 +43,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.1"
+RUNTIME_VERSION = "1.0.2"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -56,18 +56,26 @@ BUSINESS_ENTITY_SPECS = {
     "Catalog_ОбъектыСтроительства": {
         "kind": "construction_object",
         "contractRelationField": None,
+        "diagnosticStage": "search.business.construction-object",
     },
     "Catalog_НаправленияДеятельности": {
         "kind": "business_direction",
         "contractRelationField": "НаправлениеДеятельности_Key",
+        "diagnosticStage": "search.business.business-direction",
     },
     "Catalog_ПодразделенияОрганизаций": {
         "kind": "subdivision",
-        "contractRelationField": "Подразделение_Key",
+        "contractRelationField": None,
+        "diagnosticStage": "search.business.subdivision",
     },
     "Catalog_СтруктураПредприятия": {
         "kind": "enterprise_structure",
-        "contractRelationField": None,
+        # Live metadata/results confirm that `Подразделение_Key` in
+        # Catalog_ДоговорыКонтрагентов points to this catalog. It must not be
+        # confused with Catalog_ПодразделенияОрганизаций: both can contain the
+        # same human-readable location but have different UUID namespaces.
+        "contractRelationField": "Подразделение_Key",
+        "diagnosticStage": "search.business.enterprise-structure",
     },
 }
 BUSINESS_SELECT_FIELDS = ("Ref_Key", "Description")
@@ -102,6 +110,10 @@ DOCUMENT_SELECT_FIELDS = (
     "СуммаДокумента",
 )
 DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
+CONTRACT_RELATION_DIAGNOSTIC_STAGES = {
+    "НаправлениеДеятельности_Key": "search.contracts.by-business-direction",
+    "Подразделение_Key": "search.contracts.by-subdivision",
+}
 NEW_FILE_ENTITY = "Catalog_КэшВизуализацииДокументовЭДОПрисоединенныеФайлы"
 OLD_MESSAGE_ENTITY = "Document_СообщениеЭДО"
 OLD_FILE_ENTITY = "Catalog_СообщениеЭДОПрисоединенныеФайлы"
@@ -121,15 +133,65 @@ MAX_RELATED_BUSINESS_OBJECTS = 20
 MAX_RELATED_CONTRACTS = 20
 MAX_SEARCH_DOCUMENTS = 200
 MAX_DOCUMENTS_PER_CONTRACT_DIRECTION = 50
+DIAGNOSTIC_STAGES = frozenset(
+    {
+        "connect.probe",
+        "doctor.probe",
+        "search.business.construction-object",
+        "search.business.business-direction",
+        "search.business.subdivision",
+        "search.business.enterprise-structure",
+        "search.contracts.by-business-direction",
+        "search.contracts.by-subdivision",
+        "search.contracts.text",
+        "search.documents.incoming.by-contract",
+        "search.documents.outgoing.by-contract",
+        "search.documents.incoming.text",
+        "search.documents.outgoing.text",
+        "search.documents.incoming.recent",
+        "search.documents.outgoing.recent",
+        "document.incoming.get",
+        "document.outgoing.get",
+        "files.incoming.new",
+        "files.outgoing.new",
+        "files.incoming.old-messages",
+        "files.outgoing.old-messages",
+        "files.incoming.old-files",
+        "files.outgoing.old-files",
+        "file.new.download",
+        "file.old.download",
+    },
+)
 
 
 class OneCEdoError(RuntimeError):
     """Expected user-safe runtime failure."""
 
-    def __init__(self, code: str, message: str, *, exit_code: int = 2) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        exit_code: int = 2,
+        diagnostic_stage: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.exit_code = exit_code
+        self.details: dict[str, str | int] = {}
+        # Diagnostics intentionally use only an enum owned by the signed
+        # runtime plus the numeric status. Never include the request URL,
+        # query/filter, response body, headers or credentials: 1C/proxy errors
+        # may echo all of those back to the caller.
+        if diagnostic_stage is not None:
+            if diagnostic_stage not in DIAGNOSTIC_STAGES:
+                raise ValueError("unknown fixed diagnostic stage")
+            self.details["stage"] = diagnostic_stage
+        if http_status is not None:
+            if isinstance(http_status, bool) or not 100 <= http_status <= 599:
+                raise ValueError("invalid HTTP status")
+            self.details["httpStatus"] = http_status
 
 
 class AuthenticationError(OneCEdoError):
@@ -679,7 +741,13 @@ def _http_open(
     credentials: Credentials,
     timeout: float,
     x_odata: str | None,
+    diagnostic_stage: str,
 ) -> Any:
+    if diagnostic_stage not in DIAGNOSTIC_STAGES:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний запрос не имеет разрешённого diagnostic stage.",
+        )
     if method not in {"GET", "HEAD"}:
         raise OneCEdoError("method_blocked", "Runtime разрешает только GET и HEAD.")
     parsed = urllib.parse.urlsplit(url)
@@ -695,7 +763,11 @@ def _http_open(
             type=socket.SOCK_STREAM,
         )
     except socket.gaierror as error:
-        raise NetworkError("network_error", "DNS endpoint 1С недоступен.") from error
+        raise NetworkError(
+            "network_error",
+            "DNS endpoint 1С недоступен.",
+            diagnostic_stage=diagnostic_stage,
+        ) from error
     for address in resolved:
         ip_value = ipaddress.ip_address(address[4][0])
         if not ip_value.is_global:
@@ -722,12 +794,28 @@ def _http_open(
             raise AuthenticationError(
                 "authentication_failed",
                 "1С отклонила личный логин/пароль или доступ к endpoint.",
+                diagnostic_stage=diagnostic_stage,
+                http_status=error.code,
             ) from error
         if 300 <= error.code < 400:
-            raise OneCEdoError("redirect_blocked", "Redirect от 1С заблокирован.") from error
-        raise NetworkError("http_error", f"1С вернула HTTP {error.code}.") from error
+            raise OneCEdoError(
+                "redirect_blocked",
+                "Redirect от 1С заблокирован.",
+                diagnostic_stage=diagnostic_stage,
+                http_status=error.code,
+            ) from error
+        raise NetworkError(
+            "http_error",
+            f"1С отклонила фиксированный запрос: HTTP {error.code}.",
+            diagnostic_stage=diagnostic_stage,
+            http_status=error.code,
+        ) from error
     except (urllib.error.URLError, TimeoutError, socket.timeout, ssl.SSLError) as error:
-        raise NetworkError("network_error", "Не удалось безопасно связаться с 1С.") from error
+        raise NetworkError(
+            "network_error",
+            "Не удалось безопасно связаться с 1С.",
+            diagnostic_stage=diagnostic_stage,
+        ) from error
 
 
 def _read_limited(stream: BinaryIO, limit: int) -> bytes:
@@ -742,6 +830,8 @@ def _request_odata(
     credentials: Credentials,
     entity: str,
     parameters: Iterable[tuple[str, str | int]] = (),
+    *,
+    diagnostic_stage: str,
 ) -> dict[str, Any]:
     url = _odata_url(config, entity, parameters)
     response = _http_open(
@@ -750,6 +840,7 @@ def _request_odata(
         credentials=credentials,
         timeout=config.request_timeout_seconds,
         x_odata=_require_x_odata(),
+        diagnostic_stage=diagnostic_stage,
     )
     with response:
         raw = _read_limited(response, MAX_ODATA_RESPONSE_BYTES)
@@ -857,6 +948,7 @@ def _bounded_odata_rows(
     *,
     parameters: Iterable[tuple[str, str | int]],
     limit: int,
+    diagnostic_stage: str,
 ) -> list[dict[str, Any]]:
     """Page a fixed query without trusting the server to honor `$top`.
 
@@ -890,6 +982,7 @@ def _bounded_odata_rows(
                 ("$top", page_size),
                 ("$skip", page * config.max_rows),
             ),
+            diagnostic_stage=diagnostic_stage,
         )
         remote_rows = _odata_rows(payload)
         # A server that ignores `$top` cannot bypass local row/fan-out limits.
@@ -924,7 +1017,13 @@ def command_connect(_: argparse.Namespace) -> dict[str, Any]:
     config = load_company_config()
     credentials = prompt_credentials()
     try:
-        _request_odata(config, credentials, next(iter(DOCUMENT_ENTITIES.values())), (("$top", 1),))
+        _request_odata(
+            config,
+            credentials,
+            next(iter(DOCUMENT_ENTITIES.values())),
+            (("$top", 1),),
+            diagnostic_stage="connect.probe",
+        )
     except AuthenticationError:
         _mark_auth_failure(identity, config)
         raise
@@ -959,6 +1058,7 @@ def command_doctor(_: argparse.Namespace) -> dict[str, Any]:
                 credentials,
                 next(iter(DOCUMENT_ENTITIES.values())),
                 (("$top", 1),),
+                diagnostic_stage="doctor.probe",
             )
             save_access_state(identity, config, "connected")
             result["status"] = "connected"
@@ -1041,6 +1141,7 @@ def _search_business_objects(
                 ("$filter", _substring_filter(term, ("Description",))),
             ),
             limit=min(MAX_BUSINESS_MATCHES_PER_ENTITY, remaining),
+            diagnostic_stage=spec["diagnosticStage"],
         )
         for raw_row in rows:
             safe_row = _safe_selected_record(raw_row, BUSINESS_SELECT_FIELDS)
@@ -1120,9 +1221,14 @@ def _search_contracts(
             parameters=(
                 ("$select", _selected_fields(CONTRACT_SELECT_FIELDS)),
                 ("$filter", relation_filter),
-                ("$orderby", "Date desc"),
+                # Catalogs do not expose the document system field `Date`.
+                # This exact query caused the v1.0.2 production HTTP 400.
+                # `Дата` is the published contract field confirmed by the
+                # live metadata/result card and keeps pagination deterministic.
+                ("$orderby", "Дата desc"),
             ),
             limit=remaining,
+            diagnostic_stage=CONTRACT_RELATION_DIAGNOSTIC_STAGES[relation_field],
         )
         for raw_row in rows:
             raw_relation = raw_row.get(relation_field)
@@ -1159,9 +1265,10 @@ def _search_contracts(
             parameters=(
                 ("$select", _selected_fields(CONTRACT_SELECT_FIELDS)),
                 ("$filter", _substring_filter(term, CONTRACT_TERM_FIELDS)),
-                ("$orderby", "Date desc"),
+                ("$orderby", "Дата desc"),
             ),
             limit=remaining,
+            diagnostic_stage="search.contracts.text",
         )
         for raw_row in direct_rows:
             _add_contract(contracts, raw_row, {"kind": "contract_text"})
@@ -1221,6 +1328,7 @@ def _search_documents_for_contracts(
                     ("$orderby", "Date desc"),
                 ),
                 limit=min(MAX_DOCUMENTS_PER_CONTRACT_DIRECTION, remaining),
+                diagnostic_stage=f"search.documents.{direction}.by-contract",
             )
             for raw_row in rows:
                 _add_document(
@@ -1255,6 +1363,7 @@ def _search_direct_documents(
                 ("$orderby", "Date desc"),
             ),
             limit=remaining,
+            diagnostic_stage=f"search.documents.{direction}.text",
         )
         for raw_row in rows:
             _add_document(
@@ -1287,6 +1396,7 @@ def _browse_documents(
                 ("$orderby", "Date desc"),
             ),
             limit=remaining,
+            diagnostic_stage=f"search.documents.{direction}.recent",
         )
         for raw_row in rows:
             _add_document(
@@ -1383,6 +1493,7 @@ def command_get_document(args: argparse.Namespace) -> dict[str, Any]:
                 credentials,
                 entity,
                 (("$filter", filter_value), ("$top", 1)),
+                diagnostic_stage=f"document.{direction[0]}.get",
             ),
         )
         save_access_state(identity, config, "connected")
@@ -1401,6 +1512,19 @@ def _new_files(
     document_id: str,
     document_entity: str,
 ) -> list[dict[str, Any]]:
+    direction = next(
+        (
+            candidate
+            for candidate, candidate_entity in DOCUMENT_ENTITIES.items()
+            if candidate_entity == document_entity
+        ),
+        None,
+    )
+    if direction is None:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний file query получил неизвестный тип документа.",
+        )
     owner_filter = (
         f"ВладелецФайла eq cast(guid'{document_id}', '{document_entity}')"
     )
@@ -1410,6 +1534,7 @@ def _new_files(
             credentials,
             NEW_FILE_ENTITY,
             (("$filter", owner_filter), ("$top", config.max_rows)),
+            diagnostic_stage=f"files.{direction}.new",
         ),
     )
     return [{"scheme": "new", "file": _safe_scalar_record(row)} for row in rows]
@@ -1421,6 +1546,19 @@ def _old_files(
     document_id: str,
     document_entity: str,
 ) -> list[dict[str, Any]]:
+    direction = next(
+        (
+            candidate
+            for candidate, candidate_entity in DOCUMENT_ENTITIES.items()
+            if candidate_entity == document_entity
+        ),
+        None,
+    )
+    if direction is None:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний legacy file query получил неизвестный тип документа.",
+        )
     document_filter = (
         f"ЭлектронныйДокумент eq cast(guid'{document_id}', '{document_entity}')"
     )
@@ -1430,6 +1568,7 @@ def _old_files(
             credentials,
             OLD_MESSAGE_ENTITY,
             (("$filter", document_filter), ("$top", config.max_rows)),
+            diagnostic_stage=f"files.{direction}.old-messages",
         ),
     )
     result: list[dict[str, Any]] = []
@@ -1446,6 +1585,7 @@ def _old_files(
                 credentials,
                 OLD_FILE_ENTITY,
                 (("$filter", file_filter), ("$top", config.max_rows)),
+                diagnostic_stage=f"files.{direction}.old-files",
             ),
         )
         result.extend(
@@ -1504,6 +1644,7 @@ def command_download_file(args: argparse.Namespace) -> dict[str, Any]:
             credentials=credentials,
             timeout=config.request_timeout_seconds,
             x_odata=None,
+            diagnostic_stage=f"file.{args.scheme}.download",
         )
         with response, os.fdopen(descriptor, "wb") as output:
             content_length = response.headers.get("Content-Length")
@@ -1611,6 +1752,18 @@ def _safe_message(error: BaseException) -> str:
     return message[:MAX_ERROR_MESSAGE_CHARS] or "Неизвестная ошибка runtime."
 
 
+def _safe_error_payload(error: OneCEdoError) -> dict[str, Any]:
+    """Serialize only the deliberately bounded agent-visible error contract."""
+
+    payload: dict[str, Any] = {
+        "code": error.code,
+        "message": _safe_message(error),
+    }
+    if error.details:
+        payload["details"] = dict(error.details)
+    return payload
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -1623,7 +1776,7 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(
                 {
                     "ok": False,
-                    "error": {"code": error.code, "message": _safe_message(error)},
+                    "error": _safe_error_payload(error),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),
