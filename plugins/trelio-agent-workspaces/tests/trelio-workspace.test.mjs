@@ -38,6 +38,7 @@ import {
   parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
   resolveWorkspaceBridgeConfigDirectory,
+  validateHandoffTaskOutcome,
 } from "../scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -1142,7 +1143,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.3");
+  assert.equal(BRIDGE_VERSION, "1.5.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1152,6 +1153,48 @@ test("bridge release version stays synchronized across executable and manifests"
     cwd: ".",
     tool_timeout_sec: 660,
   });
+});
+
+test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {
+  assert.throws(
+    () => validateHandoffTaskOutcome({
+      scopeType: "task",
+      checkpointType: "handoff",
+      taskOutcome: "",
+      openQuestions: [],
+    }),
+    /обязательно укажите --task-outcome/u,
+  );
+  assert.doesNotThrow(() => validateHandoffTaskOutcome({
+    scopeType: "task",
+    checkpointType: "handoff",
+    taskOutcome: "work_completed",
+    openQuestions: [],
+  }));
+  assert.doesNotThrow(() => validateHandoffTaskOutcome({
+    scopeType: "task",
+    checkpointType: "handoff",
+    taskOutcome: "no_status_change",
+    openQuestions: ["Кто согласует результат?"],
+  }));
+  assert.throws(
+    () => validateHandoffTaskOutcome({
+      scopeType: "task",
+      checkpointType: "handoff",
+      taskOutcome: "review_passed",
+      openQuestions: ["Кто согласует результат?"],
+    }),
+    /незакрытыми вопросами/u,
+  );
+  assert.throws(
+    () => validateHandoffTaskOutcome({
+      scopeType: "task",
+      checkpointType: "draft",
+      taskOutcome: "direct_completion",
+      openQuestions: [],
+    }),
+    /только для checkpoint типа handoff/u,
+  );
 });
 
 test("workspace skill keeps comment proposals non-blocking and handoff comment-free", async () => {
@@ -1169,6 +1212,11 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(skillMarkdown, /Never call `create_comment` for this proposal/u);
   assert.match(skillMarkdown, /do not pause the requested work/u);
   assert.match(skillMarkdown, /Submission requires the meaningful handoff but never a manual task comment/u);
+  assert.match(skillMarkdown, /work_completed/u);
+  assert.match(skillMarkdown, /review_passed/u);
+  assert.match(skillMarkdown, /direct_completion/u);
+  assert.match(skillMarkdown, /no_status_change/u);
+  assert.match(bridgeSource, /--task-outcome/u);
   assert.doesNotMatch(skillMarkdown, /--task-comment/u);
   assert.doesNotMatch(bridgeSource, /task-comment/u);
 });

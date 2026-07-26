@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.5.3";
+export const BRIDGE_VERSION = "1.5.4";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -44,7 +44,7 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "- Фиксируй осмысленные контрольные точки без внутренних рассуждений и технического шума.",
   "- Перед вопросом, без ответа на который нельзя продолжать, создай bridge checkpoint типа `blocker` с конкретным `--question` и `--next-action`. Bridge сам сохранит переносимый draft snapshot; только после успешной серверной фиксации checkpoint задавай вопрос человеку.",
   "- Если в работе с задачей появились смысловые изменения, прочитай `get_task_comment_proposal_context` и вызови `render_task_comment_proposal` с новой краткой смысловой сводкой после последнего реально опубликованного предложения. MCP App даёт человеку редактируемое поле и кнопку «Опубликовать»; не публикуй автоматически и не останавливай из-за неопубликованного текста работу. Новый render заменяет прежний неопубликованный вариант, а не дополняет его копиями старого текста. В клиенте без MCP Apps покажи fallback-текст и вызывай `publish_task_comment_proposal` только после явной команды пользователя. Для этого proposal не используй `create_comment`. Handoff и submit от manual comment не зависят.",
-  "- Перед записью создай checkpoint типа `handoff`: простыми словами опиши результат, подтверждения, подготовленные материалы, открытые вопросы и один конкретный следующий шаг.",
+  "- Перед записью создай checkpoint типа `handoff`: простыми словами опиши результат, подтверждения, подготовленные материалы, открытые вопросы и один конкретный следующий шаг. Для task-scoped Run обязательно передай `--task-outcome`: `work_completed` после выполнения переводит задачу в статус с kind `review`, а при отсутствии такого статуса — в `done`; `review_passed` используй только при успешной проверке задачи, уже находящейся в `review`, чтобы перевести её в `done`; `direct_completion` допустим по явному указанию пользователя, закреплённому правилу или для задачи, которую этот же пользователь поставил сам себе, хотя review остаётся предпочтительным; `no_status_change` оставляет статус как есть. Не выбирай статус по названию или code.",
   "- В сообщении человеку сначала показывай итог и требуемое решение. Не подменяй отчёт SHA, UUID, статусом Run или фразой о том, что полезный текст находится где-то внутри workspace.",
   "- Передавай результат через candidate: Trelio примет его автоматически только при актуальном base head. При конфликте начни новый Run и перенеси изменения осознанно.",
   "",
@@ -3434,6 +3434,7 @@ const openWorkspace = async (origin, options) => {
         schemaVersion: 3,
         origin,
         pluginVersion: BRIDGE_VERSION,
+        scopeType: runPayload.workspace?.scopeType || existingMetadata.scopeType || null,
         leaseId: agentRun.leaseId,
         fencingToken: agentRun.fencingToken,
         baseHead: agentRun.baseHead,
@@ -3536,6 +3537,7 @@ const openWorkspace = async (origin, options) => {
       schemaVersion: 3,
       origin,
       pluginVersion: BRIDGE_VERSION,
+      scopeType: runPayload.workspace?.scopeType || null,
       workspaceId,
       runId,
       leaseId: agentRun.leaseId,
@@ -3854,6 +3856,48 @@ const getChangedPaths = async (workspaceDirectory, knownObjects = []) => {
     .filter(Boolean);
 };
 
+const TASK_OUTCOMES = new Set([
+  "work_completed",
+  "review_passed",
+  "direct_completion",
+  "no_status_change",
+]);
+
+export const validateHandoffTaskOutcome = ({
+  scopeType,
+  checkpointType,
+  taskOutcome,
+  openQuestions,
+}) => {
+  if (checkpointType !== "handoff") {
+    if (taskOutcome) {
+      throw new Error("--task-outcome допустим только для checkpoint типа handoff.");
+    }
+    return;
+  }
+
+  if (scopeType === "task" && !taskOutcome) {
+    throw new Error(
+      "Для handoff задачи обязательно укажите --task-outcome: "
+      + "work_completed, review_passed, direct_completion или no_status_change.",
+    );
+  }
+
+  if (taskOutcome && !TASK_OUTCOMES.has(taskOutcome)) {
+    throw new Error("Неизвестный --task-outcome.");
+  }
+
+  // Открытый вопрос означает, что результат ещё требует решения. Такой
+  // checkpoint можно надёжно сохранить и принять, но нельзя одновременно
+  // объявлять выполнением работы или успешной проверкой.
+  if (taskOutcome && taskOutcome !== "no_status_change" && openQuestions.length > 0) {
+    throw new Error(
+      "Handoff с незакрытыми вопросами не может завершать работу или проверку задачи; "
+      + "используйте --task-outcome no_status_change.",
+    );
+  }
+};
+
 const checkpoint = async (options) => withRun(async ({
   metadata,
   metadataPath,
@@ -3882,6 +3926,7 @@ const checkpoint = async (options) => withRun(async ({
       : [];
   const openQuestions = getOptionValues(options, "question");
   const nextActionInstruction = getOptionValues(options, "next-action")[0] || "";
+  const taskOutcome = String(options["task-outcome"] || "").trim();
 
   if (checkpointType === "handoff") {
     if (summary.length < 20) {
@@ -3899,7 +3944,15 @@ const checkpoint = async (options) => withRun(async ({
     if (!nextActionInstruction) {
       throw new Error("Для handoff явно укажите действие оператора через --next-action.");
     }
+
   }
+
+  validateHandoffTaskOutcome({
+    scopeType: metadata.scopeType,
+    checkpointType,
+    taskOutcome,
+    openQuestions,
+  });
 
   if (checkpointType === "blocker") {
     if (openQuestions.length === 0) {
@@ -3932,6 +3985,7 @@ const checkpoint = async (options) => withRun(async ({
       ...(filesChanged.length > 0 ? { filesChanged } : {}),
       ...(openQuestions.length > 0 ? { openQuestions } : {}),
       ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
+      ...(taskOutcome ? { taskOutcome } : {}),
       ...(draftSnapshot ? { draftHead: draftSnapshot.draftHead } : {}),
     }),
   });
@@ -4451,6 +4505,28 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
       process.stdout.write("Результат записан в рабочее пространство Trelio.\n");
       process.stdout.write("Статус: принят автоматически.\n");
       process.stdout.write("Проверки структуры, безопасности и актуальности базовой версии пройдены.\n");
+      if (result.taskStatusTransition?.state === "applied") {
+        process.stdout.write(
+          `Статус задачи: ${result.taskStatusTransition.fromStatusName} -> `
+          + `${result.taskStatusTransition.toStatusName}.\n`,
+        );
+      } else if (result.taskStatusTransition?.state === "unchanged") {
+        process.stdout.write(
+          `Статус задачи не изменён: ${result.taskStatusTransition.currentStatusName}.\n`,
+        );
+      } else if (result.taskStatusTransition?.state === "blocked") {
+        process.stdout.write(
+          `Статус задачи не изменён: ${result.taskStatusTransition.reason}.\n`,
+        );
+      } else if (result.taskStatusTransition?.state === "pending") {
+        process.stdout.write(
+          `Смена статуса задачи отложена: ${result.taskStatusTransition.reason}.\n`,
+        );
+      } else if (result.taskStatusTransition?.state === "skipped") {
+        process.stdout.write(
+          `Статус задачи оставлен без изменений: ${result.taskStatusTransition.reason}.\n`,
+        );
+      }
       if (result.projection?.status === "pending_reconciliation") {
         process.stdout.write("Git-проекция будет восстановлена фоновым reconciliation; повторять submit не нужно.\n");
       }
@@ -5076,7 +5152,7 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace clean\n");
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type blocker --summary TEXT --question TEXT --next-action TEXT\n");
-  process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] --next-action TEXT\n");
+  process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] --next-action TEXT [--task-outcome work_completed|review_passed|direct_completion|no_status_change]\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
   process.stdout.write("  trelio-workspace skill pack --skill ID --runtime-version X.Y.Z --source DIR --entry PATH --interpreter node|python|executable --output FILE [--capability VALUE]\n");
   process.stdout.write("  trelio-workspace skill run --company UUID [--project UUID] --skill ID --release UUID -- [ARGS...]\n");
