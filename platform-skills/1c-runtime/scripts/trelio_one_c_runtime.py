@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only local runtime for the Trelio platform skill ``1c-edo``.
+"""Shared read-only runtime core for Trelio's ``1c-edo`` and ``1c`` skills.
 
 The runtime deliberately separates three trust domains:
 
@@ -37,13 +37,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 
 
-SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.5"
+SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
+# Both user-facing surfaces intentionally use the legacy provider namespace.
+# The backend resolves the same 1c-edo connection id for `1c`, so existing
+# personal Basic Auth credentials remain usable without copying or migration.
+CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
+RUNTIME_VERSION = "1.0.6"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -140,6 +145,7 @@ UUID_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_METADATA_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
@@ -179,8 +185,54 @@ DIAGNOSTIC_STAGES = frozenset(
         "files.outgoing.old-files",
         "file.new.download",
         "file.old.download",
+        "metadata.inventory.fetch",
+        "metadata.inventory.sample",
     },
 )
+
+# Development inventory is deliberately heuristic only at the *name matching*
+# layer. It can discover a bounded set of likely business entities, but it
+# cannot query an arbitrary entity or reveal raw records. Final production
+# mappings are frozen later in a signed capability registry.
+INVENTORY_REFERENCE_TERMS = {
+    "organization": ("Организац",),
+    "business_unit": (
+        "СтруктураПредприятия",
+        "ПодразделенияОрганизаций",
+        "ОбъектыСтроительства",
+        "НаправленияДеятельности",
+    ),
+    "counterparty": ("Контрагент",),
+    "partner": ("Партнер", "Партнёр"),
+    "contract": ("ДоговорыКонтрагентов",),
+    "item": ("Номенклатур",),
+    "warehouse": ("Склад",),
+}
+INVENTORY_DOCUMENT_TERMS = {
+    "purchase": ("Поступлен", "Закуп"),
+    "sale": ("Реализац", "Продаж"),
+    "receipt": ("Приход", "Оприход"),
+    "return": ("Возврат",),
+    "transfer": ("Перемещ",),
+}
+INVENTORY_STOCK_TERMS = ("Остат", "Склад", "Товар", "Номенклатур")
+INVENTORY_BLOCKED_TERMS = (
+    "Зарплат",
+    "Кадр",
+    "Сотрудник",
+    "Физическ",
+    "Банков",
+    "Платеж",
+    "Платёж",
+    "Касс",
+    "Бухгалтер",
+    "Проводк",
+    "НДФЛ",
+    "Страхов",
+    "Начислен",
+)
+MAX_INVENTORY_ENTITIES = 48
+MAX_INVENTORY_PROPERTIES = 160
 
 
 class OneCEdoError(RuntimeError):
@@ -276,10 +328,18 @@ def _uuid(value: str | None, label: str) -> str:
     return str(uuid.UUID(normalized))
 
 
-def load_identity() -> Identity:
+def current_skill_id() -> str:
     skill_id = str(os.environ.get("TRELIO_SKILL_ID", "")).strip()
-    if skill_id != SKILL_ID:
-        raise OneCEdoError("invalid_host_context", "Runtime запущен не для навыка 1c-edo.")
+    if skill_id not in SUPPORTED_SKILL_IDS:
+        raise OneCEdoError(
+            "invalid_host_context",
+            "Runtime запущен не для поддерживаемой поверхности 1С.",
+        )
+    return skill_id
+
+
+def load_identity() -> Identity:
+    current_skill_id()
     return Identity(
         company_id=_uuid(os.environ.get("TRELIO_SKILL_COMPANY_ID"), "company id"),
         member_id=_uuid(os.environ.get("TRELIO_SKILL_MEMBER_ID"), "member id"),
@@ -403,7 +463,7 @@ def connection_root(identity: Identity) -> Path:
     return (
         default_config_home()
         / "integrations"
-        / SKILL_ID
+        / CREDENTIAL_PROVIDER_NAMESPACE
         / identity.company_id
         / identity.member_id
         / identity.connection_id
@@ -762,6 +822,7 @@ def _http_open(
     timeout: float,
     x_odata: str | None,
     diagnostic_stage: str,
+    accept: str | None = None,
 ) -> Any:
     if diagnostic_stage not in DIAGNOSTIC_STAGES:
         raise OneCEdoError(
@@ -796,9 +857,9 @@ def _http_open(
                 "Endpoint 1С разрешился в непубличный сетевой адрес.",
             )
     headers = {
-        "Accept": "application/json" if x_odata else "*/*",
+        "Accept": accept or ("application/json" if x_odata else "*/*"),
         "Authorization": _basic_auth(credentials),
-        "User-Agent": f"Trelio-1C-EDO/{RUNTIME_VERSION}",
+        "User-Agent": f"Trelio-1C/{RUNTIME_VERSION}",
     }
     if x_odata is not None:
         headers["X-OData"] = x_odata
@@ -871,6 +932,278 @@ def _request_odata(
     if not isinstance(value, dict):
         raise OneCEdoError("invalid_odata_response", "1С вернула неожиданный OData payload.")
     return value
+
+
+def _metadata_url(config: CompanyConfig) -> str:
+    """Return the single fixed metadata URL.
+
+    The caller cannot supply a URL or path.  This command exists only in the
+    development release of the broad `1c` skill and never returns raw XML.
+    """
+
+    return f"{config.odata_base_url}$metadata"
+
+
+def _request_metadata(
+    config: CompanyConfig,
+    credentials: Credentials,
+) -> bytes:
+    response = _http_open(
+        "GET",
+        _metadata_url(config),
+        credentials=credentials,
+        timeout=config.request_timeout_seconds,
+        x_odata=_require_x_odata(),
+        diagnostic_stage="metadata.inventory.fetch",
+        accept="application/xml",
+    )
+    with response:
+        return _read_limited(response, MAX_METADATA_RESPONSE_BYTES)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _metadata_candidates(raw: bytes) -> tuple[str, list[dict[str, Any]], bool]:
+    """Parse a bounded structural inventory from 1C metadata.
+
+    Only names and declared EDM types from business-oriented candidates leave
+    the process. Raw metadata, annotations and unrelated entities (including
+    HR, payroll, banking, cash and accounting internals) are never serialized.
+    """
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as error:
+        raise OneCEdoError(
+            "invalid_metadata_response",
+            "1С вернула некорректный XML metadata.",
+        ) from error
+
+    entity_types: dict[str, dict[str, Any]] = {}
+    for schema in (element for element in root.iter() if _xml_local_name(element.tag) == "Schema"):
+        namespace = str(schema.attrib.get("Namespace") or "")
+        for entity_type in (
+            child for child in schema
+            if _xml_local_name(child.tag) == "EntityType"
+        ):
+            type_name = str(entity_type.attrib.get("Name") or "")
+            if not type_name:
+                continue
+            properties: list[dict[str, Any]] = []
+            navigations: list[dict[str, str]] = []
+            for child in entity_type:
+                local_name = _xml_local_name(child.tag)
+                if local_name == "Property":
+                    property_name = str(child.attrib.get("Name") or "")
+                    property_type = str(child.attrib.get("Type") or "")
+                    if property_name and property_type:
+                        properties.append({
+                            "name": property_name[:128],
+                            "type": property_type[:160],
+                            "nullable": child.attrib.get("Nullable") != "false",
+                        })
+                elif local_name == "NavigationProperty":
+                    navigation_name = str(child.attrib.get("Name") or "")
+                    navigation_type = str(child.attrib.get("Type") or "")
+                    if navigation_name and navigation_type:
+                        navigations.append({
+                            "name": navigation_name[:128],
+                            "type": navigation_type[:160],
+                        })
+            normalized = {
+                "properties": properties[:MAX_INVENTORY_PROPERTIES],
+                "propertiesTruncated": len(properties) > MAX_INVENTORY_PROPERTIES,
+                "navigationProperties": navigations[:MAX_INVENTORY_PROPERTIES],
+                "navigationPropertiesTruncated": len(navigations) > MAX_INVENTORY_PROPERTIES,
+            }
+            entity_types[type_name] = normalized
+            if namespace:
+                entity_types[f"{namespace}.{type_name}"] = normalized
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for entity_set in (
+        element for element in root.iter()
+        if _xml_local_name(element.tag) == "EntitySet"
+    ):
+        name = str(entity_set.attrib.get("Name") or "")
+        entity_type_name = str(entity_set.attrib.get("EntityType") or "")
+        if (
+            not name
+            or any(term.casefold() in name.casefold() for term in INVENTORY_BLOCKED_TERMS)
+        ):
+            continue
+        matches: list[dict[str, str]] = []
+        if name.startswith("Catalog_"):
+            for kind, terms in INVENTORY_REFERENCE_TERMS.items():
+                if any(term.casefold() in name.casefold() for term in terms):
+                    matches.append({"section": "reference", "kind": kind})
+        elif name.startswith("Document_"):
+            for kind, terms in INVENTORY_DOCUMENT_TERMS.items():
+                if any(term.casefold() in name.casefold() for term in terms):
+                    matches.append({"section": "document", "kind": kind})
+        elif name.startswith(("AccumulationRegister_", "InformationRegister_")):
+            if (
+                "Остат".casefold() in name.casefold()
+                and any(term.casefold() in name.casefold() for term in INVENTORY_STOCK_TERMS[1:])
+            ):
+                matches.append({"section": "balance", "kind": "stock"})
+
+        if not matches:
+            continue
+        grouped[name] = {
+            "entitySet": name,
+            "entityType": entity_type_name[:240],
+            "matches": matches,
+            **entity_types.get(entity_type_name, {
+                "properties": [],
+                "propertiesTruncated": False,
+                "navigationProperties": [],
+                "navigationPropertiesTruncated": False,
+            }),
+        }
+
+    ordered = sorted(grouped.values(), key=lambda item: item["entitySet"])
+    return hashlib.sha256(raw).hexdigest(), ordered[:MAX_INVENTORY_ENTITIES], (
+        len(ordered) > MAX_INVENTORY_ENTITIES
+    )
+
+
+def _inventory_sample_fields(candidate: dict[str, Any]) -> list[str]:
+    property_names = [
+        str(item.get("name") or "")
+        for item in candidate.get("properties", [])
+        if isinstance(item, dict)
+    ]
+    preferred = [
+        "Ref_Key",
+        "Description",
+        "Code",
+        "Number",
+        "Date",
+        "Posted",
+        "DeletionMark",
+    ]
+    relations = [
+        name for name in property_names
+        if name.endswith("_Key")
+        and not any(term.casefold() in name.casefold() for term in INVENTORY_BLOCKED_TERMS)
+    ][:12]
+    statuses = [
+        name for name in property_names
+        if any(term in name.casefold() for term in ("статус", "состояни"))
+    ][:4]
+    selected: list[str] = []
+    for name in [*preferred, *relations, *statuses]:
+        if name in property_names and name not in selected:
+            selected.append(name)
+    return selected[:24]
+
+
+def _inventory_sample_value_class(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        if UUID_RE.fullmatch(value):
+            return "uuid"
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}T.*", value):
+            return "datetime"
+        return "string"
+    return "non_scalar"
+
+
+def _request_inventory_sample(
+    config: CompanyConfig,
+    credentials: Credentials,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    entity = str(candidate["entitySet"])
+    fields = _inventory_sample_fields(candidate)
+    # The entity name comes only from the already parsed metadata and is
+    # additionally constrained by fixed business prefixes/patterns above.
+    # No CLI value can reach this URL builder.
+    url = f"{config.odata_base_url}{urllib.parse.quote(entity, safe='_')}"
+    parameters: list[tuple[str, str | int]] = [("$top", 1)]
+    if fields:
+        parameters.append(("$select", ",".join(fields)))
+    response = _http_open(
+        "GET",
+        f"{url}?{_odata_query(parameters)}",
+        credentials=credentials,
+        timeout=config.request_timeout_seconds,
+        x_odata=_require_x_odata(),
+        diagnostic_stage="metadata.inventory.sample",
+    )
+    with response:
+        raw = _read_limited(response, min(MAX_ODATA_RESPONSE_BYTES, 512 * 1024))
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректный sample JSON.",
+        ) from error
+    if not isinstance(value, dict):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула неожиданный sample payload.",
+        )
+    rows = _odata_rows(value)
+    first = rows[0] if rows else {}
+    return {
+        "accessible": True,
+        "hasRows": bool(rows),
+        "selectedFields": fields,
+        "returnedFieldClasses": {
+            field: _inventory_sample_value_class(first.get(field))
+            for field in fields
+            if field in first
+        },
+    }
+
+
+def command_developer_inventory_metadata(_: argparse.Namespace) -> dict[str, Any]:
+    """Inspect only bounded structural candidates through the signed runtime."""
+
+    identity, config, credentials = _connected_context()
+    try:
+        raw = _request_metadata(config, credentials)
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    schema_digest, candidates, truncated = _metadata_candidates(raw)
+    for candidate in candidates:
+        try:
+            candidate["sample"] = _request_inventory_sample(
+                config,
+                credentials,
+                candidate,
+            )
+        except AuthenticationError:
+            _mark_auth_failure(identity, config)
+            raise
+        except OneCEdoError as error:
+            candidate["sample"] = {
+                "accessible": False,
+                "error": _safe_error_payload(error),
+            }
+    return {
+        "inventoryVersion": 1,
+        "schemaDigest": f"sha256:{schema_digest}",
+        "candidateCount": len(candidates),
+        "candidatesTruncated": truncated,
+        "candidates": candidates,
+        "limits": {
+            "maxEntities": MAX_INVENTORY_ENTITIES,
+            "maxPropertiesPerEntity": MAX_INVENTORY_PROPERTIES,
+            "sampleRowsPerEntity": 1,
+        },
+    }
 
 
 def _odata_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2004,7 +2337,7 @@ def command_forget_credentials(_: argparse.Namespace) -> dict[str, Any]:
     return {"status": "unknown", "credentialsRemoved": removed}
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_edo_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trelio-1c-edo",
         description="Read-only local 1C EDO runtime.",
@@ -2053,6 +2386,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_general_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="trelio-1c",
+        description="Broad read-only local 1C business runtime.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # The initial development release exposes one fixed inventory action. It
+    # has no URL/entity/query arguments, emits no raw values and exists only to
+    # freeze the production capability registry against the live publication.
+    inventory = subparsers.add_parser("developer-inventory-metadata")
+    inventory.set_defaults(handler=command_developer_inventory_metadata)
+    return parser
+
+
+def build_parser(skill_id: str | None = None) -> argparse.ArgumentParser:
+    resolved_skill_id = skill_id or current_skill_id()
+    if resolved_skill_id == "1c-edo":
+        return build_edo_parser()
+    if resolved_skill_id == "1c":
+        return build_general_parser()
+    raise OneCEdoError(
+        "invalid_host_context",
+        "Runtime запущен не для поддерживаемой поверхности 1С.",
+    )
+
+
 def _safe_message(error: BaseException) -> str:
     message = str(error).replace("\r", " ").replace("\n", " ").strip()
     return message[:MAX_ERROR_MESSAGE_CHARS] or "Неизвестная ошибка runtime."
@@ -2070,9 +2430,19 @@ def _safe_error_payload(error: OneCEdoError) -> dict[str, Any]:
     return payload
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
+def main(
+    argv: list[str] | None = None,
+    *,
+    expected_skill_id: str | None = None,
+) -> int:
     try:
+        skill_id = current_skill_id()
+        if expected_skill_id is not None and skill_id != expected_skill_id:
+            raise OneCEdoError(
+                "invalid_host_context",
+                "Entrypoint и skill identity не совпадают.",
+            )
+        parser = build_parser(skill_id)
         args = parser.parse_args(argv)
         result = args.handler(args)
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")))
