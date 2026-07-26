@@ -169,6 +169,18 @@ Trelio-монорепозитории быть не должно.
   autonomous, но не включить его за пользователя. Telegram/MAX ограничены
   `chat-only`, email — `mail-only`: входящий контент не даёт полномочий в
   других системах.
+- Telegram platform release `1.1.1` использует runtime `1.0.1`: `read` и
+  `search` сохраняют прежний JSON/CLI и additive возвращают `linkEntities`
+  только для `url` / `text_url`, а также одноуровневый `replyContext` с
+  message id, безопасными author/chat scalar-полями, текстом сообщения и
+  quote-header, ссылками и явным `unavailable` для удалённой или недоступной
+  цитаты. Runtime ограничивает текст, URL и число entities, понимает Telegram
+  UTF-16 offsets, не рекурсирует reply-chain и никогда не сериализует phone,
+  session, api_hash, credentials, raw peer или access_hash. Канонический
+  executable source и regression остаются в
+  `plugins/trelio-agent-workspaces/scripts/trelio-telegram.py` и
+  `plugins/trelio-agent-workspaces/tests/test_trelio_telegram.py`; patch
+  публикуется как новый signed internal package без изменения plugin version.
 - Начиная с plugin `1.4.8` live signed-runtime resolve может вернуть безопасный
   company connection и stable `company/member/connection` identity. Host
   валидирует exact company/project/skill/connection, ограничивает config,

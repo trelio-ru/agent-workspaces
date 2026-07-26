@@ -29,6 +29,18 @@ API_HASH_ENV = "TRELIO_TELEGRAM_API_HASH"
 RUNTIME_VERSION = "1"
 POLICY_MODES = ("confirm", "autonomous", "read-only")
 MAX_MESSAGE_CHARS = 4096
+# Telegram already bounds ordinary messages, but keeping explicit output caps
+# makes the JSON contract safe even when a future MTProto object or test double
+# contains unexpectedly large values.
+MAX_READ_TEXT_CHARS = 16_384
+MAX_REPLY_TEXT_CHARS = 4_096
+MAX_ENTITY_TITLE_CHARS = 256
+MAX_ENTITY_USERNAME_CHARS = 64
+MAX_FILE_NAME_CHARS = 512
+MAX_LINK_ENTITIES = 32
+MAX_LINK_TEXT_CHARS = 512
+MAX_LINK_URL_CHARS = 2_048
+MAX_REPLY_RESOLUTION_CONCURRENCY = 8
 
 
 class TelegramRuntimeError(RuntimeError):
@@ -298,28 +310,292 @@ async def command_login_async(args: argparse.Namespace, identity: Identity) -> d
         await client.disconnect()
 
 
+def bounded_string(value: Any, limit: int) -> tuple[str, bool]:
+    """Return a JSON-safe bounded string without leaking object structure."""
+
+    if value is None:
+        text = ""
+    elif isinstance(value, str):
+        text = value
+    else:
+        text = str(value)
+    return text[:limit], len(text) > limit
+
+
+def optional_bounded_string(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text, _ = bounded_string(value, limit)
+    return text or None
+
+
 def public_entity(entity: Any) -> dict[str, Any]:
+    """Allowlist the public identity fields used by the CLI JSON contract.
+
+    Telethon entities also contain phone numbers, access hashes and raw peer
+    structures. Reading individual known scalar attributes instead of dumping
+    the MTProto object keeps all of that state outside agent-visible output.
+    """
+
+    raw_id = getattr(entity, "id", None)
+    entity_id = raw_id if isinstance(raw_id, int) and not isinstance(raw_id, bool) else None
+    title = (
+        optional_bounded_string(getattr(entity, "title", None), MAX_ENTITY_TITLE_CHARS)
+        or optional_bounded_string(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        optional_bounded_string(
+                            getattr(entity, "first_name", None),
+                            MAX_ENTITY_TITLE_CHARS,
+                        ),
+                        optional_bounded_string(
+                            getattr(entity, "last_name", None),
+                            MAX_ENTITY_TITLE_CHARS,
+                        ),
+                    ],
+                )
+            ),
+            MAX_ENTITY_TITLE_CHARS,
+        )
+        or optional_bounded_string(
+            getattr(entity, "username", None),
+            MAX_ENTITY_TITLE_CHARS,
+        )
+    )
     return {
-        "id": getattr(entity, "id", None),
-        "title": getattr(entity, "title", None)
-        or " ".join(filter(None, [getattr(entity, "first_name", None), getattr(entity, "last_name", None)]))
-        or getattr(entity, "username", None),
-        "username": getattr(entity, "username", None),
+        "id": entity_id,
+        "title": title,
+        "username": optional_bounded_string(
+            getattr(entity, "username", None),
+            MAX_ENTITY_USERNAME_CHARS,
+        ),
     }
 
 
-def public_message(message: Any) -> dict[str, Any]:
+def utf16_slice(text: str, offset: int, length: int) -> str:
+    """Slice Telegram entity offsets, which are measured in UTF-16 units."""
+
+    encoded = text.encode("utf-16-le", errors="surrogatepass")
+    start = min(offset * 2, len(encoded))
+    end = min((offset + length) * 2, len(encoded))
+    return encoded[start:end].decode("utf-16-le", errors="replace")
+
+
+def public_link_entities(
+    text: str,
+    entities: Any,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Normalize only URL-bearing Telegram entities.
+
+    The class-name allowlist is intentionally narrow. Other MTProto entity
+    variants may carry mentions, custom emoji document ids or future fields
+    that are not part of this read-only contract.
+    """
+
+    if not isinstance(entities, (list, tuple)):
+        return [], False
+
+    result: list[dict[str, Any]] = []
+    supported_seen = 0
+    for entity in entities:
+        class_name = type(entity).__name__
+        if class_name not in {"MessageEntityUrl", "MessageEntityTextUrl"}:
+            continue
+        supported_seen += 1
+        if len(result) >= MAX_LINK_ENTITIES:
+            continue
+
+        offset = getattr(entity, "offset", None)
+        length = getattr(entity, "length", None)
+        if (
+            not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or not isinstance(length, int)
+            or isinstance(length, bool)
+            or offset < 0
+            or length <= 0
+        ):
+            continue
+
+        entity_text, text_truncated = bounded_string(
+            utf16_slice(text, offset, length),
+            MAX_LINK_TEXT_CHARS,
+        )
+        raw_url = (
+            entity_text
+            if class_name == "MessageEntityUrl"
+            else getattr(entity, "url", None)
+        )
+        if not isinstance(raw_url, str) or not raw_url:
+            continue
+        url, url_truncated = bounded_string(raw_url, MAX_LINK_URL_CHARS)
+        result.append({
+            "type": "url" if class_name == "MessageEntityUrl" else "text_url",
+            "offset": offset,
+            "length": length,
+            "text": entity_text,
+            "url": url,
+            "textTruncated": text_truncated,
+            "urlTruncated": url_truncated,
+        })
+
+    return result, supported_seen > len(result)
+
+
+async def optional_message_entity(message: Any, attribute: str, getter_name: str) -> Any | None:
+    """Resolve sender/chat best-effort without exposing Telegram diagnostics."""
+
+    entity = getattr(message, attribute, None)
+    if entity is not None:
+        return entity
+    getter = getattr(message, getter_name, None)
+    if not callable(getter):
+        return None
+    try:
+        return await getter()
+    except Exception:
+        # Missing/deleted peers must not make an otherwise readable message
+        # fail, and raw RPC diagnostics do not belong in normalized output.
+        return None
+
+
+async def public_reply_context(message: Any, current_chat: Any) -> dict[str, Any] | None:
+    """Resolve one direct reply only; never recurse into the quoted message."""
+
+    reply_header = getattr(message, "reply_to", None)
+    reply_message_id = getattr(message, "reply_to_msg_id", None)
+    if reply_message_id is None and reply_header is not None:
+        reply_message_id = getattr(reply_header, "reply_to_msg_id", None)
+    if (
+        not isinstance(reply_message_id, int)
+        or isinstance(reply_message_id, bool)
+        or reply_message_id <= 0
+    ):
+        return None
+
+    quote_text, quote_text_truncated = bounded_string(
+        getattr(reply_header, "quote_text", None),
+        MAX_REPLY_TEXT_CHARS,
+    )
+    quote_entities, quote_entities_truncated = public_link_entities(
+        quote_text,
+        getattr(reply_header, "quote_entities", None),
+    )
+
+    reply_message = None
+    get_reply_message = getattr(message, "get_reply_message", None)
+    if callable(get_reply_message):
+        try:
+            reply_message = await get_reply_message()
+        except Exception:
+            # A deleted message, an inaccessible cross-chat reply and a
+            # transient MTProto lookup failure intentionally collapse to the
+            # same non-sensitive unavailable state.
+            reply_message = None
+
+    if reply_message is None:
+        return {
+            "messageId": reply_message_id,
+            "unavailable": True,
+            "author": None,
+            "chat": (
+                None
+                if getattr(reply_header, "reply_to_peer_id", None) is not None
+                else public_entity(current_chat)
+            ),
+            "text": quote_text,
+            "textTruncated": quote_text_truncated,
+            "linkEntities": quote_entities,
+            "linkEntitiesTruncated": quote_entities_truncated,
+            "quoteText": quote_text or None,
+            "quoteTextTruncated": quote_text_truncated,
+            "quoteLinkEntities": quote_entities,
+            "quoteLinkEntitiesTruncated": quote_entities_truncated,
+        }
+
+    sender = await optional_message_entity(reply_message, "sender", "get_sender")
+    reply_chat = await optional_message_entity(reply_message, "chat", "get_chat")
+    if reply_chat is None and getattr(reply_header, "reply_to_peer_id", None) is None:
+        reply_chat = current_chat
+
+    reply_text, reply_text_truncated = bounded_string(
+        getattr(reply_message, "message", None),
+        MAX_REPLY_TEXT_CHARS,
+    )
+    reply_entities, reply_entities_truncated = public_link_entities(
+        reply_text,
+        getattr(reply_message, "entities", None),
+    )
+    return {
+        "messageId": reply_message_id,
+        "unavailable": False,
+        "author": public_entity(sender) if sender is not None else None,
+        "chat": public_entity(reply_chat) if reply_chat is not None else None,
+        "text": reply_text,
+        "textTruncated": reply_text_truncated,
+        "linkEntities": reply_entities,
+        "linkEntitiesTruncated": reply_entities_truncated,
+        "quoteText": quote_text or None,
+        "quoteTextTruncated": quote_text_truncated,
+        "quoteLinkEntities": quote_entities,
+        "quoteLinkEntitiesTruncated": quote_entities_truncated,
+    }
+
+
+def public_message(
+    message: Any,
+    *,
+    reply_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     sender = getattr(message, "sender", None)
+    text, text_truncated = bounded_string(
+        getattr(message, "message", None),
+        MAX_READ_TEXT_CHARS,
+    )
+    link_entities, link_entities_truncated = public_link_entities(
+        text,
+        getattr(message, "entities", None),
+    )
+    raw_file_size = getattr(getattr(message, "file", None), "size", None)
+    file_size = (
+        raw_file_size
+        if isinstance(raw_file_size, int)
+        and not isinstance(raw_file_size, bool)
+        and raw_file_size >= 0
+        else None
+    )
     return {
         "id": message.id,
         "date": message.date.isoformat() if message.date else None,
         "outgoing": bool(message.out),
         "sender": public_entity(sender) if sender else None,
-        "text": message.message or "",
+        "text": text,
+        "textTruncated": text_truncated,
         "hasMedia": message.media is not None,
-        "fileName": getattr(getattr(message, "file", None), "name", None),
-        "fileSize": getattr(getattr(message, "file", None), "size", None),
+        "fileName": optional_bounded_string(
+            getattr(getattr(message, "file", None), "name", None),
+            MAX_FILE_NAME_CHARS,
+        ),
+        "fileSize": file_size,
+        "linkEntities": link_entities,
+        "linkEntitiesTruncated": link_entities_truncated,
+        "replyContext": reply_context,
     }
+
+
+async def public_messages(messages: list[Any], current_chat: Any) -> list[dict[str, Any]]:
+    """Serialize a bounded page while limiting concurrent reply lookups."""
+
+    semaphore = asyncio.Semaphore(MAX_REPLY_RESOLUTION_CONCURRENCY)
+
+    async def serialize(message: Any) -> dict[str, Any]:
+        async with semaphore:
+            reply_context = await public_reply_context(message, current_chat)
+        return public_message(message, reply_context=reply_context)
+
+    return list(await asyncio.gather(*(serialize(message) for message in messages)))
 
 
 async def resolve_entity(client: Any, reference: str):
@@ -360,7 +636,8 @@ async def command_read_async(args: argparse.Namespace, identity: Identity) -> di
     await ensure_authorized(client)
     try:
         entity = await resolve_entity(client, args.chat)
-        messages = [public_message(item) async for item in client.iter_messages(entity, limit=args.limit)]
+        raw_messages = [item async for item in client.iter_messages(entity, limit=args.limit)]
+        messages = await public_messages(raw_messages, entity)
         return {"chat": public_entity(entity), "messages": messages}
     finally:
         await client.disconnect()
@@ -371,10 +648,10 @@ async def command_search_async(args: argparse.Namespace, identity: Identity) -> 
     await ensure_authorized(client)
     try:
         entity = await resolve_entity(client, args.chat)
-        messages = [
-            public_message(item)
-            async for item in client.iter_messages(entity, search=args.query, limit=args.limit)
+        raw_messages = [
+            item async for item in client.iter_messages(entity, search=args.query, limit=args.limit)
         ]
+        messages = await public_messages(raw_messages, entity)
         return {"chat": public_entity(entity), "query": args.query, "messages": messages}
     finally:
         await client.disconnect()
