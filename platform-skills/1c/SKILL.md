@@ -96,6 +96,14 @@ both compressed input and decompressed XML are independently bounded, and the
 complete decompressed schema is still parsed and verified before the business
 query.
 
+When no validator is available, runtime `1.0.11` first requires a fixed HEAD
+response with a bounded total length, then proves exact byte-range support with
+one byte and downloads the remaining body through at most three disjoint
+parallel ranges. The combined ranges cover exactly one full metadata body,
+with no overlap or amplification. Every response must be identity-encoded and
+must repeat the exact total and requested `Content-Range`; any missing support,
+length change or part error fails closed without a second full download.
+
 `get-links` can return bounded normalized EDO document references, but it never
 returns or downloads EDO files. Use `1c-edo` `list-files` / `download-file`
 with its existing rules for those files.
