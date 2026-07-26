@@ -257,10 +257,13 @@ INVENTORY_BLOCKED_TERMS = (
     "Кадр",
     "Сотрудник",
     "Физическ",
-    "Банков",
+    "Банк",
+    "Безналич",
+    "Денежн",
     "Платеж",
     "Платёж",
     "Касс",
+    "Книг",
     "Бухгалтер",
     "Проводк",
     "НДФЛ",
@@ -271,7 +274,7 @@ INVENTORY_BLOCKED_TERMS = (
     "Сертификат",
 )
 MAX_INVENTORY_ENTITIES = 128
-MAX_INVENTORY_ENTITIES_PER_CAPABILITY = 16
+MAX_INVENTORY_ENTITIES_PER_CAPABILITY = 8
 MAX_INVENTORY_SAMPLES_PER_CAPABILITY = 2
 MAX_INVENTORY_PROPERTIES = 160
 
