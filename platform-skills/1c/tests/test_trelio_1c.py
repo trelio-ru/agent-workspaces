@@ -41,6 +41,12 @@ METADATA = b"""<?xml version="1.0" encoding="utf-8"?>
       </EntityType>
       <EntityType Name="Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3">
         <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
+        <Property Name="\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b" Type="Collection(Sample.Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3_\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b_RowType)" />
+      </EntityType>
+      <EntityType Name="Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3_\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b_RowType">
+        <Property Name="LineNumber" Type="Edm.Int32" Nullable="false" />
+        <Property Name="\xd0\x9d\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xba\xd0\xbb\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0_Key" Type="Edm.Guid" />
+        <Property Name="\xd0\x9a\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe" Type="Edm.Double" />
       </EntityType>
       <EntityType Name="Catalog_\xd0\x97\xd0\xb0\xd1\x80\xd0\xbf\xd0\xbb\xd0\xb0\xd1\x82\xd0\xb0">
         <Property Name="Ref_Key" Type="Edm.Guid" />
@@ -102,6 +108,17 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.assertNotIn("\u0414\u0435\u043d\u0435\u0436\u043d", str(candidates))
         self.assertEqual(counts["reference.organization"]["returned"], 1)
         self.assertEqual(counts["document.purchase"]["returned"], 2)
+        acquisition = next(
+            candidate
+            for candidate in candidates
+            if candidate["entitySet"]
+            == "Document_\u041f\u0440\u0438\u043e\u0431\u0440\u0435\u0442\u0435\u043d\u0438\u0435\u0422\u043e\u0432\u0430\u0440\u043e\u0432\u0423\u0441\u043b\u0443\u0433"
+        )
+        self.assertEqual(acquisition["collections"][0]["name"], "\u0422\u043e\u0432\u0430\u0440\u044b")
+        self.assertEqual(
+            [field["name"] for field in acquisition["collections"][0]["properties"]],
+            ["LineNumber", "\u041d\u043e\u043c\u0435\u043d\u043a\u043b\u0430\u0442\u0443\u0440\u0430_Key", "\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e"],
+        )
         self.assertLessEqual(
             max(len(candidate["properties"]) for candidate in candidates),
             runtime.MAX_INVENTORY_PROPERTIES,

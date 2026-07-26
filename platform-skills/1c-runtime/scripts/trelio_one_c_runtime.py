@@ -1135,6 +1135,30 @@ def _metadata_candidates(
                 "navigationPropertiesTruncated": False,
             }),
         }
+        collections: list[dict[str, Any]] = []
+        for property_item in grouped[name]["properties"]:
+            property_type = str(property_item.get("type") or "")
+            if not (
+                property_type.startswith("Collection(")
+                and property_type.endswith(")")
+            ):
+                continue
+            row_type_name = property_type[len("Collection("):-1]
+            row_definition = entity_types.get(row_type_name)
+            collections.append({
+                "name": str(property_item.get("name") or "")[:128],
+                "rowType": row_type_name[:240],
+                "properties": (
+                    row_definition.get("properties", [])
+                    if row_definition is not None
+                    else []
+                )[:MAX_INVENTORY_PROPERTIES],
+                "propertiesTruncated": bool(
+                    row_definition and row_definition.get("propertiesTruncated")
+                ),
+            })
+        grouped[name]["collections"] = collections[:32]
+        grouped[name]["collectionsTruncated"] = len(collections) > 32
 
     selected: dict[str, dict[str, Any]] = {}
     capability_counts: dict[str, dict[str, int | bool]] = {}
