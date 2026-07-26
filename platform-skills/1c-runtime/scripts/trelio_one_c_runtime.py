@@ -48,7 +48,7 @@ SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
 # The backend resolves the same 1c-edo connection id for `1c`, so existing
 # personal Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.6"
+RUNTIME_VERSION = "1.0.7"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -191,6 +191,28 @@ DIAGNOSTIC_STAGES = frozenset(
         "file.old.download",
         "metadata.inventory.fetch",
         "metadata.inventory.sample",
+        "general.schema.verify",
+        "general.links.contracts",
+        "general.links.edo.incoming",
+        "general.links.edo.outgoing",
+        *{
+            f"general.reference.{kind}.{action}"
+            for kind in (
+                "organization",
+                "business_unit",
+                "counterparty",
+                "partner",
+                "contract",
+                "item",
+                "warehouse",
+            )
+            for action in ("search", "get")
+        },
+        *{
+            f"general.document.{kind}.{action}"
+            for kind in ("purchase", "sale", "receipt", "return", "transfer")
+            for action in ("search", "get", "links")
+        },
     },
 )
 
@@ -277,6 +299,372 @@ MAX_INVENTORY_ENTITIES = 128
 MAX_INVENTORY_ENTITIES_PER_CAPABILITY = 8
 MAX_INVENTORY_SAMPLES_PER_CAPABILITY = 2
 MAX_INVENTORY_PROPERTIES = 160
+
+# The production broad 1C surface is intentionally frozen to the exact
+# entities and EDM field types observed through the signed inventory runtime
+# on 2026-07-26.  Only fields listed here can enter a query or normalized
+# response.  Banking, payment, cash, HR/payroll, contacts, binary fields and
+# accounting internals are deliberately absent even when the source entity
+# publishes them.
+GENERAL_INVENTORY_SCHEMA_DIGEST = (
+    "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
+)
+GENERAL_MAX_PAGE_SIZE = 25
+GENERAL_MAX_PAGES = 3
+GENERAL_MAX_LINES = 100
+GENERAL_MAX_LINK_CONTRACTS = 20
+GENERAL_MAX_LINK_DOCUMENTS = 25
+GENERAL_MAX_LINK_EDO_DOCUMENTS = 25
+GENERAL_REFERENCE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
+    "organization": (
+        {
+            "entity": "Catalog_Организации",
+            "sourceType": "organization",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "НаименованиеПолное": "Edm.String",
+                "Статус": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "НаименованиеПолное"),
+        },
+    ),
+    "business_unit": (
+        {
+            "entity": "Catalog_СтруктураПредприятия",
+            "sourceType": "enterprise_structure",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Parent_Key": "Edm.Guid",
+                "Статус": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+        {
+            "entity": "Catalog_ПодразделенияОрганизаций",
+            "sourceType": "organization_division",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Owner_Key": "Edm.Guid",
+                "Parent_Key": "Edm.Guid",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "counterparty": (
+        {
+            "entity": "Catalog_Контрагенты",
+            "sourceType": "counterparty",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "НаименованиеПолное": "Edm.String",
+                "Партнер_Key": "Edm.Guid",
+                "ЮридическоеФизическоеЛицо": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "НаименованиеПолное"),
+        },
+    ),
+    "partner": (
+        {
+            "entity": "Catalog_Партнеры",
+            "sourceType": "partner",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Клиент": "Edm.Boolean",
+                "Поставщик": "Edm.Boolean",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "contract": (
+        {
+            "entity": "Catalog_ДоговорыКонтрагентов",
+            "sourceType": "counterparty_contract",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Номер": "Edm.String",
+                "Дата": "Edm.DateTime",
+                "ДатаНачалаДействия": "Edm.DateTime",
+                "ДатаОкончанияДействия": "Edm.DateTime",
+                "Организация_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Статус": "Edm.String",
+                "ТипДоговора": "Edm.String",
+                "ХозяйственнаяОперация": "Edm.String",
+                "Согласован": "Edm.Boolean",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Номер"),
+        },
+    ),
+    "item": (
+        {
+            "entity": "Catalog_Номенклатура",
+            "sourceType": "item",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Артикул": "Edm.String",
+                "НаименованиеПолное": "Edm.String",
+                "ЕдиницаИзмерения_Key": "Edm.Guid",
+                "ТипНоменклатуры": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": (
+                "Description",
+                "Code",
+                "Артикул",
+                "НаименованиеПолное",
+            ),
+        },
+    ),
+    "warehouse": (
+        {
+            "entity": "Catalog_Склады",
+            "sourceType": "warehouse",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Parent_Key": "Edm.Guid",
+                "IsFolder": "Edm.Boolean",
+                "Подразделение_Key": "Edm.Guid",
+                "ТипСклада": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description",),
+        },
+    ),
+}
+
+GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
+    "purchase": (
+        {
+            "entity": "Document_ПриобретениеТоваровУслуг",
+            "sourceType": "purchase",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Договор_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Комментарий": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ПриобретениеТоваровУслуг_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "Склад_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+            },
+            "filters": ("period", "organization", "business_unit", "counterparty", "contract", "number", "status"),
+        },
+    ),
+    "sale": (
+        {
+            "entity": "Document_РеализацияТоваровУслуг",
+            "sourceType": "sale",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Договор_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Комментарий": "Edm.String",
+                "Статус": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_РеализацияТоваровУслуг_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "Склад_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+            },
+            "filters": ("period", "organization", "business_unit", "counterparty", "contract", "number", "status"),
+        },
+    ),
+    "receipt": (
+        {
+            "entity": "Document_ОприходованиеИзлишковТоваров",
+            "sourceType": "surplus_receipt",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "Комментарий": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ОприходованиеИзлишковТоваров_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+            },
+            "filters": ("period", "organization", "business_unit", "number", "status"),
+        },
+    ),
+    "return": (
+        {
+            "entity": "Document_ВозвратТоваровОтКлиента",
+            "sourceType": "return_from_customer",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Договор_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Комментарий": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ВозвратТоваровОтКлиента_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "Склад_Key": "Edm.Guid",
+            },
+            "filters": ("period", "organization", "business_unit", "counterparty", "contract", "number", "status"),
+        },
+        {
+            "entity": "Document_ВозвратТоваровПоставщику",
+            "sourceType": "return_to_supplier",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Договор_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Комментарий": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ВозвратТоваровПоставщику_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "Склад_Key": "Edm.Guid",
+            },
+            "filters": ("period", "organization", "business_unit", "counterparty", "contract", "number", "status"),
+        },
+    ),
+    "transfer": (
+        {
+            "entity": "Document_ПеремещениеТоваров",
+            "sourceType": "stock_transfer",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "ОрганизацияПолучатель_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "СкладОтправитель_Key": "Edm.Guid",
+                "СкладПолучатель_Key": "Edm.Guid",
+                "Комментарий": "Edm.String",
+                "Статус": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ПеремещениеТоваров_Товары_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+            },
+            "filters": ("period", "organization", "business_unit", "number", "status"),
+        },
+    ),
+}
+GENERAL_ODATA_ENTITIES = frozenset(
+    spec["entity"]
+    for specs in (*GENERAL_REFERENCE_SPECS.values(), *GENERAL_DOCUMENT_SPECS.values())
+    for spec in specs
+)
 
 
 class OneCEdoError(RuntimeError):
@@ -839,6 +1227,7 @@ def _odata_url(
         NEW_FILE_ENTITY,
         OLD_MESSAGE_ENTITY,
         OLD_FILE_ENTITY,
+        *GENERAL_ODATA_ENTITIES,
     }
     if entity not in allowed:
         raise OneCEdoError("entity_blocked", "Эта OData entity не разрешена runtime.")
@@ -991,6 +1380,8 @@ def _metadata_url(config: CompanyConfig) -> str:
 def _request_metadata(
     config: CompanyConfig,
     credentials: Credentials,
+    *,
+    diagnostic_stage: str = "metadata.inventory.fetch",
 ) -> bytes:
     response = _http_open(
         "GET",
@@ -998,7 +1389,7 @@ def _request_metadata(
         credentials=credentials,
         timeout=config.request_timeout_seconds,
         x_odata=_require_x_odata(),
-        diagnostic_stage="metadata.inventory.fetch",
+        diagnostic_stage=diagnostic_stage,
         accept="application/xml",
     )
     with response:
@@ -2507,6 +2898,1191 @@ def command_forget_credentials(_: argparse.Namespace) -> dict[str, Any]:
     return {"status": "unknown", "credentialsRemoved": removed}
 
 
+def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
+    """Return the private canonical material used for one capability digest.
+
+    The digest is agent-visible, but this material is not.  In particular,
+    ordinary production results never expose internal 1C field names.
+    """
+
+    source = (
+        GENERAL_REFERENCE_SPECS if section == "reference"
+        else GENERAL_DOCUMENT_SPECS
+    )
+    specs = source.get(kind)
+    if specs is None:
+        raise OneCEdoError(
+            "capability_blocked",
+            "Запрошенная capability не входит в фиксированный registry.",
+        )
+    return {
+        "registryVersion": 1,
+        "section": section,
+        "kind": kind,
+        "sources": [
+            {
+                "entity": spec["entity"],
+                "sourceType": spec["sourceType"],
+                "fields": dict(sorted(spec["fields"].items())),
+                "lineFields": dict(sorted(spec.get("lineFields", {}).items())),
+                "filters": list(spec.get("filters", ())),
+            }
+            for spec in specs
+        ],
+    }
+
+
+def _general_capability_digest(section: str, kind: str) -> str:
+    raw = json.dumps(
+        _general_registry_material(section, kind),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _parse_general_schema(
+    raw: bytes,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Parse only entity-set/type/property names required for verification."""
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as error:
+        raise OneCEdoError(
+            "invalid_metadata_response",
+            "1С вернула некорректный XML metadata.",
+        ) from error
+
+    entity_sets: dict[str, str] = {}
+    type_fields: dict[str, dict[str, str]] = {}
+    for schema in (
+        element
+        for element in root.iter()
+        if _xml_local_name(element.tag) == "Schema"
+    ):
+        namespace = str(schema.attrib.get("Namespace") or "")
+        for child in schema:
+            local_name = _xml_local_name(child.tag)
+            if local_name in {"EntityType", "ComplexType"}:
+                type_name = str(child.attrib.get("Name") or "")
+                if not type_name:
+                    continue
+                properties = {
+                    str(property_item.attrib.get("Name")): str(
+                        property_item.attrib.get("Type"),
+                    )
+                    for property_item in child
+                    if (
+                        _xml_local_name(property_item.tag) == "Property"
+                        and property_item.attrib.get("Name")
+                        and property_item.attrib.get("Type")
+                    )
+                }
+                type_fields[type_name] = properties
+                if namespace:
+                    type_fields[f"{namespace}.{type_name}"] = properties
+            elif local_name == "EntityContainer":
+                for entity_set in child:
+                    if _xml_local_name(entity_set.tag) != "EntitySet":
+                        continue
+                    name = str(entity_set.attrib.get("Name") or "")
+                    entity_type = str(entity_set.attrib.get("EntityType") or "")
+                    if name and entity_type:
+                        entity_sets[name] = entity_type
+    return entity_sets, type_fields
+
+
+def _verify_general_schema(
+    config: CompanyConfig,
+    credentials: Credentials,
+    capabilities: Iterable[tuple[str, str]],
+) -> dict[str, Any]:
+    """Fail closed only when a field used by the requested capability changed.
+
+    The full publication digest is still reported for audit.  An unrelated
+    metadata addition does not disable every capability; removal or type drift
+    of a fixed entity/field/row field does.
+    """
+
+    raw = _request_metadata(
+        config,
+        credentials,
+        diagnostic_stage="general.schema.verify",
+    )
+    schema_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    entity_sets, type_fields = _parse_general_schema(raw)
+    verified: dict[str, str] = {}
+    for section, kind in capabilities:
+        material = _general_registry_material(section, kind)
+        for source in material["sources"]:
+            entity = source["entity"]
+            entity_type = entity_sets.get(entity)
+            fields = type_fields.get(entity_type or "", {})
+            if not entity_type:
+                raise OneCEdoError(
+                    "capability_schema_changed",
+                    f"1С capability {section}.{kind} отключена: entity отсутствует в текущей schema.",
+                )
+            for field, expected_type in source["fields"].items():
+                if fields.get(field) != expected_type:
+                    raise OneCEdoError(
+                        "capability_schema_changed",
+                        f"1С capability {section}.{kind} отключена: mapping больше не совпадает со schema.",
+                    )
+            line_fields = source["lineFields"]
+            if line_fields:
+                collection_type = fields.get("Товары", "")
+                if not (
+                    collection_type.startswith("Collection(")
+                    and collection_type.endswith(")")
+                ):
+                    raise OneCEdoError(
+                        "capability_schema_changed",
+                        f"1С capability {section}.{kind} отключена: строки документа больше не подтверждены.",
+                    )
+                row_fields = type_fields.get(collection_type[11:-1], {})
+                for field, expected_type in line_fields.items():
+                    if row_fields.get(field) != expected_type:
+                        raise OneCEdoError(
+                            "capability_schema_changed",
+                            f"1С capability {section}.{kind} отключена: mapping строк больше не совпадает со schema.",
+                        )
+        verified[f"{section}.{kind}"] = _general_capability_digest(section, kind)
+    return {
+        "schemaDigest": schema_digest,
+        "inventorySchemaDigest": GENERAL_INVENTORY_SCHEMA_DIGEST,
+        "fullSchemaChanged": schema_digest != GENERAL_INVENTORY_SCHEMA_DIGEST,
+        "capabilityDigests": verified,
+    }
+
+
+def _general_uuid_value(value: Any, field_label: str) -> str | None:
+    """Normalize a 1C reference, treating its all-zero sentinel as absent."""
+
+    if value in {None, "", "00000000-0000-0000-0000-000000000000"}:
+        return None
+    if not isinstance(value, str) or not UUID_RE.fullmatch(value):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            f"1С вернула некорректный {field_label}.",
+        )
+    return str(uuid.UUID(value))
+
+
+def _general_text(value: Any) -> str | None:
+    return value[:4_000] if isinstance(value, str) else None
+
+
+def _general_number(value: Any) -> int | float | None:
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _general_reference_record(
+    kind: str,
+    spec: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    matched_by: list[str],
+) -> dict[str, Any]:
+    safe = _safe_selected_record(raw, spec["fields"])
+    reference = _general_uuid_value(safe.get("Ref_Key"), "reference id")
+    if reference is None:
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула справочник без идентификатора.",
+        )
+    source_type = str(spec["sourceType"])
+    item: dict[str, Any] = {
+        "id": reference,
+        "kind": kind,
+        "type": source_type,
+        "name": _general_text(safe.get("Description")),
+        "code": _general_text(safe.get("Code") or safe.get("Номер")),
+        "fullName": _general_text(safe.get("НаименованиеПолное")),
+        "status": _general_text(safe.get("Статус")),
+        "isDeleted": _normalized_boolean(safe.get("DeletionMark")),
+        "parentId": _general_uuid_value(safe.get("Parent_Key"), "parent id"),
+        "organizationId": _general_uuid_value(
+            safe.get("Owner_Key") or safe.get("Организация_Key"),
+            "organization id",
+        ),
+        "counterpartyId": _general_uuid_value(
+            safe.get("Контрагент_Key"),
+            "counterparty id",
+        ),
+        "partnerId": _general_uuid_value(safe.get("Партнер_Key"), "partner id"),
+        "businessUnitId": _general_uuid_value(
+            safe.get("Подразделение_Key"),
+            "business unit id",
+        ),
+        "unitId": _general_uuid_value(
+            safe.get("ЕдиницаИзмерения_Key"),
+            "unit id",
+        ),
+        "itemType": _general_text(safe.get("ТипНоменклатуры")),
+        "warehouseType": _general_text(safe.get("ТипСклада")),
+        "isFolder": _normalized_boolean(safe.get("IsFolder")),
+        "isCustomer": _normalized_boolean(safe.get("Клиент")),
+        "isSupplier": _normalized_boolean(safe.get("Поставщик")),
+        "contractDate": _normalized_1c_datetime(
+            safe.get("Дата"),
+            field_label="contract date",
+        ),
+        "validFrom": _normalized_1c_datetime(
+            safe.get("ДатаНачалаДействия"),
+            field_label="contract valid from",
+        ),
+        "validTo": _normalized_1c_datetime(
+            safe.get("ДатаОкончанияДействия"),
+            field_label="contract valid to",
+        ),
+        "contractType": _general_text(safe.get("ТипДоговора")),
+        "operation": _general_text(safe.get("ХозяйственнаяОперация")),
+        "approved": _normalized_boolean(safe.get("Согласован")),
+        "matchedBy": matched_by,
+        "source": {
+            "kind": "reference",
+            "type": source_type,
+            "id": reference,
+        },
+    }
+    return item
+
+
+def _general_search_matches(
+    raw: dict[str, Any],
+    spec: dict[str, Any],
+    term: str,
+) -> list[str]:
+    if not term:
+        return ["browse"]
+    normalized = term.casefold()
+    field_labels = {
+        "Description": "name",
+        "НаименованиеПолное": "full_name",
+        "Code": "code",
+        "Артикул": "article",
+        "Номер": "number",
+    }
+    matches = [
+        f"query.{field_labels.get(field, 'text')}"
+        for field in spec["searchFields"]
+        if isinstance(raw.get(field), str)
+        and normalized in str(raw[field]).casefold()
+    ]
+    return matches or ["query"]
+
+
+def _general_page(args: argparse.Namespace, config: CompanyConfig) -> tuple[int, int]:
+    page = int(args.page)
+    limit = int(args.limit)
+    max_pages = min(config.max_pages, GENERAL_MAX_PAGES)
+    max_limit = min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
+    if page < 1 or page > max_pages:
+        raise OneCEdoError(
+            "page_out_of_range",
+            f"page должна быть от 1 до {max_pages}.",
+        )
+    if limit < 1 or limit > max_limit:
+        raise OneCEdoError(
+            "limit_out_of_range",
+            f"limit должен быть от 1 до {max_limit}.",
+        )
+    return page, limit
+
+
+def _general_reference_search_rows(
+    config: CompanyConfig,
+    credentials: Credentials,
+    kind: str,
+    spec: dict[str, Any],
+    term: str,
+    target: int,
+) -> list[dict[str, Any]]:
+    clauses = ["DeletionMark eq false"]
+    if term:
+        clauses.append(f"({_substring_filter(term, spec['searchFields'])})")
+    return _bounded_odata_rows(
+        config,
+        credentials,
+        spec["entity"],
+        parameters=(
+            ("$select", _selected_fields(spec["fields"])),
+            ("$filter", " and ".join(clauses)),
+            ("$orderby", "Description asc"),
+        ),
+        limit=target,
+        diagnostic_stage=f"general.reference.{kind}.search",
+    )
+
+
+def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    all_capabilities = [
+        *(("reference", kind) for kind in GENERAL_REFERENCE_SPECS),
+        *(("document", kind) for kind in GENERAL_DOCUMENT_SPECS),
+    ]
+    try:
+        schema = _verify_general_schema(config, credentials, all_capabilities)
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    references = [
+        {
+            "kind": kind,
+            "status": "supported",
+            "types": [spec["sourceType"] for spec in specs],
+            "filters": ["query"],
+            "capabilityDigest": schema["capabilityDigests"][f"reference.{kind}"],
+        }
+        for kind, specs in GENERAL_REFERENCE_SPECS.items()
+    ]
+    documents = [
+        {
+            "kind": kind,
+            "status": "supported",
+            "types": [spec["sourceType"] for spec in specs],
+            "filters": list(specs[0]["filters"]),
+            "includeLines": True,
+            "capabilityDigest": schema["capabilityDigests"][f"document.{kind}"],
+        }
+        for kind, specs in GENERAL_DOCUMENT_SPECS.items()
+    ]
+    return {
+        "registryVersion": 1,
+        "schema": schema,
+        "sections": {
+            "references": references,
+            "documents": documents,
+            "balances": [
+                {
+                    "kind": "stock",
+                    "status": "unsupported",
+                    "reason": "needs_custom_endpoint",
+                },
+            ],
+            "links": [
+                {
+                    "kind": "business_unit",
+                    "status": "supported",
+                    "sourceTypes": ["enterprise_structure"],
+                },
+                {"kind": "contract", "status": "supported"},
+                {"kind": "document", "status": "supported"},
+            ],
+        },
+        "limits": {
+            "maxPageSize": min(config.max_rows, GENERAL_MAX_PAGE_SIZE),
+            "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
+            "maxLines": GENERAL_MAX_LINES,
+            "requestTimeoutSeconds": config.request_timeout_seconds,
+            "responseBytes": MAX_ODATA_RESPONSE_BYTES,
+            "metadataBytes": MAX_METADATA_RESPONSE_BYTES,
+        },
+        "readOnly": True,
+    }
+
+
+def command_general_search_reference_items(args: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    specs = GENERAL_REFERENCE_SPECS[kind]
+    term = _search_term(args.query)
+    page, limit = _general_page(args, config)
+    # One extra row lets the runtime report truncation without exposing a
+    # remote count.  Multi-entity kinds are merged and sliced locally.
+    target = min(
+        (page * limit) + 1,
+        min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
+        * min(config.max_pages, GENERAL_MAX_PAGES),
+    )
+    try:
+        schema = _verify_general_schema(
+            config,
+            credentials,
+            (("reference", kind),),
+        )
+        combined: list[dict[str, Any]] = []
+        saturated = False
+        for spec in specs:
+            rows = _general_reference_search_rows(
+                config,
+                credentials,
+                kind,
+                spec,
+                term,
+                target,
+            )
+            saturated = saturated or len(rows) >= target
+            combined.extend(
+                _general_reference_record(
+                    kind,
+                    spec,
+                    row,
+                    matched_by=_general_search_matches(row, spec, term),
+                )
+                for row in rows
+            )
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    combined.sort(
+        key=lambda item: (
+            str(item.get("name") or "").casefold(),
+            str(item["type"]),
+            str(item["id"]),
+        ),
+    )
+    start = (page - 1) * limit
+    end = start + limit
+    items = combined[start:end]
+    return {
+        "kind": kind,
+        "items": items,
+        "count": len(items),
+        "matchedBy": "fixed_query" if term else "browse",
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "truncated": saturated or len(combined) > end,
+        },
+        "schema": schema,
+        "limits": {
+            "maxPageSize": min(config.max_rows, GENERAL_MAX_PAGE_SIZE),
+            "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
+        },
+    }
+
+
+def _general_reference_by_id(
+    config: CompanyConfig,
+    credentials: Credentials,
+    kind: str,
+    reference: str,
+    *,
+    specs: tuple[dict[str, Any], ...] | None = None,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for spec in specs or GENERAL_REFERENCE_SPECS[kind]:
+        rows = _odata_rows(
+            _request_odata(
+                config,
+                credentials,
+                spec["entity"],
+                (
+                    ("$select", _selected_fields(spec["fields"])),
+                    ("$filter", f"Ref_Key eq guid'{reference}'"),
+                    ("$top", 2),
+                ),
+                diagnostic_stage=f"general.reference.{kind}.get",
+            ),
+        )
+        for row in rows[:2]:
+            normalized = _general_reference_record(
+                kind,
+                spec,
+                row,
+                matched_by=["id"],
+            )
+            if normalized["id"] != reference:
+                raise OneCEdoError(
+                    "invalid_odata_response",
+                    "1С вернула посторонний справочник для exact id.",
+                )
+            result.append(normalized)
+    return result
+
+
+def command_general_get_reference_item(args: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    reference = _uuid(args.id, "reference id")
+    try:
+        schema = _verify_general_schema(
+            config,
+            credentials,
+            (("reference", kind),),
+        )
+        matches = _general_reference_by_id(
+            config,
+            credentials,
+            kind,
+            reference,
+        )
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    if len(matches) > 1:
+        raise OneCEdoError(
+            "ambiguous_reference",
+            "Один UUID найден в нескольких фиксированных типах справочника.",
+        )
+    return {
+        "kind": kind,
+        "item": matches[0] if matches else None,
+        "matchedBy": ["id"],
+        "schema": schema,
+    }
+
+
+def _general_parse_date(value: str, label: str) -> dt.date | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        return dt.date.fromisoformat(normalized)
+    except ValueError as error:
+        raise OneCEdoError(
+            "invalid_date",
+            f"{label} должна быть датой YYYY-MM-DD.",
+        ) from error
+
+
+def _general_document_filter(
+    args: argparse.Namespace,
+    spec: dict[str, Any],
+) -> tuple[str, list[str]]:
+    requested: dict[str, Any] = {
+        "period": bool(args.date_from or args.date_to),
+        "organization": args.organization_id,
+        "business_unit": args.business_unit_id,
+        "counterparty": args.counterparty_id,
+        "contract": args.contract_id,
+        "number": args.number,
+        "status": args.status,
+    }
+    unsupported = [
+        name
+        for name, value in requested.items()
+        if value and name not in spec["filters"]
+    ]
+    if unsupported:
+        raise OneCEdoError(
+            "filter_unsupported",
+            f"Фильтр {unsupported[0]} не поддержан для этого типа документа.",
+        )
+
+    clauses: list[str] = []
+    matched: list[str] = []
+    date_from = _general_parse_date(args.date_from, "date-from")
+    date_to = _general_parse_date(args.date_to, "date-to")
+    if date_from and date_to and date_from > date_to:
+        raise OneCEdoError(
+            "invalid_period",
+            "date-from не может быть позже date-to.",
+        )
+    if date_from:
+        clauses.append(f"Date ge datetime'{date_from.isoformat()}T00:00:00'")
+        matched.append("period")
+    if date_to:
+        exclusive = date_to + dt.timedelta(days=1)
+        clauses.append(f"Date lt datetime'{exclusive.isoformat()}T00:00:00'")
+        if "period" not in matched:
+            matched.append("period")
+
+    uuid_filters = (
+        ("organization", args.organization_id, "Организация_Key"),
+        ("business_unit", args.business_unit_id, "Подразделение_Key"),
+        ("counterparty", args.counterparty_id, "Контрагент_Key"),
+        ("contract", args.contract_id, "Договор_Key"),
+    )
+    for label, value, field in uuid_filters:
+        if not value:
+            continue
+        reference = _uuid(value, f"{label} id")
+        clauses.append(f"{field} eq guid'{reference}'")
+        matched.append(label)
+    number = _search_term(args.number)
+    if number:
+        clauses.append(f"substringof({_odata_string_literal(number)},Number)")
+        matched.append("number")
+    if args.status == "deleted":
+        clauses.append("DeletionMark eq true")
+        matched.append("status.deleted")
+    else:
+        clauses.append("DeletionMark eq false")
+        if args.status == "posted":
+            clauses.append("Posted eq true")
+            matched.append("status.posted")
+        elif args.status == "unposted":
+            clauses.append("Posted eq false")
+            matched.append("status.unposted")
+    return " and ".join(f"({clause})" for clause in clauses), matched or ["recent"]
+
+
+def _general_document_record(
+    kind: str,
+    spec: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    matched_by: list[str],
+    include_lines: bool,
+    line_limit: int,
+) -> dict[str, Any]:
+    safe = _safe_selected_record(raw, spec["fields"])
+    reference = _general_uuid_value(safe.get("Ref_Key"), "document id")
+    if reference is None:
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула документ без идентификатора.",
+        )
+    source_type = str(spec["sourceType"])
+    raw_lines = raw.get("Товары") if include_lines else []
+    if raw_lines is None:
+        raw_lines = []
+    if not isinstance(raw_lines, list):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула строки документа в неожиданном формате.",
+        )
+    normalized_lines: list[dict[str, Any]] = []
+    for raw_line in raw_lines[:line_limit]:
+        if not isinstance(raw_line, dict):
+            continue
+        line = _safe_selected_record(raw_line, spec["lineFields"])
+        normalized_lines.append({
+            "lineNumber": _general_number(line.get("LineNumber")),
+            "itemId": _general_uuid_value(line.get("Номенклатура_Key"), "line item id"),
+            "variantId": _general_uuid_value(
+                line.get("Характеристика_Key"),
+                "line variant id",
+            ),
+            "quantity": _general_number(line.get("Количество")),
+            "price": _general_number(line.get("Цена")),
+            "amount": _general_number(line.get("Сумма")),
+            "vatAmount": _general_number(line.get("СуммаНДС")),
+            "warehouseId": _general_uuid_value(
+                line.get("Склад_Key"),
+                "line warehouse id",
+            ),
+            "businessUnitId": _general_uuid_value(
+                line.get("Подразделение_Key"),
+                "line business unit id",
+            ),
+        })
+    document = {
+        "id": reference,
+        "kind": kind,
+        "type": source_type,
+        "number": _general_text(safe.get("Number")),
+        "date": _normalized_1c_datetime(safe.get("Date"), field_label="document date"),
+        "postingStatus": (
+            "posted"
+            if safe.get("Posted") is True
+            else "unposted"
+            if safe.get("Posted") is False
+            else "unknown"
+        ),
+        "isDeleted": _normalized_boolean(safe.get("DeletionMark")),
+        "organizationId": _general_uuid_value(
+            safe.get("Организация_Key"),
+            "organization id",
+        ),
+        "destinationOrganizationId": _general_uuid_value(
+            safe.get("ОрганизацияПолучатель_Key"),
+            "destination organization id",
+        ),
+        "businessUnitId": _general_uuid_value(
+            safe.get("Подразделение_Key"),
+            "business unit id",
+        ),
+        "counterpartyId": _general_uuid_value(
+            safe.get("Контрагент_Key"),
+            "counterparty id",
+        ),
+        "partnerId": _general_uuid_value(safe.get("Партнер_Key"), "partner id"),
+        "contractId": _general_uuid_value(safe.get("Договор_Key"), "contract id"),
+        "warehouseId": _general_uuid_value(
+            safe.get("Склад_Key") or safe.get("СкладОтправитель_Key"),
+            "warehouse id",
+        ),
+        "destinationWarehouseId": _general_uuid_value(
+            safe.get("СкладПолучатель_Key"),
+            "destination warehouse id",
+        ),
+        "amount": _general_number(safe.get("СуммаДокумента")),
+        "comment": _general_text(safe.get("Комментарий")),
+        "sourceStatus": _general_text(safe.get("Статус")),
+        "matchedBy": matched_by,
+        "lines": normalized_lines,
+        "lineInfo": {
+            "included": include_lines,
+            "returned": len(normalized_lines),
+            "limit": line_limit if include_lines else 0,
+            "truncated": include_lines and len(raw_lines) > line_limit,
+        },
+        "source": {
+            "kind": "document",
+            "type": source_type,
+            "id": reference,
+        },
+    }
+    return document
+
+
+def _general_document_select(spec: dict[str, Any], include_lines: bool) -> str:
+    fields = [
+        field
+        for field in spec["fields"]
+        if include_lines or field != "Товары"
+    ]
+    return _selected_fields(fields)
+
+
+def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    specs = GENERAL_DOCUMENT_SPECS[kind]
+    page, limit = _general_page(args, config)
+    target = min(
+        (page * limit) + 1,
+        min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
+        * min(config.max_pages, GENERAL_MAX_PAGES),
+    )
+    try:
+        schema = _verify_general_schema(
+            config,
+            credentials,
+            (("document", kind),),
+        )
+        combined: list[dict[str, Any]] = []
+        saturated = False
+        for spec in specs:
+            filter_value, matched_by = _general_document_filter(args, spec)
+            rows = _bounded_odata_rows(
+                config,
+                credentials,
+                spec["entity"],
+                parameters=(
+                    ("$select", _general_document_select(spec, False)),
+                    ("$filter", filter_value),
+                    ("$orderby", "Date desc"),
+                ),
+                limit=target,
+                diagnostic_stage=f"general.document.{kind}.search",
+            )
+            saturated = saturated or len(rows) >= target
+            combined.extend(
+                _general_document_record(
+                    kind,
+                    spec,
+                    row,
+                    matched_by=list(matched_by),
+                    include_lines=False,
+                    line_limit=0,
+                )
+                for row in rows
+            )
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    combined.sort(
+        key=lambda item: (
+            str(item.get("date") or ""),
+            str(item.get("number") or ""),
+            str(item["id"]),
+        ),
+        reverse=True,
+    )
+    start = (page - 1) * limit
+    end = start + limit
+    documents = combined[start:end]
+    return {
+        "kind": kind,
+        "documents": documents,
+        "count": len(documents),
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "truncated": saturated or len(combined) > end,
+        },
+        "schema": schema,
+        "limits": {
+            "maxPageSize": min(config.max_rows, GENERAL_MAX_PAGE_SIZE),
+            "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
+        },
+    }
+
+
+def _general_documents_by_id(
+    config: CompanyConfig,
+    credentials: Credentials,
+    kind: str,
+    reference: str,
+    *,
+    include_lines: bool,
+    line_limit: int,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for spec in GENERAL_DOCUMENT_SPECS[kind]:
+        rows = _odata_rows(
+            _request_odata(
+                config,
+                credentials,
+                spec["entity"],
+                (
+                    ("$select", _general_document_select(spec, include_lines)),
+                    ("$filter", f"Ref_Key eq guid'{reference}'"),
+                    ("$top", 2),
+                ),
+                diagnostic_stage=f"general.document.{kind}.get",
+            ),
+        )
+        for row in rows[:2]:
+            document = _general_document_record(
+                kind,
+                spec,
+                row,
+                matched_by=["id"],
+                include_lines=include_lines,
+                line_limit=line_limit,
+            )
+            if document["id"] != reference:
+                raise OneCEdoError(
+                    "invalid_odata_response",
+                    "1С вернула посторонний документ для exact id.",
+                )
+            result.append(document)
+    return result
+
+
+def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    reference = _uuid(args.id, "document id")
+    line_limit = int(args.line_limit)
+    if line_limit < 1 or line_limit > GENERAL_MAX_LINES:
+        raise OneCEdoError(
+            "line_limit_out_of_range",
+            f"line-limit должен быть от 1 до {GENERAL_MAX_LINES}.",
+        )
+    try:
+        schema = _verify_general_schema(
+            config,
+            credentials,
+            (("document", kind),),
+        )
+        matches = _general_documents_by_id(
+            config,
+            credentials,
+            kind,
+            reference,
+            include_lines=bool(args.include_lines),
+            line_limit=line_limit,
+        )
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    if len(matches) > 1:
+        raise OneCEdoError(
+            "ambiguous_document",
+            "Один UUID найден в нескольких фиксированных типах документа.",
+        )
+    return {
+        "kind": kind,
+        "document": matches[0] if matches else None,
+        "matchedBy": ["id"],
+        "schema": schema,
+        "limits": {"maxLines": GENERAL_MAX_LINES},
+    }
+
+
+def command_general_get_balances(args: argparse.Namespace) -> dict[str, Any]:
+    # The standard publication exposes no verified bounded virtual balance
+    # table for this deployment.  Movements must never be summed as a fake
+    # stock balance.
+    return {
+        "kind": str(args.kind),
+        "status": "unsupported",
+        "reason": "needs_custom_endpoint",
+        "balances": [],
+        "readOnly": True,
+    }
+
+
+def _general_contract_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    contract_ids: Iterable[str],
+) -> tuple[list[dict[str, Any]], bool]:
+    normalized_ids = tuple(contract_ids)
+    if not normalized_ids or len(normalized_ids) > GENERAL_MAX_LINK_CONTRACTS:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний links query получил недопустимый batch договоров.",
+        )
+    contract_filter = " or ".join(
+        f"Договор_Key eq guid'{_uuid(contract_id, 'contract id')}'"
+        for contract_id in normalized_ids
+    )
+    result: list[dict[str, Any]] = []
+    saturated = False
+    for kind, specs in GENERAL_DOCUMENT_SPECS.items():
+        for spec in specs:
+            if "Договор_Key" not in spec["fields"]:
+                continue
+            remaining = GENERAL_MAX_LINK_DOCUMENTS - len(result)
+            if remaining <= 0:
+                saturated = True
+                return result, saturated
+            rows = _bounded_odata_rows(
+                config,
+                credentials,
+                spec["entity"],
+                parameters=(
+                    ("$select", _general_document_select(spec, False)),
+                    ("$filter", f"({contract_filter}) and DeletionMark eq false"),
+                    ("$orderby", "Date desc"),
+                ),
+                limit=remaining,
+                diagnostic_stage=f"general.document.{kind}.links",
+            )
+            saturated = saturated or len(rows) >= remaining
+            result.extend(
+                _general_document_record(
+                    kind,
+                    spec,
+                    row,
+                    matched_by=["contract"],
+                    include_lines=False,
+                    line_limit=0,
+                )
+                for row in rows[:remaining]
+            )
+    return result[:GENERAL_MAX_LINK_DOCUMENTS], saturated
+
+
+def _general_contract_edo_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    contract_ids: Iterable[str],
+) -> tuple[list[dict[str, Any]], bool]:
+    normalized_ids = tuple(contract_ids)
+    if not normalized_ids or len(normalized_ids) > GENERAL_MAX_LINK_CONTRACTS:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний EDO links query получил недопустимый batch договоров.",
+        )
+    result: list[dict[str, Any]] = []
+    saturated = False
+    for direction, entity in DOCUMENT_ENTITIES.items():
+        remaining = GENERAL_MAX_LINK_EDO_DOCUMENTS - len(result)
+        if remaining <= 0:
+            saturated = True
+            break
+        contract_filter = " or ".join(
+            (
+                "ДоговорКонтрагента eq "
+                f"cast(guid'{_uuid(contract_id, 'contract id')}', '{CONTRACT_ENTITY}')"
+            )
+            for contract_id in normalized_ids
+        )
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            entity,
+            parameters=(
+                ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                ("$filter", contract_filter),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+            diagnostic_stage=f"general.links.edo.{direction}",
+        )
+        saturated = saturated or len(rows) >= remaining
+        for row in rows[:remaining]:
+            safe = _safe_selected_record(row, DOCUMENT_SELECT_FIELDS)
+            reference = _general_uuid_value(safe.get("Ref_Key"), "EDO document id")
+            if reference is None:
+                continue
+            result.append({
+                "id": reference,
+                "direction": direction,
+                "number": _general_text(
+                    safe.get("НомерДокумента") or safe.get("Number"),
+                ),
+                "date": _normalized_1c_datetime(
+                    safe.get("ДатаДокумента") or safe.get("Date"),
+                    field_label="EDO document date",
+                ),
+                "matchedBy": ["contract"],
+                "source": {
+                    "kind": "edo_document",
+                    "type": direction,
+                    "id": reference,
+                },
+            })
+    return result[:GENERAL_MAX_LINK_EDO_DOCUMENTS], saturated
+
+
+def command_general_get_links(args: argparse.Namespace) -> dict[str, Any]:
+    identity, config, credentials = _connected_context()
+    link_kind = str(args.kind)
+    reference = _uuid(args.id, f"{link_kind} id")
+    all_schema_capabilities = [
+        ("reference", "contract"),
+        *(("document", kind) for kind in GENERAL_DOCUMENT_SPECS),
+    ]
+    if link_kind == "business_unit":
+        all_schema_capabilities.append(("reference", "business_unit"))
+    try:
+        schema = _verify_general_schema(
+            config,
+            credentials,
+            all_schema_capabilities,
+        )
+        business_unit: dict[str, Any] | None = None
+        contracts: list[dict[str, Any]] = []
+        documents: list[dict[str, Any]] = []
+        edo_documents: list[dict[str, Any]] = []
+        contracts_truncated = False
+        documents_truncated = False
+        edo_truncated = False
+
+        contract_ids: list[str] = []
+        if link_kind == "business_unit":
+            enterprise_spec = GENERAL_REFERENCE_SPECS["business_unit"][0]
+            business_units = _general_reference_by_id(
+                config,
+                credentials,
+                "business_unit",
+                reference,
+                specs=(enterprise_spec,),
+            )
+            business_unit = business_units[0] if business_units else None
+            if business_unit is not None:
+                contract_spec = GENERAL_REFERENCE_SPECS["contract"][0]
+                rows = _bounded_odata_rows(
+                    config,
+                    credentials,
+                    contract_spec["entity"],
+                    parameters=(
+                        ("$select", _selected_fields(contract_spec["fields"])),
+                        ("$filter", f"Подразделение_Key eq guid'{reference}' and DeletionMark eq false"),
+                        ("$orderby", "Дата desc"),
+                    ),
+                    limit=GENERAL_MAX_LINK_CONTRACTS,
+                    diagnostic_stage="general.links.contracts",
+                )
+                contracts_truncated = len(rows) >= GENERAL_MAX_LINK_CONTRACTS
+                contracts = [
+                    _general_reference_record(
+                        "contract",
+                        contract_spec,
+                        row,
+                        matched_by=["business_unit"],
+                    )
+                    for row in rows[:GENERAL_MAX_LINK_CONTRACTS]
+                ]
+                contract_ids = [item["id"] for item in contracts]
+        elif link_kind == "contract":
+            matches = _general_reference_by_id(
+                config,
+                credentials,
+                "contract",
+                reference,
+            )
+            contracts = matches[:1]
+            contract_ids = [reference] if matches else []
+        else:
+            found: list[dict[str, Any]] = []
+            for kind in GENERAL_DOCUMENT_SPECS:
+                found.extend(
+                    _general_documents_by_id(
+                        config,
+                        credentials,
+                        kind,
+                        reference,
+                        include_lines=False,
+                        line_limit=0,
+                    ),
+                )
+            if len(found) > 1:
+                raise OneCEdoError(
+                    "ambiguous_document",
+                    "Один UUID найден в нескольких фиксированных типах документа.",
+                )
+            documents = found
+            contract_id = found[0].get("contractId") if found else None
+            if isinstance(contract_id, str):
+                contract_ids = [contract_id]
+                contracts = _general_reference_by_id(
+                    config,
+                    credentials,
+                    "contract",
+                    contract_id,
+                )[:1]
+
+        if contract_ids:
+            remaining_documents = GENERAL_MAX_LINK_DOCUMENTS - len(documents)
+            related, truncated = _general_contract_documents(
+                config,
+                credentials,
+                contract_ids,
+            )
+            known = {(item["type"], item["id"]) for item in documents}
+            for item in related:
+                key = (item["type"], item["id"])
+                if key not in known and len(documents) < GENERAL_MAX_LINK_DOCUMENTS:
+                    known.add(key)
+                    documents.append(item)
+            documents_truncated = (
+                documents_truncated
+                or truncated
+                or len(related) > remaining_documents
+            )
+            related_edo, truncated_edo = _general_contract_edo_documents(
+                config,
+                credentials,
+                contract_ids,
+            )
+            known_edo = {(item["direction"], item["id"]) for item in edo_documents}
+            for item in related_edo:
+                key = (item["direction"], item["id"])
+                if (
+                    key not in known_edo
+                    and len(edo_documents) < GENERAL_MAX_LINK_EDO_DOCUMENTS
+                ):
+                    known_edo.add(key)
+                    edo_documents.append(item)
+            edo_truncated = edo_truncated or truncated_edo
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return {
+        "kind": link_kind,
+        "id": reference,
+        "businessUnit": business_unit,
+        "contracts": contracts,
+        "documents": documents[:GENERAL_MAX_LINK_DOCUMENTS],
+        "edoDocuments": edo_documents[:GENERAL_MAX_LINK_EDO_DOCUMENTS],
+        "matchedBy": ["id"],
+        "schema": schema,
+        "limits": {
+            "maxContracts": GENERAL_MAX_LINK_CONTRACTS,
+            "maxDocuments": GENERAL_MAX_LINK_DOCUMENTS,
+            "maxEdoDocuments": GENERAL_MAX_LINK_EDO_DOCUMENTS,
+        },
+        "truncation": {
+            "contracts": contracts_truncated,
+            "documents": documents_truncated,
+            "edoDocuments": edo_truncated,
+        },
+        "edoFiles": {
+            "included": False,
+            "reason": "use_1c_edo_skill",
+        },
+    }
+
+
 def build_edo_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trelio-1c-edo",
@@ -2563,11 +4139,60 @@ def build_general_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # The initial development release exposes one fixed inventory action. It
-    # has no URL/entity/query arguments, emits no raw values and exists only to
-    # freeze the production capability registry against the live publication.
-    inventory = subparsers.add_parser("developer-inventory-metadata")
-    inventory.set_defaults(handler=command_developer_inventory_metadata)
+    capabilities = subparsers.add_parser("get-capabilities")
+    capabilities.set_defaults(handler=command_general_get_capabilities)
+
+    reference_kinds = tuple(GENERAL_REFERENCE_SPECS)
+    search_reference = subparsers.add_parser("search-reference-items")
+    search_reference.add_argument("--kind", choices=reference_kinds, required=True)
+    search_reference.add_argument("--query", default="")
+    search_reference.add_argument("--page", type=int, default=1)
+    search_reference.add_argument("--limit", type=int, default=25)
+    search_reference.set_defaults(handler=command_general_search_reference_items)
+
+    get_reference = subparsers.add_parser("get-reference-item")
+    get_reference.add_argument("--kind", choices=reference_kinds, required=True)
+    get_reference.add_argument("--id", required=True)
+    get_reference.set_defaults(handler=command_general_get_reference_item)
+
+    document_kinds = tuple(GENERAL_DOCUMENT_SPECS)
+    search_documents = subparsers.add_parser("search-documents")
+    search_documents.add_argument("--kind", choices=document_kinds, required=True)
+    search_documents.add_argument("--date-from", default="")
+    search_documents.add_argument("--date-to", default="")
+    search_documents.add_argument("--organization-id", default="")
+    search_documents.add_argument("--business-unit-id", default="")
+    search_documents.add_argument("--counterparty-id", default="")
+    search_documents.add_argument("--contract-id", default="")
+    search_documents.add_argument("--number", default="")
+    search_documents.add_argument(
+        "--status",
+        choices=["", "posted", "unposted", "deleted"],
+        default="",
+    )
+    search_documents.add_argument("--page", type=int, default=1)
+    search_documents.add_argument("--limit", type=int, default=25)
+    search_documents.set_defaults(handler=command_general_search_documents)
+
+    get_document = subparsers.add_parser("get-document")
+    get_document.add_argument("--kind", choices=document_kinds, required=True)
+    get_document.add_argument("--id", required=True)
+    get_document.add_argument("--include-lines", action="store_true")
+    get_document.add_argument("--line-limit", type=int, default=50)
+    get_document.set_defaults(handler=command_general_get_document)
+
+    balances = subparsers.add_parser("get-balances")
+    balances.add_argument("--kind", choices=["stock"], required=True)
+    balances.set_defaults(handler=command_general_get_balances)
+
+    links = subparsers.add_parser("get-links")
+    links.add_argument(
+        "--kind",
+        choices=["business_unit", "contract", "document"],
+        required=True,
+    )
+    links.add_argument("--id", required=True)
+    links.set_defaults(handler=command_general_get_links)
     return parser
 
 

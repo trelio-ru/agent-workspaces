@@ -5,6 +5,8 @@ import os
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +26,9 @@ SPEC.loader.exec_module(runtime)
 COMPANY_ID = "11111111-1111-4111-8111-111111111111"
 MEMBER_ID = "22222222-2222-4222-8222-222222222222"
 CONNECTION_ID = "33333333-3333-4333-8333-333333333333"
+REFERENCE_ID = "44444444-4444-4444-8444-444444444444"
+DOCUMENT_ID = "55555555-5555-4555-8555-555555555555"
+ITEM_ID = "66666666-6666-4666-8666-666666666666"
 
 
 METADATA = b"""<?xml version="1.0" encoding="utf-8"?>
@@ -65,6 +70,82 @@ METADATA = b"""<?xml version="1.0" encoding="utf-8"?>
   </edmx:DataServices>
 </edmx:Edmx>
 """
+
+
+def production_metadata(
+    *,
+    override: tuple[str, str] | None = None,
+) -> bytes:
+    """Build a deterministic metadata snapshot from the frozen registry.
+
+    Digest literals below remain the independent review gate for mapping
+    changes; this XML fixture exercises the actual entity/ComplexType verifier.
+    """
+
+    root = ET.Element(
+        "{http://docs.oasis-open.org/odata/ns/edmx}Edmx",
+        {"Version": "4.0"},
+    )
+    services = ET.SubElement(
+        root,
+        "{http://docs.oasis-open.org/odata/ns/edmx}DataServices",
+    )
+    schema = ET.SubElement(
+        services,
+        "{http://docs.oasis-open.org/odata/ns/edm}Schema",
+        {"Namespace": "StandardODATA"},
+    )
+    container = ET.Element(
+        "{http://docs.oasis-open.org/odata/ns/edm}EntityContainer",
+        {"Name": "Container"},
+    )
+    registries = (
+        runtime.GENERAL_REFERENCE_SPECS,
+        runtime.GENERAL_DOCUMENT_SPECS,
+    )
+    for registry in registries:
+        for sources in registry.values():
+            for source in sources:
+                entity = ET.SubElement(
+                    schema,
+                    "{http://docs.oasis-open.org/odata/ns/edm}EntityType",
+                    {"Name": source["entity"]},
+                )
+                for field, field_type in source["fields"].items():
+                    actual_type = (
+                        override[1]
+                        if override and override[0] == f"{source['entity']}.{field}"
+                        else field_type
+                    )
+                    ET.SubElement(
+                        entity,
+                        "{http://docs.oasis-open.org/odata/ns/edm}Property",
+                        {"Name": field, "Type": actual_type},
+                    )
+                ET.SubElement(
+                    container,
+                    "{http://docs.oasis-open.org/odata/ns/edm}EntitySet",
+                    {
+                        "Name": source["entity"],
+                        "EntityType": f"StandardODATA.{source['entity']}",
+                    },
+                )
+                if source.get("lineFields"):
+                    collection_type = source["fields"]["Товары"][11:-1]
+                    row_name = collection_type.removeprefix("StandardODATA.")
+                    row_type = ET.SubElement(
+                        schema,
+                        "{http://docs.oasis-open.org/odata/ns/edm}ComplexType",
+                        {"Name": row_name},
+                    )
+                    for field, field_type in source["lineFields"].items():
+                        ET.SubElement(
+                            row_type,
+                            "{http://docs.oasis-open.org/odata/ns/edm}Property",
+                            {"Name": field, "Type": field_type},
+                        )
+    schema.append(container)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 class OneCGeneralRuntimeTest(unittest.TestCase):
@@ -192,9 +273,218 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
     def test_general_parser_has_no_raw_odata_arguments(self) -> None:
         parser = runtime.build_parser("1c")
         with self.assertRaises(SystemExit):
-            parser.parse_args(["developer-inventory-metadata", "--entity", "Catalog_Users"])
+            parser.parse_args(["developer-inventory-metadata"])
         with self.assertRaises(SystemExit):
             parser.parse_args(["raw-query", "--url", "https://example.test/"])
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "search-reference-items",
+                "--kind",
+                "users",
+            ])
+
+    def test_production_registry_digests_match_reviewed_snapshot(self) -> None:
+        expected = {
+            "document.purchase": "sha256:7afac154856c37c72da3a896ca9bfa081687e9a448a0176b97d5b2fa7f163887",
+            "document.receipt": "sha256:888b63f2aa4c5f44da03d658ca4ee8fb6bfaa3d26e6db94a333c057e25eab56a",
+            "document.return": "sha256:2e4720f7a1b2bd674b36bb78d5215683bb52c0e2de6ac5179e352a20502bd7b8",
+            "document.sale": "sha256:3f25c1c0b73ace19903cb6f8cb7bdd943cc29deac2f16365fb402c55e9fd86d7",
+            "document.transfer": "sha256:7d7fb239dec93035810f32d2cd6ae85c3eae6a0a273f8589090e10c419db1e78",
+            "reference.business_unit": "sha256:504bcc3fa2baf43b8847cef3e8403d108a8b4e30726489569a01567448b5f958",
+            "reference.contract": "sha256:19545b544023b17f0d7ec492013ac8ebde0142f39d48143f7f5bcbef5234466f",
+            "reference.counterparty": "sha256:027a55880241d5296930773e365fbf85e969cee06a4be22f491e0481f70a1fb1",
+            "reference.item": "sha256:d266c949bbcfe2d08661e04af143c5c4e0963e982579a396f53bd96d749607b0",
+            "reference.organization": "sha256:24ba32743bcd09da852e45fca91758aaf756487e2233de79dbd85adf39d45a77",
+            "reference.partner": "sha256:ab90293f0b52ac67238e8ac40d928590e29168e3339f9f13ceb3fc091b1c58fe",
+            "reference.warehouse": "sha256:2de83f9ebf0c315904554e1cec813adc844f86308874172045b306cfc1cfb35f",
+        }
+        actual = {
+            f"reference.{kind}": runtime._general_capability_digest(
+                "reference",
+                kind,
+            )
+            for kind in runtime.GENERAL_REFERENCE_SPECS
+        }
+        actual.update({
+            f"document.{kind}": runtime._general_capability_digest(
+                "document",
+                kind,
+            )
+            for kind in runtime.GENERAL_DOCUMENT_SPECS
+        })
+
+        self.assertEqual(runtime.GENERAL_INVENTORY_SCHEMA_DIGEST, "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b")
+        self.assertEqual(actual, expected)
+
+    def test_schema_verifier_accepts_snapshot_and_rejects_affected_drift(self) -> None:
+        config = mock.Mock()
+        credentials = runtime.Credentials("user", "password")
+        capabilities = [
+            *(("reference", kind) for kind in runtime.GENERAL_REFERENCE_SPECS),
+            *(("document", kind) for kind in runtime.GENERAL_DOCUMENT_SPECS),
+        ]
+        with mock.patch.object(
+            runtime,
+            "_request_metadata",
+            return_value=production_metadata(),
+        ):
+            verified = runtime._verify_general_schema(
+                config,
+                credentials,
+                capabilities,
+            )
+
+        self.assertEqual(len(verified["capabilityDigests"]), 12)
+
+        drifted = production_metadata(
+            override=("Catalog_Организации.Description", "Edm.Int32"),
+        )
+        with (
+            mock.patch.object(runtime, "_request_metadata", return_value=drifted),
+            self.assertRaisesRegex(runtime.OneCEdoError, "reference.organization"),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+    def test_reference_search_normalizes_and_drops_unselected_fields(self) -> None:
+        identity = runtime.Identity(COMPANY_ID, MEMBER_ID, CONNECTION_ID)
+        config = mock.Mock(max_rows=50, max_pages=3)
+        credentials = runtime.Credentials("user", "password")
+        args = Namespace(
+            kind="counterparty",
+            query="Поставщик",
+            page=1,
+            limit=10,
+        )
+        row = {
+            "Ref_Key": REFERENCE_ID,
+            "Description": "Поставщик",
+            "НаименованиеПолное": "ООО Поставщик",
+            "Партнер_Key": ITEM_ID,
+            "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
+            "DeletionMark": False,
+            "ИНН": "must-not-leak",
+            "БанковскийСчет_Key": ITEM_ID,
+        }
+        schema = {
+            "schemaDigest": runtime.GENERAL_INVENTORY_SCHEMA_DIGEST,
+            "capabilityDigests": {
+                "reference.counterparty": runtime._general_capability_digest(
+                    "reference",
+                    "counterparty",
+                ),
+            },
+        }
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                return_value=(identity, config, credentials),
+            ),
+            mock.patch.object(
+                runtime,
+                "_verify_general_schema",
+                return_value=schema,
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_reference_search_rows",
+                return_value=[row],
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            result = runtime.command_general_search_reference_items(args)
+
+        serialized = str(result)
+        self.assertEqual(result["items"][0]["id"], REFERENCE_ID)
+        self.assertEqual(result["items"][0]["partnerId"], ITEM_ID)
+        self.assertIn("query.name", result["items"][0]["matchedBy"])
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertNotIn("Банков", serialized)
+        self.assertNotIn("ИНН", serialized)
+
+    def test_document_filter_escapes_text_and_blocks_unsupported_relation(self) -> None:
+        common = {
+            "date_from": "2026-07-01",
+            "date_to": "2026-07-31",
+            "organization_id": REFERENCE_ID,
+            "business_unit_id": "",
+            "counterparty_id": "",
+            "contract_id": "",
+            "number": "A' or true",
+            "status": "posted",
+        }
+        filter_value, matched = runtime._general_document_filter(
+            Namespace(**common),
+            runtime.GENERAL_DOCUMENT_SPECS["sale"][0],
+        )
+
+        self.assertIn("substringof('A'' or true',Number)", filter_value)
+        self.assertIn("Posted eq true", filter_value)
+        self.assertIn("period", matched)
+        self.assertIn("number", matched)
+
+        blocked = dict(common)
+        blocked["counterparty_id"] = REFERENCE_ID
+        with self.assertRaisesRegex(runtime.OneCEdoError, "counterparty"):
+            runtime._general_document_filter(
+                Namespace(**blocked),
+                runtime.GENERAL_DOCUMENT_SPECS["receipt"][0],
+            )
+
+    def test_document_lines_are_normalized_and_locally_truncated(self) -> None:
+        spec = runtime.GENERAL_DOCUMENT_SPECS["purchase"][0]
+        raw = {
+            "Ref_Key": DOCUMENT_ID,
+            "Number": "П-1",
+            "Date": "2026-07-26T10:00:00",
+            "DeletionMark": False,
+            "Posted": True,
+            "Организация_Key": REFERENCE_ID,
+            "Контрагент_Key": ITEM_ID,
+            "Товары": [
+                {
+                    "LineNumber": index,
+                    "Номенклатура_Key": ITEM_ID,
+                    "Количество": 2.0,
+                    "Цена": 10.0,
+                    "Сумма": 20.0,
+                    "БанковскийСчет_Key": "must-not-leak",
+                }
+                for index in range(1, 4)
+            ],
+            "БанковскийСчетОрганизации_Key": "must-not-leak",
+        }
+
+        result = runtime._general_document_record(
+            "purchase",
+            spec,
+            raw,
+            matched_by=["id"],
+            include_lines=True,
+            line_limit=2,
+        )
+
+        self.assertEqual(result["id"], DOCUMENT_ID)
+        self.assertEqual(len(result["lines"]), 2)
+        self.assertTrue(result["lineInfo"]["truncated"])
+        self.assertNotIn("must-not-leak", str(result))
+        self.assertNotIn("Банков", str(result))
+
+    def test_stock_balance_is_explicitly_unsupported(self) -> None:
+        result = runtime.command_general_get_balances(Namespace(kind="stock"))
+
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["reason"], "needs_custom_endpoint")
+        self.assertEqual(result["balances"], [])
+
+    def test_general_entity_allowlist_rejects_arbitrary_catalog(self) -> None:
+        config = mock.Mock(odata_base_url="https://example.test/odata/")
+        with self.assertRaisesRegex(runtime.OneCEdoError, "entity"):
+            runtime._odata_url(config, "Catalog_Пользователи")
 
 
 if __name__ == "__main__":
