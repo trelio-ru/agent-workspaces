@@ -289,6 +289,15 @@ Trelio-монорепозитории быть не должно.
   по явному указанию, закреплённому правилу либо для задачи, которую тот же
   пользователь поставил сам себе, хотя review остаётся предпочтительным.
   Незакрытые вопросы совместимы только с `no_status_change`.
+- Patch `1.5.5` добавляет обязательную runtime-attestation модели и reasoning
+  effort для bridge start/claim и общий `PreToolUse` guard Codex/Claude Code.
+  Policy закрепляется в `.trelio-run.json` на весь Run; смена модели посреди
+  сессии проверяется заново перед действием. `CLAUDE_PLUGIN_ROOT` нельзя
+  использовать для определения клиента, потому что Codex тоже задаёт эту
+  compatibility-переменную. Аттестация имеет уровень `local_observed`, а не
+  криптографический platform proof. Claude Cowork и остальные клиенты без
+  надёжных model+effort данных проходят только через отдельное company-правило
+  «другие клиенты: разрешить/запретить».
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

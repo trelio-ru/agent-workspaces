@@ -1,0 +1,29 @@
+{
+  "description": "Проверяет закреплённую company policy модели и reasoning effort для Trelio Agent Run.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-policy.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-policy.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
