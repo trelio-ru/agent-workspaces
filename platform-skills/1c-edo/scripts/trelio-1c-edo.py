@@ -43,7 +43,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.4"
+RUNTIME_VERSION = "1.0.5"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -111,14 +111,19 @@ DOCUMENT_SELECT_FIELDS = (
     "Организация_Key",
     "Остановлен",
     "СуммаДокумента",
-    "УдалитьДатаИзмененияСостоянияЭДО",
-    "УдалитьСостояниеЭДО",
 )
 DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
 DOCUMENT_SIGNATURE_BASIS = "document_signing_date"
-DOCUMENT_STATUS_BASIS = "document_legacy_status_field"
-DOCUMENT_STATUS_COVERAGE = "opportunistic"
-EDO_STATUS_EMPTY_REASON = "document_legacy_status_field_empty"
+STATUS_REGISTER_ENTITY = "InformationRegister_СостоянияДокументовЭДО"
+STATUS_REGISTER_SELECT_FIELDS = (
+    "ЭлектронныйДокумент",
+    "ЭлектронныйДокумент_Type",
+    "Состояние",
+)
+DOCUMENT_STATUS_BASIS = "information_register_status"
+DOCUMENT_STATUS_COVERAGE = "primary"
+EDO_STATUS_NO_MATCH_REASON = "status_register_no_match"
+EDO_STATUS_EMPTY_REASON = "status_register_empty"
 CONTRACT_RELATION_DIAGNOSTIC_STAGES = {
     "НаправлениеДеятельности_Key": "search.contracts.by-business-direction",
     "Подразделение_Key": "search.contracts.by-subdivision",
@@ -143,6 +148,8 @@ MAX_RELATED_BUSINESS_OBJECTS = 20
 MAX_RELATED_CONTRACTS = 20
 MAX_SEARCH_DOCUMENTS = 200
 MAX_DOCUMENTS_PER_CONTRACT_DIRECTION = 50
+MAX_STATUS_LOOKUP_DOCUMENTS = MAX_SEARCH_DOCUMENTS
+STATUS_LOOKUP_BATCH_SIZE = 20
 DIAGNOSTIC_STAGES = frozenset(
     {
         "connect.probe",
@@ -162,6 +169,8 @@ DIAGNOSTIC_STAGES = frozenset(
         "search.documents.outgoing.recent",
         "document.incoming.get",
         "document.outgoing.get",
+        "status.incoming.lookup",
+        "status.outgoing.lookup",
         "files.incoming.new",
         "files.outgoing.new",
         "files.incoming.old-messages",
@@ -722,6 +731,7 @@ def _odata_url(
         *DOCUMENT_ENTITIES.values(),
         CONTRACT_ENTITY,
         *BUSINESS_ENTITY_SPECS,
+        STATUS_REGISTER_ENTITY,
         NEW_FILE_ENTITY,
         OLD_MESSAGE_ENTITY,
         OLD_FILE_ENTITY,
@@ -964,14 +974,14 @@ def _normalized_signing_date(value: Any) -> str | None:
     return _normalized_1c_datetime(value, field_label="подписания документа")
 
 
-def _normalized_legacy_status(value: Any) -> str | None:
-    """Return a bounded legacy card status without claiming full coverage.
+def _normalized_register_status(value: Any) -> str | None:
+    """Normalize only the current status resource from the published register.
 
-    The published document field has useful values on many cards, but live
-    evidence also contains documents where it is empty. Only a non-empty
-    string is therefore authoritative for that one card. Unexpected types,
-    control characters or an implausibly large value fail closed instead of
-    becoming an agent-visible status.
+    The 1C enum is serialized as a string by standard OData. Keeping the
+    normalized scalar instead of hard-coding today's enum members makes the
+    runtime forward-compatible with newly published statuses, while the
+    length/control-character checks prevent an upstream serializer regression
+    from becoming unbounded agent-visible text.
     """
 
     if value is None:
@@ -979,7 +989,7 @@ def _normalized_legacy_status(value: Any) -> str | None:
     if not isinstance(value, str):
         raise OneCEdoError(
             "invalid_odata_response",
-            "1С вернула некорректное legacy-состояние ЭДО.",
+            "1С вернула некорректное состояние ЭДО.",
         )
     normalized = value.strip()
     if not normalized:
@@ -993,19 +1003,39 @@ def _normalized_legacy_status(value: Any) -> str | None:
     ):
         raise OneCEdoError(
             "invalid_odata_response",
-            "1С вернула некорректное legacy-состояние ЭДО.",
+            "1С вернула некорректное состояние ЭДО.",
         )
     return normalized
+
+
+def _status_availability(
+    status: str | None,
+    *,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Build the stable public status contract from the primary register only."""
+
+    availability: dict[str, Any] = {
+        "available": status is not None,
+        "basis": DOCUMENT_STATUS_BASIS,
+        "source": STATUS_REGISTER_ENTITY,
+        "coverage": DOCUMENT_STATUS_COVERAGE,
+        # Ilya confirmed only the dimension and status resource. Do not invent
+        # a change timestamp from deprecated document-card fields.
+        "statusChangedAt": None,
+    }
+    if status is None:
+        availability["reason"] = reason or EDO_STATUS_NO_MATCH_REASON
+    return availability
 
 
 def _normalize_document(value: dict[str, Any]) -> dict[str, Any]:
     """Add stable document semantics while preserving safe source scalars.
 
-    The published state register is absent, so the legacy card field is only
-    an opportunistic per-document source: a non-empty value is returned with
-    an explicit basis, while an empty value remains ``unknown``. Neither this
-    source nor document flags or ``file.ПодписанЭП`` may affect the independent
-    document signature normalization.
+    Status is attached later from the fixed information-register lookup.
+    Deprecated ``Удалить...`` card fields are neither selected nor consulted.
+    Document flags and ``file.ПодписанЭП`` remain independent from both the
+    status and signature normalization.
     """
 
     result = dict(value)
@@ -1015,26 +1045,140 @@ def _normalize_document(value: dict[str, Any]) -> dict[str, Any]:
         "signedAt": signed_at,
         "basis": DOCUMENT_SIGNATURE_BASIS,
     }
-    legacy_status = _normalized_legacy_status(result.get("УдалитьСостояниеЭДО"))
-    status_changed_at = _normalized_1c_datetime(
-        result.get("УдалитьДатаИзмененияСостоянияЭДО"),
-        field_label="изменения legacy-состояния ЭДО",
+    result["edoStatus"] = "unknown"
+    result["statusAvailability"] = _status_availability(
+        None,
+        reason=EDO_STATUS_NO_MATCH_REASON,
     )
-    result["edoStatus"] = legacy_status or "unknown"
-    status_availability: dict[str, Any] = {
-        "available": legacy_status is not None,
-        "basis": DOCUMENT_STATUS_BASIS,
-        "coverage": DOCUMENT_STATUS_COVERAGE,
-        "statusChangedAt": status_changed_at,
-    }
-    if legacy_status is None:
-        status_availability["reason"] = EDO_STATUS_EMPTY_REASON
-    result["statusAvailability"] = status_availability
     result["isStopped"] = _normalized_boolean(result.get("Остановлен"))
     result["exchangeWithoutSignature"] = _normalized_boolean(
         result.get("ОбменБезПодписи"),
     )
     return result
+
+
+def _status_reference_filter(document_ids: Iterable[str], entity: str) -> str:
+    """Build a fixed bounded OR-filter for one exact document entity type.
+
+    Every value has already passed strict UUID normalization and ``entity`` is
+    selected from ``DOCUMENT_ENTITIES``. The caller cannot contribute OData
+    field names, operators, type names or parentheses.
+    """
+
+    if entity not in DOCUMENT_ENTITIES.values():
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний status query получил неизвестный тип документа.",
+        )
+    normalized_ids = tuple(document_ids)
+    if not normalized_ids or len(normalized_ids) > STATUS_LOOKUP_BATCH_SIZE:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний status query превысил фиксированный batch.",
+        )
+    return " or ".join(
+        (
+            "ЭлектронныйДокумент eq "
+            f"cast(guid'{_uuid(document_id, 'document id')}', '{entity}')"
+        )
+        for document_id in normalized_ids
+    )
+
+
+def _register_row_document_key(
+    row: dict[str, Any],
+    *,
+    direction: str,
+) -> tuple[str, str]:
+    """Validate the composite register dimension and return its safe key.
+
+    Standard 1C OData serializes a composite reference as a UUID string plus
+    ``<field>_Type``. Depending on serializer version, the type can be bare or
+    qualified with the fixed ``StandardODATA.`` namespace; no other type is
+    accepted, so an incoming and outgoing document with the same UUID cannot
+    be confused.
+    """
+
+    raw_reference = row.get("ЭлектронныйДокумент")
+    if not isinstance(raw_reference, str) or not UUID_RE.fullmatch(raw_reference):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректную ссылку регистра состояний ЭДО.",
+        )
+    raw_type = row.get("ЭлектронныйДокумент_Type")
+    expected_type = DOCUMENT_ENTITIES[direction]
+    if raw_type not in {expected_type, f"StandardODATA.{expected_type}"}:
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректный тип ссылки регистра состояний ЭДО.",
+        )
+    return direction, str(uuid.UUID(raw_reference))
+
+
+def _attach_register_statuses(
+    config: CompanyConfig,
+    credentials: Credentials,
+    documents: dict[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Attach authoritative status rows with bounded fixed register queries.
+
+    Queries are grouped by direction and split into small immutable batches.
+    Even if a non-compliant server ignores ``$top`` or ``$filter``, every row
+    is checked against the requested UUID/type set before it can affect output.
+    An unrelated row or duplicate key fails closed instead of leaking data or
+    assigning a status to the wrong document.
+    """
+
+    if len(documents) > MAX_STATUS_LOOKUP_DOCUMENTS:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний status lookup превысил фиксированный лимит.",
+        )
+    for direction, entity in DOCUMENT_ENTITIES.items():
+        direction_ids = sorted(
+            document_id
+            for candidate_direction, document_id in documents
+            if candidate_direction == direction
+        )
+        for start in range(0, len(direction_ids), STATUS_LOOKUP_BATCH_SIZE):
+            batch = direction_ids[start : start + STATUS_LOOKUP_BATCH_SIZE]
+            expected = {(direction, document_id) for document_id in batch}
+            payload = _request_odata(
+                config,
+                credentials,
+                STATUS_REGISTER_ENTITY,
+                (
+                    ("$select", _selected_fields(STATUS_REGISTER_SELECT_FIELDS)),
+                    ("$filter", _status_reference_filter(batch, entity)),
+                    ("$top", len(batch)),
+                ),
+                diagnostic_stage=f"status.{direction}.lookup",
+            )
+            seen: set[tuple[str, str]] = set()
+            for raw_row in _odata_rows(payload):
+                safe_row = _safe_selected_record(
+                    raw_row,
+                    STATUS_REGISTER_SELECT_FIELDS,
+                )
+                key = _register_row_document_key(safe_row, direction=direction)
+                if key not in expected:
+                    raise OneCEdoError(
+                        "invalid_odata_response",
+                        "1С вернула постороннюю строку регистра состояний ЭДО.",
+                    )
+                if key in seen:
+                    raise OneCEdoError(
+                        "invalid_odata_response",
+                        "1С вернула дублирующую строку регистра состояний ЭДО.",
+                    )
+                seen.add(key)
+                status = _normalized_register_status(safe_row.get("Состояние"))
+                document = documents[key]["document"]
+                document["edoStatus"] = status or "unknown"
+                document["statusAvailability"] = _status_availability(
+                    status,
+                    reason=EDO_STATUS_EMPTY_REASON,
+                )
 
 
 def _search_term(value: Any) -> str:
@@ -1586,6 +1730,7 @@ def command_search_documents(args: argparse.Namespace) -> dict[str, Any]:
                 directions,
                 document_limit,
             )
+        _attach_register_statuses(config, credentials, documents)
         save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
@@ -1635,19 +1780,35 @@ def command_get_document(args: argparse.Namespace) -> dict[str, Any]:
                 diagnostic_stage=f"document.{direction[0]}.get",
             ),
         )
+        document = (
+            _normalize_document(
+                _safe_selected_record(rows[0], DOCUMENT_SELECT_FIELDS),
+            )
+            if rows
+            else None
+        )
+        if document is not None:
+            reference = _record_uuid(document)
+            if reference is None:
+                raise OneCEdoError(
+                    "invalid_odata_response",
+                    "1С вернула документ без корректного идентификатора.",
+                )
+            status_target = {
+                (direction[0], reference): {
+                    "direction": direction[0],
+                    "document": document,
+                    "matchedBy": [],
+                },
+            }
+            _attach_register_statuses(config, credentials, status_target)
         save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
         raise
     return {
         "direction": direction[0],
-        "document": (
-            _normalize_document(
-                _safe_selected_record(rows[0], DOCUMENT_SELECT_FIELDS),
-            )
-            if rows
-            else None
-        ),
+        "document": document,
     }
 
 

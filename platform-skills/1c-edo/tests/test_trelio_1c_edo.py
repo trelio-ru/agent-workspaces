@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -338,8 +339,6 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "ДатаОтправки": "2026-07-23T15:04:04",
                 "Остановлен": False,
                 "ОбменБезПодписи": False,
-                "УдалитьСостояниеЭДО": "",
-                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
             },
         )
         incoming = MODULE._normalize_document(
@@ -351,8 +350,6 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "ДатаПолучения": "2026-07-24T13:42:22",
                 "Остановлен": False,
                 "ОбменБезПодписи": False,
-                "УдалитьСостояниеЭДО": "",
-                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
             },
         )
 
@@ -378,65 +375,47 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 document["statusAvailability"],
                 {
                     "available": False,
-                    "basis": "document_legacy_status_field",
-                    "coverage": "opportunistic",
+                    "basis": "information_register_status",
+                    "source": "InformationRegister_СостоянияДокументовЭДО",
+                    "coverage": "primary",
                     "statusChangedAt": None,
-                    "reason": "document_legacy_status_field_empty",
+                    "reason": "status_register_no_match",
                 },
             )
             self.assertFalse(document["isStopped"])
             self.assertFalse(document["exchangeWithoutSignature"])
 
-    def test_legacy_status_is_opportunistic_and_normalizes_change_date(self) -> None:
-        """A card status is useful only when the fixed legacy field is non-empty."""
+    def test_register_status_normalization_is_bounded_and_card_legacy_is_ignored(
+        self,
+    ) -> None:
+        """Only the current register resource may become document status."""
 
-        filled = MODULE._normalize_document(
+        document = MODULE._normalize_document(
             {
                 "ДатаПодписания": "0001-01-01T00:00:00",
-                "УдалитьСостояниеЭДО": "  Ожидается подтверждение  ",
+                "УдалитьСостояниеЭДО": "Deprecated card value",
                 "УдалитьДатаИзмененияСостоянияЭДО": "2026-07-25T10:20:30",
                 "Остановлен": False,
                 "ОбменБезПодписи": False,
             },
         )
-        empty = MODULE._normalize_document(
-            {
-                "ДатаПодписания": "2026-07-23T15:04:00",
-                "УдалитьСостояниеЭДО": "   ",
-                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
-                "Остановлен": True,
-                "ОбменБезПодписи": True,
-            },
-        )
-
-        self.assertEqual(filled["edoStatus"], "Ожидается подтверждение")
+        self.assertEqual(document["edoStatus"], "unknown")
         self.assertEqual(
-            filled["statusAvailability"],
-            {
-                "available": True,
-                "basis": "document_legacy_status_field",
-                "coverage": "opportunistic",
-                "statusChangedAt": "2026-07-25T10:20:30",
-            },
-        )
-        self.assertFalse(filled["signature"]["isSigned"])
-        self.assertFalse(filled["isStopped"])
-        self.assertFalse(filled["exchangeWithoutSignature"])
-
-        self.assertEqual(empty["edoStatus"], "unknown")
-        self.assertEqual(
-            empty["statusAvailability"],
+            document["statusAvailability"],
             {
                 "available": False,
-                "basis": "document_legacy_status_field",
-                "coverage": "opportunistic",
+                "basis": "information_register_status",
+                "source": "InformationRegister_СостоянияДокументовЭДО",
+                "coverage": "primary",
                 "statusChangedAt": None,
-                "reason": "document_legacy_status_field_empty",
+                "reason": "status_register_no_match",
             },
         )
-        self.assertTrue(empty["signature"]["isSigned"])
-        self.assertTrue(empty["isStopped"])
-        self.assertTrue(empty["exchangeWithoutSignature"])
+        self.assertEqual(
+            MODULE._normalized_register_status("  Ожидается подтверждение  "),
+            "Ожидается подтверждение",
+        )
+        self.assertIsNone(MODULE._normalized_register_status("   "))
 
     def test_empty_sentinel_and_malformed_signing_dates_fail_closed(self) -> None:
         for unset in (None, "", "   ", "0001-01-01T00:00:00", "0001-01-01T00:00:00Z"):
@@ -451,27 +430,13 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             ):
                 MODULE._normalize_document({"ДатаПодписания": malformed})
 
-    def test_malformed_legacy_status_fields_fail_closed(self) -> None:
+    def test_malformed_register_status_fails_closed(self) -> None:
         for malformed_status in (False, 1, "contains\ncontrol", "я" * 513):
             with self.assertRaisesRegex(
                 MODULE.OneCEdoError,
-                "некорректное legacy-состояние",
+                "некорректное состояние",
             ):
-                MODULE._normalize_document(
-                    {"УдалитьСостояниеЭДО": malformed_status},
-                )
-
-        for malformed_date in (False, 1, "not-a-timestamp"):
-            with self.assertRaisesRegex(
-                MODULE.OneCEdoError,
-                "некорректную дату изменения legacy-состояния",
-            ):
-                MODULE._normalize_document(
-                    {
-                        "УдалитьСостояниеЭДО": "Подписан",
-                        "УдалитьДатаИзмененияСостоянияЭДО": malformed_date,
-                    },
-                )
+                MODULE._normalized_register_status(malformed_status)
 
     def test_mixed_file_signature_flags_never_change_document_signature(self) -> None:
         """Mixed new/old attachment flags must stay file-local."""
@@ -635,10 +600,6 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Number": "IN-120",
                             "Комментарий": "Мурманск-4",
                             "ДатаПодписания": "0001-01-01T00:00:00",
-                            "УдалитьСостояниеЭДО": "",
-                            "УдалитьДатаИзмененияСостоянияЭДО": (
-                                "0001-01-01T00:00:00"
-                            ),
                             "Остановлен": False,
                             "ОбменБезПодписи": False,
                             "ServerIgnoredSelect": "blocked",
@@ -653,15 +614,44 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Number": "OUT-120",
                             "Комментарий": "Мурманск-4",
                             "ДатаПодписания": "2026-07-23T15:04:00",
-                            "УдалитьСостояниеЭДО": "Подписан",
-                            "УдалитьДатаИзмененияСостоянияЭДО": (
-                                "2026-07-23T15:04:04"
-                            ),
                             "Остановлен": False,
                             "ОбменБезПодписи": False,
                         },
                     ],
                 }
+            if entity == MODULE.STATUS_REGISTER_ENTITY:
+                self.assertEqual(
+                    query["$select"],
+                    "ЭлектронныйДокумент,ЭлектронныйДокумент_Type,Состояние",
+                )
+                self.assertNotIn("Удалить", str(query))
+                if DOCUMENT_ID in filter_value:
+                    return {
+                        "value": [
+                            {
+                                "ЭлектронныйДокумент": DOCUMENT_ID,
+                                "ЭлектронныйДокумент_Type": (
+                                    "StandardODATA."
+                                    f"{MODULE.DOCUMENT_ENTITIES['incoming']}"
+                                ),
+                                "Состояние": "",
+                                "UnselectedRegisterValue": "blocked",
+                            },
+                        ],
+                    }
+                if OUTGOING_DOCUMENT_ID in filter_value:
+                    return {
+                        "value": [
+                            {
+                                "ЭлектронныйДокумент": OUTGOING_DOCUMENT_ID,
+                                "ЭлектронныйДокумент_Type": (
+                                    MODULE.DOCUMENT_ENTITIES["outgoing"]
+                                ),
+                                "Состояние": "Подписан",
+                            },
+                        ],
+                    }
+                raise AssertionError(f"unexpected status filter: {filter_value}")
             return {"value": []}
 
         with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
@@ -705,11 +695,20 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertEqual(statuses["incoming"][0], "unknown")
         self.assertFalse(statuses["incoming"][1]["available"])
         self.assertIsNone(statuses["incoming"][1]["statusChangedAt"])
+        self.assertEqual(
+            statuses["incoming"][1]["reason"],
+            "status_register_empty",
+        )
         self.assertEqual(statuses["outgoing"][0], "Подписан")
         self.assertTrue(statuses["outgoing"][1]["available"])
+        self.assertIsNone(statuses["outgoing"][1]["statusChangedAt"])
         self.assertEqual(
-            statuses["outgoing"][1]["statusChangedAt"],
-            "2026-07-23T15:04:04",
+            statuses["outgoing"][1]["basis"],
+            "information_register_status",
+        )
+        self.assertEqual(
+            statuses["outgoing"][1]["source"],
+            MODULE.STATUS_REGISTER_ENTITY,
         )
         for item in result["documents"]:
             self.assertEqual(
@@ -754,8 +753,11 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "ДатаПодписания" in parameters["$select"]
                 and "Остановлен" in parameters["$select"]
                 and "ОбменБезПодписи" in parameters["$select"]
-                and "УдалитьСостояниеЭДО" in parameters["$select"]
-                and "УдалитьДатаИзмененияСостоянияЭДО" in parameters["$select"]
+                and "УдалитьСостояниеЭДО" not in parameters["$select"]
+                and (
+                    "УдалитьДатаИзмененияСостоянияЭДО"
+                    not in parameters["$select"]
+                )
                 for parameters in document_calls
             ),
         )
@@ -776,8 +778,27 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             calls.append((entity, query))
             self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
             self.assertIn("$select", query)
-            self.assertIn("УдалитьСостояниеЭДО", str(query["$select"]))
-            self.assertIn(
+            if entity == MODULE.STATUS_REGISTER_ENTITY:
+                filter_value = str(query["$filter"])
+                if LIVE_OUTGOING_DOCUMENT_ID in filter_value:
+                    return {
+                        "value": [
+                            {
+                                "ЭлектронныйДокумент": (
+                                    LIVE_OUTGOING_DOCUMENT_ID
+                                ),
+                                "ЭлектронныйДокумент_Type": (
+                                    MODULE.DOCUMENT_ENTITIES["outgoing"]
+                                ),
+                                "Состояние": "Подписан",
+                            },
+                        ],
+                    }
+                if LIVE_INCOMING_DOCUMENT_ID in filter_value:
+                    return {"value": []}
+                raise AssertionError(f"unexpected status filter: {filter_value}")
+            self.assertNotIn("УдалитьСостояниеЭДО", str(query["$select"]))
+            self.assertNotIn(
                 "УдалитьДатаИзмененияСостоянияЭДО",
                 str(query["$select"]),
             )
@@ -794,10 +815,6 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             **common,
                             "Ref_Key": LIVE_OUTGOING_DOCUMENT_ID,
                             "ДатаПодписания": "2026-07-23T15:04:00",
-                            "УдалитьСостояниеЭДО": "Подписан",
-                            "УдалитьДатаИзмененияСостоянияЭДО": (
-                                "2026-07-23T15:04:04"
-                            ),
                         },
                     ],
                 }
@@ -807,10 +824,6 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                         **common,
                         "Ref_Key": LIVE_INCOMING_DOCUMENT_ID,
                         "ДатаПодписания": "0001-01-01T00:00:00",
-                        "УдалитьСостояниеЭДО": "",
-                        "УдалитьДатаИзмененияСостоянияЭДО": (
-                            "0001-01-01T00:00:00"
-                        ),
                     },
                 ],
             }
@@ -831,10 +844,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
 
         self.assertEqual(outgoing["edoStatus"], "Подписан")
         self.assertTrue(outgoing["statusAvailability"]["available"])
-        self.assertEqual(
-            outgoing["statusAvailability"]["statusChangedAt"],
-            "2026-07-23T15:04:04",
-        )
+        self.assertIsNone(outgoing["statusAvailability"]["statusChangedAt"])
         self.assertTrue(outgoing["signature"]["isSigned"])
         self.assertEqual(incoming["edoStatus"], "unknown")
         self.assertFalse(incoming["statusAvailability"]["available"])
@@ -844,7 +854,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertNotIn("ServerIgnoredSelect", incoming)
         self.assertEqual(
             {entity for entity, _query in calls},
-            set(MODULE.DOCUMENT_ENTITIES.values()),
+            {*MODULE.DOCUMENT_ENTITIES.values(), MODULE.STATUS_REGISTER_ENTITY},
         )
 
     def test_search_escapes_apostrophe_unicode_and_percent_20(self) -> None:
@@ -922,6 +932,112 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             [(2, 0), (2, 2)],
         )
 
+    def test_status_register_batches_are_fixed_bounded_and_percent_encoded(
+        self,
+    ) -> None:
+        """Status fan-out must stay bounded even for a large search result."""
+
+        _, config, credentials = self.store_connected_credentials()
+        document_ids = [str(__import__("uuid").uuid4()) for _ in range(21)]
+        documents = {
+            ("incoming", document_id): {
+                "direction": "incoming",
+                "document": MODULE._normalize_document(
+                    {"Ref_Key": document_id},
+                ),
+                "matchedBy": [],
+            }
+            for document_id in document_ids
+        }
+        requests: list[dict[str, object]] = []
+
+        def fake_request(
+            request_config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertEqual(entity, MODULE.STATUS_REGISTER_ENTITY)
+            self.assertEqual(diagnostic_stage, "status.incoming.lookup")
+            query = dict(parameters)
+            requests.append(query)
+            url = MODULE._odata_url(request_config, entity, parameters)
+            self.assertIn("%20eq%20cast", url)
+            self.assertNotIn("+", url)
+            requested_ids = re.findall(r"guid'([0-9a-f-]+)'", str(query["$filter"]))
+            return {
+                "value": [
+                    {
+                        "ЭлектронныйДокумент": document_id,
+                        "ЭлектронныйДокумент_Type": (
+                            MODULE.DOCUMENT_ENTITIES["incoming"]
+                        ),
+                        "Состояние": f"Состояние-{index}",
+                    }
+                    for index, document_id in enumerate(requested_ids)
+                ],
+            }
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            MODULE._attach_register_statuses(config, credentials, documents)
+
+        self.assertEqual([request["$top"] for request in requests], [20, 1])
+        self.assertTrue(
+            all(
+                str(request["$select"])
+                == "ЭлектронныйДокумент,ЭлектронныйДокумент_Type,Состояние"
+                for request in requests
+            ),
+        )
+        self.assertTrue(
+            all(
+                entry["document"]["statusAvailability"]["available"]
+                for entry in documents.values()
+            ),
+        )
+
+    def test_status_register_rejects_ignored_filter_and_duplicate_rows(self) -> None:
+        """A non-compliant server cannot assign unrelated or ambiguous status."""
+
+        _, config, credentials = self.store_connected_credentials()
+        target = {
+            ("outgoing", OUTGOING_DOCUMENT_ID): {
+                "direction": "outgoing",
+                "document": MODULE._normalize_document(
+                    {"Ref_Key": OUTGOING_DOCUMENT_ID},
+                ),
+                "matchedBy": [],
+            },
+        }
+        valid_row = {
+            "ЭлектронныйДокумент": OUTGOING_DOCUMENT_ID,
+            "ЭлектронныйДокумент_Type": (
+                "StandardODATA." + MODULE.DOCUMENT_ENTITIES["outgoing"]
+            ),
+            "Состояние": "ОбменЗавершен",
+        }
+        unrelated_row = {
+            **valid_row,
+            "ЭлектронныйДокумент": DOCUMENT_ID,
+        }
+
+        for rows, message in (
+            ([valid_row, unrelated_row], "постороннюю строку"),
+            ([valid_row, valid_row], "дублирующую строку"),
+        ):
+            with (
+                self.subTest(message=message),
+                mock.patch.object(
+                    MODULE,
+                    "_request_odata",
+                    return_value={"value": rows},
+                ),
+                self.assertRaisesRegex(MODULE.OneCEdoError, message),
+            ):
+                MODULE._attach_register_statuses(config, credentials, target)
+
     def test_search_rejects_arbitrary_odata_cli_and_long_or_control_query(self) -> None:
         parser = MODULE.build_parser()
         for option in ("--entity", "--filter", "--select", "--orderby", "--url"):
@@ -957,6 +1073,8 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                         {"Ref_Key": OUTGOING_DOCUMENT_ID, "Number": "recent"},
                     ],
                 }
+            if entity == MODULE.STATUS_REGISTER_ENTITY:
+                return {"value": []}
             raise AssertionError(f"unexpected entity: {entity}")
 
         with mock.patch.object(MODULE, "_request_odata", side_effect=browse_request):
@@ -965,11 +1083,22 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             )
         self.assertEqual(browse["count"], 2)
         self.assertEqual(
-            {entity for entity, _ in calls},
+            {
+                entity
+                for entity, _ in calls
+                if entity in MODULE.DOCUMENT_ENTITIES.values()
+            },
             set(MODULE.DOCUMENT_ENTITIES.values()),
         )
-        self.assertTrue(all("$filter" not in query for _, query in calls))
-        self.assertTrue(all(query["$orderby"] == "Date desc" for _, query in calls))
+        document_calls = [
+            query
+            for entity, query in calls
+            if entity in MODULE.DOCUMENT_ENTITIES.values()
+        ]
+        self.assertTrue(all("$filter" not in query for query in document_calls))
+        self.assertTrue(
+            all(query["$orderby"] == "Date desc" for query in document_calls),
+        )
 
         with mock.patch.object(
             MODULE,
