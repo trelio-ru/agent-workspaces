@@ -73,6 +73,10 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    def test_metadata_has_a_separate_bounded_limit(self) -> None:
+        self.assertEqual(runtime.MAX_ODATA_RESPONSE_BYTES, 8 * 1024 * 1024)
+        self.assertEqual(runtime.MAX_METADATA_RESPONSE_BYTES, 64 * 1024 * 1024)
+
     def test_inventory_is_bounded_structural_and_excludes_sensitive_catalogs(self) -> None:
         digest, candidates, truncated = runtime._metadata_candidates(METADATA)
 

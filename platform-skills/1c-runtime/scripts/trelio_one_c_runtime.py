@@ -145,7 +145,11 @@ UUID_RE = re.compile(
     re.IGNORECASE,
 )
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_METADATA_RESPONSE_BYTES = 16 * 1024 * 1024
+# Полная schema стандартной OData-публикации крупной конфигурации может быть
+# заметно больше обычного бизнес-ответа. Для единственного fixed `$metadata`
+# маршрута держим отдельный bounded cap; все sample/search/get ответы по-
+# прежнему ограничены существенно меньшими 8 МиБ.
+MAX_METADATA_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
