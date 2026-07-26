@@ -459,6 +459,348 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
   }
 });
 
+test("blocker checkpoint transfers the exact draft and continuation state to another device", {
+  timeout: 20_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-draft-resume-"));
+  const firstHomeDirectory = path.join(temporaryDirectory, "home-first");
+  const secondHomeDirectory = path.join(temporaryDirectory, "home-second");
+  const firstRootDirectory = path.join(temporaryDirectory, "run-first");
+  const secondRootDirectory = path.join(temporaryDirectory, "run-second");
+  const draftRepository = path.join(temporaryDirectory, "draft-repository");
+  const baseImportPath = path.join(temporaryDirectory, "base-import.bundle");
+  const draftUploadPath = path.join(temporaryDirectory, "uploaded-draft.bundle");
+  const draftExportPath = path.join(temporaryDirectory, "exported-draft.bundle");
+  const writableWorkspaceId = "44444444-4444-4444-8444-444444444444";
+  const firstLeaseId = "55555555-5555-4555-8555-555555555555";
+  const secondLeaseId = "66666666-6666-4666-8666-666666666666";
+  const checkpointId = "77777777-7777-4777-8777-777777777777";
+  const baseExport = await createExportBundle(path.join(temporaryDirectory, "base"), {
+    "PROJECT_CONTEXT.md": "# Task context\n",
+  });
+  let draftHead = null;
+  let draftBundle = null;
+  let checkpointPayload = null;
+  let currentStatus = "running";
+  let fencingToken = 1;
+  let serverError = null;
+
+  await mkdir(draftRepository, { recursive: true });
+  await runGit(draftRepository, ["init", "--initial-branch=main"]);
+  // Реальный backend уже хранит pinned base commit в bare repository. Fake
+  // server импортирует его заранее, потому что draft bundle намеренно передаёт
+  // только delta и перечисляет base commit как prerequisite.
+  await writeFile(baseImportPath, baseExport.bundle);
+  await runGit(draftRepository, [
+    "fetch",
+    baseImportPath,
+    "+refs/trelio/exports/*:refs/remotes/base-export/*",
+  ]);
+
+  const serializeRun = () => ({
+    id: runId,
+    status: currentStatus,
+    leaseId: fencingToken === 1 ? firstLeaseId : secondLeaseId,
+    fencingToken,
+    baseHead: baseExport.head,
+    draftHead,
+    contextHeadsJson: {},
+    agentInstructionsSnapshotJson: {
+      schemaVersion: 1,
+      company: null,
+      project: null,
+      compiledMarkdown: "# Рабочие правила агентов Trelio\n",
+    },
+    userProfileSnapshotJson: {
+      schemaVersion: 1,
+      profile: null,
+      compiledMarkdown: "# Как агенту работать со мной\n",
+    },
+  });
+
+  const server = createServer(async (request, response) => {
+    try {
+      const body = request.method === "POST" ? await readRequestBody(request) : Buffer.alloc(0);
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}/runs`
+      ) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: serializeRun(),
+          workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
+        }));
+        return;
+      }
+
+      if (request.url === `/api/agent-workspaces/runs/${runId}/heartbeat`) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          ...serializeRun(),
+          leaseExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/runs/${runId}/draft`
+      ) {
+        assert.ok(body.byteLength > 0, "blocker must upload a non-empty draft bundle");
+        await writeFile(draftUploadPath, body);
+        await runGit(draftRepository, [
+          "fetch",
+          draftUploadPath,
+          "+refs/heads/trelio-candidate:refs/heads/draft",
+        ]);
+        draftHead = (await runGit(draftRepository, ["rev-parse", "refs/heads/draft"])).stdout.trim();
+        assert.notEqual(draftHead, baseExport.head);
+        await runGit(draftRepository, [
+          "update-ref",
+          `refs/trelio/exports/${runId}`,
+          draftHead,
+        ]);
+        await runGit(draftRepository, [
+          "bundle",
+          "create",
+          draftExportPath,
+          `refs/trelio/exports/${runId}`,
+        ]);
+        draftBundle = await readFile(draftExportPath);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: {
+            ...serializeRun(),
+            draftUpdatedAt: new Date().toISOString(),
+          },
+          draft: { head: draftHead, baseHead: baseExport.head },
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/runs/${runId}/checkpoints`
+      ) {
+        checkpointPayload = JSON.parse(body.toString("utf8"));
+        assert.equal(checkpointPayload.checkpointType, "blocker");
+        assert.equal(checkpointPayload.draftHead, draftHead);
+        assert.deepEqual(checkpointPayload.openQuestions, ["Какой вариант согласовать?"]);
+        assert.equal(
+          checkpointPayload.nextAction.instruction,
+          "Выберите вариант, затем продолжите этот Run.",
+        );
+        currentStatus = "waiting_for_human";
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          id: checkpointId,
+          runId,
+          checkpointType: "blocker",
+          candidateHead: draftHead,
+          summary: checkpointPayload.summary,
+          evidenceJson: [],
+          filesChangedJson: checkpointPayload.filesChanged || [],
+          openQuestionsJson: checkpointPayload.openQuestions,
+          nextActionJson: checkpointPayload.nextAction,
+          createdAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      if (
+        request.method === "GET"
+        && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}`
+      ) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
+          runs: [serializeRun()],
+          checkpoints: checkpointPayload
+            ? [{
+                id: checkpointId,
+                runId,
+                checkpointType: "blocker",
+                candidateHead: draftHead,
+                summary: checkpointPayload.summary,
+                evidenceJson: [],
+                filesChangedJson: checkpointPayload.filesChanged || [],
+                openQuestionsJson: checkpointPayload.openQuestions,
+                nextActionJson: checkpointPayload.nextAction,
+                createdAt: new Date().toISOString(),
+              }]
+            : [],
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/runs/${runId}/claim`
+      ) {
+        const claim = JSON.parse(body.toString("utf8"));
+        assert.equal(currentStatus, "waiting_for_human");
+        assert.equal(claim.expectedFencingToken, fencingToken);
+        fencingToken += 1;
+        currentStatus = "running";
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(serializeRun()));
+        return;
+      }
+
+      if (request.url === `/api/agent-workspaces/runs/${runId}/bundle`) {
+        response.setHeader("content-type", "application/vnd.git.bundle");
+        response.end(draftBundle || baseExport.bundle);
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await Promise.all([
+      mkdir(firstHomeDirectory, { recursive: true }),
+      mkdir(secondHomeDirectory, { recursive: true }),
+    ]);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const serverAddress = server.address();
+    assert.ok(serverAddress && typeof serverAddress === "object");
+    const origin = `http://127.0.0.1:${serverAddress.port}`;
+    await Promise.all([
+      writeTestCredential(firstHomeDirectory, origin),
+      writeTestCredential(secondHomeDirectory, origin),
+    ]);
+
+    await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "open",
+        "--origin",
+        origin,
+        "--workspace",
+        writableWorkspaceId,
+        "--dir",
+        firstRootDirectory,
+      ],
+      {
+        cwd: temporaryDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, HOME: firstHomeDirectory },
+      },
+    );
+    const firstWorkspaceDirectory = path.join(firstRootDirectory, "workspace");
+    await mkdir(path.join(firstWorkspaceDirectory, "artifacts"), { recursive: true });
+    await writeFile(
+      path.join(firstWorkspaceDirectory, "artifacts", "decision.md"),
+      "# Варианты решения\n\nDraft с первого компьютера.\n",
+      "utf8",
+    );
+
+    const checkpointed = await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "checkpoint",
+        "--type",
+        "blocker",
+        "--summary",
+        "Подготовлены варианты, нужен выбор человека.",
+        "--question",
+        "Какой вариант согласовать?",
+        "--next-action",
+        "Выберите вариант, затем продолжите этот Run.",
+      ],
+      {
+        cwd: firstWorkspaceDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, HOME: firstHomeDirectory },
+      },
+    );
+    assert.match(checkpointed.stdout, /Draft snapshot сохранён/u);
+    assert.match(checkpointed.stdout, /Checkpoint сохранён/u);
+    assert.equal(currentStatus, "waiting_for_human");
+    assert.ok(draftHead);
+
+    await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "open",
+        "--origin",
+        origin,
+        "--workspace",
+        writableWorkspaceId,
+        "--run",
+        runId,
+        "--dir",
+        secondRootDirectory,
+      ],
+      {
+        cwd: temporaryDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, HOME: secondHomeDirectory },
+      },
+    );
+
+    assert.equal(
+      await readFile(
+        path.join(secondRootDirectory, "workspace", "artifacts", "decision.md"),
+        "utf8",
+      ),
+      "# Варианты решения\n\nDraft с первого компьютера.\n",
+    );
+    const transferredCheckpoint = JSON.parse(
+      await readFile(
+        path.join(secondRootDirectory, "context", "run-checkpoint.json"),
+        "utf8",
+      ),
+    );
+    assert.equal(transferredCheckpoint.checkpointId, checkpointId);
+    assert.equal(transferredCheckpoint.draftHead, draftHead);
+    assert.deepEqual(transferredCheckpoint.openQuestions, ["Какой вариант согласовать?"]);
+    assert.equal(
+      transferredCheckpoint.nextAction.instruction,
+      "Выберите вариант, затем продолжите этот Run.",
+    );
+    assert.equal(currentStatus, "running");
+    assert.equal(
+      baseExport.head,
+      JSON.parse(
+        await readFile(path.join(secondRootDirectory, ".trelio-run.json"), "utf8"),
+      ).baseHead,
+      "server draft must not replace the accepted base head",
+    );
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    if (process.platform !== "win32") {
+      await execFileAsync("chmod", ["-R", "u+w", temporaryDirectory]).catch(() => undefined);
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("context fetch downloads one exact path, reuses verified cache and rejects tampered cache", {
   timeout: 15_000,
 }, async () => {
@@ -800,7 +1142,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.1");
+  assert.equal(BRIDGE_VERSION, "1.5.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

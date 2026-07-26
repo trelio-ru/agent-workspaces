@@ -246,6 +246,13 @@ Trelio-монорепозитории быть не должно.
   работу до `codex plugin marketplace upgrade trelio-plugins`, полного
   перезапуска и новой задачи. Текущий Run можно продолжить повторным `open`;
   подделывать version header или обходить gate другим `clientKind` нельзя.
+- Начиная с `1.5.2` blocker checkpoint является двухфазной переносимой
+  остановкой: bridge сначала готовит и загружает полный проверенный draft,
+  включая external objects, и только затем создаёт blocker с exact
+  `draftHead`. Новый компьютер claim-ит тот же Run и получает server draft
+  вместе с read-only `context/run-checkpoint.json`; accepted revision при этом
+  не меняется. Грязное или расходящееся локальное дерево нельзя
+  автоматически перезаписывать server draft.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio
