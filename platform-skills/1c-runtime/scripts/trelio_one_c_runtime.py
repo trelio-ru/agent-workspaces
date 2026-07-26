@@ -220,6 +220,38 @@ INVENTORY_DOCUMENT_TERMS = {
     "transfer": ("Перемещ",),
 }
 INVENTORY_STOCK_TERMS = ("Остат", "Склад", "Товар", "Номенклатур")
+INVENTORY_PREFERRED_ENTITIES = {
+    ("reference", "organization"): ("Catalog_Организации",),
+    ("reference", "business_unit"): (
+        "Catalog_СтруктураПредприятия",
+        "Catalog_ПодразделенияОрганизаций",
+        "Catalog_ОбъектыСтроительства",
+        "Catalog_НаправленияДеятельности",
+    ),
+    ("reference", "counterparty"): ("Catalog_Контрагенты",),
+    ("reference", "partner"): ("Catalog_Партнеры", "Catalog_Партнёры"),
+    ("reference", "contract"): ("Catalog_ДоговорыКонтрагентов",),
+    ("reference", "item"): ("Catalog_Номенклатура",),
+    ("reference", "warehouse"): ("Catalog_Склады",),
+    ("document", "purchase"): (
+        "Document_ПриобретениеТоваровУслуг",
+        "Document_ПоступлениеТоваровУслуг",
+    ),
+    ("document", "sale"): ("Document_РеализацияТоваровУслуг",),
+    ("document", "receipt"): (
+        "Document_ПриходныйОрдерНаТовары",
+        "Document_ОприходованиеИзлишковТоваров",
+    ),
+    ("document", "return"): (
+        "Document_ВозвратТоваровПоставщику",
+        "Document_ВозвратТоваровОтКлиента",
+        "Document_ВозвратТоваровМеждуОрганизациями",
+    ),
+    ("document", "transfer"): (
+        "Document_ПеремещениеТоваров",
+        "Document_ПередачаТоваровМеждуОрганизациями",
+    ),
+}
 INVENTORY_BLOCKED_TERMS = (
     "Зарплат",
     "Кадр",
@@ -234,8 +266,13 @@ INVENTORY_BLOCKED_TERMS = (
     "НДФЛ",
     "Страхов",
     "Начислен",
+    "Контактн",
+    "Доверенност",
+    "Сертификат",
 )
-MAX_INVENTORY_ENTITIES = 48
+MAX_INVENTORY_ENTITIES = 128
+MAX_INVENTORY_ENTITIES_PER_CAPABILITY = 16
+MAX_INVENTORY_SAMPLES_PER_CAPABILITY = 2
 MAX_INVENTORY_PROPERTIES = 160
 
 
@@ -969,7 +1006,35 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _metadata_candidates(raw: bytes) -> tuple[str, list[dict[str, Any]], bool]:
+def _inventory_entity_rank(
+    candidate: dict[str, Any],
+    capability: tuple[str, str],
+) -> tuple[int, int, int, int, str]:
+    """Rank fixed business candidates without relying on metadata order.
+
+    Exact conventional names are only discovery hints: they do not become a
+    production mapping until the returned schema and sample have been reviewed.
+    Base entities rank ahead of tabular parts and auxiliary catalogs so a large
+    family such as `Номенклатура` cannot crowd out another capability.
+    """
+
+    name = str(candidate["entitySet"])
+    preferred = INVENTORY_PREFERRED_ENTITIES.get(capability, ())
+    preferred_index = preferred.index(name) if name in preferred else len(preferred)
+    suffix = name.split("_", 1)[1] if "_" in name else name
+    is_auxiliary = "_" in suffix or name.endswith("ПрисоединенныеФайлы")
+    return (
+        0 if name in preferred else 1,
+        preferred_index,
+        1 if is_auxiliary else 0,
+        len(name),
+        name,
+    )
+
+
+def _metadata_candidates(
+    raw: bytes,
+) -> tuple[str, list[dict[str, Any]], bool, dict[str, dict[str, int | bool]]]:
     """Parse a bounded structural inventory from 1C metadata.
 
     Only names and declared EDM types from business-oriented candidates leave
@@ -1068,10 +1133,74 @@ def _metadata_candidates(raw: bytes) -> tuple[str, list[dict[str, Any]], bool]:
             }),
         }
 
-    ordered = sorted(grouped.values(), key=lambda item: item["entitySet"])
-    return hashlib.sha256(raw).hexdigest(), ordered[:MAX_INVENTORY_ENTITIES], (
-        len(ordered) > MAX_INVENTORY_ENTITIES
+    selected: dict[str, dict[str, Any]] = {}
+    capability_counts: dict[str, dict[str, int | bool]] = {}
+    capabilities = sorted({
+        (str(match["section"]), str(match["kind"]))
+        for candidate in grouped.values()
+        for match in candidate["matches"]
+    })
+    truncated = False
+    for capability in capabilities:
+        matches = [
+            candidate
+            for candidate in grouped.values()
+            if {
+                "section": capability[0],
+                "kind": capability[1],
+            } in candidate["matches"]
+        ]
+        matches.sort(key=lambda candidate: _inventory_entity_rank(candidate, capability))
+        limited = matches[:MAX_INVENTORY_ENTITIES_PER_CAPABILITY]
+        capability_key = f"{capability[0]}.{capability[1]}"
+        capability_counts[capability_key] = {
+            "matched": len(matches),
+            "returned": len(limited),
+            "truncated": len(matches) > len(limited),
+        }
+        truncated = truncated or len(matches) > len(limited)
+        for candidate in limited:
+            selected[str(candidate["entitySet"])] = candidate
+
+    ordered = sorted(
+        selected.values(),
+        key=lambda item: str(item["entitySet"]),
     )
+    if len(ordered) > MAX_INVENTORY_ENTITIES:
+        ordered = ordered[:MAX_INVENTORY_ENTITIES]
+        truncated = True
+    return (
+        hashlib.sha256(raw).hexdigest(),
+        ordered,
+        truncated,
+        capability_counts,
+    )
+
+
+def _inventory_sample_names(candidates: list[dict[str, Any]]) -> set[str]:
+    """Choose a bounded sample set independently for every capability."""
+
+    selected: set[str] = set()
+    capabilities = sorted({
+        (str(match["section"]), str(match["kind"]))
+        for candidate in candidates
+        for match in candidate["matches"]
+    })
+    for capability in capabilities:
+        matches = [
+            candidate
+            for candidate in candidates
+            if {
+                "section": capability[0],
+                "kind": capability[1],
+            } in candidate["matches"]
+        ]
+        matches.sort(key=lambda candidate: _inventory_entity_rank(candidate, capability))
+        selected.update(
+            str(candidate["entitySet"])
+            for candidate in matches[:MAX_INVENTORY_SAMPLES_PER_CAPABILITY]
+        )
+    return selected
 
 
 def _inventory_sample_fields(candidate: dict[str, Any]) -> list[str]:
@@ -1180,8 +1309,15 @@ def command_developer_inventory_metadata(_: argparse.Namespace) -> dict[str, Any
     except AuthenticationError:
         _mark_auth_failure(identity, config)
         raise
-    schema_digest, candidates, truncated = _metadata_candidates(raw)
+    schema_digest, candidates, truncated, capability_counts = _metadata_candidates(raw)
+    sample_names = _inventory_sample_names(candidates)
     for candidate in candidates:
+        if str(candidate["entitySet"]) not in sample_names:
+            candidate["sample"] = {
+                "sampled": False,
+                "reason": "per_capability_limit",
+            }
+            continue
         try:
             candidate["sample"] = _request_inventory_sample(
                 config,
@@ -1201,10 +1337,13 @@ def command_developer_inventory_metadata(_: argparse.Namespace) -> dict[str, Any
         "schemaDigest": f"sha256:{schema_digest}",
         "candidateCount": len(candidates),
         "candidatesTruncated": truncated,
+        "capabilityCounts": capability_counts,
         "candidates": candidates,
         "limits": {
             "maxEntities": MAX_INVENTORY_ENTITIES,
+            "maxEntitiesPerCapability": MAX_INVENTORY_ENTITIES_PER_CAPABILITY,
             "maxPropertiesPerEntity": MAX_INVENTORY_PROPERTIES,
+            "maxSamplesPerCapability": MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
             "sampleRowsPerEntity": 1,
         },
     }

@@ -78,7 +78,7 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.assertEqual(runtime.MAX_METADATA_RESPONSE_BYTES, 64 * 1024 * 1024)
 
     def test_inventory_is_bounded_structural_and_excludes_sensitive_catalogs(self) -> None:
-        digest, candidates, truncated = runtime._metadata_candidates(METADATA)
+        digest, candidates, truncated, counts = runtime._metadata_candidates(METADATA)
 
         self.assertEqual(len(digest), 64)
         self.assertFalse(truncated)
@@ -87,9 +87,39 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
             ["Catalog_\u041e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438", "Document_\u041f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435"],
         )
         self.assertNotIn("\u0417\u0430\u0440\u043f\u043b\u0430\u0442\u0430", str(candidates))
+        self.assertEqual(counts["reference.organization"]["returned"], 1)
+        self.assertEqual(counts["document.purchase"]["returned"], 1)
         self.assertLessEqual(
             max(len(candidate["properties"]) for candidate in candidates),
             runtime.MAX_INVENTORY_PROPERTIES,
+        )
+
+    def test_inventory_samples_are_bounded_per_capability(self) -> None:
+        candidates = [
+            {
+                "entitySet": f"Catalog_\u041e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438{index}",
+                "matches": [{"section": "reference", "kind": "organization"}],
+            }
+            for index in range(5)
+        ]
+        candidates.extend([
+            {
+                "entitySet": f"Document_\u041f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435{index}",
+                "matches": [{"section": "document", "kind": "purchase"}],
+            }
+            for index in range(5)
+        ])
+
+        selected = runtime._inventory_sample_names(candidates)
+
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(
+            len([name for name in selected if name.startswith("Catalog_")]),
+            runtime.MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
+        )
+        self.assertEqual(
+            len([name for name in selected if name.startswith("Document_")]),
+            runtime.MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
         )
 
     def test_inventory_command_never_returns_sample_values(self) -> None:
