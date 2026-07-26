@@ -20,8 +20,11 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+import email.utils
+import errno
 import getpass
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -33,6 +36,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,7 +44,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable
+from typing import Any, BinaryIO, Iterable, Mapping
 
 
 SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
@@ -48,7 +52,7 @@ SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
 # The backend resolves the same 1c-edo connection id for `1c`, so existing
 # personal Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.8"
+RUNTIME_VERSION = "1.0.9"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -150,6 +154,18 @@ MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
 # маршрута держим отдельный bounded cap; все sample/search/get ответы по-
 # прежнему ограничены существенно меньшими 8 МиБ.
 MAX_METADATA_RESPONSE_BYTES = 64 * 1024 * 1024
+# The cache stores only a signed-runtime-derived verdict for each fixed
+# capability, never raw metadata or arbitrary 1C field names.  It is not a TTL
+# shortcut: every broad command still contacts the fixed metadata route.  A
+# cached verdict becomes usable only after the server confirms its validator
+# with HTTP 304; without ETag/Last-Modified the runtime downloads and verifies
+# the complete metadata again.
+GENERAL_SCHEMA_CACHE_VERSION = 1
+GENERAL_SCHEMA_CACHE_LOCK_TIMEOUT_SECONDS = 180
+MAX_GENERAL_SCHEMA_CACHE_BYTES = 256 * 1024
+MAX_METADATA_ETAG_CHARS = 512
+MAX_METADATA_LAST_MODIFIED_CHARS = 128
+METADATA_ETAG_RE = re.compile(r'^(?:W/)?"[\x21\x23-\x7e]*"$')
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
@@ -731,6 +747,16 @@ class Credentials:
     password: str
 
 
+@dataclass(frozen=True)
+class MetadataResource:
+    """Bounded metadata response without exposing raw HTTP headers."""
+
+    status: int
+    body: bytes | None
+    etag: str | None
+    last_modified: str | None
+
+
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject every redirect so an allowed host cannot bounce credentials."""
 
@@ -910,6 +936,16 @@ def credentials_path(identity: Identity) -> Path:
     return connection_root(identity) / "secrets" / "personal-basic-auth.json"
 
 
+def general_schema_cache_path(identity: Identity) -> Path:
+    """Return the identity-scoped cache path shared by both 1C surfaces."""
+
+    return connection_root(identity) / "cache" / "broad-schema-v1.json"
+
+
+def general_schema_cache_lock_path(identity: Identity) -> Path:
+    return connection_root(identity) / "cache" / "broad-schema-v1.lock"
+
+
 def _assert_not_symlink(path: Path) -> None:
     with contextlib.suppress(FileNotFoundError):
         if stat.S_ISLNK(path.lstat().st_mode):
@@ -1019,6 +1055,93 @@ def _delete_private_file(path: Path) -> bool:
     return True
 
 
+@contextlib.contextmanager
+def _exclusive_private_file_lock(path: Path) -> Iterable[None]:
+    """Serialize cache refreshes across one-shot runtime processes.
+
+    The lock never carries data or credentials.  It only prevents two
+    simultaneous commands from downloading the same large metadata document.
+    A bounded wait fails closed rather than bypassing schema validation.
+    """
+
+    ensure_private_directory(path.parent)
+    _assert_not_symlink(path)
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        raise OneCEdoError(
+            "unsafe_local_storage",
+            "Не удалось безопасно открыть локальную блокировку metadata cache.",
+        ) from error
+    deadline = time.monotonic() + GENERAL_SCHEMA_CACHE_LOCK_TIMEOUT_SECONDS
+    locked = False
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OneCEdoError(
+                "unsafe_local_storage",
+                "Локальная блокировка metadata cache должна быть обычным файлом.",
+            )
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise OneCEdoError(
+                            "metadata_cache_busy",
+                            "Другая проверка metadata не завершилась вовремя.",
+                        )
+                    time.sleep(0.1)
+        elif os.name == "nt":
+            import msvcrt
+
+            if metadata.st_size == 0:
+                os.write(descriptor, b"\0")
+            while True:
+                try:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    locked = True
+                    break
+                except OSError as error:
+                    if error.errno not in {errno.EACCES, errno.EAGAIN}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise OneCEdoError(
+                            "metadata_cache_busy",
+                            "Другая проверка metadata не завершилась вовремя.",
+                        )
+                    time.sleep(0.1)
+        else:
+            raise OneCEdoError(
+                "unsafe_local_storage",
+                "Платформа не поддерживает безопасную блокировку metadata cache.",
+            )
+        yield
+    finally:
+        if locked and os.name == "posix":
+            with contextlib.suppress(OSError):
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        elif locked and os.name == "nt":
+            with contextlib.suppress(OSError):
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
+
+
 def load_access_state(identity: Identity, config: CompanyConfig) -> dict[str, Any]:
     value = _read_private_json(access_state_path(identity))
     if not value or value.get("fingerprint") != config.fingerprint:
@@ -1081,6 +1204,10 @@ def save_credentials(
     config: CompanyConfig,
     credentials: Credentials,
 ) -> None:
+    # A protected reconnect can change the metadata visibility of the same
+    # endpoint.  Remove the old attestation before persisting the new
+    # credentials so it can never be revalidated under another identity.
+    _delete_private_file(general_schema_cache_path(identity))
     _write_private_json(
         credentials_path(identity),
         {
@@ -1256,6 +1383,8 @@ def _http_open(
     x_odata: str | None,
     diagnostic_stage: str,
     accept: str | None = None,
+    conditional_headers: Mapping[str, str] | None = None,
+    allow_not_modified: bool = False,
 ) -> Any:
     if diagnostic_stage not in DIAGNOSTIC_STAGES:
         raise OneCEdoError(
@@ -1296,6 +1425,28 @@ def _http_open(
     }
     if x_odata is not None:
         headers["X-OData"] = x_odata
+    for name, value in (conditional_headers or {}).items():
+        # Conditional headers can originate only from the private,
+        # integrity-protected metadata cache. Repeat a strict allowlist and
+        # newline/size check here so a corrupted local file cannot become a
+        # generic header-injection primitive.
+        if name not in {"If-None-Match", "If-Modified-Since"}:
+            raise OneCEdoError(
+                "query_builder_error",
+                "Runtime отклонила неподдерживаемый conditional header.",
+            )
+        if (
+            not isinstance(value, str)
+            or not value
+            or len(value) > MAX_METADATA_ETAG_CHARS
+            or "\r" in value
+            or "\n" in value
+        ):
+            raise OneCEdoError(
+                "invalid_local_state",
+                "Локальный metadata validator повреждён.",
+            )
+        headers[name] = value
     request = urllib.request.Request(url, headers=headers, method=method)
     opener = urllib.request.build_opener(
         NoRedirectHandler(),
@@ -1304,6 +1455,12 @@ def _http_open(
     try:
         return opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as error:
+        if allow_not_modified and error.code == 304:
+            # urllib represents a valid conditional response as HTTPError.
+            # The caller receives only the status and safe validator
+            # availability; neither header values nor request details are
+            # serialized to the agent.
+            return error
         if error.code in {401, 403}:
             raise AuthenticationError(
                 "authentication_failed",
@@ -1377,12 +1534,62 @@ def _metadata_url(config: CompanyConfig) -> str:
     return f"{config.odata_base_url}$metadata"
 
 
-def _request_metadata(
+def _safe_metadata_validators(headers: Any) -> tuple[str | None, str | None]:
+    """Extract only syntactically safe validators for a later conditional GET.
+
+    Header values stay in the private cache and are never returned in the
+    runtime JSON. Unsupported or malformed values are ignored, causing the
+    next broad command to perform another complete metadata verification.
+    """
+
+    raw_etag = headers.get("ETag") if headers is not None else None
+    etag = str(raw_etag).strip() if raw_etag is not None else ""
+    if (
+        not etag
+        or len(etag) > MAX_METADATA_ETAG_CHARS
+        or not METADATA_ETAG_RE.fullmatch(etag)
+    ):
+        etag = ""
+
+    raw_last_modified = (
+        headers.get("Last-Modified") if headers is not None else None
+    )
+    last_modified = (
+        str(raw_last_modified).strip()
+        if raw_last_modified is not None
+        else ""
+    )
+    if (
+        not last_modified
+        or len(last_modified) > MAX_METADATA_LAST_MODIFIED_CHARS
+        or "\r" in last_modified
+        or "\n" in last_modified
+    ):
+        last_modified = ""
+    else:
+        try:
+            if email.utils.parsedate_to_datetime(last_modified) is None:
+                last_modified = ""
+        except (TypeError, ValueError, OverflowError):
+            last_modified = ""
+    return etag or None, last_modified or None
+
+
+def _request_metadata_resource(
     config: CompanyConfig,
     credentials: Credentials,
     *,
+    validators: Mapping[str, str] | None = None,
     diagnostic_stage: str = "metadata.inventory.fetch",
-) -> bytes:
+) -> MetadataResource:
+    conditional_headers: dict[str, str] = {}
+    if validators:
+        etag = validators.get("etag")
+        last_modified = validators.get("lastModified")
+        if etag:
+            conditional_headers["If-None-Match"] = etag
+        if last_modified:
+            conditional_headers["If-Modified-Since"] = last_modified
     response = _http_open(
         "GET",
         _metadata_url(config),
@@ -1391,9 +1598,48 @@ def _request_metadata(
         x_odata=_require_x_odata(),
         diagnostic_stage=diagnostic_stage,
         accept="application/xml",
+        conditional_headers=conditional_headers,
+        allow_not_modified=bool(conditional_headers),
     )
     with response:
-        return _read_limited(response, MAX_METADATA_RESPONSE_BYTES)
+        status_code = int(
+            getattr(response, "status", None)
+            or getattr(response, "code", None)
+            or response.getcode(),
+        )
+        etag, last_modified = _safe_metadata_validators(response.headers)
+        if status_code == 304:
+            return MetadataResource(
+                status=304,
+                body=None,
+                etag=etag,
+                last_modified=last_modified,
+            )
+        return MetadataResource(
+            status=status_code,
+            body=_read_limited(response, MAX_METADATA_RESPONSE_BYTES),
+            etag=etag,
+            last_modified=last_modified,
+        )
+
+
+def _request_metadata(
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    diagnostic_stage: str = "metadata.inventory.fetch",
+) -> bytes:
+    resource = _request_metadata_resource(
+        config,
+        credentials,
+        diagnostic_stage=diagnostic_stage,
+    )
+    if resource.status != 200 or resource.body is None:
+        raise OneCEdoError(
+            "invalid_metadata_response",
+            "1С вернула неожиданный ответ metadata.",
+        )
+    return resource.body
 
 
 def _xml_local_name(tag: str) -> str:
@@ -2894,6 +3140,7 @@ def command_forget_credentials(_: argparse.Namespace) -> dict[str, Any]:
     identity = load_identity()
     config = load_company_config()
     removed = _delete_private_file(credentials_path(identity))
+    _delete_private_file(general_schema_cache_path(identity))
     save_access_state(identity, config, "unknown")
     return {"status": "unknown", "credentialsRemoved": removed}
 
@@ -2940,6 +3187,284 @@ def _general_capability_digest(section: str, kind: str) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _general_registry_digest() -> str:
+    """Bind cache entries to the complete signed broad capability registry."""
+
+    material = [
+        _general_registry_material(section, kind)
+        for section, registry in (
+            ("reference", GENERAL_REFERENCE_SPECS),
+            ("document", GENERAL_DOCUMENT_SPECS),
+        )
+        for kind in registry
+    ]
+    raw = _canonical_json(material).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _general_identity_boundary(identity: Identity) -> str:
+    """Hash the identity tuple so the cache payload does not repeat UUIDs."""
+
+    raw = _canonical_json(
+        {
+            "companyId": identity.company_id,
+            "memberId": identity.member_id,
+            "connectionId": identity.connection_id,
+        },
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _general_cache_hmac_key(
+    identity: Identity,
+    credentials: Credentials,
+) -> bytes:
+    """Derive a local integrity key without persisting another secret.
+
+    Anyone who can read the personal credential file already controls the 1C
+    session.  HMAC still protects against a lower-privileged process that can
+    tamper with the cache path but cannot read that private credential file.
+    """
+
+    # Canonical JSON keeps the derivation unambiguous even if a credential
+    # contains a delimiter-like character.
+    material = _canonical_json(
+        {
+            "context": "trelio-1c-general-schema-cache-v1",
+            "companyId": identity.company_id,
+            "memberId": identity.member_id,
+            "connectionId": identity.connection_id,
+            "username": credentials.username,
+            "password": credentials.password,
+        },
+    ).encode("utf-8")
+    return hashlib.sha256(material).digest()
+
+
+def _sign_general_schema_cache(
+    payload: Mapping[str, Any],
+    identity: Identity,
+    credentials: Credentials,
+) -> str:
+    return hmac.new(
+        _general_cache_hmac_key(identity, credentials),
+        _canonical_json(payload).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _general_capability_keys() -> tuple[str, ...]:
+    return (
+        *(f"reference.{kind}" for kind in GENERAL_REFERENCE_SPECS),
+        *(f"document.{kind}" for kind in GENERAL_DOCUMENT_SPECS),
+    )
+
+
+def _general_schema_capability_states(
+    entity_sets: Mapping[str, str],
+    type_fields: Mapping[str, Mapping[str, str]],
+) -> dict[str, str]:
+    """Reduce full metadata to exact allowlisted verification verdicts."""
+
+    states: dict[str, str] = {}
+    for section, registry in (
+        ("reference", GENERAL_REFERENCE_SPECS),
+        ("document", GENERAL_DOCUMENT_SPECS),
+    ):
+        for kind in registry:
+            state = "matched"
+            material = _general_registry_material(section, kind)
+            for source in material["sources"]:
+                entity_type = entity_sets.get(source["entity"])
+                fields = type_fields.get(entity_type or "", {})
+                if not entity_type:
+                    state = "entity_missing"
+                    break
+                if any(
+                    fields.get(field) != expected_type
+                    for field, expected_type in source["fields"].items()
+                ):
+                    state = "field_mapping_changed"
+                    break
+                line_fields = source["lineFields"]
+                if not line_fields:
+                    continue
+                collection_type = fields.get("Товары", "")
+                if not (
+                    collection_type.startswith("Collection(")
+                    and collection_type.endswith(")")
+                ):
+                    state = "line_collection_changed"
+                    break
+                row_fields = type_fields.get(collection_type[11:-1], {})
+                if any(
+                    row_fields.get(field) != expected_type
+                    for field, expected_type in line_fields.items()
+                ):
+                    state = "line_mapping_changed"
+                    break
+            states[f"{section}.{kind}"] = state
+    return states
+
+
+def _metadata_validator_kind(
+    etag: str | None,
+    last_modified: str | None,
+) -> str:
+    if etag and last_modified:
+        return "etag_and_last_modified"
+    if etag:
+        return "etag"
+    if last_modified:
+        return "last_modified"
+    return "none"
+
+
+def _read_general_schema_cache(
+    identity: Identity,
+    config: CompanyConfig,
+    credentials: Credentials,
+) -> dict[str, Any] | None:
+    path = general_schema_cache_path(identity)
+    _assert_not_symlink(path)
+    if not path.exists():
+        return None
+    try:
+        if path.stat().st_size > MAX_GENERAL_SCHEMA_CACHE_BYTES:
+            raise OneCEdoError(
+                "invalid_local_state",
+                "Локальный metadata cache превысил безопасный размер.",
+            )
+    except OSError as error:
+        raise OneCEdoError(
+            "invalid_local_state",
+            "Не удалось проверить локальный metadata cache.",
+        ) from error
+    stored = _read_private_json(path)
+    if stored is None:
+        return None
+    integrity = stored.pop("integrity", None)
+    if (
+        not isinstance(integrity, str)
+        or len(integrity) != 64
+        or not hmac.compare_digest(
+            integrity,
+            _sign_general_schema_cache(stored, identity, credentials),
+        )
+    ):
+        raise OneCEdoError(
+            "invalid_local_state",
+            "Целостность локального metadata cache не подтверждена.",
+        )
+
+    # A valid old cache is a miss, never an authorization shortcut, after any
+    # release, registry, connection or identity-boundary change.
+    if (
+        stored.get("schemaVersion") != GENERAL_SCHEMA_CACHE_VERSION
+        or stored.get("runtimeVersion") != RUNTIME_VERSION
+        or stored.get("registryDigest") != _general_registry_digest()
+        or stored.get("connectionFingerprint") != config.fingerprint
+        or stored.get("identityBoundary") != _general_identity_boundary(identity)
+    ):
+        return None
+
+    schema_digest = stored.get("schemaDigest")
+    states = stored.get("capabilityStates")
+    validators = stored.get("validators")
+    if (
+        not isinstance(schema_digest, str)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", schema_digest)
+        or not isinstance(states, dict)
+        or set(states) != set(_general_capability_keys())
+        or any(
+            value
+            not in {
+                "matched",
+                "entity_missing",
+                "field_mapping_changed",
+                "line_collection_changed",
+                "line_mapping_changed",
+            }
+            for value in states.values()
+        )
+        or not isinstance(validators, dict)
+    ):
+        raise OneCEdoError(
+            "invalid_local_state",
+            "Локальный metadata cache имеет некорректную структуру.",
+        )
+    etag = validators.get("etag")
+    last_modified = validators.get("lastModified")
+    if etag is not None and (
+        not isinstance(etag, str)
+        or len(etag) > MAX_METADATA_ETAG_CHARS
+        or not METADATA_ETAG_RE.fullmatch(etag)
+    ):
+        raise OneCEdoError(
+            "invalid_local_state",
+            "Локальный ETag metadata cache повреждён.",
+        )
+    if last_modified is not None:
+        if (
+            not isinstance(last_modified, str)
+            or len(last_modified) > MAX_METADATA_LAST_MODIFIED_CHARS
+            or "\r" in last_modified
+            or "\n" in last_modified
+        ):
+            raise OneCEdoError(
+                "invalid_local_state",
+                "Локальный Last-Modified metadata cache повреждён.",
+            )
+        try:
+            if email.utils.parsedate_to_datetime(last_modified) is None:
+                raise ValueError("invalid Last-Modified")
+        except (TypeError, ValueError, OverflowError) as error:
+            raise OneCEdoError(
+                "invalid_local_state",
+                "Локальный Last-Modified metadata cache повреждён.",
+            ) from error
+    if not etag and not last_modified:
+        # Entries without a server validator can never satisfy the
+        # per-request validation contract.
+        return None
+    return stored
+
+
+def _write_general_schema_cache(
+    identity: Identity,
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    schema_digest: str,
+    states: Mapping[str, str],
+    etag: str | None,
+    last_modified: str | None,
+) -> None:
+    if not etag and not last_modified:
+        _delete_private_file(general_schema_cache_path(identity))
+        return
+    payload: dict[str, Any] = {
+        "schemaVersion": GENERAL_SCHEMA_CACHE_VERSION,
+        "runtimeVersion": RUNTIME_VERSION,
+        "registryDigest": _general_registry_digest(),
+        "connectionFingerprint": config.fingerprint,
+        "identityBoundary": _general_identity_boundary(identity),
+        "schemaDigest": schema_digest,
+        "capabilityStates": dict(states),
+        "validators": {
+            "etag": etag,
+            "lastModified": last_modified,
+        },
+        "verifiedAt": _utc_now(),
+    }
+    payload["integrity"] = _sign_general_schema_cache(
+        payload,
+        identity,
+        credentials,
+    )
+    _write_private_json(general_schema_cache_path(identity), payload)
 
 
 def _parse_general_schema(
@@ -2999,62 +3524,136 @@ def _verify_general_schema(
     credentials: Credentials,
     capabilities: Iterable[tuple[str, str]],
 ) -> dict[str, Any]:
-    """Fail closed only when a field used by the requested capability changed.
+    """Validate the remote schema on every broad command.
 
-    The full publication digest is still reported for audit.  An unrelated
-    metadata addition does not disable every capability; removal or type drift
-    of a fixed entity/field/row field does.
+    The first command downloads and parses full metadata. A later one may use
+    the private projection only after the same fixed route confirms ETag or
+    Last-Modified with HTTP 304. Network errors, missing validators, a 200
+    response, cache tampering or any binding mismatch never reuse stale state.
     """
 
-    raw = _request_metadata(
-        config,
-        credentials,
-        diagnostic_stage="general.schema.verify",
-    )
-    schema_digest = f"sha256:{hashlib.sha256(raw).hexdigest()}"
-    entity_sets, type_fields = _parse_general_schema(raw)
+    identity = load_identity()
+    with _exclusive_private_file_lock(general_schema_cache_lock_path(identity)):
+        cached = _read_general_schema_cache(identity, config, credentials)
+        validators = (
+            dict(cached["validators"])
+            if cached is not None
+            else None
+        )
+        resource = _request_metadata_resource(
+            config,
+            credentials,
+            validators=validators,
+            diagnostic_stage="general.schema.verify",
+        )
+        if resource.status == 304:
+            if cached is None:
+                raise OneCEdoError(
+                    "invalid_metadata_response",
+                    "1С вернула 304 без подтверждённого локального metadata cache.",
+                )
+            cached_etag = validators.get("etag")
+            cached_last_modified = validators.get("lastModified")
+            if (
+                resource.etag is not None
+                and cached_etag is not None
+                and resource.etag != cached_etag
+            ) or (
+                resource.last_modified is not None
+                and cached_last_modified is not None
+                and resource.last_modified != cached_last_modified
+            ):
+                # A 304 may omit validators or add a previously absent one,
+                # but it must not contradict a validator that caused this
+                # conditional request. Treat such a response as ambiguous and
+                # never reuse the cached projection.
+                raise OneCEdoError(
+                    "invalid_metadata_response",
+                    "1С вернула противоречивое подтверждение metadata validator.",
+                )
+            schema_digest = str(cached["schemaDigest"])
+            states = dict(cached["capabilityStates"])
+            etag = resource.etag or cached_etag
+            last_modified = (
+                resource.last_modified or cached_last_modified
+            )
+            _write_general_schema_cache(
+                identity,
+                config,
+                credentials,
+                schema_digest=schema_digest,
+                states=states,
+                etag=etag,
+                last_modified=last_modified,
+            )
+            validation = {
+                "mode": "conditional_not_modified",
+                "conditionalRequest": True,
+                "serverValidator": _metadata_validator_kind(
+                    etag,
+                    last_modified,
+                ),
+                "cacheProjectionUsed": True,
+            }
+        elif resource.status == 200 and resource.body is not None:
+            schema_digest = (
+                f"sha256:{hashlib.sha256(resource.body).hexdigest()}"
+            )
+            entity_sets, type_fields = _parse_general_schema(resource.body)
+            states = _general_schema_capability_states(
+                entity_sets,
+                type_fields,
+            )
+            _write_general_schema_cache(
+                identity,
+                config,
+                credentials,
+                schema_digest=schema_digest,
+                states=states,
+                etag=resource.etag,
+                last_modified=resource.last_modified,
+            )
+            validation = {
+                "mode": (
+                    "conditional_full_response"
+                    if validators
+                    else "full_download"
+                ),
+                "conditionalRequest": bool(validators),
+                "serverValidator": _metadata_validator_kind(
+                    resource.etag,
+                    resource.last_modified,
+                ),
+                "cacheProjectionUsed": False,
+            }
+        else:
+            raise OneCEdoError(
+                "invalid_metadata_response",
+                "1С вернула неожиданный ответ metadata.",
+            )
+
     verified: dict[str, str] = {}
     for section, kind in capabilities:
-        material = _general_registry_material(section, kind)
-        for source in material["sources"]:
-            entity = source["entity"]
-            entity_type = entity_sets.get(entity)
-            fields = type_fields.get(entity_type or "", {})
-            if not entity_type:
-                raise OneCEdoError(
-                    "capability_schema_changed",
-                    f"1С capability {section}.{kind} отключена: entity отсутствует в текущей schema.",
-                )
-            for field, expected_type in source["fields"].items():
-                if fields.get(field) != expected_type:
-                    raise OneCEdoError(
-                        "capability_schema_changed",
-                        f"1С capability {section}.{kind} отключена: mapping больше не совпадает со schema.",
-                    )
-            line_fields = source["lineFields"]
-            if line_fields:
-                collection_type = fields.get("Товары", "")
-                if not (
-                    collection_type.startswith("Collection(")
-                    and collection_type.endswith(")")
-                ):
-                    raise OneCEdoError(
-                        "capability_schema_changed",
-                        f"1С capability {section}.{kind} отключена: строки документа больше не подтверждены.",
-                    )
-                row_fields = type_fields.get(collection_type[11:-1], {})
-                for field, expected_type in line_fields.items():
-                    if row_fields.get(field) != expected_type:
-                        raise OneCEdoError(
-                            "capability_schema_changed",
-                            f"1С capability {section}.{kind} отключена: mapping строк больше не совпадает со schema.",
-                        )
-        verified[f"{section}.{kind}"] = _general_capability_digest(section, kind)
+        key = f"{section}.{kind}"
+        state = states.get(key)
+        if state != "matched":
+            detail = {
+                "entity_missing": "entity отсутствует в текущей schema",
+                "field_mapping_changed": "mapping больше не совпадает со schema",
+                "line_collection_changed": "строки документа больше не подтверждены",
+                "line_mapping_changed": "mapping строк больше не совпадает со schema",
+            }.get(str(state), "результат проверки schema неоднозначен")
+            raise OneCEdoError(
+                "capability_schema_changed",
+                f"1С capability {key} отключена: {detail}.",
+            )
+        verified[key] = _general_capability_digest(section, kind)
     return {
         "schemaDigest": schema_digest,
         "inventorySchemaDigest": GENERAL_INVENTORY_SCHEMA_DIGEST,
         "fullSchemaChanged": schema_digest != GENERAL_INVENTORY_SCHEMA_DIGEST,
         "capabilityDigests": verified,
+        "validation": validation,
     }
 
 

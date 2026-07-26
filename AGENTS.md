@@ -214,6 +214,21 @@ Trelio-монорепозитории быть не должно.
   суммировать как остатки. `get-links` следует только подтверждённому
   `СтруктураПредприятия → ДоговорыКонтрагентов → хозяйственный документ → ЭДО`
   и не дублирует list/download файлов из `1c-edo`.
+  Начиная с runtime `1.0.9`, broad-команды сохраняют между одноразовыми
+  процессами только HMAC-защищённую allowlisted projection результата schema
+  verification, никогда raw metadata. Cache привязан одновременно к
+  company/member/connection identity boundary, connection fingerprint,
+  runtime release и digest полного signed registry, хранится атомарно с
+  private permissions в существующем `1c-edo` namespace и удаляется при
+  reconnect/forget. Это не TTL shortcut: перед каждым поддержанным broad
+  запросом runtime всё равно обращается к fixed `$metadata` route. Projection
+  разрешено использовать только после серверного `304` на сохранённый
+  ETag/Last-Modified; при `200` metadata полностью перечитывается и
+  перепроверяется, при отсутствии validator каждый вызов остаётся full
+  verification, а network/cache/validator ambiguity всегда fail-closed без
+  stale-on-error. Обычная диагностика показывает только
+  `full_download` / `conditional_not_modified`, тип доступного validator и
+  факт использования projection, но никогда значение header, URL или body.
   Текстовый поиск не сканирует случайные первые страницы: он ограниченно ищет
   бизнес-объекты и договоры, следует только подтверждённым связям
   `Catalog_СтруктураПредприятия` → `Подразделение_Key` либо

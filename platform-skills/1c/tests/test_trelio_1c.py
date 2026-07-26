@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ET
 from argparse import Namespace
@@ -317,7 +320,7 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         self.assertEqual(actual, expected)
 
     def test_schema_verifier_accepts_snapshot_and_rejects_affected_drift(self) -> None:
-        config = mock.Mock()
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
         credentials = runtime.Credentials("user", "password")
         capabilities = [
             *(("reference", kind) for kind in runtime.GENERAL_REFERENCE_SPECS),
@@ -325,8 +328,13 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
         ]
         with mock.patch.object(
             runtime,
-            "_request_metadata",
-            return_value=production_metadata(),
+            "_request_metadata_resource",
+            return_value=runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag='"schema-v1"',
+                last_modified=None,
+            ),
         ):
             verified = runtime._verify_general_schema(
                 config,
@@ -340,7 +348,16 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
             override=("Catalog_Организации.Description", "Edm.Int32"),
         )
         with (
-            mock.patch.object(runtime, "_request_metadata", return_value=drifted),
+            mock.patch.object(
+                runtime,
+                "_request_metadata_resource",
+                return_value=runtime.MetadataResource(
+                    status=200,
+                    body=drifted,
+                    etag='"schema-v2"',
+                    last_modified=None,
+                ),
+            ),
             self.assertRaisesRegex(runtime.OneCEdoError, "reference.organization"),
         ):
             runtime._verify_general_schema(
@@ -348,6 +365,294 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
                 credentials,
                 (("reference", "organization"),),
             )
+
+    def test_schema_cache_requires_conditional_confirmation_on_every_call(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("user", "password")
+        capability = (("reference", "organization"),)
+        requests: list[dict[str, str] | None] = []
+
+        def request(*_args, validators=None, **_kwargs):
+            requests.append(validators)
+            if len(requests) == 1:
+                return runtime.MetadataResource(
+                    status=200,
+                    body=production_metadata(),
+                    etag='"stable-schema"',
+                    last_modified=None,
+                )
+            return runtime.MetadataResource(
+                status=304,
+                body=None,
+                etag='"stable-schema"',
+                last_modified=None,
+            )
+
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            side_effect=request,
+        ):
+            cold = runtime._verify_general_schema(
+                config,
+                credentials,
+                capability,
+            )
+            warm = runtime._verify_general_schema(
+                config,
+                credentials,
+                capability,
+            )
+
+        self.assertIsNone(requests[0])
+        self.assertEqual(
+            requests[1],
+            {"etag": '"stable-schema"', "lastModified": None},
+        )
+        self.assertEqual(cold["validation"]["mode"], "full_download")
+        self.assertEqual(
+            warm["validation"]["mode"],
+            "conditional_not_modified",
+        )
+        self.assertTrue(warm["validation"]["cacheProjectionUsed"])
+
+    def test_schema_without_validator_is_downloaded_again_not_ttl_cached(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("user", "password")
+        requests: list[dict[str, str] | None] = []
+
+        def request(*_args, validators=None, **_kwargs):
+            requests.append(validators)
+            return runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag=None,
+                last_modified=None,
+            )
+
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            side_effect=request,
+        ):
+            first = runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+            second = runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+        self.assertEqual(requests, [None, None])
+        self.assertEqual(first["validation"]["serverValidator"], "none")
+        self.assertEqual(second["validation"]["mode"], "full_download")
+        self.assertFalse(
+            runtime.general_schema_cache_path(runtime.load_identity()).exists(),
+        )
+
+    def test_schema_cache_tampering_fails_closed_before_network(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("user", "password")
+        identity = runtime.load_identity()
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            return_value=runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag='"stable-schema"',
+                last_modified=None,
+            ),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+        path = runtime.general_schema_cache_path(identity)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["schemaDigest"] = "sha256:" + ("0" * 64)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        path.chmod(0o600)
+
+        with (
+            mock.patch.object(runtime, "_request_metadata_resource") as request,
+            self.assertRaisesRegex(runtime.OneCEdoError, "Целостность"),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+        request.assert_not_called()
+
+    def test_schema_cache_rejects_a_contradictory_304_validator(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("user", "password")
+        capability = (("reference", "organization"),)
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            return_value=runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag='"schema-v1"',
+                last_modified=None,
+            ),
+        ):
+            runtime._verify_general_schema(config, credentials, capability)
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_request_metadata_resource",
+                return_value=runtime.MetadataResource(
+                    status=304,
+                    body=None,
+                    etag='"schema-v2"',
+                    last_modified=None,
+                ),
+            ),
+            self.assertRaisesRegex(
+                runtime.OneCEdoError,
+                "противоречивое",
+            ),
+        ):
+            runtime._verify_general_schema(config, credentials, capability)
+
+    def test_schema_cache_is_private_minimal_and_never_stale_on_error(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("private-user", "private-password")
+        identity = runtime.load_identity()
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            return_value=runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag='"stable-schema"',
+                last_modified=None,
+            ),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+        path = runtime.general_schema_cache_path(identity)
+        serialized = path.read_text(encoding="utf-8")
+        self.assertEqual(path.stat().st_mode & 0o077, 0)
+        self.assertNotIn("private-user", serialized)
+        self.assertNotIn("private-password", serialized)
+        self.assertNotIn("Catalog_", serialized)
+        self.assertNotIn("Document_", serialized)
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_request_metadata_resource",
+                side_effect=runtime.NetworkError(
+                    "network_error",
+                    "offline",
+                ),
+            ),
+            self.assertRaises(runtime.NetworkError),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+    def test_metadata_validator_diagnostic_never_returns_header_values(self) -> None:
+        headers = {
+            "ETag": '"private-etag-value"',
+            "Last-Modified": "Sun, 27 Jul 2026 00:00:00 GMT",
+        }
+
+        etag, last_modified = runtime._safe_metadata_validators(headers)
+        diagnostic = runtime._metadata_validator_kind(etag, last_modified)
+
+        self.assertEqual(diagnostic, "etag_and_last_modified")
+        self.assertNotIn("private-etag-value", diagnostic)
+        self.assertEqual(
+            runtime._safe_metadata_validators(
+                {
+                    "ETag": "invalid\r\nInjected: value",
+                    "Last-Modified": "not-a-date",
+                },
+            ),
+            (None, None),
+        )
+
+    def test_schema_cache_survives_separate_one_shot_process(self) -> None:
+        config = mock.Mock(fingerprint="test-connection-fingerprint")
+        credentials = runtime.Credentials("user", "password")
+        with mock.patch.object(
+            runtime,
+            "_request_metadata_resource",
+            return_value=runtime.MetadataResource(
+                status=200,
+                body=production_metadata(),
+                etag='"stable-schema"',
+                last_modified=None,
+            ),
+        ):
+            runtime._verify_general_schema(
+                config,
+                credentials,
+                (("reference", "organization"),),
+            )
+
+        child = f"""
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from unittest import mock
+path = Path({str(SCRIPT)!r})
+spec = importlib.util.spec_from_file_location("trelio_one_c_child", path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+config = mock.Mock(fingerprint="test-connection-fingerprint")
+credentials = module.Credentials("user", "password")
+with mock.patch.object(
+    module,
+    "_request_metadata_resource",
+    return_value=module.MetadataResource(
+        status=304,
+        body=None,
+        etag='"stable-schema"',
+        last_modified=None,
+    ),
+):
+    result = module._verify_general_schema(
+        config,
+        credentials,
+        (("reference", "organization"),),
+    )
+print(json.dumps(result["validation"], sort_keys=True))
+"""
+        started = time.monotonic()
+        completed = subprocess.run(
+            [sys.executable, "-c", child],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=dict(os.environ),
+            timeout=5,
+        )
+        elapsed = time.monotonic() - started
+
+        validation = json.loads(completed.stdout)
+        self.assertEqual(validation["mode"], "conditional_not_modified")
+        self.assertLess(elapsed, 2.0)
 
     def test_reference_search_normalizes_and_drops_unselected_fields(self) -> None:
         identity = runtime.Identity(COMPANY_ID, MEMBER_ID, CONNECTION_ID)
