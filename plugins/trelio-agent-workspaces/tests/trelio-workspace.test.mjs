@@ -764,7 +764,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.9");
+  assert.equal(BRIDGE_VERSION, "1.4.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1751,6 +1751,186 @@ test("bridge submit external object writes the pointer through stdin without han
       expectedPointer,
     );
     assert.deepEqual(await readFile(path.join(objectDirectory, "archive.bin")), binaryBytes);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge registers inherited objects for a clean precommitted candidate", {
+  timeout: 15_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-precommitted-submit-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const runDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  const objectDirectory = path.join(workspaceDirectory, "sources");
+  // NUL makes the fixture unambiguously binary for the bridge inspection.
+  const binaryBytes = Buffer.from([0, 8, 9, 10]);
+  const binaryDigest = createHash("sha256").update(binaryBytes).digest("hex");
+  const expectedPointer = [
+    "version https://trelio.ru/spec/workspace-object/v1",
+    `oid sha256:${binaryDigest}`,
+    `size ${binaryBytes.byteLength}`,
+    "content-type application/octet-stream",
+    "",
+  ].join("\n");
+  let registerAttempts = 0;
+  let candidateAttempts = 0;
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      const body = await readRequestBody(request);
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url?.endsWith("/heartbeat")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }));
+        return;
+      }
+
+      if (request.url?.endsWith("/objects/register")) {
+        registerAttempts += 1;
+        const registration = JSON.parse(body.toString("utf8"));
+        assert.deepEqual(registration, {
+          leaseId: "55555555-5555-4555-8555-555555555555",
+          fencingToken: 7,
+          filePath: "sources/inherited.bin",
+          sha256: binaryDigest,
+          sizeBytes: binaryBytes.byteLength,
+          contentType: "application/octet-stream",
+        });
+        // Объект уже существует в company storage: новый Run получает только
+        // exact path binding, а содержимое повторно не загружается.
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          uploadRequired: false,
+          pointer: expectedPointer,
+        }));
+        return;
+      }
+
+      if (request.url?.endsWith("/candidate")) {
+        candidateAttempts += 1;
+        assert.equal(
+          registerAttempts,
+          1,
+          "the inherited pointer must be registered before candidate submission",
+        );
+        assert.ok(body.byteLength > 0, "precommitted candidate bundle must reach the server");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: { status: "accepted" },
+          projection: { status: "projected" },
+        }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(objectDirectory, { recursive: true });
+    await mkdir(homeDirectory, { recursive: true });
+    await runGit(workspaceDirectory, ["init", "--initial-branch=trelio-candidate"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Bridge Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "bridge-test@trelio.local"]);
+    await writeFile(path.join(workspaceDirectory, "README.md"), "# Base\n", "utf8");
+    await writeFile(path.join(objectDirectory, "inherited.bin"), expectedPointer, "utf8");
+    await runGit(workspaceDirectory, ["add", "README.md", "sources/inherited.bin"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Base"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // `open` materializes bytes while Git keeps the accepted pointer. The
+    // user then commits an unrelated text change before calling submit.
+    await writeFile(path.join(objectDirectory, "inherited.bin"), binaryBytes);
+    await runGit(workspaceDirectory, ["update-index", "--skip-worktree", "sources/inherited.bin"]);
+    await writeFile(path.join(workspaceDirectory, "README.md"), "# Candidate\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "README.md"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Precommitted candidate"]);
+    assert.equal(
+      (await runGit(workspaceDirectory, ["status", "--short"])).stdout,
+      "",
+      "regression requires a clean working tree",
+    );
+
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const serverAddress = server.address();
+    assert.ok(serverAddress && typeof serverAddress === "object");
+    const origin = `http://127.0.0.1:${serverAddress.port}`;
+    const credentialDirectory = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+    );
+    await mkdir(credentialDirectory, { recursive: true, mode: 0o700 });
+    if (process.platform !== "win32") {
+      await chmod(credentialDirectory, 0o700);
+    }
+    await writeFile(
+      path.join(credentialDirectory, "credentials.json"),
+      `${JSON.stringify({ [origin]: { accessToken: "integration-token" } }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    await writeFile(
+      path.join(runDirectory, ".trelio-run.json"),
+      `${JSON.stringify({
+        schemaVersion: 3,
+        origin,
+        pluginVersion: BRIDGE_VERSION,
+        workspaceId: "44444444-4444-4444-8444-444444444444",
+        runId,
+        leaseId: "55555555-5555-4555-8555-555555555555",
+        fencingToken: 7,
+        baseHead,
+        workspaceDirectory,
+        contextHeads: {},
+        contexts: [],
+        objects: [{
+          filePath: "sources/inherited.bin",
+          sha256: binaryDigest,
+          sizeBytes: binaryBytes.byteLength,
+          contentType: "application/octet-stream",
+        }],
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const submitted = await execFileAsync(
+      process.execPath,
+      [bridgePath, "submit"],
+      {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 8_000,
+        env: {
+          ...process.env,
+          HOME: homeDirectory,
+        },
+      },
+    );
+
+    assert.match(submitted.stdout, /Статус: принят автоматически/);
+    assert.equal(registerAttempts, 1);
+    assert.equal(candidateAttempts, 1);
+    assert.deepEqual(await readFile(path.join(objectDirectory, "inherited.bin")), binaryBytes);
+    assert.equal(
+      (await runGit(workspaceDirectory, ["show", "HEAD:sources/inherited.bin"])).stdout,
+      expectedPointer,
+    );
+    assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await rm(temporaryDirectory, { recursive: true, force: true });

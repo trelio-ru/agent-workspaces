@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.4.9";
+export const BRIDGE_VERSION = "1.4.10";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -3961,11 +3961,19 @@ const hasStagedChanges = async (workspaceDirectory) => {
 const submit = async (options) => withRun(async ({ metadata, metadataPath, origin, token }) => {
   const workspaceDirectory = metadata.workspaceDirectory;
   const gitStatus = await getGitStatus(workspaceDirectory, metadata.objects || []);
+  const initialHeadResult = await run("git", ["rev-parse", "HEAD"], { cwd: workspaceDirectory });
+  const hasCommittedCandidate = initialHeadResult.stdout.trim() !== metadata.baseHead;
   let candidateObjects = metadata.objects || [];
 
-  if (gitStatus) {
+  if (gitStatus || hasCommittedCandidate) {
     // Upload большого workspace object может занять заметное время, поэтому
     // продлеваем lease до первого сетевого потока, а не только перед bundle.
+    //
+    // Подготовку нельзя пропускать и для clean working tree, если агент уже
+    // закоммитил candidate вручную. Иначе унаследованные pointer-файлы попадут
+    // в bundle, но не будут привязаны к manifest текущего Run, и backend
+    // справедливо отклонит submit. Повторная exact-регистрация идемпотентна:
+    // сервер переиспользует company object без повторной передачи содержимого.
     await heartbeat();
     candidateObjects = await prepareCandidateIndex({
       metadata,

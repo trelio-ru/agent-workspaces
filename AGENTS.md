@@ -57,7 +57,10 @@ Trelio-монорепозитории быть не должно.
   `git add --all`, не регистрирует уже завершённые path + SHA-256 + size +
   content type и продолжает с первого незавершённого файла. Backend exact
   register текущего Run остаётся идемпотентным на случай остановки между
-  server commit и локальным checkpoint.
+  server commit и локальным checkpoint. Даже при чистом working tree bridge
+  обязан заново подготовить candidate, если его `HEAD` уже отличается от
+  pinned `baseHead`: это привязывает все унаследованные external-object
+  pointers к manifest текущего Run перед отправкой bundle.
 - Агент не должен предлагать оператору самостоятельно копировать или
   публиковать уже подготовленный комментарий.
 - `trelio-skill-catalog` всегда читает текущую опубликованную инструкцию через

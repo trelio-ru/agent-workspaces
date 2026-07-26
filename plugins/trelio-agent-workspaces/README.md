@@ -301,7 +301,9 @@ workspace. Затем агент читает `PROJECT_CONTEXT.md`. Этот ф�
 потоково сохраняет в private object storage и записывает в Git точный
 content-addressed pointer. Candidate bundle содержит только delta относительно
 закреплённого base head, поэтому размер пользовательских материалов больше не
-совпадает с размером Git transport.
+совпадает с размером Git transport. Если изменения уже закоммичены вручную и
+working tree чист, submit всё равно сверяет и идемпотентно регистрирует
+унаследованные pointers в manifest текущего Run до отправки candidate.
 
 ## Локальная очистка
 
