@@ -22,7 +22,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.5.0";
+export const BRIDGE_VERSION = "1.5.1";
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -41,7 +41,7 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "- На `AGENT_SKILL_RELEASE_CHANGED` снова прочитай навык через `get_agent_skill`, не запускай stale release; отсутствие назначения не запрещает совместимый личный навык.",
   "- Сохраняй долговечные результаты в `artifacts/`, рабочие материалы в `work/`, источники в `sources/`.",
   "- Фиксируй осмысленные контрольные точки без внутренних рассуждений и технического шума.",
-  "- Для работы с задачей сам опубликуй через штатный `create_comment` содержательный комментарий о результате, проверках, вопросах и действиях участников; не перекладывай публикацию готового текста на оператора.",
+  "- Если в работе с задачей появились смысловые изменения, предложи один редактируемый комментарий с действием публикации, но не публикуй его автоматически и не останавливай из-за него работу. Каждый новый вариант заново кратко отражает суть изменений после последнего реально опубликованного предложения; неопубликованный вариант заменяется актуальной сводкой, а не дополняется копиями старого текста. `create_comment` вызывай только после явной публикации пользователем. Handoff и submit от manual comment не зависят.",
   "- Перед записью создай checkpoint типа `handoff`: простыми словами опиши результат, подтверждения, подготовленные материалы, открытые вопросы и один конкретный следующий шаг.",
   "- В сообщении человеку сначала показывай итог и требуемое решение. Не подменяй отчёт SHA, UUID, статусом Run или фразой о том, что полезный текст находится где-то внутри workspace.",
   "- Передавай результат через candidate: Trelio примет его автоматически только при актуальном base head. При конфликте начни новый Run и перенеси изменения осознанно.",
@@ -3699,8 +3699,6 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
       : [];
   const openQuestions = getOptionValues(options, "question");
   const nextActionInstruction = getOptionValues(options, "next-action")[0] || "";
-  const rawTaskCommentId = getOptionValues(options, "task-comment")[0] || "";
-  const taskCommentId = rawTaskCommentId ? requireUuid(rawTaskCommentId, "task-comment") : "";
 
   if (checkpointType === "handoff") {
     if (summary.length < 20) {
@@ -3732,7 +3730,6 @@ const checkpoint = async (options) => withRun(async ({ metadata, origin, token }
       ...(filesChanged.length > 0 ? { filesChanged } : {}),
       ...(openQuestions.length > 0 ? { openQuestions } : {}),
       ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
-      ...(taskCommentId ? { taskCommentId } : {}),
     }),
   });
   const checkpointPayload = await response.json();
@@ -4777,7 +4774,7 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace clean --dry-run\n");
   process.stdout.write("  trelio-workspace clean\n");
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
-  process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] [--task-comment UUID] --next-action TEXT\n");
+  process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] --next-action TEXT\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
   process.stdout.write("  trelio-workspace skill pack --skill ID --runtime-version X.Y.Z --source DIR --entry PATH --interpreter node|python|executable --output FILE [--capability VALUE]\n");
   process.stdout.write("  trelio-workspace skill run --company UUID [--project UUID] --skill ID --release UUID -- [ARGS...]\n");

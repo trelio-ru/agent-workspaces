@@ -415,6 +415,14 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.equal(contextIndex.userProfile.profile.revisionId, "77777777-7777-4777-8777-777777777777");
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /plan_my_agent_profile_update/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /user-profile\.md/u);
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /предложи один редактируемый комментарий с действием публикации/u,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Handoff и submit от manual comment не зависят/u,
+    );
     assert.equal(
       (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
       "",
@@ -792,7 +800,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.0");
+  assert.equal(BRIDGE_VERSION, "1.5.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -802,6 +810,21 @@ test("bridge release version stays synchronized across executable and manifests"
     cwd: ".",
     tool_timeout_sec: 660,
   });
+});
+
+test("workspace skill keeps comment proposals non-blocking and handoff comment-free", async () => {
+  const skillMarkdown = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+  const bridgeSource = await readFile(bridgePath, "utf8");
+
+  assert.match(skillMarkdown, /Do not publish it automatically/u);
+  assert.match(skillMarkdown, /semantic task changes since the last proposal the operator actually published/u);
+  assert.match(skillMarkdown, /do not pause the requested work/u);
+  assert.match(skillMarkdown, /Submission requires the meaningful handoff but never a manual task comment/u);
+  assert.doesNotMatch(skillMarkdown, /--task-comment/u);
+  assert.doesNotMatch(bridgeSource, /task-comment/u);
 });
 
 test("1C EDO secret checkout instructions avoid a nested bridge executable", async () => {
