@@ -48,7 +48,7 @@ SUPPORTED_SKILL_IDS = frozenset({"1c-edo", "1c"})
 # The backend resolves the same 1c-edo connection id for `1c`, so existing
 # personal Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.7"
+RUNTIME_VERSION = "1.0.8"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -3079,6 +3079,25 @@ def _general_number(value: Any) -> int | float | None:
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _general_integer(value: Any) -> int | None:
+    """Normalize an EDM integer without accepting arbitrary numeric text.
+
+    Standard OData JSON commonly serializes `Edm.Int64` as a decimal string to
+    avoid JavaScript precision loss.  Only a short canonical integer form is
+    accepted; floats, exponent notation and other strings remain invalid.
+    """
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if (
+        isinstance(value, str)
+        and len(value) <= 20
+        and re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value)
+    ):
+        return int(value)
+    return None
+
+
 def _general_reference_record(
     kind: str,
     spec: dict[str, Any],
@@ -3546,7 +3565,7 @@ def _general_document_record(
             continue
         line = _safe_selected_record(raw_line, spec["lineFields"])
         normalized_lines.append({
-            "lineNumber": _general_number(line.get("LineNumber")),
+            "lineNumber": _general_integer(line.get("LineNumber")),
             "itemId": _general_uuid_value(line.get("Номенклатура_Key"), "line item id"),
             "variantId": _general_uuid_value(
                 line.get("Характеристика_Key"),

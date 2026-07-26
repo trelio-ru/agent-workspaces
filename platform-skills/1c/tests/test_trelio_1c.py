@@ -447,7 +447,7 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
             "Контрагент_Key": ITEM_ID,
             "Товары": [
                 {
-                    "LineNumber": index,
+                    "LineNumber": str(index),
                     "Номенклатура_Key": ITEM_ID,
                     "Количество": 2.0,
                     "Цена": 10.0,
@@ -470,6 +470,7 @@ class OneCGeneralRuntimeTest(unittest.TestCase):
 
         self.assertEqual(result["id"], DOCUMENT_ID)
         self.assertEqual(len(result["lines"]), 2)
+        self.assertEqual(result["lines"][0]["lineNumber"], 1)
         self.assertTrue(result["lineInfo"]["truncated"])
         self.assertNotIn("must-not-leak", str(result))
         self.assertNotIn("Банков", str(result))
