@@ -764,7 +764,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.8");
+  assert.equal(BRIDGE_VERSION, "1.4.9");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -774,6 +774,26 @@ test("bridge release version stays synchronized across executable and manifests"
     cwd: ".",
     tool_timeout_sec: 660,
   });
+});
+
+test("1C EDO secret checkout instructions avoid a nested bridge executable", async () => {
+  const skillMarkdown = await readFile(
+    path.resolve(pluginDirectory, "..", "..", "platform-skills", "1c-edo", "SKILL.md"),
+    "utf8",
+  );
+
+  // prepare_agent_secret_checkout returns an argv prefix that already starts
+  // the bridge executable. Keeping this phrase under regression prevents an
+  // agent from appending the full runtime command and accidentally executing
+  // `trelio-workspace ... -- trelio-workspace skill run ...`.
+  assert.match(
+    skillMarkdown,
+    /without its first `trelio-workspace` token/,
+  );
+  assert.match(
+    skillMarkdown,
+    /trelio-workspace secret exec --grant \.\.\. -- skill run/,
+  );
 });
 
 test("bridge private credential path and Windows ACL are explicit and user-scoped", () => {

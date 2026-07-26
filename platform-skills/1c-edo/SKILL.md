@@ -55,8 +55,12 @@ For the current active Agent Run:
 1. Call `prepare_agent_secret_checkout` for that binding with delivery `env`,
    environment name `TRELIO_1C_EDO_X_ODATA`, and the exact executable
    `trelio-workspace`.
-2. Prefix the exact `runtimeExecution.command` with the returned
-   `argvPrefix`/`trelio-workspace secret exec --grant ... --` command.
+2. Take the returned `bridge.argvPrefix` (the
+   `trelio-workspace secret exec --grant ... --` prefix), then append
+   `runtimeExecution.command` **without its first `trelio-workspace` token**,
+   followed by the runtime arguments. The resulting command must contain one
+   bridge executable only:
+   `trelio-workspace secret exec --grant ... -- skill run ... -- <arguments>`.
 3. Do not replace the executable with a shell, `env`, logger, `printenv` or any
    program that could reveal the value. Do not print or inspect the injected
    environment.
