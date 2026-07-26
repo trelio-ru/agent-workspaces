@@ -1058,7 +1058,7 @@ def _metadata_candidates(
         namespace = str(schema.attrib.get("Namespace") or "")
         for entity_type in (
             child for child in schema
-            if _xml_local_name(child.tag) == "EntityType"
+            if _xml_local_name(child.tag) in {"EntityType", "ComplexType"}
         ):
             type_name = str(entity_type.attrib.get("Name") or "")
             if not type_name:
