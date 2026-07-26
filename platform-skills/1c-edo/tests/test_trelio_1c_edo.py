@@ -339,6 +339,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "Остановлен": False,
                 "ОбменБезПодписи": False,
                 "УдалитьСостояниеЭДО": "",
+                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
             },
         )
         incoming = MODULE._normalize_document(
@@ -351,6 +352,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "Остановлен": False,
                 "ОбменБезПодписи": False,
                 "УдалитьСостояниеЭДО": "",
+                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
             },
         )
 
@@ -376,11 +378,65 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 document["statusAvailability"],
                 {
                     "available": False,
-                    "reason": "register_not_published",
+                    "basis": "document_legacy_status_field",
+                    "coverage": "opportunistic",
+                    "statusChangedAt": None,
+                    "reason": "document_legacy_status_field_empty",
                 },
             )
             self.assertFalse(document["isStopped"])
             self.assertFalse(document["exchangeWithoutSignature"])
+
+    def test_legacy_status_is_opportunistic_and_normalizes_change_date(self) -> None:
+        """A card status is useful only when the fixed legacy field is non-empty."""
+
+        filled = MODULE._normalize_document(
+            {
+                "ДатаПодписания": "0001-01-01T00:00:00",
+                "УдалитьСостояниеЭДО": "  Ожидается подтверждение  ",
+                "УдалитьДатаИзмененияСостоянияЭДО": "2026-07-25T10:20:30",
+                "Остановлен": False,
+                "ОбменБезПодписи": False,
+            },
+        )
+        empty = MODULE._normalize_document(
+            {
+                "ДатаПодписания": "2026-07-23T15:04:00",
+                "УдалитьСостояниеЭДО": "   ",
+                "УдалитьДатаИзмененияСостоянияЭДО": "0001-01-01T00:00:00",
+                "Остановлен": True,
+                "ОбменБезПодписи": True,
+            },
+        )
+
+        self.assertEqual(filled["edoStatus"], "Ожидается подтверждение")
+        self.assertEqual(
+            filled["statusAvailability"],
+            {
+                "available": True,
+                "basis": "document_legacy_status_field",
+                "coverage": "opportunistic",
+                "statusChangedAt": "2026-07-25T10:20:30",
+            },
+        )
+        self.assertFalse(filled["signature"]["isSigned"])
+        self.assertFalse(filled["isStopped"])
+        self.assertFalse(filled["exchangeWithoutSignature"])
+
+        self.assertEqual(empty["edoStatus"], "unknown")
+        self.assertEqual(
+            empty["statusAvailability"],
+            {
+                "available": False,
+                "basis": "document_legacy_status_field",
+                "coverage": "opportunistic",
+                "statusChangedAt": None,
+                "reason": "document_legacy_status_field_empty",
+            },
+        )
+        self.assertTrue(empty["signature"]["isSigned"])
+        self.assertTrue(empty["isStopped"])
+        self.assertTrue(empty["exchangeWithoutSignature"])
 
     def test_empty_sentinel_and_malformed_signing_dates_fail_closed(self) -> None:
         for unset in (None, "", "   ", "0001-01-01T00:00:00", "0001-01-01T00:00:00Z"):
@@ -394,6 +450,28 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "некорректную дату подписания",
             ):
                 MODULE._normalize_document({"ДатаПодписания": malformed})
+
+    def test_malformed_legacy_status_fields_fail_closed(self) -> None:
+        for malformed_status in (False, 1, "contains\ncontrol", "я" * 513):
+            with self.assertRaisesRegex(
+                MODULE.OneCEdoError,
+                "некорректное legacy-состояние",
+            ):
+                MODULE._normalize_document(
+                    {"УдалитьСостояниеЭДО": malformed_status},
+                )
+
+        for malformed_date in (False, 1, "not-a-timestamp"):
+            with self.assertRaisesRegex(
+                MODULE.OneCEdoError,
+                "некорректную дату изменения legacy-состояния",
+            ):
+                MODULE._normalize_document(
+                    {
+                        "УдалитьСостояниеЭДО": "Подписан",
+                        "УдалитьДатаИзмененияСостоянияЭДО": malformed_date,
+                    },
+                )
 
     def test_mixed_file_signature_flags_never_change_document_signature(self) -> None:
         """Mixed new/old attachment flags must stay file-local."""
@@ -557,6 +635,10 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Number": "IN-120",
                             "Комментарий": "Мурманск-4",
                             "ДатаПодписания": "0001-01-01T00:00:00",
+                            "УдалитьСостояниеЭДО": "",
+                            "УдалитьДатаИзмененияСостоянияЭДО": (
+                                "0001-01-01T00:00:00"
+                            ),
                             "Остановлен": False,
                             "ОбменБезПодписи": False,
                             "ServerIgnoredSelect": "blocked",
@@ -571,6 +653,10 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                             "Number": "OUT-120",
                             "Комментарий": "Мурманск-4",
                             "ДатаПодписания": "2026-07-23T15:04:00",
+                            "УдалитьСостояниеЭДО": "Подписан",
+                            "УдалитьДатаИзмененияСостоянияЭДО": (
+                                "2026-07-23T15:04:04"
+                            ),
                             "Остановлен": False,
                             "ОбменБезПодписи": False,
                         },
@@ -608,6 +694,22 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertEqual(
             signatures["outgoing"]["signedAt"],
             "2026-07-23T15:04:00",
+        )
+        statuses = {
+            item["direction"]: (
+                item["document"]["edoStatus"],
+                item["document"]["statusAvailability"],
+            )
+            for item in result["documents"]
+        }
+        self.assertEqual(statuses["incoming"][0], "unknown")
+        self.assertFalse(statuses["incoming"][1]["available"])
+        self.assertIsNone(statuses["incoming"][1]["statusChangedAt"])
+        self.assertEqual(statuses["outgoing"][0], "Подписан")
+        self.assertTrue(statuses["outgoing"][1]["available"])
+        self.assertEqual(
+            statuses["outgoing"][1]["statusChangedAt"],
+            "2026-07-23T15:04:04",
         )
         for item in result["documents"]:
             self.assertEqual(
@@ -652,40 +754,97 @@ class OneCEdoRuntimeTest(unittest.TestCase):
                 "ДатаПодписания" in parameters["$select"]
                 and "Остановлен" in parameters["$select"]
                 and "ОбменБезПодписи" in parameters["$select"]
+                and "УдалитьСостояниеЭДО" in parameters["$select"]
+                and "УдалитьДатаИзмененияСостоянияЭДО" in parameters["$select"]
                 for parameters in document_calls
             ),
         )
 
-    def test_get_document_returns_the_same_normalized_signature_contract(self) -> None:
+    def test_get_document_matches_search_status_contract_for_both_directions(self) -> None:
         self.store_connected_credentials()
-        raw_document = {
-            "Ref_Key": LIVE_OUTGOING_DOCUMENT_ID,
-            "Number": "00000002110",
-            "НомерДокумента": "2110",
-            "ДатаПодписания": "2026-07-23T15:04:00",
-            "Остановлен": False,
-            "ОбменБезПодписи": False,
-        }
-        with mock.patch.object(
-            MODULE,
-            "_request_odata",
-            return_value={"value": [raw_document]},
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
         ):
-            result = MODULE.command_get_document(
+            query = dict(parameters)
+            calls.append((entity, query))
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
+            self.assertIn("$select", query)
+            self.assertIn("УдалитьСостояниеЭДО", str(query["$select"]))
+            self.assertIn(
+                "УдалитьДатаИзмененияСостоянияЭДО",
+                str(query["$select"]),
+            )
+            common = {
+                "Остановлен": False,
+                "ОбменБезПодписи": False,
+                # A server ignoring `$select` must not leak extra card fields.
+                "ServerIgnoredSelect": "blocked",
+            }
+            if entity == MODULE.DOCUMENT_ENTITIES["outgoing"]:
+                return {
+                    "value": [
+                        {
+                            **common,
+                            "Ref_Key": LIVE_OUTGOING_DOCUMENT_ID,
+                            "ДатаПодписания": "2026-07-23T15:04:00",
+                            "УдалитьСостояниеЭДО": "Подписан",
+                            "УдалитьДатаИзмененияСостоянияЭДО": (
+                                "2026-07-23T15:04:04"
+                            ),
+                        },
+                    ],
+                }
+            return {
+                "value": [
+                    {
+                        **common,
+                        "Ref_Key": LIVE_INCOMING_DOCUMENT_ID,
+                        "ДатаПодписания": "0001-01-01T00:00:00",
+                        "УдалитьСостояниеЭДО": "",
+                        "УдалитьДатаИзмененияСостоянияЭДО": (
+                            "0001-01-01T00:00:00"
+                        ),
+                    },
+                ],
+            }
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            outgoing = MODULE.command_get_document(
                 argparse.Namespace(
                     direction="outgoing",
                     document_id=LIVE_OUTGOING_DOCUMENT_ID,
                 ),
-            )
-        self.assertEqual(result["document"]["signature"]["isSigned"], True)
+            )["document"]
+            incoming = MODULE.command_get_document(
+                argparse.Namespace(
+                    direction="incoming",
+                    document_id=LIVE_INCOMING_DOCUMENT_ID,
+                ),
+            )["document"]
+
+        self.assertEqual(outgoing["edoStatus"], "Подписан")
+        self.assertTrue(outgoing["statusAvailability"]["available"])
         self.assertEqual(
-            result["document"]["signature"]["signedAt"],
-            "2026-07-23T15:04:00",
+            outgoing["statusAvailability"]["statusChangedAt"],
+            "2026-07-23T15:04:04",
         )
-        self.assertEqual(result["document"]["edoStatus"], "unknown")
+        self.assertTrue(outgoing["signature"]["isSigned"])
+        self.assertEqual(incoming["edoStatus"], "unknown")
+        self.assertFalse(incoming["statusAvailability"]["available"])
+        self.assertIsNone(incoming["statusAvailability"]["statusChangedAt"])
+        self.assertFalse(incoming["signature"]["isSigned"])
+        self.assertNotIn("ServerIgnoredSelect", outgoing)
+        self.assertNotIn("ServerIgnoredSelect", incoming)
         self.assertEqual(
-            result["document"]["statusAvailability"]["reason"],
-            "register_not_published",
+            {entity for entity, _query in calls},
+            set(MODULE.DOCUMENT_ENTITIES.values()),
         )
 
     def test_search_escapes_apostrophe_unicode_and_percent_20(self) -> None:

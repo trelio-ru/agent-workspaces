@@ -43,7 +43,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.3"
+RUNTIME_VERSION = "1.0.4"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -111,10 +111,14 @@ DOCUMENT_SELECT_FIELDS = (
     "Организация_Key",
     "Остановлен",
     "СуммаДокумента",
+    "УдалитьДатаИзмененияСостоянияЭДО",
+    "УдалитьСостояниеЭДО",
 )
 DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
 DOCUMENT_SIGNATURE_BASIS = "document_signing_date"
-EDO_STATUS_UNAVAILABLE_REASON = "register_not_published"
+DOCUMENT_STATUS_BASIS = "document_legacy_status_field"
+DOCUMENT_STATUS_COVERAGE = "opportunistic"
+EDO_STATUS_EMPTY_REASON = "document_legacy_status_field_empty"
 CONTRACT_RELATION_DIAGNOSTIC_STAGES = {
     "НаправлениеДеятельности_Key": "search.contracts.by-business-direction",
     "Подразделение_Key": "search.contracts.by-subdivision",
@@ -133,6 +137,7 @@ UUID_RE = re.compile(
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
+MAX_EDO_STATUS_CHARS = 512
 MAX_BUSINESS_MATCHES_PER_ENTITY = 5
 MAX_RELATED_BUSINESS_OBJECTS = 20
 MAX_RELATED_CONTRACTS = 20
@@ -921,15 +926,14 @@ def _normalized_boolean(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def _normalized_signing_date(value: Any) -> str | None:
-    """Normalize the published 1C signing date without inventing a status.
+def _normalized_1c_datetime(value: Any, *, field_label: str) -> str | None:
+    """Normalize one fixed 1C datetime while treating its sentinel as absent.
 
     1C serializes an unset date as the minimum platform timestamp
     ``0001-01-01T00:00:00``. Empty and minimum timestamps mean that the
-    document has no signing date. A malformed non-empty value is rejected
-    instead of being silently converted to ``isSigned=false``: otherwise an
-    upstream schema/serializer regression could produce a false business
-    statement.
+    source field is not set. A malformed non-empty value is rejected instead
+    of silently becoming ``null``: otherwise an upstream schema/serializer
+    regression could produce a false business statement.
     """
 
     if value is None:
@@ -937,7 +941,7 @@ def _normalized_signing_date(value: Any) -> str | None:
     if not isinstance(value, str):
         raise OneCEdoError(
             "invalid_odata_response",
-            "1С вернула некорректную дату подписания документа.",
+            f"1С вернула некорректную дату {field_label}.",
         )
     normalized = value.strip()
     if not normalized:
@@ -947,20 +951,61 @@ def _normalized_signing_date(value: Any) -> str | None:
     except ValueError as error:
         raise OneCEdoError(
             "invalid_odata_response",
-            "1С вернула некорректную дату подписания документа.",
+            f"1С вернула некорректную дату {field_label}.",
         ) from error
     if parsed == dt.datetime.min.replace(tzinfo=parsed.tzinfo):
         return None
     return normalized
 
 
+def _normalized_signing_date(value: Any) -> str | None:
+    """Normalize the published signing date used only for document signature."""
+
+    return _normalized_1c_datetime(value, field_label="подписания документа")
+
+
+def _normalized_legacy_status(value: Any) -> str | None:
+    """Return a bounded legacy card status without claiming full coverage.
+
+    The published document field has useful values on many cards, but live
+    evidence also contains documents where it is empty. Only a non-empty
+    string is therefore authoritative for that one card. Unexpected types,
+    control characters or an implausibly large value fail closed instead of
+    becoming an agent-visible status.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректное legacy-состояние ЭДО.",
+        )
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if (
+        len(normalized) > MAX_EDO_STATUS_CHARS
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in normalized
+        )
+    ):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректное legacy-состояние ЭДО.",
+        )
+    return normalized
+
+
 def _normalize_document(value: dict[str, Any]) -> dict[str, Any]:
     """Add stable document semantics while preserving safe source scalars.
 
-    The full EDO workflow status is deliberately *not* inferred from document
-    flags or attachment metadata. The confirmed state register is absent from
-    the published OData schema, and ``file.ПодписанЭП`` describes only one
-    concrete attachment (live documents contain mixed true/false files).
+    The published state register is absent, so the legacy card field is only
+    an opportunistic per-document source: a non-empty value is returned with
+    an explicit basis, while an empty value remains ``unknown``. Neither this
+    source nor document flags or ``file.ПодписанЭП`` may affect the independent
+    document signature normalization.
     """
 
     result = dict(value)
@@ -970,11 +1015,21 @@ def _normalize_document(value: dict[str, Any]) -> dict[str, Any]:
         "signedAt": signed_at,
         "basis": DOCUMENT_SIGNATURE_BASIS,
     }
-    result["edoStatus"] = "unknown"
-    result["statusAvailability"] = {
-        "available": False,
-        "reason": EDO_STATUS_UNAVAILABLE_REASON,
+    legacy_status = _normalized_legacy_status(result.get("УдалитьСостояниеЭДО"))
+    status_changed_at = _normalized_1c_datetime(
+        result.get("УдалитьДатаИзмененияСостоянияЭДО"),
+        field_label="изменения legacy-состояния ЭДО",
+    )
+    result["edoStatus"] = legacy_status or "unknown"
+    status_availability: dict[str, Any] = {
+        "available": legacy_status is not None,
+        "basis": DOCUMENT_STATUS_BASIS,
+        "coverage": DOCUMENT_STATUS_COVERAGE,
+        "statusChangedAt": status_changed_at,
     }
+    if legacy_status is None:
+        status_availability["reason"] = EDO_STATUS_EMPTY_REASON
+    result["statusAvailability"] = status_availability
     result["isStopped"] = _normalized_boolean(result.get("Остановлен"))
     result["exchangeWithoutSignature"] = _normalized_boolean(
         result.get("ОбменБезПодписи"),
@@ -1572,7 +1627,11 @@ def command_get_document(args: argparse.Namespace) -> dict[str, Any]:
                 config,
                 credentials,
                 entity,
-                (("$filter", filter_value), ("$top", 1)),
+                (
+                    ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                    ("$filter", filter_value),
+                    ("$top", 1),
+                ),
                 diagnostic_stage=f"document.{direction[0]}.get",
             ),
         )
@@ -1583,7 +1642,9 @@ def command_get_document(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "direction": direction[0],
         "document": (
-            _normalize_document(_safe_scalar_record(rows[0]))
+            _normalize_document(
+                _safe_selected_record(rows[0], DOCUMENT_SELECT_FIELDS),
+            )
             if rows
             else None
         ),
