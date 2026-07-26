@@ -75,8 +75,13 @@ file endpoint itself receives only personal Basic Auth.
 Use these runtime commands:
 
 - `search-documents --direction incoming|outgoing|both [--query TEXT]`
-  retrieves bounded pages from the fixed document entities, then applies the
-  text term locally across safe scalar fields.
+  without a query returns a bounded recent list. With a query it first searches
+  the fixed business-object and contract fields, follows only the confirmed
+  subdivision/business-direction → contract → `ДоговорКонтрагента` relation,
+  and merges that result with fixed direct document-card text matches.
+  Results include normalized `businessObjects`, `contracts`, document
+  `matchedBy` reasons and the effective limits. The runtime escapes OData
+  string literals itself; never pre-escape the text or add OData syntax.
 - `get-document --direction incoming|outgoing --document-id UUID` retrieves
   one exact document.
 - `list-files --direction incoming|outgoing --document-id UUID` follows both

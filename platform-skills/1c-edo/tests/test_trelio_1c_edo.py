@@ -28,6 +28,9 @@ CONNECTION_ID = "33333333-3333-4333-8333-333333333333"
 DOCUMENT_ID = "44444444-4444-4444-8444-444444444444"
 MESSAGE_ID = "55555555-5555-4555-8555-555555555555"
 FILE_ID = "66666666-6666-4666-8666-666666666666"
+BUSINESS_ID = "77777777-7777-4777-8777-777777777777"
+CONTRACT_ID = "982a385d-df58-11f0-a58a-047c16799dce"
+OUTGOING_DOCUMENT_ID = "88888888-8888-4888-8888-888888888888"
 
 
 def company_config(**overrides: object) -> dict[str, object]:
@@ -275,6 +278,226 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertEqual(request.call_args.args[0], "GET")
         self.assertIsNone(request.call_args.kwargs["x_odata"])
         self.assertEqual(list(destination.parent.glob("*.part")), [])
+
+    def test_search_follows_business_contract_chain_for_both_directions(self) -> None:
+        self.store_connected_credentials()
+        calls: list[tuple[str, tuple[tuple[str, object], ...]]] = []
+
+        def fake_request(_config, _credentials, entity, parameters=()):
+            parameters = tuple(parameters)
+            calls.append((entity, parameters))
+            query = dict(parameters)
+            filter_value = str(query.get("$filter", ""))
+            if entity == "Catalog_ПодразделенияОрганизаций":
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": BUSINESS_ID,
+                            "Description": "Мурманск-4",
+                            "НеожиданноеПоле": "не должно выйти наружу",
+                        },
+                    ],
+                }
+            if entity == MODULE.CONTRACT_ENTITY:
+                if "Подразделение_Key eq guid" in filter_value:
+                    return {
+                        "value": [
+                            {
+                                "Ref_Key": CONTRACT_ID,
+                                "Description": (
+                                    "Агентский договор №120 от 18.12.2025 "
+                                    "(Мурманск-4)"
+                                ),
+                                "Подразделение_Key": BUSINESS_ID,
+                            },
+                        ],
+                    }
+                if "substringof" in filter_value:
+                    # The same contract is intentionally returned by the
+                    # direct fallback to verify stable deduplication.
+                    return {
+                        "value": [
+                            {
+                                "Ref_Key": CONTRACT_ID,
+                                "Description": "Мурманск-4",
+                                "Подразделение_Key": BUSINESS_ID,
+                            },
+                        ],
+                    }
+            if entity == MODULE.DOCUMENT_ENTITIES["incoming"]:
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": DOCUMENT_ID,
+                            "Number": "IN-120",
+                            "Комментарий": "Мурманск-4",
+                            "ServerIgnoredSelect": "blocked",
+                        },
+                    ],
+                }
+            if entity == MODULE.DOCUMENT_ENTITIES["outgoing"]:
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": OUTGOING_DOCUMENT_ID,
+                            "Number": "OUT-120",
+                            "Комментарий": "Мурманск-4",
+                        },
+                    ],
+                }
+            return {"value": []}
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            result = MODULE.command_search_documents(
+                argparse.Namespace(direction="both", query="Мурманск-4"),
+            )
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(
+            {item["direction"] for item in result["documents"]},
+            {"incoming", "outgoing"},
+        )
+        self.assertEqual(len(result["contracts"]), 1)
+        self.assertEqual(
+            {match["kind"] for match in result["contracts"][0]["matchedBy"]},
+            {"subdivision", "contract_text"},
+        )
+        self.assertEqual(len(result["businessObjects"]), 1)
+        self.assertNotIn(
+            "ServerIgnoredSelect",
+            result["documents"][0]["document"],
+        )
+        for item in result["documents"]:
+            self.assertEqual(
+                {match["kind"] for match in item["matchedBy"]},
+                {"contract", "document_text"},
+            )
+
+        contract_document_calls = [
+            (entity, dict(parameters))
+            for entity, parameters in calls
+            if entity in MODULE.DOCUMENT_ENTITIES.values()
+            and "ДоговорКонтрагента eq cast" in str(dict(parameters).get("$filter"))
+        ]
+        self.assertEqual(len(contract_document_calls), 2)
+        self.assertTrue(
+            all(
+                CONTRACT_ID in str(parameters["$filter"])
+                for _, parameters in contract_document_calls
+            ),
+        )
+
+    def test_search_escapes_apostrophe_unicode_and_percent_20(self) -> None:
+        self.store_connected_credentials()
+        filters: list[str] = []
+
+        def fake_request(config, _credentials, entity, parameters=()):
+            query = dict(parameters)
+            if "$filter" in query:
+                filters.append(str(query["$filter"]))
+                url = MODULE._odata_url(config, entity, parameters)
+                self.assertNotIn("+", url)
+                self.assertNotIn(" ", url)
+                self.assertIn("%20", url)
+            return {"value": []}
+
+        term = "ООО O'Reilly – Мурманск"
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            result = MODULE.command_search_documents(
+                argparse.Namespace(direction="incoming", query=term),
+            )
+        self.assertEqual(result["count"], 0)
+        self.assertTrue(filters)
+        self.assertTrue(all("O''Reilly" in value for value in filters))
+        self.assertTrue(any("–" in value for value in filters))
+
+    def test_paging_caps_rows_even_when_server_ignores_top(self) -> None:
+        _, config, credentials = self.store_connected_credentials()
+        os.environ["TRELIO_SKILL_CONNECTION_CONFIG_JSON"] = json.dumps(
+            company_config(maxRows=2, maxPages=2),
+        )
+        config = MODULE.load_company_config()
+        requests: list[dict[str, object]] = []
+        excessive_rows = [
+            {"Ref_Key": str(__import__("uuid").uuid4()), "Description": str(index)}
+            for index in range(100)
+        ]
+
+        def fake_request(_config, _credentials, _entity, parameters=()):
+            requests.append(dict(parameters))
+            return {"value": excessive_rows}
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            rows = MODULE._bounded_odata_rows(
+                config,
+                credentials,
+                "Catalog_ПодразделенияОрганизаций",
+                parameters=(
+                    ("$select", "Ref_Key,Description"),
+                    ("$filter", "substringof('Мурманск',Description)"),
+                ),
+                limit=50,
+            )
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(
+            [(request["$top"], request["$skip"]) for request in requests],
+            [(2, 0), (2, 2)],
+        )
+
+    def test_search_rejects_arbitrary_odata_cli_and_long_or_control_query(self) -> None:
+        parser = MODULE.build_parser()
+        for option in ("--entity", "--filter", "--select", "--orderby", "--url"):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(
+                    ["search-documents", option, "Catalog_Users"],
+                )
+        with self.assertRaisesRegex(MODULE.OneCEdoError, "длиннее"):
+            MODULE._search_term("я" * (MODULE.MAX_SEARCH_QUERY_CHARS + 1))
+        with self.assertRaisesRegex(MODULE.OneCEdoError, "управляющие"):
+            MODULE._search_term("Мурманск\n4")
+
+    def test_empty_search_browses_fixed_entities_and_no_match_is_empty(self) -> None:
+        self.store_connected_credentials()
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def browse_request(_config, _credentials, entity, parameters=()):
+            query = dict(parameters)
+            calls.append((entity, query))
+            if entity == MODULE.DOCUMENT_ENTITIES["incoming"]:
+                return {"value": [{"Ref_Key": DOCUMENT_ID, "Number": "recent"}]}
+            if entity == MODULE.DOCUMENT_ENTITIES["outgoing"]:
+                return {
+                    "value": [
+                        {"Ref_Key": OUTGOING_DOCUMENT_ID, "Number": "recent"},
+                    ],
+                }
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=browse_request):
+            browse = MODULE.command_search_documents(
+                argparse.Namespace(direction="both", query=""),
+            )
+        self.assertEqual(browse["count"], 2)
+        self.assertEqual(
+            {entity for entity, _ in calls},
+            set(MODULE.DOCUMENT_ENTITIES.values()),
+        )
+        self.assertTrue(all("$filter" not in query for _, query in calls))
+        self.assertTrue(all(query["$orderby"] == "Date desc" for _, query in calls))
+
+        with mock.patch.object(
+            MODULE,
+            "_request_odata",
+            return_value={"value": []},
+        ):
+            empty = MODULE.command_search_documents(
+                argparse.Namespace(direction="outgoing", query="нет совпадений"),
+            )
+        self.assertEqual(empty["count"], 0)
+        self.assertEqual(empty["documents"], [])
+        self.assertEqual(empty["contracts"], [])
+        self.assertEqual(empty["businessObjects"], [])
 
     def test_search_is_bounded_and_auth_failure_sets_needs_reconnect(self) -> None:
         identity, config, _ = self.store_connected_credentials()

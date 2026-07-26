@@ -43,7 +43,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.0"
+RUNTIME_VERSION = "1.0.1"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -51,6 +51,57 @@ DOCUMENT_ENTITIES = {
     "incoming": "Document_ЭлектронныйДокументВходящийЭДО",
     "outgoing": "Document_ЭлектронныйДокументИсходящийЭДО",
 }
+CONTRACT_ENTITY = "Catalog_ДоговорыКонтрагентов"
+BUSINESS_ENTITY_SPECS = {
+    "Catalog_ОбъектыСтроительства": {
+        "kind": "construction_object",
+        "contractRelationField": None,
+    },
+    "Catalog_НаправленияДеятельности": {
+        "kind": "business_direction",
+        "contractRelationField": "НаправлениеДеятельности_Key",
+    },
+    "Catalog_ПодразделенияОрганизаций": {
+        "kind": "subdivision",
+        "contractRelationField": "Подразделение_Key",
+    },
+    "Catalog_СтруктураПредприятия": {
+        "kind": "enterprise_structure",
+        "contractRelationField": None,
+    },
+}
+BUSINESS_SELECT_FIELDS = ("Ref_Key", "Description")
+CONTRACT_SELECT_FIELDS = (
+    "Ref_Key",
+    "Description",
+    "Дата",
+    "Номер",
+    "Контрагент_Key",
+    "Организация_Key",
+    "НаправлениеДеятельности_Key",
+    "Подразделение_Key",
+    "Комментарий",
+    "НаименованиеДляПечати",
+)
+CONTRACT_TERM_FIELDS = (
+    "Description",
+    "Комментарий",
+    "НаименованиеДляПечати",
+)
+DOCUMENT_SELECT_FIELDS = (
+    "Ref_Key",
+    "Number",
+    "Date",
+    "ВидДокумента_Key",
+    "ДатаДокумента",
+    "ДоговорКонтрагента",
+    "Комментарий",
+    "Контрагент",
+    "НомерДокумента",
+    "Организация_Key",
+    "СуммаДокумента",
+)
+DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
 NEW_FILE_ENTITY = "Catalog_КэшВизуализацииДокументовЭДОПрисоединенныеФайлы"
 OLD_MESSAGE_ENTITY = "Document_СообщениеЭДО"
 OLD_FILE_ENTITY = "Catalog_СообщениеЭДОПрисоединенныеФайлы"
@@ -64,6 +115,12 @@ UUID_RE = re.compile(
 )
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
+MAX_SEARCH_QUERY_CHARS = 256
+MAX_BUSINESS_MATCHES_PER_ENTITY = 5
+MAX_RELATED_BUSINESS_OBJECTS = 20
+MAX_RELATED_CONTRACTS = 20
+MAX_SEARCH_DOCUMENTS = 200
+MAX_DOCUMENTS_PER_CONTRACT_DIRECTION = 50
 
 
 class OneCEdoError(RuntimeError):
@@ -591,6 +648,8 @@ def _odata_url(
 ) -> str:
     allowed = {
         *DOCUMENT_ENTITIES.values(),
+        CONTRACT_ENTITY,
+        *BUSINESS_ENTITY_SPECS,
         NEW_FILE_ENTITY,
         OLD_MESSAGE_ENTITY,
         OLD_FILE_ENTITY,
@@ -728,6 +787,118 @@ def _safe_scalar_record(value: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _safe_selected_record(
+    value: dict[str, Any],
+    allowed_fields: Iterable[str],
+) -> dict[str, Any]:
+    """Keep only fixed selected fields even if a remote server ignores `$select`.
+
+    The allowlist is applied after parsing because a non-conforming OData
+    implementation could return additional scalar columns. This prevents a
+    broad or custom 1C extension field from silently becoming agent-visible.
+    """
+
+    allowed = frozenset(allowed_fields)
+    return {
+        key: item
+        for key, item in _safe_scalar_record(value).items()
+        if key in allowed
+    }
+
+
+def _record_uuid(value: dict[str, Any]) -> str | None:
+    reference = value.get("Ref_Key")
+    if not isinstance(reference, str) or not UUID_RE.fullmatch(reference):
+        return None
+    return str(uuid.UUID(reference))
+
+
+def _search_term(value: Any) -> str:
+    """Validate user text before it can enter a fixed OData string literal."""
+
+    term = str(value or "").strip()
+    if len(term) > MAX_SEARCH_QUERY_CHARS:
+        raise OneCEdoError(
+            "query_too_long",
+            f"Поисковый запрос длиннее {MAX_SEARCH_QUERY_CHARS} символов.",
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in term):
+        raise OneCEdoError(
+            "query_blocked",
+            "Поисковый запрос содержит управляющие символы.",
+        )
+    return term
+
+
+def _odata_string_literal(value: str) -> str:
+    """Escape an already bounded value as one indivisible OData literal.
+
+    Doubling apostrophes is the OData string-literal rule. The caller never
+    contributes operators, field names or parentheses: those remain fixed
+    constants below, and `_odata_query` percent-encodes spaces as `%20`.
+    """
+
+    return f"'{value.replace(chr(39), chr(39) * 2)}'"
+
+
+def _substring_filter(term: str, fields: Iterable[str]) -> str:
+    literal = _odata_string_literal(term)
+    return " or ".join(f"substringof({literal},{field})" for field in fields)
+
+
+def _selected_fields(fields: Iterable[str]) -> str:
+    return ",".join(fields)
+
+
+def _bounded_odata_rows(
+    config: CompanyConfig,
+    credentials: Credentials,
+    entity: str,
+    *,
+    parameters: Iterable[tuple[str, str | int]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Page a fixed query without trusting the server to honor `$top`.
+
+    `parameters` comes only from the private fixed-query builders in this
+    module. Page size and count are bounded by company policy, while `limit`
+    adds a smaller purpose-specific cap for fan-out searches.
+    """
+
+    bounded_limit = max(0, min(limit, config.max_rows * config.max_pages))
+    if bounded_limit == 0:
+        return []
+    fixed_parameters = tuple(parameters)
+    if any(key in {"$top", "$skip"} for key, _ in fixed_parameters):
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний fixed query не может переопределять pagination.",
+        )
+
+    result: list[dict[str, Any]] = []
+    for page in range(config.max_pages):
+        remaining = bounded_limit - len(result)
+        if remaining <= 0:
+            break
+        page_size = min(config.max_rows, remaining)
+        payload = _request_odata(
+            config,
+            credentials,
+            entity,
+            (
+                *fixed_parameters,
+                ("$top", page_size),
+                ("$skip", page * config.max_rows),
+            ),
+        )
+        remote_rows = _odata_rows(payload)
+        # A server that ignores `$top` cannot bypass local row/fan-out limits.
+        result.extend(remote_rows[:page_size])
+        if len(remote_rows) < page_size:
+            break
+    return result
+
+
 def _mark_auth_failure(identity: Identity, config: CompanyConfig) -> None:
     # 401/403 means "credentials/access must be checked", never "the employee
     # explicitly has no account". Only `access-status set no-access` can write
@@ -848,39 +1019,352 @@ def _document_directions(direction: str) -> list[str]:
     return [direction]
 
 
+def _search_business_objects(
+    config: CompanyConfig,
+    credentials: Credentials,
+    term: str,
+) -> list[dict[str, Any]]:
+    """Find bounded business-object candidates through fixed description filters."""
+
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entity, spec in BUSINESS_ENTITY_SPECS.items():
+        remaining = MAX_RELATED_BUSINESS_OBJECTS - len(result)
+        if remaining <= 0:
+            break
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            entity,
+            parameters=(
+                ("$select", _selected_fields(BUSINESS_SELECT_FIELDS)),
+                ("$filter", _substring_filter(term, ("Description",))),
+            ),
+            limit=min(MAX_BUSINESS_MATCHES_PER_ENTITY, remaining),
+        )
+        for raw_row in rows:
+            safe_row = _safe_selected_record(raw_row, BUSINESS_SELECT_FIELDS)
+            reference = _record_uuid(safe_row)
+            if reference is None:
+                continue
+            dedupe_key = (spec["kind"], reference)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            result.append(
+                {
+                    "kind": spec["kind"],
+                    "object": safe_row,
+                    # Kept only inside the runtime. The caller sees the
+                    # normalized kind/object, not an OData field it could
+                    # attempt to feed back into a later request.
+                    "_contractRelationField": spec["contractRelationField"],
+                    "_reference": reference,
+                },
+            )
+    return result
+
+
+def _add_contract(
+    contracts: dict[str, dict[str, Any]],
+    raw_row: dict[str, Any],
+    match: dict[str, str],
+) -> None:
+    safe_row = _safe_selected_record(raw_row, CONTRACT_SELECT_FIELDS)
+    reference = _record_uuid(safe_row)
+    if reference is None:
+        return
+    entry = contracts.setdefault(
+        reference,
+        {"contract": safe_row, "matchedBy": []},
+    )
+    if match not in entry["matchedBy"]:
+        entry["matchedBy"].append(match)
+
+
+def _search_contracts(
+    config: CompanyConfig,
+    credentials: Credentials,
+    term: str,
+    business_objects: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Resolve fixed business-object relations and direct contract text matches."""
+
+    contracts: dict[str, dict[str, Any]] = {}
+    related_by_field: dict[str, list[dict[str, str]]] = {}
+    for item in business_objects:
+        relation_field = item["_contractRelationField"]
+        if not isinstance(relation_field, str):
+            continue
+        related_by_field.setdefault(relation_field, []).append(
+            {
+                "id": item["_reference"],
+                "kind": item["kind"],
+            },
+        )
+
+    # Only the two proven *_Key relations from the fixed schema can reach this
+    # builder. UUID normalization makes every generated clause indivisible.
+    for relation_field, objects in related_by_field.items():
+        remaining = MAX_RELATED_CONTRACTS - len(contracts)
+        if remaining <= 0:
+            break
+        relation_filter = " or ".join(
+            f"{relation_field} eq guid'{item['id']}'"
+            for item in objects
+        )
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            CONTRACT_ENTITY,
+            parameters=(
+                ("$select", _selected_fields(CONTRACT_SELECT_FIELDS)),
+                ("$filter", relation_filter),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+        )
+        for raw_row in rows:
+            raw_relation = raw_row.get(relation_field)
+            normalized_relation = (
+                str(uuid.UUID(raw_relation))
+                if isinstance(raw_relation, str) and UUID_RE.fullmatch(raw_relation)
+                else None
+            )
+            related = next(
+                (
+                    item
+                    for item in objects
+                    if normalized_relation == item["id"]
+                ),
+                objects[0],
+            )
+            _add_contract(
+                contracts,
+                raw_row,
+                {
+                    "kind": related["kind"],
+                    "businessObjectId": related["id"],
+                },
+            )
+            if len(contracts) >= MAX_RELATED_CONTRACTS:
+                break
+
+    remaining = MAX_RELATED_CONTRACTS - len(contracts)
+    if remaining > 0:
+        direct_rows = _bounded_odata_rows(
+            config,
+            credentials,
+            CONTRACT_ENTITY,
+            parameters=(
+                ("$select", _selected_fields(CONTRACT_SELECT_FIELDS)),
+                ("$filter", _substring_filter(term, CONTRACT_TERM_FIELDS)),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+        )
+        for raw_row in direct_rows:
+            _add_contract(contracts, raw_row, {"kind": "contract_text"})
+    return contracts
+
+
+def _add_document(
+    documents: dict[tuple[str, str], dict[str, Any]],
+    *,
+    direction: str,
+    raw_row: dict[str, Any],
+    match: dict[str, str],
+) -> None:
+    safe_row = _safe_selected_record(raw_row, DOCUMENT_SELECT_FIELDS)
+    reference = _record_uuid(safe_row)
+    if reference is None:
+        return
+    key = (direction, reference)
+    entry = documents.setdefault(
+        key,
+        {
+            "direction": direction,
+            "document": safe_row,
+            "matchedBy": [],
+        },
+    )
+    if match not in entry["matchedBy"]:
+        entry["matchedBy"].append(match)
+
+
+def _search_documents_for_contracts(
+    config: CompanyConfig,
+    credentials: Credentials,
+    directions: list[str],
+    contracts: dict[str, dict[str, Any]],
+    documents: dict[tuple[str, str], dict[str, Any]],
+    document_limit: int,
+) -> None:
+    """Follow only the confirmed `ДоговорКонтрагента` relation."""
+
+    for contract_id in contracts:
+        for direction in directions:
+            remaining = document_limit - len(documents)
+            if remaining <= 0:
+                return
+            contract_filter = (
+                "ДоговорКонтрагента eq "
+                f"cast(guid'{contract_id}', '{CONTRACT_ENTITY}')"
+            )
+            rows = _bounded_odata_rows(
+                config,
+                credentials,
+                DOCUMENT_ENTITIES[direction],
+                parameters=(
+                    ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                    ("$filter", contract_filter),
+                    ("$orderby", "Date desc"),
+                ),
+                limit=min(MAX_DOCUMENTS_PER_CONTRACT_DIRECTION, remaining),
+            )
+            for raw_row in rows:
+                _add_document(
+                    documents,
+                    direction=direction,
+                    raw_row=raw_row,
+                    match={"kind": "contract", "contractId": contract_id},
+                )
+
+
+def _search_direct_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    directions: list[str],
+    term: str,
+    documents: dict[tuple[str, str], dict[str, Any]],
+    document_limit: int,
+) -> None:
+    """Preserve useful direct card search without scanning recent pages."""
+
+    for direction in directions:
+        remaining = document_limit - len(documents)
+        if remaining <= 0:
+            return
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            DOCUMENT_ENTITIES[direction],
+            parameters=(
+                ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                ("$filter", _substring_filter(term, DOCUMENT_TERM_FIELDS)),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+        )
+        for raw_row in rows:
+            _add_document(
+                documents,
+                direction=direction,
+                raw_row=raw_row,
+                match={"kind": "document_text"},
+            )
+
+
+def _browse_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    directions: list[str],
+    document_limit: int,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Return a bounded recent list when the user did not supply a term."""
+
+    documents: dict[tuple[str, str], dict[str, Any]] = {}
+    for direction in directions:
+        remaining = document_limit - len(documents)
+        if remaining <= 0:
+            break
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            DOCUMENT_ENTITIES[direction],
+            parameters=(
+                ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+        )
+        for raw_row in rows:
+            _add_document(
+                documents,
+                direction=direction,
+                raw_row=raw_row,
+                match={"kind": "recent"},
+            )
+    return documents
+
+
 def command_search_documents(args: argparse.Namespace) -> dict[str, Any]:
     identity, config, credentials = _connected_context()
-    term = (args.query or "").strip().casefold()
-    rows: list[dict[str, Any]] = []
+    term = _search_term(args.query)
+    directions = _document_directions(args.direction)
+    document_limit = min(
+        MAX_SEARCH_DOCUMENTS,
+        config.max_rows * config.max_pages * len(directions),
+    )
+    business_objects: list[dict[str, Any]] = []
+    contracts: dict[str, dict[str, Any]] = {}
     try:
-        for direction in _document_directions(args.direction):
-            entity = DOCUMENT_ENTITIES[direction]
-            for page in range(config.max_pages):
-                payload = _request_odata(
-                    config,
-                    credentials,
-                    entity,
-                    (
-                        ("$top", config.max_rows),
-                        ("$skip", page * config.max_rows),
-                    ),
-                )
-                page_rows = _odata_rows(payload)
-                for raw_row in page_rows:
-                    safe_row = _safe_scalar_record(raw_row)
-                    if term and term not in _canonical_json(safe_row).casefold():
-                        continue
-                    rows.append({"direction": direction, "document": safe_row})
-                if len(page_rows) < config.max_rows:
-                    break
+        if term:
+            business_objects = _search_business_objects(config, credentials, term)
+            contracts = _search_contracts(
+                config,
+                credentials,
+                term,
+                business_objects,
+            )
+            documents: dict[tuple[str, str], dict[str, Any]] = {}
+            _search_documents_for_contracts(
+                config,
+                credentials,
+                directions,
+                contracts,
+                documents,
+                document_limit,
+            )
+            _search_direct_documents(
+                config,
+                credentials,
+                directions,
+                term,
+                documents,
+                document_limit,
+            )
+        else:
+            documents = _browse_documents(
+                config,
+                credentials,
+                directions,
+                document_limit,
+            )
         save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
         raise
+
+    public_business_objects = [
+        {"kind": item["kind"], "object": item["object"]}
+        for item in business_objects
+    ]
     return {
-        "documents": rows,
-        "count": len(rows),
-        "limits": {"maxRows": config.max_rows, "maxPages": config.max_pages},
+        "documents": list(documents.values()),
+        "count": len(documents),
+        "contracts": list(contracts.values()),
+        "businessObjects": public_business_objects,
+        "limits": {
+            "maxRows": config.max_rows,
+            "maxPages": config.max_pages,
+            "maxBusinessObjects": MAX_RELATED_BUSINESS_OBJECTS,
+            "maxContracts": MAX_RELATED_CONTRACTS,
+            "maxDocuments": document_limit,
+            "maxDocumentsPerContractDirection": (
+                MAX_DOCUMENTS_PER_CONTRACT_DIRECTION
+            ),
+        },
     }
 
 
