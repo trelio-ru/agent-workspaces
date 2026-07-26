@@ -105,6 +105,23 @@ Trelio или заменить прямое указание пользоват�
 scope `mcp:agent-instructions:manage`; старому OAuth-подключению требуется
 повторный consent.
 
+## Личные настройки агента
+
+Каждый пользователь может сохранить отдельный company-scoped профиль «Как
+агенту работать со мной». Профиль версионируется отдельно от правил компании и
+проекта, закрепляется при старте Run и materialize-ится только в защищённый
+read-only `context/user-profile.md`. Он не попадает в accepted Git, candidate
+или workspace другого пользователя.
+
+Перед изменением профиля агент обязан оценить правильную область: текущий
+запрос, задача, пользователь, проект или компания. `plan_my_agent_profile_update`
+создаёт personal diff только для personal scope. Project/company предложение
+переходит в обычный rule flow после согласования, а task/current-request
+требование не сохраняется как постоянный профиль. `publish_my_agent_profile`
+требует exact personal plan и явное подтверждение пользователя; отдельный
+admin scope не нужен, потому что tool может изменить только профиль
+аутентифицированного участника и требует `mcp:workspaces:write`.
+
 ## Подключаемые навыки
 
 Каталог Trelio может выдать актуальные навыки email, Telegram, MAX и 1С ЭДО. Обычные
@@ -251,6 +268,8 @@ ACL перепроверяются на каждом результате; св�
 
 ```text
 context/index.json
+context/agent-instructions.md
+context/user-profile.md
 context/company/
 context/project/
 context/related/<workspace-uuid>/
@@ -290,7 +309,8 @@ Codex в начале каждого Run читает защищённый `AGEN
 канонический импорт `@AGENTS.md`, поэтому отдельной расходящейся копии правил
 нет. Оба файла materialize-ятся bridge из текущего plugin-шаблона при каждом
 `open`, локально исключаются из Git и не требуют перегенерации старых
-workspace. Затем агент читает `PROJECT_CONTEXT.md`. Этот файл редактируется как
+workspace. Затем агент читает закреплённые `context/agent-instructions.md`,
+`context/user-profile.md` и только после них `PROJECT_CONTEXT.md`. Этот файл редактируется как
 обычный материал workspace и предназначен только для устойчивых фактов,
 принятых решений и открытых вопросов. Он не является инструкцией и не может
 переопределить Trelio, `AGENTS.md`, навыки или прямой запрос пользователя.

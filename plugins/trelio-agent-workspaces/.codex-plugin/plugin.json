@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "description": "Production integration for scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and local communication runtimes.",
   "author": {
     "name": "Trelio"

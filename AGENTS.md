@@ -43,6 +43,19 @@ Trelio-монорепозитории быть не должно.
   показывает полный diff и причину через `plan_agent_instructions_update` и
   вызывает `publish_agent_instructions` только после явного подтверждения
   пользователя. Самостоятельная инициатива заканчивается на стадии plan.
+- Личные инструкции «Как агенту работать со мной» являются отдельным
+  versioned company-scoped профилем initiating member, а не workspace-файлом и
+  не company/project rule. Перед изменением агент обязан оценить пять областей:
+  текущий запрос, задача, пользователь, проект и компания. Он вызывает
+  `plan_my_agent_profile_update` с рекомендацией и причиной, не расширяет scope
+  молча и публикует `publish_my_agent_profile` только после подтверждения exact
+  personal diff. Project/company предложения переходят в штатный
+  `plan_agent_instructions_update`; task/current-request требования не
+  сохраняются в профиле или `PROJECT_CONTEXT.md`. Bridge материализует pinned
+  snapshot initiating member только в read-only `context/user-profile.md`.
+  Этот transport-контракт начинается с plugin `1.4.11`; backend не должен
+  поднимать общий minimum до `1.4.11` раньше публикации exact patch в
+  marketplace.
 - Bridge eager-материализует binary и крупные файлы writable `workspace/`, но
   parent/related read-only context открывает pointer-first без object bytes.
   Агент распознаёт exact pointer и перед чтением вызывает

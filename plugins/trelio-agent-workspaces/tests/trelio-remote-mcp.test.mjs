@@ -1233,6 +1233,6 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.4.10");
+  assert.equal(frames[0].result.serverInfo.version, "1.4.11");
   assert.equal(frames[1].result.tools.length, 4);
 });

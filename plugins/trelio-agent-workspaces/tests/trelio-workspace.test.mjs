@@ -312,6 +312,15 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
               project: null,
               compiledMarkdown: "# Рабочие правила агентов Trelio\n",
             },
+            userProfileSnapshotJson: {
+              schemaVersion: 1,
+              profile: {
+                revisionId: "77777777-7777-4777-8777-777777777777",
+                version: 3,
+                instructionsMarkdown: "Пиши коротко.\n",
+              },
+              compiledMarkdown: "# Как агенту работать со мной\n\nПиши коротко.\n",
+            },
           },
           workspace: { id: writableWorkspaceId },
         }));
@@ -387,6 +396,16 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
       AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
     );
+    assert.equal(
+      await readFile(path.join(rootDirectory, "context", "user-profile.md"), "utf8"),
+      "# Как агенту работать со мной\n\nПиши коротко.\n",
+    );
+    const contextIndex = JSON.parse(
+      await readFile(path.join(rootDirectory, "context", "index.json"), "utf8"),
+    );
+    assert.equal(contextIndex.userProfile.profile.revisionId, "77777777-7777-4777-8777-777777777777");
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /plan_my_agent_profile_update/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /user-profile\.md/u);
     assert.equal(
       (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
       "",
@@ -764,7 +783,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.4.10");
+  assert.equal(BRIDGE_VERSION, "1.4.11");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
