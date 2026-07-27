@@ -28,22 +28,26 @@ import contextlib
 import datetime as dt
 import getpass
 import hashlib
+import http.server
 import ipaddress
 import json
 import math
 import os
 import re
-import shutil
+import secrets
 import socket
 import ssl
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
@@ -55,10 +59,15 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # namespace. The backend resolves the existing 1c-edo connection id, so local
 # Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.14"
+RUNTIME_VERSION = "1.0.15"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
+MAX_PROMPT_BODY_BYTES = 8 * 1024
+MAX_USERNAME_CHARS = 512
+MAX_PASSWORD_CHARS = 2_048
+BROWSER_LOAD_TIMEOUT_SECONDS = 8
+BROWSER_INPUT_TIMEOUT_SECONDS = 5 * 60
 DOCUMENT_ENTITIES = {
     "incoming": "Document_ЭлектронныйДокументВходящийЭДО",
     "outgoing": "Document_ЭлектронныйДокументИсходящийЭДО",
@@ -1032,11 +1041,395 @@ def save_credentials(
     )
 
 
+def browser_prompt_app_page() -> bytes:
+    """Render the self-contained local 1C credential page."""
+
+    return """<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trelio — 1С</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#eef0f2;
+    color:#202124; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  main { width:min(560px,calc(100vw - 32px)); box-sizing:border-box; background:#fff;
+    border:1px solid #d9dce1; border-radius:12px; box-shadow:0 18px 48px rgba(0,0,0,.18);
+    padding:24px; }
+  h1 { margin:0 0 12px; font-size:22px; line-height:1.35; font-weight:650; }
+  form { display:grid; gap:14px; }
+  input { box-sizing:border-box; width:100%; min-height:44px; border:2px solid #1a73e8;
+    border-radius:8px; padding:8px 10px; color:#202124; background:#fff; font-size:18px; }
+  input:focus { outline:3px solid rgba(26,115,232,.2); }
+  .actions { display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap; }
+  button { min-width:120px; min-height:40px; border:1px solid #c9cdd3; border-radius:8px;
+    background:#eef0f2; color:#202124; font-size:16px; cursor:pointer; }
+  button.primary { border-color:#1a73e8; background:#1a73e8; color:#fff; }
+  .error { margin:0 0 12px; color:#b00020; font-size:14px; }
+  .muted { margin:0; color:#5f6368; line-height:1.45; }
+  .small { margin:12px 0 0; color:#5f6368; font-size:14px; line-height:1.4; }
+</style>
+<main id="app"><h1>Trelio — 1С</h1><p class="muted">Подготавливаю локальную форму…</p></main>
+<script>
+const app = document.getElementById("app");
+let currentPromptId = null;
+let polling = true;
+function escapeHtml(value) {
+  return String(value).replaceAll("&","&amp;").replaceAll("<","&lt;")
+    .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+}
+function renderWaiting() {
+  currentPromptId = null;
+  app.innerHTML = `<h1>Trelio — 1С</h1><p class="muted">Проверяю подключение…</p>`;
+}
+function renderFinished(data) {
+  currentPromptId = null; polling = false;
+  app.innerHTML = `<h1>${escapeHtml(data.title || "Готово")}</h1>
+    <p class="muted">${escapeHtml(data.message || "Можно закрыть вкладку и вернуться в Codex.")}</p>`;
+}
+function renderPrompt(data) {
+  currentPromptId = data.id;
+  const inputType = data.hidden ? "password" : "text";
+  const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
+  const maxLength = Number.isInteger(data.max_length) ? data.max_length : 2048;
+  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${error}
+    <form id="prompt-form" autocomplete="off">
+      <input autofocus name="value" type="${inputType}" autocomplete="off"
+        autocapitalize="none" spellcheck="false" maxlength="${escapeHtml(maxLength)}" required>
+      <div class="actions"><button type="button" data-cancel="1">Отмена</button>
+        <button class="primary" type="submit">Продолжить</button></div>
+    </form>
+    <p class="small">Данные остаются на этом компьютере и не отправляются в Trelio или чат.</p>`;
+  const form = document.getElementById("prompt-form");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(form); formData.set("id", String(data.id));
+    await submitPrompt(data, formData);
+  });
+  form.querySelector("[data-cancel]").addEventListener("click", async () => {
+    const formData = new FormData(); formData.set("id", String(data.id));
+    formData.set("cancel", "1"); await submitPrompt(data, formData);
+  });
+  form.querySelector("input").focus();
+}
+async function submitPrompt(data, formData) {
+  const response = await fetch("submit", {method:"POST",
+    headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},
+    body:new URLSearchParams(formData), cache:"no-store"});
+  const payload = await response.json();
+  if (!payload.ok && payload.error) { data.error = payload.error; renderPrompt(data); return; }
+  renderWaiting();
+}
+async function poll() {
+  try {
+    const response = await fetch("state?t=" + Date.now(), {cache:"no-store"});
+    const data = await response.json();
+    if (data.status === "prompt") {
+      if (data.id !== currentPromptId) renderPrompt(data);
+    } else if (data.status === "finished") { renderFinished(data); return; }
+    else if (currentPromptId !== null) renderWaiting();
+  } catch (_error) {
+    polling = false;
+    app.innerHTML = `<h1>Локальная страница закрыта</h1>
+      <p class="muted">Вернитесь в Codex и при необходимости запустите подключение заново.</p>`;
+  } finally { if (polling) setTimeout(poll, 350); }
+}
+poll();
+</script>
+""".encode("utf-8")
+
+
+def open_browser_url(url: str) -> None:
+    """Open one loopback URL without returning it in process output."""
+
+    try:
+        if sys.platform == "darwin":
+            completed = subprocess.run(
+                ["/usr/bin/open", url],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            if completed.returncode != 0:
+                raise OSError("default browser opener failed")
+            return
+        if sys.platform.startswith("win"):
+            startfile = getattr(os, "startfile", None)
+            if startfile is None:
+                raise OSError("Windows shell opener is unavailable")
+            startfile(url)
+            return
+        if not webbrowser.open(url, new=2):
+            raise OSError("default browser opener failed")
+    except (OSError, subprocess.TimeoutExpired, webbrowser.Error) as error:
+        raise OneCEdoError(
+            "protected_prompt_unavailable",
+            "Не удалось открыть защищённую локальную страницу подключения 1С.",
+        ) from error
+
+
+class BrowserPromptSession:
+    """Serve one tokenized loopback page for a single 1C connect process."""
+
+    def __init__(self) -> None:
+        self.token = secrets.token_urlsafe(32)
+        self.condition = threading.Condition()
+        self.page_loaded = threading.Event()
+        self.finished_seen = threading.Event()
+        self.current_prompt: dict[str, Any] | None = None
+        self.response: dict[str, Any] | None = None
+        self.finished: dict[str, str] | None = None
+        self.next_prompt_id = 0
+        self.opened = False
+        try:
+            self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        except OSError as error:
+            raise OneCEdoError(
+                "protected_prompt_unavailable",
+                "Защищённая страница подключения 1С не может занять локальный порт.",
+            ) from error
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def port(self) -> int:
+        return int(self.server.server_address[1])
+
+    @property
+    def origin(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def base_path(self) -> str:
+        return f"/{self.token}"
+
+    @property
+    def url(self) -> str:
+        return f"{self.origin}{self.base_path}/"
+
+    def _handler_class(self) -> Any:
+        session = self
+
+        class PromptHandler(http.server.BaseHTTPRequestHandler):
+            server_version = "TrelioLoopback/1"
+            sys_version = ""
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def end_headers(self) -> None:
+                for name, value in (
+                    ("Cache-Control", "no-store"),
+                    ("Pragma", "no-cache"),
+                    ("Referrer-Policy", "no-referrer"),
+                    ("X-Content-Type-Options", "nosniff"),
+                    ("X-Frame-Options", "DENY"),
+                    ("Cross-Origin-Resource-Policy", "same-origin"),
+                    (
+                        "Content-Security-Policy",
+                        "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                        "connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
+                    ),
+                ):
+                    self.send_header(name, value)
+                super().end_headers()
+
+            def send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+                self.close_connection = True
+
+            def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+                self.send_bytes(
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                    status,
+                )
+
+            def request_is_local(self) -> bool:
+                return (
+                    self.client_address[0] == "127.0.0.1"
+                    and self.headers.get("Host") == f"127.0.0.1:{session.port}"
+                )
+
+            def prompt_subpath(self) -> str | None:
+                path = urllib.parse.urlparse(self.path).path
+                if path == session.base_path:
+                    return "/"
+                prefix = session.base_path + "/"
+                return "/" + path[len(prefix):] if path.startswith(prefix) else None
+
+            def do_GET(self) -> None:  # noqa: N802
+                if not self.request_is_local():
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                subpath = self.prompt_subpath()
+                if subpath == "/":
+                    session.page_loaded.set()
+                    self.send_bytes(browser_prompt_app_page(), "text/html; charset=utf-8")
+                    return
+                if subpath == "/state":
+                    with session.condition:
+                        finished = dict(session.finished) if session.finished else None
+                        prompt = dict(session.current_prompt) if session.current_prompt else None
+                    if finished:
+                        self.send_json({"status": "finished", **finished})
+                        session.finished_seen.set()
+                    elif prompt:
+                        self.send_json({"status": "prompt", **prompt})
+                    else:
+                        self.send_json({"status": "waiting"})
+                    return
+                self.send_json({"ok": False, "error": "Not found."}, status=404)
+
+            def do_POST(self) -> None:  # noqa: N802
+                if not self.request_is_local() or self.prompt_subpath() != "/submit":
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                if self.headers.get("Origin") != session.origin:
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if content_type != "application/x-www-form-urlencoded":
+                    self.send_json({"ok": False, "error": "Unsupported request."}, status=415)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", ""))
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_PROMPT_BODY_BYTES:
+                    self.send_json({"ok": False, "error": "Invalid request size."}, status=413)
+                    return
+                try:
+                    fields = urllib.parse.parse_qs(
+                        self.rfile.read(length).decode("utf-8", errors="strict"),
+                        keep_blank_values=True,
+                        max_num_fields=4,
+                    )
+                    prompt_id = int((fields.get("id") or [""])[0])
+                except (UnicodeError, ValueError):
+                    self.send_json({"ok": False, "error": "Invalid request body."}, status=400)
+                    return
+                with session.condition:
+                    prompt = session.current_prompt
+                    if not prompt or prompt["id"] != prompt_id:
+                        self.send_json({"ok": False, "error": "Этот шаг уже не актуален."}, status=409)
+                        return
+                    if fields.get("cancel"):
+                        session.response = {"cancelled": True}
+                    else:
+                        value = (fields.get("value") or [""])[0]
+                        if prompt.get("trim"):
+                            value = value.strip()
+                        if not value:
+                            self.send_json({"ok": False, "error": "Нужно заполнить поле."}, status=400)
+                            return
+                        if len(value) > int(prompt["max_length"]):
+                            self.send_json({"ok": False, "error": "Значение слишком длинное."}, status=400)
+                            return
+                        session.response = {"cancelled": False, "value": value}
+                    session.current_prompt = None
+                    session.condition.notify_all()
+                self.send_json({"ok": True})
+
+        return PromptHandler
+
+    def open(self) -> None:
+        if self.opened:
+            return
+        self.page_loaded.clear()
+        open_browser_url(self.url)
+        if not self.page_loaded.wait(timeout=BROWSER_LOAD_TIMEOUT_SECONDS):
+            raise OneCEdoError(
+                "protected_prompt_unavailable",
+                "Браузер не загрузил защищённую локальную страницу подключения 1С.",
+            )
+        self.opened = True
+
+    def ask(self, prompt: str, *, hidden: bool, trim: bool, max_length: int) -> str:
+        with self.condition:
+            self.next_prompt_id += 1
+            self.response = None
+            self.finished = None
+            self.finished_seen.clear()
+            self.current_prompt = {
+                "id": self.next_prompt_id,
+                "prompt": prompt,
+                "hidden": hidden,
+                "trim": trim,
+                "max_length": max_length,
+                "error": "",
+            }
+            self.condition.notify_all()
+        try:
+            self.open()
+        except OneCEdoError:
+            with self.condition:
+                self.current_prompt = None
+            raise
+        deadline = time.monotonic() + BROWSER_INPUT_TIMEOUT_SECONDS
+        with self.condition:
+            while self.response is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.current_prompt = None
+                    raise OneCEdoError(
+                        "protected_prompt_timeout",
+                        "Время ввода данных 1С истекло. Запустите connect заново.",
+                    )
+                self.condition.wait(timeout=remaining)
+            response = self.response
+            self.response = None
+        if response.get("cancelled"):
+            raise OneCEdoError("connect_cancelled", "Подключение отменено пользователем.")
+        return str(response.get("value") or "")
+
+    def finish(self, *, title: str, message: str) -> None:
+        with self.condition:
+            self.current_prompt = None
+            self.response = None
+            self.finished = {"title": title, "message": message}
+            self.finished_seen.clear()
+            self.condition.notify_all()
+        if self.opened:
+            self.finished_seen.wait(timeout=1)
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+BROWSER_PROMPT_SESSION: BrowserPromptSession | None = None
+
+
+def ensure_browser_prompt_session() -> BrowserPromptSession:
+    global BROWSER_PROMPT_SESSION
+    if BROWSER_PROMPT_SESSION is None:
+        BROWSER_PROMPT_SESSION = BrowserPromptSession()
+    return BROWSER_PROMPT_SESSION
+
+
+def shutdown_browser_prompt_session() -> None:
+    global BROWSER_PROMPT_SESSION
+    if BROWSER_PROMPT_SESSION is None:
+        return
+    BROWSER_PROMPT_SESSION.close()
+    BROWSER_PROMPT_SESSION = None
+
+
 def _prompt_credentials_terminal() -> Credentials:
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise OneCEdoError(
             "protected_prompt_unavailable",
-            "Для connect нужен локальный интерактивный терминал или системное окно.",
+            "Для --terminal-prompts нужен видимый локальный интерактивный терминал.",
         )
     username = input("Логин 1С: ").strip()
     password = getpass.getpass("Пароль 1С: ")
@@ -1045,81 +1438,27 @@ def _prompt_credentials_terminal() -> Credentials:
     return Credentials(username=username, password=password)
 
 
-def _prompt_credentials_macos() -> Credentials | None:
-    if sys.platform != "darwin" or not shutil.which("osascript"):
-        return None
-    script = """
-set usernameAnswer to display dialog "Введите личный логин 1С. Он останется только на этом компьютере." default answer "" with title "Trelio – 1С ЭДО" buttons {"Отмена", "Продолжить"} default button "Продолжить" cancel button "Отмена"
-set passwordAnswer to display dialog "Введите личный пароль 1С." default answer "" with hidden answer with title "Trelio – 1С ЭДО" buttons {"Отмена", "Подключить"} default button "Подключить" cancel button "Отмена"
-return (text returned of usernameAnswer) & linefeed & (text returned of passwordAnswer)
-"""
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        check=False,
-        capture_output=True,
-        text=True,
+def _prompt_credentials_browser() -> Credentials:
+    session = ensure_browser_prompt_session()
+    username = session.ask(
+        "Введите личный логин 1С",
+        hidden=False,
+        trim=True,
+        max_length=MAX_USERNAME_CHARS,
     )
-    if result.returncode != 0:
-        raise OneCEdoError("connect_cancelled", "Подключение отменено пользователем.")
-    username, separator, password = result.stdout.rstrip("\n").partition("\n")
-    if not separator or not username.strip() or not password:
-        raise OneCEdoError("credentials_empty", "Логин и пароль 1С не могут быть пустыми.")
-    return Credentials(username=username.strip(), password=password)
-
-
-def _prompt_credentials_windows() -> Credentials | None:
-    if os.name != "nt" or not shutil.which("powershell.exe"):
-        return None
-    # The script is constant and contains no credential values. The password
-    # crosses only a private parent/child pipe and is never placed in argv.
-    script = r"""
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$form = New-Object Windows.Forms.Form
-$form.Text = 'Trelio – 1С ЭДО'
-$form.Size = New-Object Drawing.Size(430,220)
-$form.StartPosition = 'CenterScreen'
-$login = New-Object Windows.Forms.TextBox
-$login.Location = New-Object Drawing.Point(20,45)
-$login.Width = 370
-$password = New-Object Windows.Forms.TextBox
-$password.Location = New-Object Drawing.Point(20,105)
-$password.Width = 370
-$password.UseSystemPasswordChar = $true
-$ok = New-Object Windows.Forms.Button
-$ok.Text = 'Подключить'
-$ok.Location = New-Object Drawing.Point(290,145)
-$ok.DialogResult = [Windows.Forms.DialogResult]::OK
-$form.Controls.AddRange(@($login,$password,$ok))
-$form.AcceptButton = $ok
-if ($form.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { exit 3 }
-@{username=$login.Text;password=$password.Text} | ConvertTo-Json -Compress
-"""
-    result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
-        check=False,
-        capture_output=True,
-        text=True,
+    password = session.ask(
+        "Введите личный пароль 1С",
+        hidden=True,
+        trim=False,
+        max_length=MAX_PASSWORD_CHARS,
     )
-    if result.returncode != 0:
-        raise OneCEdoError("connect_cancelled", "Подключение отменено пользователем.")
-    try:
-        value = json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        raise OneCEdoError("protected_prompt_failed", "Системное окно не вернуло credentials.") from error
-    username = str(value.get("username") or "").strip()
-    password = str(value.get("password") or "")
-    if not username or not password:
-        raise OneCEdoError("credentials_empty", "Логин и пароль 1С не могут быть пустыми.")
     return Credentials(username=username, password=password)
 
 
-def prompt_credentials() -> Credentials:
-    return (
-        _prompt_credentials_macos()
-        or _prompt_credentials_windows()
-        or _prompt_credentials_terminal()
-    )
+def prompt_credentials(args: argparse.Namespace) -> Credentials:
+    if bool(getattr(args, "terminal_prompts", False)):
+        return _prompt_credentials_terminal()
+    return _prompt_credentials_browser()
 
 
 def _require_x_odata() -> str:
@@ -1815,10 +2154,10 @@ def _connected_context() -> tuple[Identity, CompanyConfig, Credentials]:
     return identity, config, credentials
 
 
-def command_connect(_: argparse.Namespace) -> dict[str, Any]:
+def command_connect(args: argparse.Namespace) -> dict[str, Any]:
     identity = load_identity()
     config = load_company_config()
-    credentials = prompt_credentials()
+    credentials = prompt_credentials(args)
     try:
         _request_odata(
             config,
@@ -1834,6 +2173,11 @@ def command_connect(_: argparse.Namespace) -> dict[str, Any]:
     # destroy working credentials or invent either no_access/needs_reconnect.
     save_credentials(identity, config, credentials)
     save_access_state(identity, config, "connected")
+    if BROWSER_PROMPT_SESSION is not None:
+        BROWSER_PROMPT_SESSION.finish(
+            title="1С подключена",
+            message="Личные данные проверены и сохранены только на этом компьютере.",
+        )
     return {"status": "connected"}
 
 
@@ -3665,7 +4009,15 @@ def build_edo_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    connect = subparsers.add_parser("connect")
+    connect = subparsers.add_parser(
+        "connect",
+        help="Connect personal credentials through a protected local browser page",
+    )
+    connect.add_argument(
+        "--terminal-prompts",
+        action="store_true",
+        help="Use the current visible terminal instead of the protected local browser page",
+    )
     connect.set_defaults(handler=command_connect)
     doctor = subparsers.add_parser("doctor")
     doctor.set_defaults(handler=command_doctor)
@@ -3816,6 +4168,11 @@ def main(
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")))
         return 0
     except OneCEdoError as error:
+        if BROWSER_PROMPT_SESSION is not None:
+            BROWSER_PROMPT_SESSION.finish(
+                title="Подключение не завершено",
+                message="Вернитесь в Codex, проверьте сообщение об ошибке и запустите connect заново.",
+            )
         print(
             json.dumps(
                 {
@@ -3828,6 +4185,11 @@ def main(
         )
         return error.exit_code
     except KeyboardInterrupt:
+        if BROWSER_PROMPT_SESSION is not None:
+            BROWSER_PROMPT_SESSION.finish(
+                title="Подключение отменено",
+                message="Можно закрыть вкладку и вернуться в Codex.",
+            )
         print(
             json.dumps(
                 {
@@ -3840,6 +4202,11 @@ def main(
         )
         return 130
     except Exception:
+        if BROWSER_PROMPT_SESSION is not None:
+            BROWSER_PROMPT_SESSION.finish(
+                title="Подключение не завершено",
+                message="Вернитесь в Codex и при необходимости запустите connect заново.",
+            )
         # Unexpected library/platform failures must not emit a traceback that
         # could contain a local path, URL or credential-bearing header. The
         # detailed exception remains deliberately outside agent-visible output.
@@ -3857,6 +4224,8 @@ def main(
             ),
         )
         return 1
+    finally:
+        shutdown_browser_prompt_session()
 
 
 if __name__ == "__main__":

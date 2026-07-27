@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import importlib.util
 import io
 import json
@@ -10,9 +11,11 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -98,6 +101,197 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         MODULE.save_credentials(identity, config, credentials)
         MODULE.save_access_state(identity, config, "connected")
         return identity, config, credentials
+
+    def test_browser_connect_release_and_cli_contract(self) -> None:
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.14")
+
+        default_args = MODULE.build_parser().parse_args(["connect"])
+        terminal_args = MODULE.build_parser().parse_args(
+            ["connect", "--terminal-prompts"],
+        )
+
+        self.assertFalse(default_args.terminal_prompts)
+        self.assertTrue(terminal_args.terminal_prompts)
+
+    def test_browser_page_disables_autocomplete_and_has_no_external_assets(self) -> None:
+        page = MODULE.browser_prompt_app_page().decode("utf-8")
+
+        self.assertIn("Trelio — 1С ЭДО", page)
+        self.assertIn('<form id="prompt-form" autocomplete="off">', page)
+        self.assertIn('type="${inputType}" autocomplete="off"', page)
+        self.assertIn("Данные остаются на этом компьютере", page)
+        self.assertNotIn("http://", page)
+        self.assertNotIn("https://", page)
+
+    def test_browser_is_default_and_terminal_fallback_is_only_explicit(self) -> None:
+        expected = MODULE.Credentials("employee", "password")
+        with mock.patch.object(
+            MODULE,
+            "_prompt_credentials_browser",
+            return_value=expected,
+        ) as browser_prompt, mock.patch.object(
+            MODULE,
+            "_prompt_credentials_terminal",
+            return_value=expected,
+        ) as terminal_prompt:
+            self.assertEqual(
+                MODULE.prompt_credentials(argparse.Namespace(terminal_prompts=False)),
+                expected,
+            )
+            browser_prompt.assert_called_once()
+            terminal_prompt.assert_not_called()
+
+        with mock.patch.object(
+            MODULE,
+            "_prompt_credentials_browser",
+            side_effect=MODULE.OneCEdoError("unavailable", "browser unavailable"),
+        ), mock.patch.object(MODULE, "_prompt_credentials_terminal") as terminal_prompt:
+            with self.assertRaises(MODULE.OneCEdoError):
+                MODULE.prompt_credentials(argparse.Namespace(terminal_prompts=False))
+            terminal_prompt.assert_not_called()
+
+        with mock.patch.object(
+            MODULE,
+            "_prompt_credentials_terminal",
+            return_value=expected,
+        ) as terminal_prompt:
+            self.assertEqual(
+                MODULE.prompt_credentials(argparse.Namespace(terminal_prompts=True)),
+                expected,
+            )
+            terminal_prompt.assert_called_once()
+
+    def test_macos_and_windows_openers_use_the_default_browser(self) -> None:
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(MODULE.sys, "platform", "darwin"), mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/open", "http://127.0.0.1:1234/token/"],
+        )
+
+        startfile = mock.Mock()
+        with mock.patch.object(MODULE.sys, "platform", "win32"), mock.patch.object(
+            MODULE.os,
+            "startfile",
+            startfile,
+            create=True,
+        ):
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+        startfile.assert_called_once_with("http://127.0.0.1:1234/token/")
+
+    def test_loopback_prompt_requires_exact_origin_and_hides_submitted_value(self) -> None:
+        session = MODULE.BrowserPromptSession()
+        session.opened = True
+        received: list[str] = []
+        errors: list[Exception] = []
+
+        def ask() -> None:
+            try:
+                received.append(
+                    session.ask(
+                        "Введите личный пароль 1С",
+                        hidden=True,
+                        trim=False,
+                        max_length=MODULE.MAX_PASSWORD_CHARS,
+                    ),
+                )
+            except Exception as error:  # pragma: no cover - surfaced below.
+                errors.append(error)
+
+        worker = threading.Thread(target=ask)
+        worker.start()
+        try:
+            with session.condition:
+                ready = session.condition.wait_for(
+                    lambda: session.current_prompt is not None,
+                    timeout=2,
+                )
+                self.assertTrue(ready)
+                prompt_id = session.current_prompt["id"]
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", f"{session.base_path}/state")
+            state_response = connection.getresponse()
+            state_payload = state_response.read().decode("utf-8")
+            self.assertEqual(state_response.status, 200)
+            self.assertNotIn("private-password", state_payload)
+            self.assertIn('"hidden": true', state_payload)
+            connection.close()
+
+            body = f"id={prompt_id}&value=private-password"
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://attacker.example",
+                },
+            )
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 403)
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": session.origin,
+                },
+            )
+            accepted = connection.getresponse()
+            accepted.read()
+            self.assertEqual(accepted.status, 200)
+            connection.close()
+
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(received, ["private-password"])
+            self.assertIsNone(session.response)
+            self.assertIsNone(session.current_prompt)
+        finally:
+            session.close()
+
+    def test_loopback_page_uses_no_store_csp_and_tokenized_path(self) -> None:
+        session = MODULE.BrowserPromptSession()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", f"{session.base_path}/")
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
+            self.assertEqual(response.getheader("Referrer-Policy"), "no-referrer")
+            self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", "/state")
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 404)
+            connection.close()
+        finally:
+            session.close()
+
+    def test_legacy_system_prompt_implementations_are_removed(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertNotIn("osascript", source)
+        self.assertNotIn("System.Windows.Forms", source)
+        self.assertNotIn("_prompt_credentials_macos", source)
+        self.assertNotIn("_prompt_credentials_windows", source)
 
     def test_company_config_is_fingerprinted_and_bounded(self) -> None:
         _, first = self.identity_and_config()
