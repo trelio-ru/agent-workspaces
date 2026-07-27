@@ -103,7 +103,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         return identity, config, credentials
 
     def test_browser_connect_release_and_cli_contract(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.14")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.15")
 
         default_args = MODULE.build_parser().parse_args(["connect"])
         terminal_args = MODULE.build_parser().parse_args(
@@ -520,6 +520,123 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             "private server path",
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_http_429_honors_retry_after_before_retrying(self) -> None:
+        rate_limited = urllib.error.HTTPError(
+            "https://example.test/odata/fixed",
+            429,
+            "rate limited",
+            {"Retry-After": "2"},
+            None,
+        )
+        success = object()
+        opener = mock.Mock()
+        opener.open.side_effect = [rate_limited, success]
+
+        with (
+            mock.patch.object(
+                MODULE.socket,
+                "getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+            ),
+            mock.patch.object(MODULE.urllib.request, "build_opener", return_value=opener),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+        ):
+            response = MODULE._http_open(
+                "GET",
+                "https://example.test/odata/fixed",
+                credentials=MODULE.Credentials("employee", "password"),
+                timeout=1,
+                x_odata="x" * 32,
+                diagnostic_stage="doctor.probe",
+            )
+
+        self.assertIs(response, success)
+        self.assertEqual(opener.open.call_count, 2)
+        sleep.assert_called_once_with(2.0)
+
+    def test_http_429_retries_and_fallback_wait_are_bounded(self) -> None:
+        def rate_limited(*_: object, **__: object) -> None:
+            raise urllib.error.HTTPError(
+                "https://example.test/odata/fixed",
+                429,
+                "rate limited",
+                {},
+                None,
+            )
+
+        opener = mock.Mock()
+        opener.open.side_effect = rate_limited
+        with (
+            mock.patch.object(
+                MODULE.socket,
+                "getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+            ),
+            mock.patch.object(MODULE.urllib.request, "build_opener", return_value=opener),
+            mock.patch.object(MODULE.secrets, "randbelow", return_value=0),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+            self.assertRaises(MODULE.NetworkError) as raised,
+        ):
+            MODULE._http_open(
+                "GET",
+                "https://example.test/odata/fixed",
+                credentials=MODULE.Credentials("employee", "password"),
+                timeout=1,
+                x_odata="x" * 32,
+                diagnostic_stage="doctor.probe",
+            )
+
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [1.0, 2.0],
+        )
+        self.assertEqual(raised.exception.details["httpStatus"], 429)
+
+    def test_retry_after_http_date_and_long_wait_are_bounded(self) -> None:
+        now = MODULE.dt.datetime(2026, 7, 27, tzinfo=MODULE.dt.timezone.utc)
+        retry_at = now + MODULE.dt.timedelta(seconds=5)
+        header = MODULE.email.utils.format_datetime(retry_at, usegmt=True)
+        self.assertEqual(
+            MODULE._retry_after_delay_seconds(
+                header,
+                now_seconds=now.timestamp(),
+            ),
+            5.0,
+        )
+
+        rate_limited = urllib.error.HTTPError(
+            "https://example.test/odata/fixed",
+            429,
+            "rate limited",
+            {"Retry-After": "120"},
+            None,
+        )
+        opener = mock.Mock()
+        opener.open.side_effect = rate_limited
+        with (
+            mock.patch.object(
+                MODULE.socket,
+                "getaddrinfo",
+                return_value=[(2, 1, 6, "", ("93.184.216.34", 443))],
+            ),
+            mock.patch.object(MODULE.urllib.request, "build_opener", return_value=opener),
+            mock.patch.object(MODULE.time, "sleep") as sleep,
+            self.assertRaises(MODULE.NetworkError) as raised,
+        ):
+            MODULE._http_open(
+                "GET",
+                "https://example.test/odata/fixed",
+                credentials=MODULE.Credentials("employee", "password"),
+                timeout=1,
+                x_odata="x" * 32,
+                diagnostic_stage="doctor.probe",
+            )
+
+        self.assertEqual(opener.open.call_count, 1)
+        sleep.assert_not_called()
+        self.assertEqual(raised.exception.details["httpStatus"], 429)
 
     def test_live_document_signature_samples_are_normalized_from_date_only(self) -> None:
         """The document signing date, not an attachment flag, is authoritative."""

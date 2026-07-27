@@ -20,6 +20,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+import email.utils
 import getpass
 import hashlib
 import http.server
@@ -47,7 +48,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.14"
+RUNTIME_VERSION = "1.0.15"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -56,6 +57,13 @@ MAX_USERNAME_CHARS = 512
 MAX_PASSWORD_CHARS = 2_048
 BROWSER_LOAD_TIMEOUT_SECONDS = 8
 BROWSER_INPUT_TIMEOUT_SECONDS = 5 * 60
+MAX_RATE_LIMIT_RETRIES = 2
+FALLBACK_RATE_LIMIT_DELAY_SECONDS = 1.0
+MAX_FALLBACK_RATE_LIMIT_DELAY_SECONDS = 4.0
+MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
+MAX_RATE_LIMIT_TOTAL_WAIT_SECONDS = 30.0
+MAX_RETRY_AFTER_HEADER_CHARS = 128
+RATE_LIMIT_JITTER_MILLISECONDS = 250
 DOCUMENT_ENTITIES = {
     "incoming": "Document_ЭлектронныйДокументВходящийЭДО",
     "outgoing": "Document_ЭлектронныйДокументИсходящийЭДО",
@@ -1191,6 +1199,84 @@ def _file_url(config: CompanyConfig, scheme: str, file_id: str) -> str:
     )
 
 
+def _retry_after_delay_seconds(
+    raw_value: str | None,
+    *,
+    now_seconds: float | None = None,
+) -> float | None:
+    """Parse RFC Retry-After without accepting an unbounded wait request."""
+
+    value = str(raw_value or "").strip()
+    if not value or len(value) > MAX_RETRY_AFTER_HEADER_CHARS:
+        return None
+    if re.fullmatch(r"\d+", value):
+        return float(int(value))
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    current_seconds = time.time() if now_seconds is None else now_seconds
+    return max(0.0, parsed.timestamp() - current_seconds)
+
+
+def _rate_limit_retry_delay_seconds(
+    error: urllib.error.HTTPError,
+    retry_count: int,
+) -> float:
+    headers = error.headers
+    raw_retry_after = None
+    if headers is not None:
+        raw_retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    retry_after = _retry_after_delay_seconds(raw_retry_after)
+    if retry_after is not None:
+        return retry_after
+    fallback = min(
+        FALLBACK_RATE_LIMIT_DELAY_SECONDS * (2 ** retry_count),
+        MAX_FALLBACK_RATE_LIMIT_DELAY_SECONDS,
+    )
+    return fallback + secrets.randbelow(RATE_LIMIT_JITTER_MILLISECONDS + 1) / 1_000
+
+
+def _close_http_error(error: urllib.error.HTTPError) -> None:
+    # Some Python/urllib adapters expose an HTTPError without a readable body.
+    # Cleanup must never replace the original bounded status/error semantics.
+    with contextlib.suppress(Exception):
+        error.close()
+
+
+def _open_with_rate_limit_retry(
+    opener: Any,
+    request: urllib.request.Request,
+    *,
+    timeout: float,
+) -> Any:
+    retry_count = 0
+    total_retry_wait = 0.0
+    while True:
+        try:
+            return opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as error:
+            if error.code != 429 or retry_count >= MAX_RATE_LIMIT_RETRIES:
+                raise
+            delay_seconds = _rate_limit_retry_delay_seconds(error, retry_count)
+            if (
+                delay_seconds > MAX_RATE_LIMIT_WAIT_SECONDS
+                or total_retry_wait + delay_seconds
+                > MAX_RATE_LIMIT_TOTAL_WAIT_SECONDS
+            ):
+                raise
+            # HTTPError owns the rejected response body/socket. Close it before
+            # sleeping so a bounded retry cannot leak connections.
+            _close_http_error(error)
+            retry_count += 1
+            total_retry_wait += delay_seconds
+            time.sleep(delay_seconds)
+
+
 def _http_open(
     method: str,
     url: str,
@@ -1245,8 +1331,9 @@ def _http_open(
         urllib.request.HTTPSHandler(context=ssl.create_default_context()),
     )
     try:
-        return opener.open(request, timeout=timeout)
+        return _open_with_rate_limit_retry(opener, request, timeout=timeout)
     except urllib.error.HTTPError as error:
+        _close_http_error(error)
         if error.code in {401, 403}:
             raise AuthenticationError(
                 "authentication_failed",

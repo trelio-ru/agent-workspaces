@@ -80,6 +80,11 @@ The secret is needed for `connect`, `doctor`, `search-documents`,
 secret-exec wrapper for a uniform one-use execution boundary, although the
 file endpoint itself receives only personal Basic Auth.
 
+The runtime handles HTTP 429 itself for its idempotent GET/HEAD requests: it
+honors a valid `Retry-After`, otherwise uses bounded exponential backoff with
+jitter, and performs at most two retries with at most 30 seconds of total
+waiting. Never wrap a failed command in an additional automatic retry loop.
+
 ## Read documents and files
 
 Use these runtime commands:

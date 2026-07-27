@@ -108,7 +108,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_reuses_provider_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.15")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.16")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-edo")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -581,6 +581,52 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             self.assertEqual(caught.exception.code, "source_contract_mismatch")
             self.assertEqual(caught.exception.details["httpStatus"], status)
             self.assertNotIn("must-not-leak", str(caught.exception))
+
+    def test_http_429_honors_retry_after_before_retrying(self) -> None:
+        rate_limited = urllib.error.HTTPError(
+            "https://example.test/odata/fixed",
+            429,
+            "rate limited",
+            {"Retry-After": "2"},
+            None,
+        )
+        success = object()
+        opener = mock.Mock()
+        opener.open.side_effect = [rate_limited, success]
+
+        with (
+            mock.patch.object(
+                runtime.socket,
+                "getaddrinfo",
+                return_value=[
+                    (
+                        runtime.socket.AF_INET,
+                        runtime.socket.SOCK_STREAM,
+                        6,
+                        "",
+                        ("93.184.216.34", 443),
+                    ),
+                ],
+            ),
+            mock.patch.object(
+                runtime.urllib.request,
+                "build_opener",
+                return_value=opener,
+            ),
+            mock.patch.object(runtime.time, "sleep") as sleep,
+        ):
+            response = runtime._http_open(
+                "GET",
+                "https://example.test/odata/fixed",
+                credentials=self.credentials,
+                timeout=1,
+                x_odata="0123456789abcdef",
+                diagnostic_stage="general.reference.organization.search",
+            )
+
+        self.assertIs(response, success)
+        self.assertEqual(opener.open.call_count, 2)
+        sleep.assert_called_once_with(2.0)
 
     def test_document_filter_escapes_text_and_blocks_unsupported_relation(self) -> None:
         common = {

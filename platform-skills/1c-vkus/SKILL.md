@@ -44,6 +44,11 @@ registry immediately. The second intentionally returns
 `unsupported / needs_custom_endpoint`; never imitate stock balances by
 summing movements.
 
+The runtime handles HTTP 429 itself for its idempotent GET/HEAD requests: it
+honors a valid `Retry-After`, otherwise uses bounded exponential backoff with
+jitter, and performs at most two retries with at most 30 seconds of total
+waiting. Never wrap a failed command in an additional automatic retry loop.
+
 ## Fixed commands
 
 - `get-capabilities`
