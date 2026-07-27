@@ -118,6 +118,10 @@ class TrelioTelegramTests(unittest.TestCase):
         self.assertIn("Telegram: Настройки", page)
         self.assertIn("Сканируйте QR только из приложения Telegram", page)
         self.assertIn('type="button" data-cancel="1"', page)
+        self.assertIn('<form id="prompt-form" autocomplete="off">', page)
+        self.assertIn('type="${inputType}" autocomplete="off"', page)
+        self.assertNotIn('autocomplete="one-time-code"', page)
+        self.assertNotIn('autocomplete="tel"', page)
         self.assertNotIn("Vkus Telegram", page)
 
     def test_password_hint_is_normalized_and_bounded_for_local_display(self):

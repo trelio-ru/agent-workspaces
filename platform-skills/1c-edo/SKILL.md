@@ -34,10 +34,20 @@ write operation.
 
 ## Connect personal credentials
 
-Run `connect` only at the user's request. It opens a protected local system
-window, with an interactive terminal fallback. The user enters the personal 1C
-login and password there; never request either value in chat, MCP, a shell
-argument, environment variable, workspace file or Trelio form.
+Run `connect` only at the user's request. By default it opens a protected
+one-time page in the operating system's default browser on `127.0.0.1`; the
+runtime requires the exact tokenized path, loopback `Host`, same-origin
+`Origin`, bounded form body and actual page load. The login and password fields
+disable browser autocomplete, and the listener closes after success, failure,
+cancellation or timeout. An explicit `connect --terminal-prompts` fallback is
+allowed only in a visible local TTY. There is no automatic fallback to a
+system dialog or terminal.
+
+The user enters the personal 1C login and password only in that local browser
+page or explicit terminal fallback; never request either value in chat, MCP, a
+shell argument, environment variable, workspace file or Trelio form. The
+runtime probes the fixed OData endpoint before atomically replacing the stored
+credential.
 
 The runtime stores personal credentials only under:
 

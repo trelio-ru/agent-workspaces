@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -105,7 +108,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_reuses_provider_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.14")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.15")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-edo")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -115,6 +118,117 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertNotIn("developer-inventory-metadata", source)
         self.assertNotIn("If-None-Match", source)
         self.assertNotIn("Accept-Encoding", source)
+        self.assertNotIn("osascript", source)
+        self.assertNotIn("System.Windows.Forms", source)
+
+    def test_latent_provider_connect_uses_protected_browser_without_autocomplete(self) -> None:
+        page = runtime.browser_prompt_app_page().decode("utf-8")
+        expected = runtime.Credentials("employee", "password")
+
+        self.assertIn("Trelio — 1С", page)
+        self.assertIn('<form id="prompt-form" autocomplete="off">', page)
+        self.assertIn('type="${inputType}" autocomplete="off"', page)
+        with mock.patch.object(
+            runtime,
+            "_prompt_credentials_browser",
+            return_value=expected,
+        ) as browser_prompt, mock.patch.object(
+            runtime,
+            "_prompt_credentials_terminal",
+            return_value=expected,
+        ) as terminal_prompt:
+            self.assertEqual(
+                runtime.prompt_credentials(Namespace(terminal_prompts=False)),
+                expected,
+            )
+            browser_prompt.assert_called_once()
+            terminal_prompt.assert_not_called()
+
+    def test_latent_provider_connect_openers_use_default_browser(self) -> None:
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(runtime.sys, "platform", "darwin"), mock.patch.object(
+            runtime.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            runtime.open_browser_url("http://127.0.0.1:1234/token/")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/open", "http://127.0.0.1:1234/token/"],
+        )
+
+        startfile = mock.Mock()
+        with mock.patch.object(runtime.sys, "platform", "win32"), mock.patch.object(
+            runtime.os,
+            "startfile",
+            startfile,
+            create=True,
+        ):
+            runtime.open_browser_url("http://127.0.0.1:1234/token/")
+        startfile.assert_called_once_with("http://127.0.0.1:1234/token/")
+
+    def test_latent_provider_loopback_rejects_cross_origin_submit(self) -> None:
+        session = runtime.BrowserPromptSession()
+        session.opened = True
+        received: list[str] = []
+
+        worker = threading.Thread(
+            target=lambda: received.append(
+                session.ask(
+                    "Введите личный пароль 1С",
+                    hidden=True,
+                    trim=False,
+                    max_length=runtime.MAX_PASSWORD_CHARS,
+                ),
+            ),
+        )
+        worker.start()
+        try:
+            with session.condition:
+                self.assertTrue(
+                    session.condition.wait_for(
+                        lambda: session.current_prompt is not None,
+                        timeout=2,
+                    ),
+                )
+                prompt_id = session.current_prompt["id"]
+
+            body = f"id={prompt_id}&value=private-password"
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://attacker.example",
+                },
+            )
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 403)
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": session.origin,
+                },
+            )
+            accepted = connection.getresponse()
+            accepted.read()
+            self.assertEqual(accepted.status, 200)
+            connection.close()
+
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(received, ["private-password"])
+        finally:
+            session.close()
 
     def test_parser_exposes_only_fixed_business_arguments(self) -> None:
         parser = runtime.build_general_parser()

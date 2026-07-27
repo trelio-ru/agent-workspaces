@@ -352,14 +352,13 @@ function renderPrompt(data) {
   } else {
     const inputType = data.hidden ? "password" : "text";
     const required = data.allow_empty ? "" : "required";
-    const autocomplete = data.hidden ? "one-time-code" : "tel";
-    controls = `<input autofocus name="value" type="${inputType}" autocomplete="${autocomplete}" ${required}>
+    controls = `<input autofocus name="value" type="${inputType}" autocomplete="off" ${required}>
       <div class="actions">
         <button type="button" data-cancel="1">${cancelLabel}</button>
         <button class="primary" type="submit">Продолжить</button>
       </div>`;
   }
-  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${hint}${error}<form id="prompt-form">${controls}</form>`;
+  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${hint}${error}<form id="prompt-form" autocomplete="off">${controls}</form>`;
   const form = document.getElementById("prompt-form");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
