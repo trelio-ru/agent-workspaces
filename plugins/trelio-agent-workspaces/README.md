@@ -498,6 +498,12 @@ Trelio хранит значения Agent Secrets зашифрованно и �
 trelio-workspace secret exec --grant <uuid> -- <executable> [args...]
 ```
 
+Начиная с `1.5.6`, grant для логического executable `trelio-workspace`
+запускает текущий проверенный bridge через его собственный Node.js process, а
+не ищет одноимённую программу в `PATH`. Поэтому установленному Codex/Claude
+plugin не нужен глобальный wrapper, а подмена `PATH` после выдачи grant не
+может перенаправить company secret в другой executable.
+
 Агент может записать значение, которое уже выдаёт локальная программа или
 защищённый файл, напрямую в vault без MCP tool argument:
 

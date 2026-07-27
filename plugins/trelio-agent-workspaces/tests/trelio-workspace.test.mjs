@@ -1143,7 +1143,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.5");
+  assert.equal(BRIDGE_VERSION, "1.5.6");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1239,6 +1239,107 @@ test("1C EDO secret checkout instructions avoid a nested bridge executable", asy
     skillMarkdown,
     /trelio-workspace secret exec --grant \.\.\. -- skill run/,
   );
+});
+
+test("secret checkout self-dispatches trelio-workspace without resolving PATH", {
+  timeout: 10_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-self-dispatch-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const emptyPathDirectory = path.join(temporaryDirectory, "empty-path");
+  const rootDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(rootDirectory, "workspace");
+  const grantId = "66666666-6666-4666-8666-666666666666";
+  const secretValue = "must-not-appear-in-output";
+  let serverError = null;
+  let consumeCount = 0;
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.method, "POST");
+      assert.equal(
+        request.url,
+        `/api/agent-secrets/checkout-grants/${grantId}/consume`,
+      );
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+      assert.equal(
+        request.headers["x-trelio-agent-workspaces-version"],
+        BRIDGE_VERSION,
+      );
+      assert.deepEqual(
+        JSON.parse((await readRequestBody(request)).toString("utf8")),
+        { runId },
+      );
+      consumeCount += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        runId,
+        executable: "trelio-workspace",
+        deliveryMode: "env",
+        environmentVariable: "TRELIO_TEST_SECRET",
+        value: secretValue,
+      }));
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await Promise.all([
+      mkdir(homeDirectory, { recursive: true }),
+      mkdir(emptyPathDirectory, { recursive: true }),
+      mkdir(workspaceDirectory, { recursive: true }),
+    ]);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    await writeFile(
+      path.join(rootDirectory, ".trelio-run.json"),
+      `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "secret",
+        "exec",
+        "--grant",
+        grantId,
+        "--",
+        "trelio-workspace",
+        "help",
+      ],
+      {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 8_000,
+        env: {
+          ...process.env,
+          HOME: homeDirectory,
+          PATH: emptyPathDirectory,
+          TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+        },
+      },
+    );
+
+    assert.match(result.stdout, /Trelio Agent Workspace Bridge/u);
+    assert.equal(result.stdout.includes(secretValue), false);
+    assert.equal(result.stderr, "");
+    assert.equal(consumeCount, 1);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("bridge private credential path and Windows ACL are explicit and user-scoped", () => {

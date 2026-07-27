@@ -18,12 +18,13 @@ import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.5.5";
+export const BRIDGE_VERSION = "1.5.6";
+const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
   "",
@@ -4552,7 +4553,19 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
 });
 
 const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentVariable, secretValue }) => {
-  const [executable, ...args] = commandArguments;
+  const [logicalExecutable, ...logicalArgs] = commandArguments;
+  // Codex/Claude plugins ship the bridge as this module and do not promise a
+  // global `trelio-workspace` binary in PATH. Keep the grant bound to the
+  // narrow logical executable, but resolve that reserved token only to this
+  // already-loaded bridge source. Besides making the documented Node fallback
+  // work for secret checkout, this prevents a caller-controlled PATH entry
+  // from replacing the bridge after the server has approved the grant.
+  const executable = logicalExecutable === "trelio-workspace"
+    ? process.execPath
+    : logicalExecutable;
+  const args = logicalExecutable === "trelio-workspace"
+    ? [BRIDGE_ENTRYPOINT_PATH, ...logicalArgs]
+    : logicalArgs;
   const childEnvironment = { ...process.env };
   let temporaryDirectory = null;
   let childStdin = "inherit";
