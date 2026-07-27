@@ -441,6 +441,14 @@ identity/release. Нельзя подменять найденный навык 
 Недоступный control plane `list_agent_skills` / `get_agent_skill` является
 отдельной ошибкой, а не доказательством отсутствия интеграции.
 
+Штатные операции Trelio MCP и Agent Workspace через MCP tools и bundled bridge
+`trelio-workspace` являются основным workspace workflow, а не fallback из
+каталога Agent Skills. Обязательная проверка каталога для resolved context
+сохраняется, но агент не ищет и не объявляет отсутствие отдельного навыка для
+поиска задач, управления workspace/Run, чтения workspace context, checkpoint,
+submit или restore. Явная причина fallback нужна только при выборе другой
+реализации операции, которую мог бы выполнить релевантный catalog skill.
+
 Bootstrap-навык `trelio-skill-catalog` получает через Trelio MCP текущий список
 навыков компании и конкретного проекта. Корпоративные и проектные назначения
 складываются; отключение назначения не удаляет и не запрещает личный навык

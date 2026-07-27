@@ -402,6 +402,14 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Fallback допустим только когда подходящего навыка действительно нет/u,
     );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Штатные операции Trelio MCP и Agent Workspace через MCP tools и bundled `trelio-workspace` bridge являются основным workspace workflow, а не fallback из каталога Agent Skills/u,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /не ищи и не объявляй отсутствие отдельного catalog skill для поиска задач, управления workspace или Run, чтения workspace context, checkpoint, submit или restore/u,
+    );
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
       AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
@@ -1143,7 +1151,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.6");
+  assert.equal(BRIDGE_VERSION, "1.5.7");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1522,6 +1530,10 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /When it includes `remoteMcpExecution`/);
   assert.match(workerSkill, /Never bypass a matching assigned skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/);
   assert.match(workerSkill, /Fallback is allowed only when the exact catalog has no relevant skill/);
+  assert.match(workerSkill, /Native Trelio MCP control-plane and Agent Workspace operations/);
+  assert.match(workerSkill, /do not search for or announce a missing catalog skill merely to discover tasks/);
+  assert.match(workerSkill, /State a fallback reason only when choosing another implementation/);
+  assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
   assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
   assert.match(workerSkill, /when you independently identify a durable rule/);
   assert.match(workerSkill, /Call `get_agent_instructions` to read the current scoped and inherited rules/);

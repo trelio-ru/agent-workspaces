@@ -1242,6 +1242,9 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
   assert.match(instructions, /State that exact reason before using a fallback/u);
+  assert.match(instructions, /Native Trelio MCP control-plane and Agent Workspace operations/u);
+  assert.match(instructions, /do not search for or announce a missing catalog skill merely to discover tasks, manage a workspace or Run, read workspace context, checkpoint, submit, or restore/u);
+  assert.match(instructions, /fallback-reason requirement applies only when choosing another implementation for an operation that a relevant catalog skill could handle/u);
   assert.match(instructions, /does not weaken any existing secret-delivery rule, personal-session boundary, approval policy, or confirmation requirement/u);
 });
 
@@ -1362,6 +1365,7 @@ test("platform routing allows a named fallback only when no relevant skill exist
   assert.match(instructions, /Fallback is allowed only when the exact catalog has no relevant skill/u);
   assert.match(instructions, /the relevant skill or required connection is not configured/u);
   assert.match(instructions, /the current skill does not support the requested operation/u);
+  assert.match(instructions, /primary workspace workflow, not a fallback from the Agent Skill catalog/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
@@ -1406,7 +1410,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.5.6");
+  assert.equal(frames[0].result.serverInfo.version, "1.5.7");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.equal(frames[1].result.tools.length, 4);
 });

@@ -32,6 +32,15 @@ using the fallback. If `list_agent_skills` or `get_agent_skill` itself is
 unavailable, report an unavailable Trelio skill control plane instead of
 claiming that the integration is absent or opening Trelio in a browser.
 
+Native Trelio MCP control-plane and Agent Workspace operations through Trelio
+MCP tools and the bundled `trelio-workspace` bridge are the primary workspace
+workflow, not a fallback from this catalog. Keep the required catalog check for
+the resolved context, but do not search for or announce a missing catalog skill
+merely to discover tasks, manage a workspace or Run, read workspace context,
+checkpoint, submit, or restore. State a fallback reason only when choosing
+another implementation for an operation that a relevant catalog skill could
+handle.
+
 Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. The bridge may cache verified package bytes by digest, but it must still resolve the release on every invocation. If the server returns `AGENT_SKILL_RELEASE_CHANGED`, call `get_agent_skill` again once and use the new instruction and exact command; never force the stale release. If the required runtime host or `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin.
 
 ## Connected integrations
