@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared read-only runtime core for Trelio's ``1c-edo`` and ``1c`` skills.
+"""Company-private read-only 1C runtime for Trelio's Vkus integration.
 
 The runtime deliberately separates three trust domains:
 
@@ -12,6 +12,12 @@ The runtime deliberately separates three trust domains:
 
 Only a fixed set of GET/HEAD requests can be built below. There is no generic
 URL, entity, OData expression or HTTP-method escape hatch.
+
+The production runtime never contacts a schema-discovery route. Its exact
+entity, field, line and filter contract is frozen in the signed registry below.
+Every business response is validated against that registry before it can be
+normalized. Metadata inventory is a separate development/release activity and
+is deliberately absent from this executable package.
 """
 
 from __future__ import annotations
@@ -20,13 +26,11 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
-import email.utils
-import errno
 import getpass
 import hashlib
-import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -36,13 +40,10 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import xml.etree.ElementTree as ET
-import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
@@ -54,7 +55,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # namespace. The backend resolves the existing 1c-edo connection id, so local
 # Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.13"
+RUNTIME_VERSION = "1.0.14"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -123,6 +124,25 @@ DOCUMENT_SELECT_FIELDS = (
     "Остановлен",
     "СуммаДокумента",
 )
+# The broad links command may return only a normalized EDO identifier and
+# transition hint. These fixed source fields are part of the same signed Vkus
+# registry; attachment contents remain exclusively in the `1c-edo` skill.
+GENERAL_EDO_LINK_FIELDS = {
+    "Ref_Key": "Edm.Guid",
+    "Number": "Edm.String",
+    "Date": "Edm.DateTime",
+    "ВидДокумента_Key": "Edm.Guid",
+    "ДатаДокумента": "Edm.DateTime",
+    "ДатаПодписания": "Edm.DateTime",
+    "ДоговорКонтрагента": "Edm.Guid",
+    "Комментарий": "Edm.String",
+    "Контрагент": "Edm.Guid",
+    "НомерДокумента": "Edm.String",
+    "ОбменБезПодписи": "Edm.Boolean",
+    "Организация_Key": "Edm.Guid",
+    "Остановлен": "Edm.Boolean",
+    "СуммаДокумента": "Edm.Double",
+}
 DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
 DOCUMENT_SIGNATURE_BASIS = "document_signing_date"
 STATUS_REGISTER_ENTITY = "InformationRegister_СостоянияДокументовЭДО"
@@ -150,25 +170,8 @@ UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
-# Полная schema стандартной OData-публикации крупной конфигурации может быть
-# заметно больше обычного бизнес-ответа. Для единственного fixed `$metadata`
-# маршрута держим отдельный bounded cap; все sample/search/get ответы по-
-# прежнему ограничены существенно меньшими 8 МиБ.
-MAX_METADATA_RESPONSE_BYTES = 64 * 1024 * 1024
-# The cache stores only a signed-runtime-derived verdict for each fixed
-# capability, never raw metadata or arbitrary 1C field names.  It is not a TTL
-# shortcut: every broad command still contacts the fixed metadata route.  A
-# cached verdict becomes usable only after the server confirms its validator
-# with HTTP 304; without ETag/Last-Modified the runtime downloads and verifies
-# the complete metadata again.
-GENERAL_SCHEMA_CACHE_VERSION = 1
-GENERAL_SCHEMA_CACHE_LOCK_TIMEOUT_SECONDS = 180
-MAX_GENERAL_SCHEMA_CACHE_BYTES = 256 * 1024
-MAX_METADATA_ETAG_CHARS = 512
-MAX_METADATA_LAST_MODIFIED_CHARS = 128
-METADATA_ETAG_RE = re.compile(r'^(?:W/)?"[\x21\x23-\x7e]*"$')
-METADATA_ACCEPT_ENCODING = "gzip"
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
@@ -208,9 +211,6 @@ DIAGNOSTIC_STAGES = frozenset(
         "files.outgoing.old-files",
         "file.new.download",
         "file.old.download",
-        "metadata.inventory.fetch",
-        "metadata.inventory.sample",
-        "general.schema.verify",
         "general.links.contracts",
         "general.links.edo.incoming",
         "general.links.edo.outgoing",
@@ -235,99 +235,19 @@ DIAGNOSTIC_STAGES = frozenset(
     },
 )
 
-# Development inventory is deliberately heuristic only at the *name matching*
-# layer. It can discover a bounded set of likely business entities, but it
-# cannot query an arbitrary entity or reveal raw records. Final production
-# mappings are frozen later in a signed capability registry.
-INVENTORY_REFERENCE_TERMS = {
-    "organization": ("Организац",),
-    "business_unit": (
-        "СтруктураПредприятия",
-        "ПодразделенияОрганизаций",
-        "ОбъектыСтроительства",
-        "НаправленияДеятельности",
-    ),
-    "counterparty": ("Контрагент",),
-    "partner": ("Партнер", "Партнёр"),
-    "contract": ("ДоговорыКонтрагентов",),
-    "item": ("Номенклатур",),
-    "warehouse": ("Склад",),
-}
-INVENTORY_DOCUMENT_TERMS = {
-    "purchase": ("Приобрет", "Поступлен", "Закуп"),
-    "sale": ("Реализац", "Продаж"),
-    "receipt": ("Приход", "Оприход"),
-    "return": ("Возврат",),
-    "transfer": ("Передач", "Перемещ"),
-}
-INVENTORY_STOCK_TERMS = ("Остат", "Склад", "Товар", "Номенклатур")
-INVENTORY_PREFERRED_ENTITIES = {
-    ("reference", "organization"): ("Catalog_Организации",),
-    ("reference", "business_unit"): (
-        "Catalog_СтруктураПредприятия",
-        "Catalog_ПодразделенияОрганизаций",
-        "Catalog_ОбъектыСтроительства",
-        "Catalog_НаправленияДеятельности",
-    ),
-    ("reference", "counterparty"): ("Catalog_Контрагенты",),
-    ("reference", "partner"): ("Catalog_Партнеры", "Catalog_Партнёры"),
-    ("reference", "contract"): ("Catalog_ДоговорыКонтрагентов",),
-    ("reference", "item"): ("Catalog_Номенклатура",),
-    ("reference", "warehouse"): ("Catalog_Склады",),
-    ("document", "purchase"): (
-        "Document_ПриобретениеТоваровУслуг",
-        "Document_ПоступлениеТоваровУслуг",
-    ),
-    ("document", "sale"): ("Document_РеализацияТоваровУслуг",),
-    ("document", "receipt"): (
-        "Document_ПриходныйОрдерНаТовары",
-        "Document_ОприходованиеИзлишковТоваров",
-    ),
-    ("document", "return"): (
-        "Document_ВозвратТоваровПоставщику",
-        "Document_ВозвратТоваровОтКлиента",
-        "Document_ВозвратТоваровМеждуОрганизациями",
-    ),
-    ("document", "transfer"): (
-        "Document_ПеремещениеТоваров",
-        "Document_ПередачаТоваровМеждуОрганизациями",
-    ),
-}
-INVENTORY_BLOCKED_TERMS = (
-    "Зарплат",
-    "Кадр",
-    "Сотрудник",
-    "Физическ",
-    "Банк",
-    "Безналич",
-    "Денежн",
-    "Платеж",
-    "Платёж",
-    "Касс",
-    "Книг",
-    "Бухгалтер",
-    "Проводк",
-    "НДФЛ",
-    "Страхов",
-    "Начислен",
-    "Контактн",
-    "Доверенност",
-    "Сертификат",
-)
-MAX_INVENTORY_ENTITIES = 128
-MAX_INVENTORY_ENTITIES_PER_CAPABILITY = 8
-MAX_INVENTORY_SAMPLES_PER_CAPABILITY = 2
-MAX_INVENTORY_PROPERTIES = 160
-
 # The production broad 1C surface is intentionally frozen to the exact
-# entities and EDM field types observed through the signed inventory runtime
-# on 2026-07-26.  Only fields listed here can enter a query or normalized
-# response.  Banking, payment, cash, HR/payroll, contacts, binary fields and
-# accounting internals are deliberately absent even when the source entity
-# publishes them.
-GENERAL_INVENTORY_SCHEMA_DIGEST = (
+# entities and EDM field types reviewed from a development-only inventory on
+# 2026-07-26. Only fields listed here can enter a query or normalized response.
+# Banking, payment, cash, HR/payroll, contacts, binary fields and accounting
+# internals are deliberately absent even when the source entity publishes them.
+#
+# The profile digest is provenance for that release review. Production does
+# not fetch the source metadata document and instead validates every returned
+# record against the signed types below.
+GENERAL_PROFILE_SCHEMA_DIGEST = (
     "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
 )
+GENERAL_REGISTRY_VERSION = 2
 GENERAL_MAX_PAGE_SIZE = 25
 GENERAL_MAX_PAGES = 3
 GENERAL_MAX_LINES = 100
@@ -750,17 +670,6 @@ class Credentials:
     password: str
 
 
-@dataclass(frozen=True)
-class MetadataResource:
-    """Bounded metadata response without exposing raw HTTP headers."""
-
-    status: int
-    body: bytes | None
-    etag: str | None
-    last_modified: str | None
-    content_encoding: str = "identity"
-
-
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Reject every redirect so an allowed host cannot bounce credentials."""
 
@@ -940,16 +849,6 @@ def credentials_path(identity: Identity) -> Path:
     return connection_root(identity) / "secrets" / "personal-basic-auth.json"
 
 
-def general_schema_cache_path(identity: Identity) -> Path:
-    """Return the identity-scoped cache path shared by both 1C surfaces."""
-
-    return connection_root(identity) / "cache" / "broad-schema-v1.json"
-
-
-def general_schema_cache_lock_path(identity: Identity) -> Path:
-    return connection_root(identity) / "cache" / "broad-schema-v1.lock"
-
-
 def _assert_not_symlink(path: Path) -> None:
     with contextlib.suppress(FileNotFoundError):
         if stat.S_ISLNK(path.lstat().st_mode):
@@ -1059,93 +958,6 @@ def _delete_private_file(path: Path) -> bool:
     return True
 
 
-@contextlib.contextmanager
-def _exclusive_private_file_lock(path: Path) -> Iterable[None]:
-    """Serialize cache refreshes across one-shot runtime processes.
-
-    The lock never carries data or credentials.  It only prevents two
-    simultaneous commands from downloading the same large metadata document.
-    A bounded wait fails closed rather than bypassing schema validation.
-    """
-
-    ensure_private_directory(path.parent)
-    _assert_not_symlink(path)
-    flags = os.O_CREAT | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except OSError as error:
-        raise OneCEdoError(
-            "unsafe_local_storage",
-            "Не удалось безопасно открыть локальную блокировку metadata cache.",
-        ) from error
-    deadline = time.monotonic() + GENERAL_SCHEMA_CACHE_LOCK_TIMEOUT_SECONDS
-    locked = False
-    try:
-        metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode):
-            raise OneCEdoError(
-                "unsafe_local_storage",
-                "Локальная блокировка metadata cache должна быть обычным файлом.",
-            )
-        if os.name == "posix":
-            os.fchmod(descriptor, 0o600)
-            import fcntl
-
-            while True:
-                try:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    locked = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise OneCEdoError(
-                            "metadata_cache_busy",
-                            "Другая проверка metadata не завершилась вовремя.",
-                        )
-                    time.sleep(0.1)
-        elif os.name == "nt":
-            import msvcrt
-
-            if metadata.st_size == 0:
-                os.write(descriptor, b"\0")
-            while True:
-                try:
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                    locked = True
-                    break
-                except OSError as error:
-                    if error.errno not in {errno.EACCES, errno.EAGAIN}:
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise OneCEdoError(
-                            "metadata_cache_busy",
-                            "Другая проверка metadata не завершилась вовремя.",
-                        )
-                    time.sleep(0.1)
-        else:
-            raise OneCEdoError(
-                "unsafe_local_storage",
-                "Платформа не поддерживает безопасную блокировку metadata cache.",
-            )
-        yield
-    finally:
-        if locked and os.name == "posix":
-            with contextlib.suppress(OSError):
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        elif locked and os.name == "nt":
-            with contextlib.suppress(OSError):
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        os.close(descriptor)
-
-
 def load_access_state(identity: Identity, config: CompanyConfig) -> dict[str, Any]:
     value = _read_private_json(access_state_path(identity))
     if not value or value.get("fingerprint") != config.fingerprint:
@@ -1208,10 +1020,6 @@ def save_credentials(
     config: CompanyConfig,
     credentials: Credentials,
 ) -> None:
-    # A protected reconnect can change the metadata visibility of the same
-    # endpoint.  Remove the old attestation before persisting the new
-    # credentials so it can never be revalidated under another identity.
-    _delete_private_file(general_schema_cache_path(identity))
     _write_private_json(
         credentials_path(identity),
         {
@@ -1387,9 +1195,6 @@ def _http_open(
     x_odata: str | None,
     diagnostic_stage: str,
     accept: str | None = None,
-    accept_encoding: str | None = None,
-    conditional_headers: Mapping[str, str] | None = None,
-    allow_not_modified: bool = False,
 ) -> Any:
     if diagnostic_stage not in DIAGNOSTIC_STAGES:
         raise OneCEdoError(
@@ -1430,38 +1235,6 @@ def _http_open(
     }
     if x_odata is not None:
         headers["X-OData"] = x_odata
-    if accept_encoding is not None:
-        # Compression is allowed only for the fixed metadata route. Keep the
-        # accepted token closed so this helper cannot become an arbitrary
-        # content-negotiation surface.
-        if accept_encoding != METADATA_ACCEPT_ENCODING:
-            raise OneCEdoError(
-                "query_builder_error",
-                "Runtime отклонила неподдерживаемое кодирование ответа.",
-            )
-        headers["Accept-Encoding"] = accept_encoding
-    for name, value in (conditional_headers or {}).items():
-        # Conditional headers can originate only from the private,
-        # integrity-protected metadata cache. Repeat a strict allowlist and
-        # newline/size check here so a corrupted local file cannot become a
-        # generic header-injection primitive.
-        if name not in {"If-None-Match", "If-Modified-Since"}:
-            raise OneCEdoError(
-                "query_builder_error",
-                "Runtime отклонила неподдерживаемый conditional header.",
-            )
-        if (
-            not isinstance(value, str)
-            or not value
-            or len(value) > MAX_METADATA_ETAG_CHARS
-            or "\r" in value
-            or "\n" in value
-        ):
-            raise OneCEdoError(
-                "invalid_local_state",
-                "Локальный metadata validator повреждён.",
-            )
-        headers[name] = value
     request = urllib.request.Request(url, headers=headers, method=method)
     opener = urllib.request.build_opener(
         NoRedirectHandler(),
@@ -1470,12 +1243,6 @@ def _http_open(
     try:
         return opener.open(request, timeout=timeout)
     except urllib.error.HTTPError as error:
-        if allow_not_modified and error.code == 304:
-            # urllib represents a valid conditional response as HTTPError.
-            # The caller receives only the status and safe validator
-            # availability; neither header values nor request details are
-            # serialized to the agent.
-            return error
         if error.code in {401, 403}:
             raise AuthenticationError(
                 "authentication_failed",
@@ -1487,6 +1254,13 @@ def _http_open(
             raise OneCEdoError(
                 "redirect_blocked",
                 "Redirect от 1С заблокирован.",
+                diagnostic_stage=diagnostic_stage,
+                http_status=error.code,
+            ) from error
+        if diagnostic_stage.startswith("general.") and error.code in {400, 404}:
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "Фиксированный источник 1С больше не соответствует подписанному registry.",
                 diagnostic_stage=diagnostic_stage,
                 http_status=error.code,
             ) from error
@@ -1533,598 +1307,107 @@ def _request_odata(
     try:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise OneCEdoError("invalid_odata_response", "1С вернула некорректный JSON.") from error
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула ответ, не соответствующий подписанному source contract.",
+        ) from error
     if not isinstance(value, dict):
-        raise OneCEdoError("invalid_odata_response", "1С вернула неожиданный OData payload.")
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула ответ, не соответствующий подписанному source contract.",
+        )
     return value
 
 
-def _metadata_url(config: CompanyConfig) -> str:
-    """Return the single fixed metadata URL.
-
-    The caller cannot supply a URL or path.  This command exists only in the
-    development release of the broad `1c` skill and never returns raw XML.
-    """
-
-    return f"{config.odata_base_url}$metadata"
-
-
-def _safe_metadata_validators(headers: Any) -> tuple[str | None, str | None]:
-    """Extract only syntactically safe validators for a later conditional GET.
-
-    Header values stay in the private cache and are never returned in the
-    runtime JSON. Unsupported or malformed values are ignored, causing the
-    next broad command to perform another complete metadata verification.
-    """
-
-    raw_etag = headers.get("ETag") if headers is not None else None
-    etag = str(raw_etag).strip() if raw_etag is not None else ""
-    if (
-        not etag
-        or len(etag) > MAX_METADATA_ETAG_CHARS
-        or not METADATA_ETAG_RE.fullmatch(etag)
-    ):
-        etag = ""
-
-    raw_last_modified = (
-        headers.get("Last-Modified") if headers is not None else None
-    )
-    last_modified = (
-        str(raw_last_modified).strip()
-        if raw_last_modified is not None
-        else ""
-    )
-    if (
-        not last_modified
-        or len(last_modified) > MAX_METADATA_LAST_MODIFIED_CHARS
-        or "\r" in last_modified
-        or "\n" in last_modified
-    ):
-        last_modified = ""
-    else:
-        try:
-            if email.utils.parsedate_to_datetime(last_modified) is None:
-                last_modified = ""
-        except (TypeError, ValueError, OverflowError):
-            last_modified = ""
-    return etag or None, last_modified or None
-
-
-def _safe_metadata_content_encoding(headers: Any) -> str:
-    """Return a fixed transfer-encoding enum or fail closed.
-
-    The runtime deliberately requests only gzip. Unknown, chained or malformed
-    content encodings are not guessed and the raw header value never leaves
-    this function.
-    """
-
-    raw = headers.get("Content-Encoding") if headers is not None else None
-    if raw is None:
-        return "identity"
-    value = str(raw).strip().lower()
-    if value in {"", "identity"}:
-        return "identity"
-    if value == METADATA_ACCEPT_ENCODING:
-        return "gzip"
-    raise OneCEdoError(
-        "invalid_metadata_response",
-        "1С вернула неподдерживаемое кодирование metadata.",
-    )
-
-
-def _read_gzip_limited(stream: BinaryIO, limit: int) -> bytes:
-    """Decode one gzip member with independent wire and output limits."""
-
-    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
-    output = bytearray()
-    compressed_bytes = 0
-    while True:
-        chunk = stream.read(64 * 1024)
-        if not chunk:
-            break
-        compressed_bytes += len(chunk)
-        if compressed_bytes > limit:
-            raise OneCEdoError(
-                "response_too_large",
-                "Сжатый metadata-ответ превысил безопасный лимит.",
-            )
-        remaining = limit + 1 - len(output)
-        try:
-            output.extend(decompressor.decompress(chunk, remaining))
-        except zlib.error as error:
-            raise OneCEdoError(
-                "invalid_metadata_response",
-                "1С вернула повреждённый gzip metadata.",
-            ) from error
-        if len(output) > limit or decompressor.unconsumed_tail:
-            raise OneCEdoError(
-                "response_too_large",
-                "Распакованный metadata-ответ превысил безопасный лимит.",
-            )
-        if decompressor.unused_data:
-            # HTTP Content-Encoding should describe one representation. Reject
-            # concatenated members/trailing bytes instead of silently ignoring
-            # an ambiguous second payload.
-            raise OneCEdoError(
-                "invalid_metadata_response",
-                "1С вернула неоднозначный gzip metadata.",
-            )
-    try:
-        output.extend(decompressor.flush(limit + 1 - len(output)))
-    except zlib.error as error:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула повреждённый gzip metadata.",
-        ) from error
-    if not decompressor.eof:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула незавершённый gzip metadata.",
-        )
-    if len(output) > limit:
-        raise OneCEdoError(
-            "response_too_large",
-            "Распакованный metadata-ответ превысил безопасный лимит.",
-        )
-    return bytes(output)
-
-
-def _request_metadata_resource(
-    config: CompanyConfig,
-    credentials: Credentials,
-    *,
-    validators: Mapping[str, str] | None = None,
-    diagnostic_stage: str = "metadata.inventory.fetch",
-) -> MetadataResource:
-    conditional_headers: dict[str, str] = {}
-    if validators:
-        etag = validators.get("etag")
-        last_modified = validators.get("lastModified")
-        if etag:
-            conditional_headers["If-None-Match"] = etag
-        if last_modified:
-            conditional_headers["If-Modified-Since"] = last_modified
-    response = _http_open(
-        "GET",
-        _metadata_url(config),
-        credentials=credentials,
-        timeout=config.request_timeout_seconds,
-        x_odata=_require_x_odata(),
-        diagnostic_stage=diagnostic_stage,
-        accept="application/xml",
-        accept_encoding=METADATA_ACCEPT_ENCODING,
-        conditional_headers=conditional_headers,
-        allow_not_modified=bool(conditional_headers),
-    )
-    with response:
-        status_code = int(
-            getattr(response, "status", None)
-            or getattr(response, "code", None)
-            or response.getcode(),
-        )
-        etag, last_modified = _safe_metadata_validators(response.headers)
-        content_encoding = _safe_metadata_content_encoding(response.headers)
-        if status_code == 304:
-            return MetadataResource(
-                status=304,
-                body=None,
-                etag=etag,
-                last_modified=last_modified,
-                content_encoding="identity",
-            )
-        body = (
-            _read_gzip_limited(response, MAX_METADATA_RESPONSE_BYTES)
-            if content_encoding == "gzip"
-            else _read_limited(response, MAX_METADATA_RESPONSE_BYTES)
-        )
-        return MetadataResource(
-            status=status_code,
-            body=body,
-            etag=etag,
-            last_modified=last_modified,
-            content_encoding=content_encoding,
-        )
-
-
-def _request_metadata(
-    config: CompanyConfig,
-    credentials: Credentials,
-    *,
-    diagnostic_stage: str = "metadata.inventory.fetch",
-) -> bytes:
-    resource = _request_metadata_resource(
-        config,
-        credentials,
-        diagnostic_stage=diagnostic_stage,
-    )
-    if resource.status != 200 or resource.body is None:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула неожиданный ответ metadata.",
-        )
-    return resource.body
-
-
-def _xml_local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
-
-
-def _inventory_entity_rank(
-    candidate: dict[str, Any],
-    capability: tuple[str, str],
-) -> tuple[int, int, int, int, str]:
-    """Rank fixed business candidates without relying on metadata order.
-
-    Exact conventional names are only discovery hints: they do not become a
-    production mapping until the returned schema and sample have been reviewed.
-    Base entities rank ahead of tabular parts and auxiliary catalogs so a large
-    family such as `Номенклатура` cannot crowd out another capability.
-    """
-
-    name = str(candidate["entitySet"])
-    preferred = INVENTORY_PREFERRED_ENTITIES.get(capability, ())
-    preferred_index = preferred.index(name) if name in preferred else len(preferred)
-    suffix = name.split("_", 1)[1] if "_" in name else name
-    is_auxiliary = "_" in suffix or name.endswith("ПрисоединенныеФайлы")
-    return (
-        0 if name in preferred else 1,
-        preferred_index,
-        1 if is_auxiliary else 0,
-        len(name),
-        name,
-    )
-
-
-def _metadata_candidates(
-    raw: bytes,
-) -> tuple[str, list[dict[str, Any]], bool, dict[str, dict[str, int | bool]]]:
-    """Parse a bounded structural inventory from 1C metadata.
-
-    Only names and declared EDM types from business-oriented candidates leave
-    the process. Raw metadata, annotations and unrelated entities (including
-    HR, payroll, banking, cash and accounting internals) are never serialized.
-    """
-
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as error:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула некорректный XML metadata.",
-        ) from error
-
-    entity_types: dict[str, dict[str, Any]] = {}
-    for schema in (element for element in root.iter() if _xml_local_name(element.tag) == "Schema"):
-        namespace = str(schema.attrib.get("Namespace") or "")
-        for entity_type in (
-            child for child in schema
-            if _xml_local_name(child.tag) in {"EntityType", "ComplexType"}
-        ):
-            type_name = str(entity_type.attrib.get("Name") or "")
-            if not type_name:
-                continue
-            properties: list[dict[str, Any]] = []
-            navigations: list[dict[str, str]] = []
-            for child in entity_type:
-                local_name = _xml_local_name(child.tag)
-                if local_name == "Property":
-                    property_name = str(child.attrib.get("Name") or "")
-                    property_type = str(child.attrib.get("Type") or "")
-                    if property_name and property_type:
-                        properties.append({
-                            "name": property_name[:128],
-                            "type": property_type[:160],
-                            "nullable": child.attrib.get("Nullable") != "false",
-                        })
-                elif local_name == "NavigationProperty":
-                    navigation_name = str(child.attrib.get("Name") or "")
-                    navigation_type = str(child.attrib.get("Type") or "")
-                    if navigation_name and navigation_type:
-                        navigations.append({
-                            "name": navigation_name[:128],
-                            "type": navigation_type[:160],
-                        })
-            normalized = {
-                "properties": properties[:MAX_INVENTORY_PROPERTIES],
-                "propertiesTruncated": len(properties) > MAX_INVENTORY_PROPERTIES,
-                "navigationProperties": navigations[:MAX_INVENTORY_PROPERTIES],
-                "navigationPropertiesTruncated": len(navigations) > MAX_INVENTORY_PROPERTIES,
-            }
-            entity_types[type_name] = normalized
-            if namespace:
-                entity_types[f"{namespace}.{type_name}"] = normalized
-
-    grouped: dict[str, dict[str, Any]] = {}
-    for entity_set in (
-        element for element in root.iter()
-        if _xml_local_name(element.tag) == "EntitySet"
-    ):
-        name = str(entity_set.attrib.get("Name") or "")
-        entity_type_name = str(entity_set.attrib.get("EntityType") or "")
-        if (
-            not name
-            or any(term.casefold() in name.casefold() for term in INVENTORY_BLOCKED_TERMS)
-        ):
-            continue
-        matches: list[dict[str, str]] = []
-        if name.startswith("Catalog_"):
-            for kind, terms in INVENTORY_REFERENCE_TERMS.items():
-                if any(term.casefold() in name.casefold() for term in terms):
-                    matches.append({"section": "reference", "kind": kind})
-        elif name.startswith("Document_"):
-            for kind, terms in INVENTORY_DOCUMENT_TERMS.items():
-                if any(term.casefold() in name.casefold() for term in terms):
-                    matches.append({"section": "document", "kind": kind})
-        elif name.startswith(("AccumulationRegister_", "InformationRegister_")):
-            if (
-                "Остат".casefold() in name.casefold()
-                and any(term.casefold() in name.casefold() for term in INVENTORY_STOCK_TERMS[1:])
-            ):
-                matches.append({"section": "balance", "kind": "stock"})
-
-        if not matches:
-            continue
-        grouped[name] = {
-            "entitySet": name,
-            "entityType": entity_type_name[:240],
-            "matches": matches,
-            **entity_types.get(entity_type_name, {
-                "properties": [],
-                "propertiesTruncated": False,
-                "navigationProperties": [],
-                "navigationPropertiesTruncated": False,
-            }),
-        }
-        collections: list[dict[str, Any]] = []
-        for property_item in grouped[name]["properties"]:
-            property_type = str(property_item.get("type") or "")
-            if not (
-                property_type.startswith("Collection(")
-                and property_type.endswith(")")
-            ):
-                continue
-            row_type_name = property_type[len("Collection("):-1]
-            row_definition = entity_types.get(row_type_name)
-            collections.append({
-                "name": str(property_item.get("name") or "")[:128],
-                "rowType": row_type_name[:240],
-                "properties": (
-                    row_definition.get("properties", [])
-                    if row_definition is not None
-                    else []
-                )[:MAX_INVENTORY_PROPERTIES],
-                "propertiesTruncated": bool(
-                    row_definition and row_definition.get("propertiesTruncated")
-                ),
-            })
-        grouped[name]["collections"] = collections[:32]
-        grouped[name]["collectionsTruncated"] = len(collections) > 32
-
-    selected: dict[str, dict[str, Any]] = {}
-    capability_counts: dict[str, dict[str, int | bool]] = {}
-    capabilities = sorted({
-        (str(match["section"]), str(match["kind"]))
-        for candidate in grouped.values()
-        for match in candidate["matches"]
-    })
-    truncated = False
-    for capability in capabilities:
-        matches = [
-            candidate
-            for candidate in grouped.values()
-            if {
-                "section": capability[0],
-                "kind": capability[1],
-            } in candidate["matches"]
-        ]
-        matches.sort(key=lambda candidate: _inventory_entity_rank(candidate, capability))
-        limited = matches[:MAX_INVENTORY_ENTITIES_PER_CAPABILITY]
-        capability_key = f"{capability[0]}.{capability[1]}"
-        capability_counts[capability_key] = {
-            "matched": len(matches),
-            "returned": len(limited),
-            "truncated": len(matches) > len(limited),
-        }
-        truncated = truncated or len(matches) > len(limited)
-        for candidate in limited:
-            selected[str(candidate["entitySet"])] = candidate
-
-    ordered = sorted(
-        selected.values(),
-        key=lambda item: str(item["entitySet"]),
-    )
-    if len(ordered) > MAX_INVENTORY_ENTITIES:
-        ordered = ordered[:MAX_INVENTORY_ENTITIES]
-        truncated = True
-    return (
-        hashlib.sha256(raw).hexdigest(),
-        ordered,
-        truncated,
-        capability_counts,
-    )
-
-
-def _inventory_sample_names(candidates: list[dict[str, Any]]) -> set[str]:
-    """Choose a bounded sample set independently for every capability."""
-
-    selected: set[str] = set()
-    capabilities = sorted({
-        (str(match["section"]), str(match["kind"]))
-        for candidate in candidates
-        for match in candidate["matches"]
-    })
-    for capability in capabilities:
-        matches = [
-            candidate
-            for candidate in candidates
-            if {
-                "section": capability[0],
-                "kind": capability[1],
-            } in candidate["matches"]
-        ]
-        matches.sort(key=lambda candidate: _inventory_entity_rank(candidate, capability))
-        selected.update(
-            str(candidate["entitySet"])
-            for candidate in matches[:MAX_INVENTORY_SAMPLES_PER_CAPABILITY]
-        )
-    return selected
-
-
-def _inventory_sample_fields(candidate: dict[str, Any]) -> list[str]:
-    property_names = [
-        str(item.get("name") or "")
-        for item in candidate.get("properties", [])
-        if isinstance(item, dict)
-    ]
-    preferred = [
-        "Ref_Key",
-        "Description",
-        "Code",
-        "Number",
-        "Date",
-        "Posted",
-        "DeletionMark",
-    ]
-    relations = [
-        name for name in property_names
-        if name.endswith("_Key")
-        and not any(term.casefold() in name.casefold() for term in INVENTORY_BLOCKED_TERMS)
-    ][:12]
-    statuses = [
-        name for name in property_names
-        if any(term in name.casefold() for term in ("статус", "состояни"))
-    ][:4]
-    selected: list[str] = []
-    for name in [*preferred, *relations, *statuses]:
-        if name in property_names and name not in selected:
-            selected.append(name)
-    return selected[:24]
-
-
-def _inventory_sample_value_class(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, (int, float)):
-        return "number"
-    if isinstance(value, str):
-        if UUID_RE.fullmatch(value):
-            return "uuid"
-        if re.fullmatch(r"\d{4}-\d{2}-\d{2}T.*", value):
-            return "datetime"
-        return "string"
-    return "non_scalar"
-
-
-def _request_inventory_sample(
-    config: CompanyConfig,
-    credentials: Credentials,
-    candidate: dict[str, Any],
-) -> dict[str, Any]:
-    entity = str(candidate["entitySet"])
-    fields = _inventory_sample_fields(candidate)
-    # The entity name comes only from the already parsed metadata and is
-    # additionally constrained by fixed business prefixes/patterns above.
-    # No CLI value can reach this URL builder.
-    url = f"{config.odata_base_url}{urllib.parse.quote(entity, safe='_')}"
-    parameters: list[tuple[str, str | int]] = [("$top", 1)]
-    if fields:
-        parameters.append(("$select", ",".join(fields)))
-    response = _http_open(
-        "GET",
-        f"{url}?{_odata_query(parameters)}",
-        credentials=credentials,
-        timeout=config.request_timeout_seconds,
-        x_odata=_require_x_odata(),
-        diagnostic_stage="metadata.inventory.sample",
-    )
-    with response:
-        raw = _read_limited(response, min(MAX_ODATA_RESPONSE_BYTES, 512 * 1024))
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise OneCEdoError(
-            "invalid_odata_response",
-            "1С вернула некорректный sample JSON.",
-        ) from error
-    if not isinstance(value, dict):
-        raise OneCEdoError(
-            "invalid_odata_response",
-            "1С вернула неожиданный sample payload.",
-        )
-    rows = _odata_rows(value)
-    first = rows[0] if rows else {}
-    return {
-        "accessible": True,
-        "hasRows": bool(rows),
-        "selectedFields": fields,
-        "returnedFieldClasses": {
-            field: _inventory_sample_value_class(first.get(field))
-            for field in fields
-            if field in first
-        },
-    }
-
-
-def command_developer_inventory_metadata(_: argparse.Namespace) -> dict[str, Any]:
-    """Inspect only bounded structural candidates through the signed runtime."""
-
-    identity, config, credentials = _connected_context()
-    try:
-        raw = _request_metadata(config, credentials)
-    except AuthenticationError:
-        _mark_auth_failure(identity, config)
-        raise
-    schema_digest, candidates, truncated, capability_counts = _metadata_candidates(raw)
-    sample_names = _inventory_sample_names(candidates)
-    for candidate in candidates:
-        if str(candidate["entitySet"]) not in sample_names:
-            candidate["sample"] = {
-                "sampled": False,
-                "reason": "per_capability_limit",
-            }
-            continue
-        try:
-            candidate["sample"] = _request_inventory_sample(
-                config,
-                credentials,
-                candidate,
-            )
-        except AuthenticationError:
-            _mark_auth_failure(identity, config)
-            raise
-        except OneCEdoError as error:
-            candidate["sample"] = {
-                "accessible": False,
-                "error": _safe_error_payload(error),
-            }
-    return {
-        "inventoryVersion": 1,
-        "schemaDigest": f"sha256:{schema_digest}",
-        "candidateCount": len(candidates),
-        "candidatesTruncated": truncated,
-        "capabilityCounts": capability_counts,
-        "candidates": candidates,
-        "limits": {
-            "maxEntities": MAX_INVENTORY_ENTITIES,
-            "maxEntitiesPerCapability": MAX_INVENTORY_ENTITIES_PER_CAPABILITY,
-            "maxPropertiesPerEntity": MAX_INVENTORY_PROPERTIES,
-            "maxSamplesPerCapability": MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
-            "sampleRowsPerEntity": 1,
-        },
-    }
-
-
 def _odata_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Require one exact OData collection shape and reject partial rows."""
+
     raw_rows = payload.get("value")
     if raw_rows is None and isinstance(payload.get("d"), dict):
         raw_rows = payload["d"].get("results")
-    if raw_rows is None:
-        raw_rows = []
     if not isinstance(raw_rows, list):
-        raise OneCEdoError("invalid_odata_response", "OData rows имеют неожиданный формат.")
-    return [row for row in raw_rows if isinstance(row, dict)]
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула ответ, не соответствующий подписанному source contract.",
+        )
+    if any(not isinstance(row, dict) for row in raw_rows):
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула строки, не соответствующие подписанному source contract.",
+        )
+    return list(raw_rows)
+
+
+def _general_value_matches_edm(value: Any, expected_type: str) -> bool:
+    """Validate JSON scalar/collection shapes frozen by the signed registry."""
+
+    if value is None:
+        # The reviewed fields are nullable at the transport boundary. Semantic
+        # requirements such as a non-null Ref_Key are checked by normalizers.
+        return True
+    if expected_type == "Edm.Guid":
+        return isinstance(value, str) and (
+            value == ZERO_UUID or bool(UUID_RE.fullmatch(value))
+        )
+    if expected_type == "Edm.String":
+        return isinstance(value, str)
+    if expected_type == "Edm.Boolean":
+        return isinstance(value, bool)
+    if expected_type == "Edm.DateTime":
+        if not isinstance(value, str):
+            return False
+        try:
+            dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return True
+    if expected_type == "Edm.Double":
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value))
+        )
+    if expected_type == "Edm.Int64":
+        return (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+        ) or (
+            isinstance(value, str)
+            and len(value) <= 20
+            and bool(re.fullmatch(r"-?(?:0|[1-9][0-9]*)", value))
+        )
+    if expected_type.startswith("Collection(") and expected_type.endswith(")"):
+        return isinstance(value, list)
+    return False
+
+
+def _validate_general_source_record(
+    value: Any,
+    field_types: Mapping[str, str],
+    *,
+    selected_fields: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Fail closed when a fixed source omits or changes a selected field."""
+
+    if not isinstance(value, dict):
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула запись, не соответствующую подписанному source contract.",
+        )
+    selected = tuple(selected_fields or field_types)
+    if (
+        any(field not in field_types for field in selected)
+        or any(field not in value for field in selected)
+        or any(
+            not _general_value_matches_edm(value[field], field_types[field])
+            for field in selected
+        )
+    ):
+        raise OneCEdoError(
+            "capability_schema_changed",
+            "Фиксированный источник 1С больше не соответствует подписанному registry.",
+        )
+    return value
 
 
 def _safe_scalar_record(value: dict[str, Any]) -> dict[str, Any]:
@@ -3243,7 +2526,6 @@ def command_forget_credentials(_: argparse.Namespace) -> dict[str, Any]:
     identity = load_identity()
     config = load_company_config()
     removed = _delete_private_file(credentials_path(identity))
-    _delete_private_file(general_schema_cache_path(identity))
     save_access_state(identity, config, "unknown")
     return {"status": "unknown", "credentialsRemoved": removed}
 
@@ -3266,7 +2548,7 @@ def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
             "Запрошенная capability не входит в фиксированный registry.",
         )
     return {
-        "registryVersion": 1,
+        "registryVersion": GENERAL_REGISTRY_VERSION,
         "section": section,
         "kind": kind,
         "sources": [
@@ -3293,484 +2575,63 @@ def _general_capability_digest(section: str, kind: str) -> str:
 
 
 def _general_registry_digest() -> str:
-    """Bind cache entries to the complete signed broad capability registry."""
+    """Digest the complete company-specific registry embedded in the package."""
 
-    material = [
-        _general_registry_material(section, kind)
-        for section, registry in (
-            ("reference", GENERAL_REFERENCE_SPECS),
-            ("document", GENERAL_DOCUMENT_SPECS),
-        )
-        for kind in registry
-    ]
+    material = {
+        "capabilities": [
+            _general_registry_material(section, kind)
+            for section, registry in (
+                ("reference", GENERAL_REFERENCE_SPECS),
+                ("document", GENERAL_DOCUMENT_SPECS),
+            )
+            for kind in registry
+        ],
+        "links": {
+            "edoEntities": dict(sorted(DOCUMENT_ENTITIES.items())),
+            "edoFields": dict(sorted(GENERAL_EDO_LINK_FIELDS.items())),
+        },
+    }
     raw = _canonical_json(material).encode("utf-8")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
-def _general_identity_boundary(identity: Identity) -> str:
-    """Hash the identity tuple so the cache payload does not repeat UUIDs."""
-
-    raw = _canonical_json(
-        {
-            "companyId": identity.company_id,
-            "memberId": identity.member_id,
-            "connectionId": identity.connection_id,
-        },
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
-
-
-def _general_cache_hmac_key(
-    identity: Identity,
-    credentials: Credentials,
-) -> bytes:
-    """Derive a local integrity key without persisting another secret.
-
-    Anyone who can read the personal credential file already controls the 1C
-    session.  HMAC still protects against a lower-privileged process that can
-    tamper with the cache path but cannot read that private credential file.
-    """
-
-    # Canonical JSON keeps the derivation unambiguous even if a credential
-    # contains a delimiter-like character.
-    material = _canonical_json(
-        {
-            "context": "trelio-1c-general-schema-cache-v1",
-            "companyId": identity.company_id,
-            "memberId": identity.member_id,
-            "connectionId": identity.connection_id,
-            "username": credentials.username,
-            "password": credentials.password,
-        },
-    ).encode("utf-8")
-    return hashlib.sha256(material).digest()
-
-
-def _sign_general_schema_cache(
-    payload: Mapping[str, Any],
-    identity: Identity,
-    credentials: Credentials,
-) -> str:
-    return hmac.new(
-        _general_cache_hmac_key(identity, credentials),
-        _canonical_json(payload).encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-
-
-def _general_capability_keys() -> tuple[str, ...]:
-    return (
-        *(f"reference.{kind}" for kind in GENERAL_REFERENCE_SPECS),
-        *(f"document.{kind}" for kind in GENERAL_DOCUMENT_SPECS),
-    )
-
-
-def _general_schema_capability_states(
-    entity_sets: Mapping[str, str],
-    type_fields: Mapping[str, Mapping[str, str]],
-) -> dict[str, str]:
-    """Reduce full metadata to exact allowlisted verification verdicts."""
-
-    states: dict[str, str] = {}
-    for section, registry in (
-        ("reference", GENERAL_REFERENCE_SPECS),
-        ("document", GENERAL_DOCUMENT_SPECS),
-    ):
-        for kind in registry:
-            state = "matched"
-            material = _general_registry_material(section, kind)
-            for source in material["sources"]:
-                entity_type = entity_sets.get(source["entity"])
-                fields = type_fields.get(entity_type or "", {})
-                if not entity_type:
-                    state = "entity_missing"
-                    break
-                if any(
-                    fields.get(field) != expected_type
-                    for field, expected_type in source["fields"].items()
-                ):
-                    state = "field_mapping_changed"
-                    break
-                line_fields = source["lineFields"]
-                if not line_fields:
-                    continue
-                collection_type = fields.get("Товары", "")
-                if not (
-                    collection_type.startswith("Collection(")
-                    and collection_type.endswith(")")
-                ):
-                    state = "line_collection_changed"
-                    break
-                row_fields = type_fields.get(collection_type[11:-1], {})
-                if any(
-                    row_fields.get(field) != expected_type
-                    for field, expected_type in line_fields.items()
-                ):
-                    state = "line_mapping_changed"
-                    break
-            states[f"{section}.{kind}"] = state
-    return states
-
-
-def _metadata_validator_kind(
-    etag: str | None,
-    last_modified: str | None,
-) -> str:
-    if etag and last_modified:
-        return "etag_and_last_modified"
-    if etag:
-        return "etag"
-    if last_modified:
-        return "last_modified"
-    return "none"
-
-
-def _read_general_schema_cache(
-    identity: Identity,
-    config: CompanyConfig,
-    credentials: Credentials,
-) -> dict[str, Any] | None:
-    path = general_schema_cache_path(identity)
-    _assert_not_symlink(path)
-    if not path.exists():
-        return None
-    try:
-        if path.stat().st_size > MAX_GENERAL_SCHEMA_CACHE_BYTES:
-            raise OneCEdoError(
-                "invalid_local_state",
-                "Локальный metadata cache превысил безопасный размер.",
-            )
-    except OSError as error:
-        raise OneCEdoError(
-            "invalid_local_state",
-            "Не удалось проверить локальный metadata cache.",
-        ) from error
-    stored = _read_private_json(path)
-    if stored is None:
-        return None
-    integrity = stored.pop("integrity", None)
-    if (
-        not isinstance(integrity, str)
-        or len(integrity) != 64
-        or not hmac.compare_digest(
-            integrity,
-            _sign_general_schema_cache(stored, identity, credentials),
-        )
-    ):
-        raise OneCEdoError(
-            "invalid_local_state",
-            "Целостность локального metadata cache не подтверждена.",
-        )
-
-    # A valid old cache is a miss, never an authorization shortcut, after any
-    # release, registry, connection or identity-boundary change.
-    if (
-        stored.get("schemaVersion") != GENERAL_SCHEMA_CACHE_VERSION
-        or stored.get("runtimeVersion") != RUNTIME_VERSION
-        or stored.get("registryDigest") != _general_registry_digest()
-        or stored.get("connectionFingerprint") != config.fingerprint
-        or stored.get("identityBoundary") != _general_identity_boundary(identity)
-    ):
-        return None
-
-    schema_digest = stored.get("schemaDigest")
-    states = stored.get("capabilityStates")
-    validators = stored.get("validators")
-    if (
-        not isinstance(schema_digest, str)
-        or not re.fullmatch(r"sha256:[0-9a-f]{64}", schema_digest)
-        or not isinstance(states, dict)
-        or set(states) != set(_general_capability_keys())
-        or any(
-            value
-            not in {
-                "matched",
-                "entity_missing",
-                "field_mapping_changed",
-                "line_collection_changed",
-                "line_mapping_changed",
-            }
-            for value in states.values()
-        )
-        or not isinstance(validators, dict)
-    ):
-        raise OneCEdoError(
-            "invalid_local_state",
-            "Локальный metadata cache имеет некорректную структуру.",
-        )
-    etag = validators.get("etag")
-    last_modified = validators.get("lastModified")
-    if etag is not None and (
-        not isinstance(etag, str)
-        or len(etag) > MAX_METADATA_ETAG_CHARS
-        or not METADATA_ETAG_RE.fullmatch(etag)
-    ):
-        raise OneCEdoError(
-            "invalid_local_state",
-            "Локальный ETag metadata cache повреждён.",
-        )
-    if last_modified is not None:
-        if (
-            not isinstance(last_modified, str)
-            or len(last_modified) > MAX_METADATA_LAST_MODIFIED_CHARS
-            or "\r" in last_modified
-            or "\n" in last_modified
-        ):
-            raise OneCEdoError(
-                "invalid_local_state",
-                "Локальный Last-Modified metadata cache повреждён.",
-            )
-        try:
-            if email.utils.parsedate_to_datetime(last_modified) is None:
-                raise ValueError("invalid Last-Modified")
-        except (TypeError, ValueError, OverflowError) as error:
-            raise OneCEdoError(
-                "invalid_local_state",
-                "Локальный Last-Modified metadata cache повреждён.",
-            ) from error
-    if not etag and not last_modified:
-        # Entries without a server validator can never satisfy the
-        # per-request validation contract.
-        return None
-    return stored
-
-
-def _write_general_schema_cache(
-    identity: Identity,
-    config: CompanyConfig,
-    credentials: Credentials,
-    *,
-    schema_digest: str,
-    states: Mapping[str, str],
-    etag: str | None,
-    last_modified: str | None,
-) -> None:
-    if not etag and not last_modified:
-        _delete_private_file(general_schema_cache_path(identity))
-        return
-    payload: dict[str, Any] = {
-        "schemaVersion": GENERAL_SCHEMA_CACHE_VERSION,
-        "runtimeVersion": RUNTIME_VERSION,
-        "registryDigest": _general_registry_digest(),
-        "connectionFingerprint": config.fingerprint,
-        "identityBoundary": _general_identity_boundary(identity),
-        "schemaDigest": schema_digest,
-        "capabilityStates": dict(states),
-        "validators": {
-            "etag": etag,
-            "lastModified": last_modified,
-        },
-        "verifiedAt": _utc_now(),
-    }
-    payload["integrity"] = _sign_general_schema_cache(
-        payload,
-        identity,
-        credentials,
-    )
-    _write_private_json(general_schema_cache_path(identity), payload)
-
-
-def _parse_general_schema(
-    raw: bytes,
-) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
-    """Parse only entity-set/type/property names required for verification."""
-
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError as error:
-        raise OneCEdoError(
-            "invalid_metadata_response",
-            "1С вернула некорректный XML metadata.",
-        ) from error
-
-    entity_sets: dict[str, str] = {}
-    type_fields: dict[str, dict[str, str]] = {}
-    for schema in (
-        element
-        for element in root.iter()
-        if _xml_local_name(element.tag) == "Schema"
-    ):
-        namespace = str(schema.attrib.get("Namespace") or "")
-        for child in schema:
-            local_name = _xml_local_name(child.tag)
-            if local_name in {"EntityType", "ComplexType"}:
-                type_name = str(child.attrib.get("Name") or "")
-                if not type_name:
-                    continue
-                properties = {
-                    str(property_item.attrib.get("Name")): str(
-                        property_item.attrib.get("Type"),
-                    )
-                    for property_item in child
-                    if (
-                        _xml_local_name(property_item.tag) == "Property"
-                        and property_item.attrib.get("Name")
-                        and property_item.attrib.get("Type")
-                    )
-                }
-                type_fields[type_name] = properties
-                if namespace:
-                    type_fields[f"{namespace}.{type_name}"] = properties
-            elif local_name == "EntityContainer":
-                for entity_set in child:
-                    if _xml_local_name(entity_set.tag) != "EntitySet":
-                        continue
-                    name = str(entity_set.attrib.get("Name") or "")
-                    entity_type = str(entity_set.attrib.get("EntityType") or "")
-                    if name and entity_type:
-                        entity_sets[name] = entity_type
-    return entity_sets, type_fields
-
-
-def _verify_general_schema(
-    config: CompanyConfig,
-    credentials: Credentials,
+def _general_signed_contract(
     capabilities: Iterable[tuple[str, str]],
 ) -> dict[str, Any]:
-    """Validate the remote schema on every broad command.
+    """Return the static release contract without performing any I/O.
 
-    The first command downloads and parses full metadata. A later one may use
-    the private projection only after the same fixed route confirms ETag or
-    Last-Modified with HTTP 304. Network errors, missing validators, a 200
-    response, cache tampering or any binding mismatch never reuse stale state.
+    The signed package itself is the authority for the Vkus entity/field
+    profile. Production requests therefore go straight to a fixed source and
+    validate its actual JSON response. The development inventory digest is
+    provenance only; no metadata route exists in this executable.
     """
 
-    identity = load_identity()
-    with _exclusive_private_file_lock(general_schema_cache_lock_path(identity)):
-        cached = _read_general_schema_cache(identity, config, credentials)
-        validators = (
-            dict(cached["validators"])
-            if cached is not None
-            else None
-        )
-        resource = _request_metadata_resource(
-            config,
-            credentials,
-            validators=validators,
-            diagnostic_stage="general.schema.verify",
-        )
-        if resource.status == 304:
-            if cached is None:
-                raise OneCEdoError(
-                    "invalid_metadata_response",
-                    "1С вернула 304 без подтверждённого локального metadata cache.",
-                )
-            cached_etag = validators.get("etag")
-            cached_last_modified = validators.get("lastModified")
-            if (
-                resource.etag is not None
-                and cached_etag is not None
-                and resource.etag != cached_etag
-            ) or (
-                resource.last_modified is not None
-                and cached_last_modified is not None
-                and resource.last_modified != cached_last_modified
-            ):
-                # A 304 may omit validators or add a previously absent one,
-                # but it must not contradict a validator that caused this
-                # conditional request. Treat such a response as ambiguous and
-                # never reuse the cached projection.
-                raise OneCEdoError(
-                    "invalid_metadata_response",
-                    "1С вернула противоречивое подтверждение metadata validator.",
-                )
-            schema_digest = str(cached["schemaDigest"])
-            states = dict(cached["capabilityStates"])
-            etag = resource.etag or cached_etag
-            last_modified = (
-                resource.last_modified or cached_last_modified
-            )
-            _write_general_schema_cache(
-                identity,
-                config,
-                credentials,
-                schema_digest=schema_digest,
-                states=states,
-                etag=etag,
-                last_modified=last_modified,
-            )
-            validation = {
-                "mode": "conditional_not_modified",
-                "conditionalRequest": True,
-                "serverValidator": _metadata_validator_kind(
-                    etag,
-                    last_modified,
-                ),
-                "cacheProjectionUsed": True,
-                "metadataResponseEncoding": "not_modified",
-            }
-        elif resource.status == 200 and resource.body is not None:
-            schema_digest = (
-                f"sha256:{hashlib.sha256(resource.body).hexdigest()}"
-            )
-            entity_sets, type_fields = _parse_general_schema(resource.body)
-            states = _general_schema_capability_states(
-                entity_sets,
-                type_fields,
-            )
-            _write_general_schema_cache(
-                identity,
-                config,
-                credentials,
-                schema_digest=schema_digest,
-                states=states,
-                etag=resource.etag,
-                last_modified=resource.last_modified,
-            )
-            validation = {
-                "mode": (
-                    "conditional_full_response"
-                    if validators
-                    else "full_download"
-                ),
-                "conditionalRequest": bool(validators),
-                "serverValidator": _metadata_validator_kind(
-                    resource.etag,
-                    resource.last_modified,
-                ),
-                "cacheProjectionUsed": False,
-                "metadataResponseEncoding": resource.content_encoding,
-            }
-        else:
-            raise OneCEdoError(
-                "invalid_metadata_response",
-                "1С вернула неожиданный ответ metadata.",
-            )
-
-    verified: dict[str, str] = {}
+    capability_digests: dict[str, str] = {}
     for section, kind in capabilities:
         key = f"{section}.{kind}"
-        state = states.get(key)
-        if state != "matched":
-            detail = {
-                "entity_missing": "entity отсутствует в текущей schema",
-                "field_mapping_changed": "mapping больше не совпадает со schema",
-                "line_collection_changed": "строки документа больше не подтверждены",
-                "line_mapping_changed": "mapping строк больше не совпадает со schema",
-            }.get(str(state), "результат проверки schema неоднозначен")
-            raise OneCEdoError(
-                "capability_schema_changed",
-                f"1С capability {key} отключена: {detail}.",
-            )
-        verified[key] = _general_capability_digest(section, kind)
+        capability_digests[key] = _general_capability_digest(section, kind)
     return {
-        "schemaDigest": schema_digest,
-        "inventorySchemaDigest": GENERAL_INVENTORY_SCHEMA_DIGEST,
-        "fullSchemaChanged": schema_digest != GENERAL_INVENTORY_SCHEMA_DIGEST,
-        "capabilityDigests": verified,
-        "validation": validation,
+        "profileSchemaDigest": GENERAL_PROFILE_SCHEMA_DIGEST,
+        "registryDigest": _general_registry_digest(),
+        "capabilityDigests": capability_digests,
+        "validation": {
+            "mode": "signed_registry_response_contract",
+            "metadataRequest": False,
+            "registrySource": "signed_package",
+            "responseValidation": "fail_closed",
+        },
     }
 
 
 def _general_uuid_value(value: Any, field_label: str) -> str | None:
     """Normalize a 1C reference, treating its all-zero sentinel as absent."""
 
-    if value in {None, "", "00000000-0000-0000-0000-000000000000"}:
+    if value in {None, "", ZERO_UUID}:
         return None
     if not isinstance(value, str) or not UUID_RE.fullmatch(value):
         raise OneCEdoError(
-            "invalid_odata_response",
-            f"1С вернула некорректный {field_label}.",
+            "capability_schema_changed",
+            f"Фиксированный источник 1С вернул некорректный {field_label}.",
         )
     return str(uuid.UUID(value))
 
@@ -3809,12 +2670,13 @@ def _general_reference_record(
     *,
     matched_by: list[str],
 ) -> dict[str, Any]:
+    _validate_general_source_record(raw, spec["fields"])
     safe = _safe_selected_record(raw, spec["fields"])
     reference = _general_uuid_value(safe.get("Ref_Key"), "reference id")
     if reference is None:
         raise OneCEdoError(
-            "invalid_odata_response",
-            "1С вернула справочник без идентификатора.",
+            "capability_schema_changed",
+            "Фиксированный справочник 1С вернул пустой идентификатор.",
         )
     source_type = str(spec["sourceType"])
     item: dict[str, Any] = {
@@ -3942,17 +2804,15 @@ def _general_reference_search_rows(
 
 
 def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
-    identity, config, credentials = _connected_context()
+    # Capabilities are a signed, release-time fact. Loading the normalized
+    # company limits is local-only and this command performs no credential,
+    # secret or network operation.
+    config = load_company_config()
     all_capabilities = [
         *(("reference", kind) for kind in GENERAL_REFERENCE_SPECS),
         *(("document", kind) for kind in GENERAL_DOCUMENT_SPECS),
     ]
-    try:
-        schema = _verify_general_schema(config, credentials, all_capabilities)
-        save_access_state(identity, config, "connected")
-    except AuthenticationError:
-        _mark_auth_failure(identity, config)
-        raise
+    schema = _general_signed_contract(all_capabilities)
     references = [
         {
             "kind": kind,
@@ -3975,7 +2835,7 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
         for kind, specs in GENERAL_DOCUMENT_SPECS.items()
     ]
     return {
-        "registryVersion": 1,
+        "registryVersion": GENERAL_REGISTRY_VERSION,
         "schema": schema,
         "sections": {
             "references": references,
@@ -4003,7 +2863,6 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
             "maxLines": GENERAL_MAX_LINES,
             "requestTimeoutSeconds": config.request_timeout_seconds,
             "responseBytes": MAX_ODATA_RESPONSE_BYTES,
-            "metadataBytes": MAX_METADATA_RESPONSE_BYTES,
         },
         "readOnly": True,
     }
@@ -4022,12 +2881,8 @@ def command_general_search_reference_items(args: argparse.Namespace) -> dict[str
         min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
         * min(config.max_pages, GENERAL_MAX_PAGES),
     )
+    schema = _general_signed_contract((("reference", kind),))
     try:
-        schema = _verify_general_schema(
-            config,
-            credentials,
-            (("reference", kind),),
-        )
         combined: list[dict[str, Any]] = []
         saturated = False
         for spec in specs:
@@ -4113,8 +2968,8 @@ def _general_reference_by_id(
             )
             if normalized["id"] != reference:
                 raise OneCEdoError(
-                    "invalid_odata_response",
-                    "1С вернула посторонний справочник для exact id.",
+                    "source_contract_mismatch",
+                    "1С вернула постороннюю запись для exact reference id.",
                 )
             result.append(normalized)
     return result
@@ -4124,12 +2979,8 @@ def command_general_get_reference_item(args: argparse.Namespace) -> dict[str, An
     identity, config, credentials = _connected_context()
     kind = str(args.kind)
     reference = _uuid(args.id, "reference id")
+    schema = _general_signed_contract((("reference", kind),))
     try:
-        schema = _verify_general_schema(
-            config,
-            credentials,
-            (("reference", kind),),
-        )
         matches = _general_reference_by_id(
             config,
             credentials,
@@ -4142,8 +2993,8 @@ def command_general_get_reference_item(args: argparse.Namespace) -> dict[str, An
         raise
     if len(matches) > 1:
         raise OneCEdoError(
-            "ambiguous_reference",
-            "Один UUID найден в нескольких фиксированных типах справочника.",
+            "source_contract_mismatch",
+            "1С вернула неоднозначный результат для фиксированного справочника.",
         )
     return {
         "kind": kind,
@@ -4247,12 +3098,22 @@ def _general_document_record(
     include_lines: bool,
     line_limit: int,
 ) -> dict[str, Any]:
-    safe = _safe_selected_record(raw, spec["fields"])
+    selected_fields = tuple(
+        field
+        for field in spec["fields"]
+        if include_lines or field != "Товары"
+    )
+    _validate_general_source_record(
+        raw,
+        spec["fields"],
+        selected_fields=selected_fields,
+    )
+    safe = _safe_selected_record(raw, selected_fields)
     reference = _general_uuid_value(safe.get("Ref_Key"), "document id")
     if reference is None:
         raise OneCEdoError(
-            "invalid_odata_response",
-            "1С вернула документ без идентификатора.",
+            "capability_schema_changed",
+            "Фиксированный документ 1С вернул пустой идентификатор.",
         )
     source_type = str(spec["sourceType"])
     raw_lines = raw.get("Товары") if include_lines else []
@@ -4260,13 +3121,12 @@ def _general_document_record(
         raw_lines = []
     if not isinstance(raw_lines, list):
         raise OneCEdoError(
-            "invalid_odata_response",
-            "1С вернула строки документа в неожиданном формате.",
+            "capability_schema_changed",
+            "Фиксированный документ 1С вернул строки неожиданного типа.",
         )
     normalized_lines: list[dict[str, Any]] = []
     for raw_line in raw_lines[:line_limit]:
-        if not isinstance(raw_line, dict):
-            continue
+        _validate_general_source_record(raw_line, spec["lineFields"])
         line = _safe_selected_record(raw_line, spec["lineFields"])
         normalized_lines.append({
             "lineNumber": _general_integer(line.get("LineNumber")),
@@ -4367,12 +3227,8 @@ def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]
         min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
         * min(config.max_pages, GENERAL_MAX_PAGES),
     )
+    schema = _general_signed_contract((("document", kind),))
     try:
-        schema = _verify_general_schema(
-            config,
-            credentials,
-            (("document", kind),),
-        )
         combined: list[dict[str, Any]] = []
         saturated = False
         for spec in specs:
@@ -4468,8 +3324,8 @@ def _general_documents_by_id(
             )
             if document["id"] != reference:
                 raise OneCEdoError(
-                    "invalid_odata_response",
-                    "1С вернула посторонний документ для exact id.",
+                    "source_contract_mismatch",
+                    "1С вернула постороннюю запись для exact document id.",
                 )
             result.append(document)
     return result
@@ -4485,12 +3341,8 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
             "line_limit_out_of_range",
             f"line-limit должен быть от 1 до {GENERAL_MAX_LINES}.",
         )
+    schema = _general_signed_contract((("document", kind),))
     try:
-        schema = _verify_general_schema(
-            config,
-            credentials,
-            (("document", kind),),
-        )
         matches = _general_documents_by_id(
             config,
             credentials,
@@ -4505,8 +3357,8 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
         raise
     if len(matches) > 1:
         raise OneCEdoError(
-            "ambiguous_document",
-            "Один UUID найден в нескольких фиксированных типах документа.",
+            "source_contract_mismatch",
+            "1С вернула неоднозначный результат для фиксированного документа.",
         )
     return {
         "kind": kind,
@@ -4621,10 +3473,14 @@ def _general_contract_edo_documents(
         )
         saturated = saturated or len(rows) >= remaining
         for row in rows[:remaining]:
+            _validate_general_source_record(row, GENERAL_EDO_LINK_FIELDS)
             safe = _safe_selected_record(row, DOCUMENT_SELECT_FIELDS)
             reference = _general_uuid_value(safe.get("Ref_Key"), "EDO document id")
             if reference is None:
-                continue
+                raise OneCEdoError(
+                    "capability_schema_changed",
+                    "Фиксированный EDO link source больше не соответствует подписанному registry.",
+                )
             result.append({
                 "id": reference,
                 "direction": direction,
@@ -4655,12 +3511,8 @@ def command_general_get_links(args: argparse.Namespace) -> dict[str, Any]:
     ]
     if link_kind == "business_unit":
         all_schema_capabilities.append(("reference", "business_unit"))
+    schema = _general_signed_contract(all_schema_capabilities)
     try:
-        schema = _verify_general_schema(
-            config,
-            credentials,
-            all_schema_capabilities,
-        )
         business_unit: dict[str, Any] | None = None
         contracts: list[dict[str, Any]] = []
         documents: list[dict[str, Any]] = []
@@ -4729,8 +3581,8 @@ def command_general_get_links(args: argparse.Namespace) -> dict[str, Any]:
                 )
             if len(found) > 1:
                 raise OneCEdoError(
-                    "ambiguous_document",
-                    "Один UUID найден в нескольких фиксированных типах документа.",
+                    "source_contract_mismatch",
+                    "1С вернула неоднозначный результат для фиксированного документа.",
                 )
             documents = found
             contract_id = found[0].get("contractId") if found else None

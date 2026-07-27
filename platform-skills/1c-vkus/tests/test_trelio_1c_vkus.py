@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import importlib.util
-import gzip
-import io
 import json
 import os
-import subprocess
 import sys
 import tempfile
-import time
 import unittest
-import xml.etree.ElementTree as ET
+import urllib.error
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "trelio_one_c_vkus_runtime.py"
-SPEC = importlib.util.spec_from_file_location("trelio_one_c_runtime_general_test", SCRIPT)
+SPEC = importlib.util.spec_from_file_location("trelio_one_c_vkus_runtime_test", SCRIPT)
 assert SPEC and SPEC.loader
 runtime = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = runtime
@@ -31,730 +27,270 @@ DOCUMENT_ID = "55555555-5555-4555-8555-555555555555"
 ITEM_ID = "66666666-6666-4666-8666-666666666666"
 
 
-METADATA = b"""<?xml version="1.0" encoding="utf-8"?>
-<edmx:Edmx xmlns:edmx="http://docs.oasis-open.org/odata/ns/edmx" Version="4.0">
-  <edmx:DataServices>
-    <Schema xmlns="http://docs.oasis-open.org/odata/ns/edm" Namespace="Sample">
-      <EntityType Name="Catalog_\xd0\x9e\xd1\x80\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8">
-        <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
-        <Property Name="Description" Type="Edm.String" />
-      </EntityType>
-      <EntityType Name="Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5">
-        <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
-        <Property Name="Number" Type="Edm.String" />
-        <Property Name="\xd0\x9e\xd1\x80\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd1\x8f_Key" Type="Edm.Guid" />
-      </EntityType>
-      <EntityType Name="Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3">
-        <Property Name="Ref_Key" Type="Edm.Guid" Nullable="false" />
-        <Property Name="\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b" Type="Collection(Sample.Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3_\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b_RowType)" />
-      </EntityType>
-      <ComplexType Name="Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3_\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd1\x8b_RowType">
-        <Property Name="LineNumber" Type="Edm.Int32" Nullable="false" />
-        <Property Name="\xd0\x9d\xd0\xbe\xd0\xbc\xd0\xb5\xd0\xbd\xd0\xba\xd0\xbb\xd0\xb0\xd1\x82\xd1\x83\xd1\x80\xd0\xb0_Key" Type="Edm.Guid" />
-        <Property Name="\xd0\x9a\xd0\xbe\xd0\xbb\xd0\xb8\xd1\x87\xd0\xb5\xd1\x81\xd1\x82\xd0\xb2\xd0\xbe" Type="Edm.Double" />
-      </ComplexType>
-      <EntityType Name="Catalog_\xd0\x97\xd0\xb0\xd1\x80\xd0\xbf\xd0\xbb\xd0\xb0\xd1\x82\xd0\xb0">
-        <Property Name="Ref_Key" Type="Edm.Guid" />
-      </EntityType>
-      <EntityType Name="Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\x91\xd0\xb5\xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd1\x85\xd0\x94\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xb6\xd0\xbd\xd1\x8b\xd1\x85\xd0\xa1\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2">
-        <Property Name="Ref_Key" Type="Edm.Guid" />
-      </EntityType>
-      <EntityContainer Name="Container">
-        <EntitySet Name="Catalog_\xd0\x9e\xd1\x80\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8" EntityType="Sample.Catalog_\xd0\x9e\xd1\x80\xd0\xb3\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb7\xd0\xb0\xd1\x86\xd0\xb8\xd0\xb8" />
-        <EntitySet Name="Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5" EntityType="Sample.Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5" />
-        <EntitySet Name="Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3" EntityType="Sample.Document_\xd0\x9f\xd1\x80\xd0\xb8\xd0\xbe\xd0\xb1\xd1\x80\xd0\xb5\xd1\x82\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\xa2\xd0\xbe\xd0\xb2\xd0\xb0\xd1\x80\xd0\xbe\xd0\xb2\xd0\xa3\xd1\x81\xd0\xbb\xd1\x83\xd0\xb3" />
-        <EntitySet Name="Catalog_\xd0\x97\xd0\xb0\xd1\x80\xd0\xbf\xd0\xbb\xd0\xb0\xd1\x82\xd0\xb0" EntityType="Sample.Catalog_\xd0\x97\xd0\xb0\xd1\x80\xd0\xbf\xd0\xbb\xd0\xb0\xd1\x82\xd0\xb0" />
-        <EntitySet Name="Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\x91\xd0\xb5\xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd1\x85\xd0\x94\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xb6\xd0\xbd\xd1\x8b\xd1\x85\xd0\xa1\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2" EntityType="Sample.Document_\xd0\x9f\xd0\xbe\xd1\x81\xd1\x82\xd1\x83\xd0\xbf\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5\xd0\x91\xd0\xb5\xd0\xb7\xd0\xbd\xd0\xb0\xd0\xbb\xd0\xb8\xd1\x87\xd0\xbd\xd1\x8b\xd1\x85\xd0\x94\xd0\xb5\xd0\xbd\xd0\xb5\xd0\xb6\xd0\xbd\xd1\x8b\xd1\x85\xd0\xa1\xd1\x80\xd0\xb5\xd0\xb4\xd1\x81\xd1\x82\xd0\xb2" />
-      </EntityContainer>
-    </Schema>
-  </edmx:DataServices>
-</edmx:Edmx>
-"""
+def source_value(expected_type: str, *, reference: str = REFERENCE_ID) -> object:
+    """Return one canonical JSON value accepted by the frozen EDM contract."""
+
+    if expected_type == "Edm.Guid":
+        return reference
+    if expected_type == "Edm.String":
+        return "Значение"
+    if expected_type == "Edm.Boolean":
+        return False
+    if expected_type == "Edm.DateTime":
+        return "2026-07-26T10:00:00"
+    if expected_type == "Edm.Double":
+        return 12.5
+    if expected_type == "Edm.Int64":
+        # Standard OData JSON may serialize Int64 as a decimal string.
+        return "1"
+    if expected_type.startswith("Collection("):
+        return []
+    raise AssertionError(f"unsupported test type: {expected_type}")
 
 
-def production_metadata(
+def source_record(
+    field_types: dict[str, str],
     *,
-    override: tuple[str, str] | None = None,
-) -> bytes:
-    """Build a deterministic metadata snapshot from the frozen registry.
+    record_id: str = REFERENCE_ID,
+) -> dict[str, object]:
+    """Build a complete record: omission itself is a contract failure."""
 
-    Digest literals below remain the independent review gate for mapping
-    changes; this XML fixture exercises the actual entity/ComplexType verifier.
-    """
-
-    root = ET.Element(
-        "{http://docs.oasis-open.org/odata/ns/edmx}Edmx",
-        {"Version": "4.0"},
-    )
-    services = ET.SubElement(
-        root,
-        "{http://docs.oasis-open.org/odata/ns/edmx}DataServices",
-    )
-    schema = ET.SubElement(
-        services,
-        "{http://docs.oasis-open.org/odata/ns/edm}Schema",
-        {"Namespace": "StandardODATA"},
-    )
-    container = ET.Element(
-        "{http://docs.oasis-open.org/odata/ns/edm}EntityContainer",
-        {"Name": "Container"},
-    )
-    registries = (
-        runtime.GENERAL_REFERENCE_SPECS,
-        runtime.GENERAL_DOCUMENT_SPECS,
-    )
-    for registry in registries:
-        for sources in registry.values():
-            for source in sources:
-                entity = ET.SubElement(
-                    schema,
-                    "{http://docs.oasis-open.org/odata/ns/edm}EntityType",
-                    {"Name": source["entity"]},
-                )
-                for field, field_type in source["fields"].items():
-                    actual_type = (
-                        override[1]
-                        if override and override[0] == f"{source['entity']}.{field}"
-                        else field_type
-                    )
-                    ET.SubElement(
-                        entity,
-                        "{http://docs.oasis-open.org/odata/ns/edm}Property",
-                        {"Name": field, "Type": actual_type},
-                    )
-                ET.SubElement(
-                    container,
-                    "{http://docs.oasis-open.org/odata/ns/edm}EntitySet",
-                    {
-                        "Name": source["entity"],
-                        "EntityType": f"StandardODATA.{source['entity']}",
-                    },
-                )
-                if source.get("lineFields"):
-                    collection_type = source["fields"]["Товары"][11:-1]
-                    row_name = collection_type.removeprefix("StandardODATA.")
-                    row_type = ET.SubElement(
-                        schema,
-                        "{http://docs.oasis-open.org/odata/ns/edm}ComplexType",
-                        {"Name": row_name},
-                    )
-                    for field, field_type in source["lineFields"].items():
-                        ET.SubElement(
-                            row_type,
-                            "{http://docs.oasis-open.org/odata/ns/edm}Property",
-                            {"Name": field, "Type": field_type},
-                        )
-    schema.append(container)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    return {
+        field: source_value(
+            expected_type,
+            reference=record_id if field == "Ref_Key" else REFERENCE_ID,
+        )
+        for field, expected_type in field_types.items()
+    }
 
 
-class OneCGeneralRuntimeTest(unittest.TestCase):
+class OneCVkusRuntimeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.environment = mock.patch.dict(
             os.environ,
             {
-                "TRELIO_SKILL_ID": (
-                    "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus"
-                ),
+                "TRELIO_SKILL_ID": runtime.VKUS_SKILL_ID,
                 "TRELIO_SKILL_COMPANY_ID": COMPANY_ID,
                 "TRELIO_SKILL_MEMBER_ID": MEMBER_ID,
                 "TRELIO_SKILL_CONNECTION_ID": CONNECTION_ID,
                 "TRELIO_CONFIG_HOME": self.temporary.name,
+                "TRELIO_SKILL_CONNECTION_CONFIG_JSON": json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "odataBaseUrl": "https://example.test/odata/",
+                        "filesBaseUrl": "https://example.test/files/",
+                        "maxRows": 50,
+                        "maxPages": 3,
+                        "maxFileBytes": 1024,
+                        "requestTimeoutMs": 20_000,
+                    },
+                ),
+                "TRELIO_1C_EDO_X_ODATA": "0123456789abcdef",
             },
             clear=False,
         )
         self.environment.start()
+        self.identity = runtime.Identity(COMPANY_ID, MEMBER_ID, CONNECTION_ID)
+        self.config = runtime.load_company_config()
+        self.credentials = runtime.Credentials("user", "password")
 
     def tearDown(self) -> None:
         self.environment.stop()
         self.temporary.cleanup()
 
-    def test_metadata_has_a_separate_bounded_limit(self) -> None:
-        self.assertEqual(runtime.MAX_ODATA_RESPONSE_BYTES, 8 * 1024 * 1024)
-        self.assertEqual(runtime.MAX_METADATA_RESPONSE_BYTES, 64 * 1024 * 1024)
+    def connected_context(self) -> tuple[object, object, object]:
+        return self.identity, self.config, self.credentials
 
-    def test_inventory_is_bounded_structural_and_excludes_sensitive_catalogs(self) -> None:
-        digest, candidates, truncated, counts = runtime._metadata_candidates(METADATA)
+    def test_release_reuses_provider_credentials_and_has_no_metadata_code_path(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(len(digest), 64)
-        self.assertFalse(truncated)
-        self.assertEqual(
-            [candidate["entitySet"] for candidate in candidates],
-            [
-                "Catalog_\u041e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438",
-                "Document_\u041f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435",
-                "Document_\u041f\u0440\u0438\u043e\u0431\u0440\u0435\u0442\u0435\u043d\u0438\u0435\u0422\u043e\u0432\u0430\u0440\u043e\u0432\u0423\u0441\u043b\u0443\u0433",
-            ],
-        )
-        self.assertNotIn("\u0417\u0430\u0440\u043f\u043b\u0430\u0442\u0430", str(candidates))
-        self.assertNotIn("\u0414\u0435\u043d\u0435\u0436\u043d", str(candidates))
-        self.assertEqual(counts["reference.organization"]["returned"], 1)
-        self.assertEqual(counts["document.purchase"]["returned"], 2)
-        acquisition = next(
-            candidate
-            for candidate in candidates
-            if candidate["entitySet"]
-            == "Document_\u041f\u0440\u0438\u043e\u0431\u0440\u0435\u0442\u0435\u043d\u0438\u0435\u0422\u043e\u0432\u0430\u0440\u043e\u0432\u0423\u0441\u043b\u0443\u0433"
-        )
-        self.assertEqual(acquisition["collections"][0]["name"], "\u0422\u043e\u0432\u0430\u0440\u044b")
-        self.assertEqual(
-            [field["name"] for field in acquisition["collections"][0]["properties"]],
-            ["LineNumber", "\u041d\u043e\u043c\u0435\u043d\u043a\u043b\u0430\u0442\u0443\u0440\u0430_Key", "\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e"],
-        )
-        self.assertLessEqual(
-            max(len(candidate["properties"]) for candidate in candidates),
-            runtime.MAX_INVENTORY_PROPERTIES,
-        )
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.14")
+        self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-edo")
+        self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
+        self.assertNotIn("$metadata", source)
+        self.assertNotIn("def _request_metadata", source)
+        self.assertNotIn("def _metadata_url", source)
+        self.assertNotIn("general_schema_cache", source)
+        self.assertNotIn("developer-inventory-metadata", source)
+        self.assertNotIn("If-None-Match", source)
+        self.assertNotIn("Accept-Encoding", source)
 
-    def test_inventory_samples_are_bounded_per_capability(self) -> None:
-        candidates = [
-            {
-                "entitySet": f"Catalog_\u041e\u0440\u0433\u0430\u043d\u0438\u0437\u0430\u0446\u0438\u0438{index}",
-                "matches": [{"section": "reference", "kind": "organization"}],
-            }
-            for index in range(5)
-        ]
-        candidates.extend([
-            {
-                "entitySet": f"Document_\u041f\u043e\u0441\u0442\u0443\u043f\u043b\u0435\u043d\u0438\u0435{index}",
-                "matches": [{"section": "document", "kind": "purchase"}],
-            }
-            for index in range(5)
-        ])
-
-        selected = runtime._inventory_sample_names(candidates)
-
-        self.assertEqual(len(selected), 4)
-        self.assertEqual(
-            len([name for name in selected if name.startswith("Catalog_")]),
-            runtime.MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
-        )
-        self.assertEqual(
-            len([name for name in selected if name.startswith("Document_")]),
-            runtime.MAX_INVENTORY_SAMPLES_PER_CAPABILITY,
-        )
-
-    def test_inventory_command_never_returns_sample_values(self) -> None:
-        identity = runtime.Identity(COMPANY_ID, MEMBER_ID, CONNECTION_ID)
-        config = mock.Mock()
-        credentials = runtime.Credentials("private-user", "private-password")
-
-        with (
-            mock.patch.object(runtime, "_connected_context", return_value=(identity, config, credentials)),
-            mock.patch.object(runtime, "_request_metadata", return_value=METADATA),
-            mock.patch.object(
-                runtime,
-                "_request_inventory_sample",
-                return_value={
-                    "accessible": True,
-                    "hasRows": True,
-                    "selectedFields": ["Ref_Key", "Description"],
-                    "returnedFieldClasses": {
-                        "Ref_Key": "uuid",
-                        "Description": "string",
-                    },
-                },
-            ),
-        ):
-            result = runtime.command_developer_inventory_metadata(mock.Mock())
-
-        serialized = str(result)
-        self.assertNotIn("private-user", serialized)
-        self.assertNotIn("private-password", serialized)
-        self.assertIn("schemaDigest", result)
-        self.assertTrue(all("sample" in candidate for candidate in result["candidates"]))
-
-    def test_general_surface_reuses_legacy_provider_credential_namespace(self) -> None:
-        identity = runtime.load_identity()
-        root = runtime.connection_root(identity)
-
-        self.assertIn("/integrations/1c-edo/", root.as_posix())
-        self.assertNotIn("/integrations/1c/", root.as_posix())
-
-    def test_general_parser_has_no_raw_odata_arguments(self) -> None:
-        parser = runtime.build_parser(runtime.VKUS_SKILL_ID)
+    def test_parser_exposes_only_fixed_business_arguments(self) -> None:
+        parser = runtime.build_general_parser()
+        forbidden = {
+            "--url",
+            "--entity",
+            "--filter",
+            "--select",
+            "--orderby",
+            "--query-expression",
+            "--method",
+        }
+        option_strings = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
+        for action in parser._subparsers._group_actions:
+            for child in action.choices.values():
+                option_strings.update(
+                    option
+                    for child_action in child._actions
+                    for option in child_action.option_strings
+                )
+        self.assertTrue(forbidden.isdisjoint(option_strings))
         with self.assertRaises(SystemExit):
             parser.parse_args(["developer-inventory-metadata"])
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["raw-query", "--url", "https://example.test/"])
-        with self.assertRaises(SystemExit):
-            parser.parse_args([
-                "search-reference-items",
-                "--kind",
-                "users",
-            ])
 
-    def test_production_registry_digests_match_reviewed_snapshot(self) -> None:
-        expected = {
-            "document.purchase": "sha256:7afac154856c37c72da3a896ca9bfa081687e9a448a0176b97d5b2fa7f163887",
-            "document.receipt": "sha256:888b63f2aa4c5f44da03d658ca4ee8fb6bfaa3d26e6db94a333c057e25eab56a",
-            "document.return": "sha256:2e4720f7a1b2bd674b36bb78d5215683bb52c0e2de6ac5179e352a20502bd7b8",
-            "document.sale": "sha256:3f25c1c0b73ace19903cb6f8cb7bdd943cc29deac2f16365fb402c55e9fd86d7",
-            "document.transfer": "sha256:7d7fb239dec93035810f32d2cd6ae85c3eae6a0a273f8589090e10c419db1e78",
-            "reference.business_unit": "sha256:504bcc3fa2baf43b8847cef3e8403d108a8b4e30726489569a01567448b5f958",
-            "reference.contract": "sha256:19545b544023b17f0d7ec492013ac8ebde0142f39d48143f7f5bcbef5234466f",
-            "reference.counterparty": "sha256:027a55880241d5296930773e365fbf85e969cee06a4be22f491e0481f70a1fb1",
-            "reference.item": "sha256:d266c949bbcfe2d08661e04af143c5c4e0963e982579a396f53bd96d749607b0",
-            "reference.organization": "sha256:24ba32743bcd09da852e45fca91758aaf756487e2233de79dbd85adf39d45a77",
-            "reference.partner": "sha256:ab90293f0b52ac67238e8ac40d928590e29168e3339f9f13ceb3fc091b1c58fe",
-            "reference.warehouse": "sha256:2de83f9ebf0c315904554e1cec813adc844f86308874172045b306cfc1cfb35f",
+    def test_static_registry_is_complete_stable_and_network_free(self) -> None:
+        expected_capability_digests = {
+            "reference.organization": "sha256:c35936172ed9413a19b764098d3d0a59e69c040470300976a62cf1c5a7560631",
+            "reference.business_unit": "sha256:86dede737531b4e422434dd53ca430ec7cb212d04d1bfc344bd47811d0567d7f",
+            "reference.counterparty": "sha256:f45733e044e227dfa3790d112b916489dd4aca1ee6cfa6cdf71a93d9923f9b7c",
+            "reference.partner": "sha256:d56747cf59c1081c2f74913a3cf56cf2b038748cf7d6cf1e2f9d165a4039361f",
+            "reference.contract": "sha256:38a3f9f5c90f850a558f4839c56db1e804487d797ada22a6ea249b899ce335a8",
+            "reference.item": "sha256:4b45fc48224dbc764c54b5053cfacf96bc5cd1497ab91cba1ebcbc01d651f799",
+            "reference.warehouse": "sha256:d6bef1fc9b469ea4fd72de686dfb1d8c13bc3ae8fa6a3ff3945f5c61cd062649",
+            "document.purchase": "sha256:45449c750b1122c9cf9f6effb20df57c876a9493ed1a46fd6c73068a245e31b8",
+            "document.sale": "sha256:692d72dac092f15b1050cbf74a72eafbdab9ba3b429352f906d79b96aad5e4a1",
+            "document.receipt": "sha256:47054e9b3c52c52fc43c1440859c625c404247dd918482723739c42bfa19f682",
+            "document.return": "sha256:ce2909227b0c02f7807d144b8212cdaa7f3abc7e4344940a59853b5ff868e5f3",
+            "document.transfer": "sha256:5737be9028869c2c278a4a4199eabb95697afca287c6b466625d40d7b657ec45",
         }
-        actual = {
-            f"reference.{kind}": runtime._general_capability_digest(
-                "reference",
-                kind,
-            )
-            for kind in runtime.GENERAL_REFERENCE_SPECS
-        }
-        actual.update({
-            f"document.{kind}": runtime._general_capability_digest(
-                "document",
-                kind,
-            )
-            for kind in runtime.GENERAL_DOCUMENT_SPECS
-        })
-
-        self.assertEqual(runtime.GENERAL_INVENTORY_SCHEMA_DIGEST, "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b")
-        self.assertEqual(actual, expected)
-
-    def test_schema_verifier_accepts_snapshot_and_rejects_affected_drift(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        capabilities = [
-            *(("reference", kind) for kind in runtime.GENERAL_REFERENCE_SPECS),
-            *(("document", kind) for kind in runtime.GENERAL_DOCUMENT_SPECS),
-        ]
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            return_value=runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag='"schema-v1"',
-                last_modified=None,
-            ),
-        ):
-            verified = runtime._verify_general_schema(
-                config,
-                credentials,
-                capabilities,
-            )
-
-        self.assertEqual(len(verified["capabilityDigests"]), 12)
-
-        drifted = production_metadata(
-            override=("Catalog_Организации.Description", "Edm.Int32"),
-        )
         with (
-            mock.patch.object(
-                runtime,
-                "_request_metadata_resource",
-                return_value=runtime.MetadataResource(
-                    status=200,
-                    body=drifted,
-                    etag='"schema-v2"',
-                    last_modified=None,
-                ),
-            ),
-            self.assertRaisesRegex(runtime.OneCEdoError, "reference.organization"),
-        ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-
-    def test_schema_cache_requires_conditional_confirmation_on_every_call(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        capability = (("reference", "organization"),)
-        requests: list[dict[str, str] | None] = []
-
-        def request(*_args, validators=None, **_kwargs):
-            requests.append(validators)
-            if len(requests) == 1:
-                return runtime.MetadataResource(
-                    status=200,
-                    body=production_metadata(),
-                    etag='"stable-schema"',
-                    last_modified=None,
-                )
-            return runtime.MetadataResource(
-                status=304,
-                body=None,
-                etag='"stable-schema"',
-                last_modified=None,
-            )
-
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            side_effect=request,
-        ):
-            cold = runtime._verify_general_schema(
-                config,
-                credentials,
-                capability,
-            )
-            warm = runtime._verify_general_schema(
-                config,
-                credentials,
-                capability,
-            )
-
-        self.assertIsNone(requests[0])
-        self.assertEqual(
-            requests[1],
-            {"etag": '"stable-schema"', "lastModified": None},
-        )
-        self.assertEqual(cold["validation"]["mode"], "full_download")
-        self.assertEqual(
-            warm["validation"]["mode"],
-            "conditional_not_modified",
-        )
-        self.assertTrue(warm["validation"]["cacheProjectionUsed"])
-
-    def test_schema_without_validator_is_downloaded_again_not_ttl_cached(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        requests: list[dict[str, str] | None] = []
-
-        def request(*_args, validators=None, **_kwargs):
-            requests.append(validators)
-            return runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag=None,
-                last_modified=None,
-            )
-
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            side_effect=request,
-        ):
-            first = runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-            second = runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-
-        self.assertEqual(requests, [None, None])
-        self.assertEqual(first["validation"]["serverValidator"], "none")
-        self.assertEqual(second["validation"]["mode"], "full_download")
-        self.assertFalse(
-            runtime.general_schema_cache_path(runtime.load_identity()).exists(),
-        )
-
-    def test_schema_cache_tampering_fails_closed_before_network(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        identity = runtime.load_identity()
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            return_value=runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag='"stable-schema"',
-                last_modified=None,
-            ),
-        ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-
-        path = runtime.general_schema_cache_path(identity)
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        payload["schemaDigest"] = "sha256:" + ("0" * 64)
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        path.chmod(0o600)
-
-        with (
-            mock.patch.object(runtime, "_request_metadata_resource") as request,
-            self.assertRaisesRegex(runtime.OneCEdoError, "Целостность"),
-        ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-        request.assert_not_called()
-
-    def test_schema_cache_rejects_a_contradictory_304_validator(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        capability = (("reference", "organization"),)
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            return_value=runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag='"schema-v1"',
-                last_modified=None,
-            ),
-        ):
-            runtime._verify_general_schema(config, credentials, capability)
-
-        with (
-            mock.patch.object(
-                runtime,
-                "_request_metadata_resource",
-                return_value=runtime.MetadataResource(
-                    status=304,
-                    body=None,
-                    etag='"schema-v2"',
-                    last_modified=None,
-                ),
-            ),
-            self.assertRaisesRegex(
-                runtime.OneCEdoError,
-                "противоречивое",
-            ),
-        ):
-            runtime._verify_general_schema(config, credentials, capability)
-
-    def test_schema_cache_is_private_minimal_and_never_stale_on_error(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("private-user", "private-password")
-        identity = runtime.load_identity()
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            return_value=runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag='"stable-schema"',
-                last_modified=None,
-            ),
-        ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-
-        path = runtime.general_schema_cache_path(identity)
-        serialized = path.read_text(encoding="utf-8")
-        self.assertEqual(path.stat().st_mode & 0o077, 0)
-        self.assertNotIn("private-user", serialized)
-        self.assertNotIn("private-password", serialized)
-        self.assertNotIn("Catalog_", serialized)
-        self.assertNotIn("Document_", serialized)
-
-        with (
-            mock.patch.object(
-                runtime,
-                "_request_metadata_resource",
-                side_effect=runtime.NetworkError(
-                    "network_error",
-                    "offline",
-                ),
-            ),
-            self.assertRaises(runtime.NetworkError),
-        ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
-
-    def test_metadata_validator_diagnostic_never_returns_header_values(self) -> None:
-        headers = {
-            "ETag": '"private-etag-value"',
-            "Last-Modified": "Sun, 27 Jul 2026 00:00:00 GMT",
-        }
-
-        etag, last_modified = runtime._safe_metadata_validators(headers)
-        diagnostic = runtime._metadata_validator_kind(etag, last_modified)
-
-        self.assertEqual(diagnostic, "etag_and_last_modified")
-        self.assertNotIn("private-etag-value", diagnostic)
-        self.assertEqual(
-            runtime._safe_metadata_validators(
-                {
-                    "ETag": "invalid\r\nInjected: value",
-                    "Last-Modified": "not-a-date",
-                },
-            ),
-            (None, None),
-        )
-
-    def test_metadata_gzip_is_fully_decoded_and_independently_bounded(self) -> None:
-        raw = production_metadata()
-        compressed = gzip.compress(raw)
-
-        self.assertEqual(
-            runtime._safe_metadata_content_encoding(
-                {"Content-Encoding": "gzip"},
-            ),
-            "gzip",
-        )
-        self.assertEqual(
-            runtime._read_gzip_limited(io.BytesIO(compressed), len(raw)),
-            raw,
-        )
-        with self.assertRaisesRegex(
-            runtime.OneCEdoError,
-            "Распакованный metadata",
-        ):
-            runtime._read_gzip_limited(
-                io.BytesIO(compressed),
-                len(raw) - 1,
-            )
-        with self.assertRaisesRegex(
-            runtime.OneCEdoError,
-            "неподдерживаемое кодирование",
-        ):
-            runtime._safe_metadata_content_encoding(
-                {"Content-Encoding": "br"},
-            )
-
-    def test_metadata_request_advertises_and_decodes_only_gzip(self) -> None:
-        class Response(io.BytesIO):
-            status = 200
-            headers = {"Content-Encoding": "gzip"}
-
-            def getcode(self) -> int:
-                return self.status
-
-        raw = production_metadata()
-        response = Response(gzip.compress(raw))
-        config = mock.Mock()
-        credentials = runtime.Credentials("user", "password")
-        with (
-            mock.patch.object(runtime, "_require_x_odata", return_value="secret"),
             mock.patch.object(
                 runtime,
                 "_http_open",
-                return_value=response,
-            ) as http_open,
-        ):
-            resource = runtime._request_metadata_resource(
-                config,
-                credentials,
-            )
-
-        self.assertEqual(resource.status, 200)
-        self.assertEqual(resource.body, raw)
-        self.assertEqual(resource.content_encoding, "gzip")
-        self.assertEqual(
-            http_open.call_args.kwargs["accept_encoding"],
-            "gzip",
-        )
-
-    def test_schema_cache_survives_separate_one_shot_process(self) -> None:
-        config = mock.Mock(fingerprint="test-connection-fingerprint")
-        credentials = runtime.Credentials("user", "password")
-        with mock.patch.object(
-            runtime,
-            "_request_metadata_resource",
-            return_value=runtime.MetadataResource(
-                status=200,
-                body=production_metadata(),
-                etag='"stable-schema"',
-                last_modified=None,
+                side_effect=AssertionError("get-capabilities must be local"),
+            ),
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=AssertionError("credentials must not be loaded"),
             ),
         ):
-            runtime._verify_general_schema(
-                config,
-                credentials,
-                (("reference", "organization"),),
-            )
+            result = runtime.command_general_get_capabilities(Namespace())
 
-        child = f"""
-import importlib.util
-import json
-import sys
-from pathlib import Path
-from unittest import mock
-path = Path({str(SCRIPT)!r})
-spec = importlib.util.spec_from_file_location("trelio_one_c_child", path)
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-config = mock.Mock(fingerprint="test-connection-fingerprint")
-credentials = module.Credentials("user", "password")
-with mock.patch.object(
-    module,
-    "_request_metadata_resource",
-    return_value=module.MetadataResource(
-        status=304,
-        body=None,
-        etag='"stable-schema"',
-        last_modified=None,
-    ),
-):
-    result = module._verify_general_schema(
-        config,
-        credentials,
-        (("reference", "organization"),),
-    )
-print(json.dumps(result["validation"], sort_keys=True))
-"""
-        started = time.monotonic()
-        completed = subprocess.run(
-            [sys.executable, "-c", child],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=dict(os.environ),
-            timeout=5,
+        self.assertEqual(result["registryVersion"], 2)
+        self.assertEqual(
+            result["schema"]["registryDigest"],
+            "sha256:99c53e81aa674da61090f44b5066c71d72a6eee7e235687017d5d30b4746d63d",
         )
-        elapsed = time.monotonic() - started
-
-        validation = json.loads(completed.stdout)
-        self.assertEqual(validation["mode"], "conditional_not_modified")
-        self.assertLess(elapsed, 2.0)
-
-    def test_reference_search_normalizes_and_drops_unselected_fields(self) -> None:
-        identity = runtime.Identity(COMPANY_ID, MEMBER_ID, CONNECTION_ID)
-        config = mock.Mock(max_rows=50, max_pages=3)
-        credentials = runtime.Credentials("user", "password")
-        args = Namespace(
-            kind="counterparty",
-            query="Поставщик",
-            page=1,
-            limit=10,
+        self.assertEqual(
+            result["schema"]["profileSchemaDigest"],
+            runtime.GENERAL_PROFILE_SCHEMA_DIGEST,
         )
-        row = {
-            "Ref_Key": REFERENCE_ID,
-            "Description": "Поставщик",
-            "НаименованиеПолное": "ООО Поставщик",
-            "Партнер_Key": ITEM_ID,
-            "ЮридическоеФизическоеЛицо": "ЮридическоеЛицо",
-            "DeletionMark": False,
-            "ИНН": "must-not-leak",
-            "БанковскийСчет_Key": ITEM_ID,
-        }
-        schema = {
-            "schemaDigest": runtime.GENERAL_INVENTORY_SCHEMA_DIGEST,
-            "capabilityDigests": {
-                "reference.counterparty": runtime._general_capability_digest(
-                    "reference",
-                    "counterparty",
-                ),
+        self.assertEqual(
+            result["schema"]["capabilityDigests"],
+            expected_capability_digests,
+        )
+        self.assertEqual(
+            result["schema"]["validation"],
+            {
+                "mode": "signed_registry_response_contract",
+                "metadataRequest": False,
+                "registrySource": "signed_package",
+                "responseValidation": "fail_closed",
             },
+        )
+        self.assertEqual(len(result["sections"]["references"]), 7)
+        self.assertEqual(len(result["sections"]["documents"]), 5)
+        self.assertNotIn("metadataBytes", result["limits"])
+
+    def test_every_production_command_has_no_schema_discovery_request(self) -> None:
+        """Exercise every broad handler while recording all transport sources."""
+
+        requested_entities: list[str] = []
+
+        def empty_source(
+            _config: object,
+            _credentials: object,
+            entity: str,
+            _parameters: object = (),
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            self.assertTrue(diagnostic_stage.startswith("general."))
+            requested_entities.append(entity)
+            return {"value": []}
+
+        common_document = {
+            "kind": "purchase",
+            "date_from": "",
+            "date_to": "",
+            "organization_id": "",
+            "business_unit_id": "",
+            "counterparty_id": "",
+            "contract_id": "",
+            "number": "",
+            "status": "",
+            "page": 1,
+            "limit": 3,
         }
+        commands = (
+            lambda: runtime.command_general_search_reference_items(
+                Namespace(kind="organization", query="", page=1, limit=3),
+            ),
+            lambda: runtime.command_general_get_reference_item(
+                Namespace(kind="organization", id=REFERENCE_ID),
+            ),
+            lambda: runtime.command_general_search_documents(
+                Namespace(**common_document),
+            ),
+            lambda: runtime.command_general_get_document(
+                Namespace(
+                    kind="purchase",
+                    id=DOCUMENT_ID,
+                    include_lines=True,
+                    line_limit=5,
+                ),
+            ),
+            lambda: runtime.command_general_get_links(
+                Namespace(kind="document", id=DOCUMENT_ID),
+            ),
+        )
         with (
             mock.patch.object(
                 runtime,
                 "_connected_context",
-                return_value=(identity, config, credentials),
+                side_effect=self.connected_context,
             ),
+            mock.patch.object(runtime, "_request_odata", side_effect=empty_source),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            for command in commands:
+                requested_entities.clear()
+                command()
+                self.assertTrue(
+                    all(entity in runtime.GENERAL_ODATA_ENTITIES for entity in requested_entities),
+                )
+
+        with mock.patch.object(
+            runtime,
+            "_request_odata",
+            side_effect=AssertionError("unsupported balance must be local"),
+        ):
+            balances = runtime.command_general_get_balances(Namespace(kind="stock"))
+        self.assertEqual(balances["reason"], "needs_custom_endpoint")
+
+    def test_reference_response_is_normalized_and_unselected_fields_never_leak(self) -> None:
+        spec = runtime.GENERAL_REFERENCE_SPECS["counterparty"][0]
+        row = source_record(spec["fields"])
+        row.update(
+            {
+                "Description": "Поставщик",
+                "НаименованиеПолное": "ООО Поставщик",
+                "Партнер_Key": ITEM_ID,
+                "ИНН": "must-not-leak",
+                "БанковскийСчет_Key": ITEM_ID,
+            },
+        )
+        with (
             mock.patch.object(
                 runtime,
-                "_verify_general_schema",
-                return_value=schema,
+                "_connected_context",
+                side_effect=self.connected_context,
             ),
             mock.patch.object(
                 runtime,
@@ -763,15 +299,174 @@ print(json.dumps(result["validation"], sort_keys=True))
             ),
             mock.patch.object(runtime, "save_access_state"),
         ):
-            result = runtime.command_general_search_reference_items(args)
+            result = runtime.command_general_search_reference_items(
+                Namespace(
+                    kind="counterparty",
+                    query="Поставщик",
+                    page=1,
+                    limit=10,
+                ),
+            )
 
-        serialized = str(result)
+        serialized = json.dumps(result, ensure_ascii=False)
         self.assertEqual(result["items"][0]["id"], REFERENCE_ID)
         self.assertEqual(result["items"][0]["partnerId"], ITEM_ID)
         self.assertIn("query.name", result["items"][0]["matchedBy"])
         self.assertNotIn("must-not-leak", serialized)
         self.assertNotIn("Банков", serialized)
         self.assertNotIn("ИНН", serialized)
+
+    def test_missing_or_changed_reference_field_fails_closed(self) -> None:
+        spec = runtime.GENERAL_REFERENCE_SPECS["organization"][0]
+        missing = source_record(spec["fields"])
+        missing.pop("Статус")
+        changed = source_record(spec["fields"])
+        changed["DeletionMark"] = "false"
+
+        for row in (missing, changed):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime._general_reference_record(
+                    "organization",
+                    spec,
+                    row,
+                    matched_by=["id"],
+                )
+            self.assertEqual(caught.exception.code, "capability_schema_changed")
+
+    def test_odata_collection_shape_and_ambiguous_exact_result_fail_closed(self) -> None:
+        for payload in ({}, {"value": {}}, {"value": [None]}):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime._odata_rows(payload)
+            self.assertEqual(caught.exception.code, "source_contract_mismatch")
+
+        record = source_record(
+            runtime.GENERAL_REFERENCE_SPECS["organization"][0]["fields"],
+        )
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_reference_by_id",
+                return_value=[
+                    runtime._general_reference_record(
+                        "organization",
+                        runtime.GENERAL_REFERENCE_SPECS["organization"][0],
+                        record,
+                        matched_by=["id"],
+                    ),
+                ]
+                * 2,
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime.command_general_get_reference_item(
+                    Namespace(kind="organization", id=REFERENCE_ID),
+                )
+        self.assertEqual(caught.exception.code, "source_contract_mismatch")
+
+    def test_document_lines_validate_int64_and_truncate_locally(self) -> None:
+        spec = runtime.GENERAL_DOCUMENT_SPECS["purchase"][0]
+        raw = source_record(spec["fields"], record_id=DOCUMENT_ID)
+        raw.update(
+            {
+                "Number": "П-1",
+                "Date": "2026-07-26T10:00:00",
+                "Posted": True,
+                "Организация_Key": REFERENCE_ID,
+                "Контрагент_Key": ITEM_ID,
+            },
+        )
+        lines: list[dict[str, object]] = []
+        for index in range(1, 4):
+            line = source_record(spec["lineFields"])
+            line.update(
+                {
+                    "LineNumber": str(index),
+                    "Номенклатура_Key": ITEM_ID,
+                    "Количество": 2.0,
+                    "Цена": 10.0,
+                    "Сумма": 20.0,
+                    "БанковскийСчет_Key": "must-not-leak",
+                },
+            )
+            lines.append(line)
+        raw["Товары"] = lines
+
+        result = runtime._general_document_record(
+            "purchase",
+            spec,
+            raw,
+            matched_by=["id"],
+            include_lines=True,
+            line_limit=2,
+        )
+
+        self.assertEqual(result["id"], DOCUMENT_ID)
+        self.assertEqual(len(result["lines"]), 2)
+        self.assertEqual(result["lines"][0]["lineNumber"], 1)
+        self.assertTrue(result["lineInfo"]["truncated"])
+        self.assertNotIn("must-not-leak", str(result))
+
+        raw["Товары"][0]["LineNumber"] = "1.0"
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_document_record(
+                "purchase",
+                spec,
+                raw,
+                matched_by=["id"],
+                include_lines=True,
+                line_limit=2,
+            )
+        self.assertEqual(caught.exception.code, "capability_schema_changed")
+
+    def test_fixed_source_400_and_404_are_safe_contract_errors(self) -> None:
+        for status in (400, 404):
+            error = urllib.error.HTTPError(
+                "https://must-not-leak.example/source?secret=query",
+                status,
+                "must-not-leak-body",
+                {},
+                None,
+            )
+            opener = mock.Mock()
+            opener.open.side_effect = error
+            with (
+                mock.patch.object(
+                    runtime.socket,
+                    "getaddrinfo",
+                    return_value=[
+                        (
+                            runtime.socket.AF_INET,
+                            runtime.socket.SOCK_STREAM,
+                            6,
+                            "",
+                            ("93.184.216.34", 443),
+                        ),
+                    ],
+                ),
+                mock.patch.object(
+                    runtime.urllib.request,
+                    "build_opener",
+                    return_value=opener,
+                ),
+            ):
+                with self.assertRaises(runtime.OneCEdoError) as caught:
+                    runtime._http_open(
+                        "GET",
+                        "https://example.test/odata/fixed",
+                        credentials=self.credentials,
+                        timeout=1,
+                        x_odata="0123456789abcdef",
+                        diagnostic_stage="general.reference.organization.search",
+                    )
+            self.assertEqual(caught.exception.code, "source_contract_mismatch")
+            self.assertEqual(caught.exception.details["httpStatus"], status)
+            self.assertNotIn("must-not-leak", str(caught.exception))
 
     def test_document_filter_escapes_text_and_blocks_unsupported_relation(self) -> None:
         common = {
@@ -802,57 +497,19 @@ print(json.dumps(result["validation"], sort_keys=True))
                 runtime.GENERAL_DOCUMENT_SPECS["receipt"][0],
             )
 
-    def test_document_lines_are_normalized_and_locally_truncated(self) -> None:
-        spec = runtime.GENERAL_DOCUMENT_SPECS["purchase"][0]
-        raw = {
-            "Ref_Key": DOCUMENT_ID,
-            "Number": "П-1",
-            "Date": "2026-07-26T10:00:00",
-            "DeletionMark": False,
-            "Posted": True,
-            "Организация_Key": REFERENCE_ID,
-            "Контрагент_Key": ITEM_ID,
-            "Товары": [
-                {
-                    "LineNumber": str(index),
-                    "Номенклатура_Key": ITEM_ID,
-                    "Количество": 2.0,
-                    "Цена": 10.0,
-                    "Сумма": 20.0,
-                    "БанковскийСчет_Key": "must-not-leak",
-                }
-                for index in range(1, 4)
-            ],
-            "БанковскийСчетОрганизации_Key": "must-not-leak",
-        }
-
-        result = runtime._general_document_record(
-            "purchase",
-            spec,
-            raw,
-            matched_by=["id"],
-            include_lines=True,
-            line_limit=2,
-        )
-
-        self.assertEqual(result["id"], DOCUMENT_ID)
-        self.assertEqual(len(result["lines"]), 2)
-        self.assertEqual(result["lines"][0]["lineNumber"], 1)
-        self.assertTrue(result["lineInfo"]["truncated"])
-        self.assertNotIn("must-not-leak", str(result))
-        self.assertNotIn("Банков", str(result))
-
-    def test_stock_balance_is_explicitly_unsupported(self) -> None:
-        result = runtime.command_general_get_balances(Namespace(kind="stock"))
-
-        self.assertEqual(result["status"], "unsupported")
-        self.assertEqual(result["reason"], "needs_custom_endpoint")
-        self.assertEqual(result["balances"], [])
-
-    def test_general_entity_allowlist_rejects_arbitrary_catalog(self) -> None:
-        config = mock.Mock(odata_base_url="https://example.test/odata/")
+    def test_entity_allowlist_and_read_only_method_guard_remain_closed(self) -> None:
         with self.assertRaisesRegex(runtime.OneCEdoError, "entity"):
-            runtime._odata_url(config, "Catalog_Пользователи")
+            runtime._odata_url(self.config, "Catalog_Пользователи")
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._http_open(
+                "POST",
+                "https://example.test/odata/fixed",
+                credentials=self.credentials,
+                timeout=1,
+                x_odata="0123456789abcdef",
+                diagnostic_stage="general.reference.organization.search",
+            )
+        self.assertEqual(caught.exception.code, "method_blocked")
 
 
 if __name__ == "__main__":

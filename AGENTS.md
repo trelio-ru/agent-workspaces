@@ -202,9 +202,10 @@ Trelio-монорепозитории быть не должно.
   больше не общие. Старый platform skill `1c` архивирован после переключения
   project assignment и не должен возвращаться каталогом или
   `get_agent_skill`.
-  Реестр строится только после signed `$metadata` inventory и bounded sample
-  GET, фиксирует digest релевантной схемы и fail-closed блокирует изменившийся
-  capability. Произвольные entity/URL/OData, персональные/зарплатные,
+  Реестр меняется только после отдельного development inventory и bounded
+  sample GET, фиксирует digest осознанно проверенного профиля конфигурации и
+  затем входит в signed package. Произвольные entity/URL/OData,
+  персональные/зарплатные,
   банковские/платёжные/кассовые данные, проводки, массовый экспорт и бинарные
   файлы в широком навыке запрещены.
   Production registry широкого навыка фиксирует справочники `Организации`,
@@ -221,27 +222,18 @@ Trelio-монорепозитории быть не должно.
   суммировать как остатки. `get-links` следует только подтверждённому
   `СтруктураПредприятия → ДоговорыКонтрагентов → хозяйственный документ → ЭДО`
   и не дублирует list/download файлов из `1c-edo`.
-  Начиная с runtime `1.0.9`, broad-команды сохраняют между одноразовыми
-  процессами только HMAC-защищённую allowlisted projection результата schema
-  verification, никогда raw metadata. Cache привязан одновременно к
-  company/member/connection identity boundary, connection fingerprint,
-  runtime release и digest полного signed registry, хранится атомарно с
-  private permissions в существующем `1c-edo` namespace и удаляется при
-  reconnect/forget. Это не TTL shortcut: перед каждым поддержанным broad
-  запросом runtime всё равно обращается к fixed `$metadata` route. Projection
-  разрешено использовать только после серверного `304` на сохранённый
-  ETag/Last-Modified; при `200` metadata полностью перечитывается и
-  перепроверяется, при отсутствии validator каждый вызов остаётся full
-  verification, а network/cache/validator ambiguity всегда fail-closed без
-  stale-on-error. Обычная диагностика показывает только
-  `full_download` / `conditional_not_modified`, тип доступного validator и
-  факт использования projection, но никогда значение header, URL или body.
-  Runtime `1.0.10` дополнительно запрашивает только стандартный `gzip` для
-  fixed metadata route. Сжатый stream и распакованный XML независимо
-  ограничены, неизвестное/chained кодирование, лишний gzip member и
-  повреждённый stream fail-closed, а schema по-прежнему полностью
-  распаковывается, парсится и проверяется до бизнес-запроса. Это ускоряет
-  full verification без TTL, stale cache или изменения смысла capability.
+  Начиная с company-private runtime `1.0.14`, production broad-команды вообще
+  не обращаются к schema discovery route и не содержат validator/gzip/range
+  или metadata cache path. `get-capabilities` возвращает статический signed
+  registry без сети; search/get/lines/links сразу используют только
+  зафиксированные entity/fields/routes. Каждый фактический OData collection,
+  record, selected field и line проверяется по signed JSON/EDM contract до
+  нормализации. Отсутствующее поле, неожиданный scalar/collection type,
+  посторонний exact-id, неоднозначность и HTTP 400/404 fixed source дают
+  `capability_schema_changed` / `source_contract_mismatch` без fallback и без
+  раскрытия URL/query/body/headers. Development inventory не входит в
+  production package; изменение профиля требует отдельного review, тестов,
+  нового registry digest и patch release.
   Текстовый поиск не сканирует случайные первые страницы: он ограниченно ищет
   бизнес-объекты и договоры, следует только подтверждённым связям
   `Catalog_СтруктураПредприятия` → `Подразделение_Key` либо
