@@ -169,13 +169,17 @@ Trelio-монорепозитории быть не должно.
   autonomous, но не включить его за пользователя. Telegram/MAX ограничены
   `chat-only`, email — `mail-only`: входящий контент не даёт полномочий в
   других системах.
-- Telegram platform release `1.1.2` использует runtime `1.0.2`: `login` по
+- Telegram platform release `1.1.3` использует runtime `1.0.3`: `login` по
   умолчанию открывает защищённую одноразовую страницу на `127.0.0.1` в
   системном браузере. macOS и Windows имеют отдельные проверяемые opener-пути;
   при недоступном браузере допустим только явный `--terminal-prompts` в видимом
   TTY.
   Пользователь выбирает «Код Telegram» или «QR-код», вводит телефон, код и 2FA
   только в локальную страницу, а QR генерируется в памяти и обновляется там же.
+  Если Telegram вернул непустую подсказку 2FA, runtime нормализует и ограничивает
+  её длину, HTML-экранирует в UI и показывает только рядом с локальным полем
+  пароля; подсказка не попадает в terminal fallback, результат команды, MCP,
+  argv, workspace или логи.
   Tokenized path, exact loopback Host/Origin, bounded form body, no-store,
   no-referrer и CSP закрывают межсайтовый submit; значения входа не попадают в
   JSON, MCP, argv, workspace или логи. Команды `read` и `search` сохраняют

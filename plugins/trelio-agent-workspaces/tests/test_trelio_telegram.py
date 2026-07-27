@@ -113,10 +113,165 @@ class TrelioTelegramTests(unittest.TestCase):
 
         self.assertIn("Trelio Telegram", page)
         self.assertIn('data.status === "qr"', page)
+        self.assertIn("Подсказка Telegram:", page)
+        self.assertIn("escapeHtml(data.hint)", page)
         self.assertIn("Telegram: Настройки", page)
         self.assertIn("Сканируйте QR только из приложения Telegram", page)
         self.assertIn('type="button" data-cancel="1"', page)
         self.assertNotIn("Vkus Telegram", page)
+
+    def test_password_hint_is_normalized_and_bounded_for_local_display(self):
+        hint = "  первая\n\tвторая  " + ("я" * 400)
+
+        normalized = MODULE.normalize_telegram_password_hint(hint)
+
+        self.assertTrue(normalized.startswith("первая вторая "))
+        self.assertNotIn("\n", normalized)
+        self.assertNotIn("\t", normalized)
+        self.assertEqual(len(normalized), MODULE.MAX_PASSWORD_HINT_CHARS)
+        self.assertEqual(MODULE.normalize_telegram_password_hint(None), "")
+
+    def test_password_hint_read_failure_does_not_block_login(self):
+        class GetPasswordRequest:
+            pass
+
+        client = mock.AsyncMock(side_effect=RuntimeError("raw Telegram diagnostic"))
+
+        hint = asyncio.run(MODULE.telegram_password_hint(client, GetPasswordRequest))
+
+        self.assertEqual(hint, "")
+        client.assert_awaited_once()
+
+    def test_password_hint_is_read_from_telegram_password_state(self):
+        class GetPasswordRequest:
+            pass
+
+        client = mock.AsyncMock(
+            return_value=SimpleNamespace(hint="  первая\n\tвторая  "),
+        )
+
+        hint = asyncio.run(MODULE.telegram_password_hint(client, GetPasswordRequest))
+
+        self.assertEqual(hint, "первая вторая")
+        self.assertIsInstance(client.await_args.args[0], GetPasswordRequest)
+
+    def test_browser_hint_is_not_forwarded_to_terminal_fallback(self):
+        with mock.patch.object(
+            MODULE,
+            "ensure_browser_prompt_session",
+            side_effect=MODULE.BrowserPromptUnavailable("no browser"),
+        ), mock.patch.object(
+            MODULE,
+            "prompt_value_terminal",
+            return_value="password",
+        ) as terminal_prompt:
+            value = MODULE.prompt_value(
+                "Пароль 2FA Telegram",
+                hidden=True,
+                browser_hint="локальная подсказка",
+            )
+
+        self.assertEqual(value, "password")
+        self.assertNotIn("browser_hint", terminal_prompt.call_args.kwargs)
+        self.assertNotIn("локальная подсказка", str(terminal_prompt.call_args))
+
+    def test_code_login_passes_telegram_hint_only_to_browser_prompt(self):
+        class SessionPasswordNeededError(Exception):
+            pass
+
+        class GetPasswordRequest:
+            pass
+
+        client = SimpleNamespace(
+            send_code_request=mock.AsyncMock(
+                return_value=SimpleNamespace(phone_code_hash="phone-code-hash"),
+            ),
+            sign_in=mock.AsyncMock(side_effect=[SessionPasswordNeededError(), None]),
+        )
+        args = SimpleNamespace(terminal_prompts=False)
+        with mock.patch.object(
+            MODULE,
+            "prompt_value",
+            side_effect=["+79990000000", "12345", "correct horse"],
+        ) as prompt, mock.patch.object(
+            MODULE,
+            "telegram_password_hint",
+            new=mock.AsyncMock(return_value="девичья фамилия"),
+        ):
+            asyncio.run(
+                MODULE.authorize_with_code_login(
+                    client,
+                    args,
+                    SessionPasswordNeededError,
+                    GetPasswordRequest,
+                )
+            )
+
+        password_prompt = prompt.call_args_list[2]
+        self.assertEqual(password_prompt.args, ("Пароль 2FA Telegram",))
+        self.assertEqual(password_prompt.kwargs["browser_hint"], "девичья фамилия")
+        self.assertEqual(client.sign_in.await_count, 2)
+
+    def test_qr_login_passes_telegram_hint_only_to_browser_prompt(self):
+        class SessionPasswordNeededError(Exception):
+            pass
+
+        class GetPasswordRequest:
+            pass
+
+        qr_login = SimpleNamespace(
+            expires=datetime.now(timezone.utc).replace(year=2099),
+            url="tg://login?token=private",
+            wait=mock.AsyncMock(side_effect=SessionPasswordNeededError()),
+            recreate=mock.AsyncMock(),
+        )
+        client = SimpleNamespace(
+            qr_login=mock.AsyncMock(return_value=qr_login),
+            sign_in=mock.AsyncMock(),
+        )
+        args = SimpleNamespace(
+            terminal_prompts=False,
+            qr_timeout=30,
+            qr_refresh_seconds=25,
+            qr=False,
+        )
+        browser_session = SimpleNamespace(
+            show_qr=mock.Mock(),
+            clear_qr=mock.Mock(),
+        )
+        with mock.patch.object(MODULE, "import_qrcode", return_value=object()), mock.patch.object(
+            MODULE,
+            "qr_image_data_url",
+            return_value="data:image/png;base64,private",
+        ), mock.patch.object(
+            MODULE,
+            "ensure_browser_prompt_session",
+            return_value=browser_session,
+        ), mock.patch.object(
+            MODULE,
+            "BROWSER_PROMPT_SESSION",
+            browser_session,
+        ), mock.patch.object(
+            MODULE,
+            "prompt_value",
+            return_value="correct horse",
+        ) as prompt, mock.patch.object(
+            MODULE,
+            "telegram_password_hint",
+            new=mock.AsyncMock(return_value="девичья фамилия"),
+        ):
+            asyncio.run(
+                MODULE.authorize_with_qr_login(
+                    client,
+                    args,
+                    SessionPasswordNeededError,
+                    GetPasswordRequest,
+                )
+            )
+
+        self.assertEqual(prompt.call_args.args, ("Пароль 2FA Telegram",))
+        self.assertEqual(prompt.call_args.kwargs["browser_hint"], "девичья фамилия")
+        client.sign_in.assert_awaited_once_with(password="correct horse")
 
     def test_macos_opener_uses_the_default_browser(self):
         completed = SimpleNamespace(returncode=0)
@@ -155,6 +310,7 @@ class TrelioTelegramTests(unittest.TestCase):
                     session.ask(
                         "Код входа Telegram",
                         hidden=True,
+                        hint="подсказка <локальная>",
                     )
                 )
             except Exception as error:  # pragma: no cover - surfaced below.
@@ -178,6 +334,7 @@ class TrelioTelegramTests(unittest.TestCase):
             self.assertEqual(state_response.status, 200)
             self.assertNotIn("12345", state_payload)
             self.assertIn('"hidden": true', state_payload)
+            self.assertIn("подсказка <локальная>", state_payload)
             connection.close()
 
             body = f"id={prompt_id}&value=12345"
@@ -252,7 +409,7 @@ class TrelioTelegramTests(unittest.TestCase):
         with mock.patch.object(
             MODULE,
             "import_telethon",
-            return_value=(object(), RuntimeError),
+            return_value=(object(), RuntimeError, object()),
         ), mock.patch.object(
             MODULE,
             "build_client",

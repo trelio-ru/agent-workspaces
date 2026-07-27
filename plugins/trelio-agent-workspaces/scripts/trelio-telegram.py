@@ -52,6 +52,7 @@ MAX_REPLY_RESOLUTION_CONCURRENCY = 8
 DEFAULT_QR_LOGIN_TIMEOUT_SECONDS = 300
 DEFAULT_QR_REFRESH_SECONDS = 25
 MAX_PROMPT_BODY_BYTES = 4_096
+MAX_PASSWORD_HINT_CHARS = 256
 LOGIN_METHOD_CODE = "code"
 LOGIN_METHOD_QR = "qr"
 BROWSER_PROMPT_SESSION: "BrowserPromptSession | None" = None
@@ -277,6 +278,7 @@ def browser_prompt_app_page() -> bytes:
   }
   button.primary { border-color: #1a73e8; background: #1a73e8; color: #fff; }
   .error { margin: 0 0 12px; color: #b00020; font-size: 14px; }
+  .prompt-hint { margin: 0 0 12px; color: #5f6368; font-size: 14px; line-height: 1.45; }
   .muted { margin: 0; color: #5f6368; line-height: 1.45; }
   .small { margin: 10px 0 0; color: #5f6368; font-size: 14px; line-height: 1.4; }
   .qr-wrap { display: grid; place-items: center; margin: 4px 0 16px; }
@@ -335,6 +337,9 @@ function renderQr(data) {
 function renderPrompt(data) {
   currentPromptId = data.id;
   const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
+  const hint = data.hint
+    ? `<p class="prompt-hint"><strong>Подсказка Telegram:</strong> ${escapeHtml(data.hint)}</p>`
+    : "";
   const cancelLabel = escapeHtml(data.cancel_label || "Отмена");
   let controls = "";
   if (data.choices && data.choices.length) {
@@ -354,7 +359,7 @@ function renderPrompt(data) {
         <button class="primary" type="submit">Продолжить</button>
       </div>`;
   }
-  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${error}<form id="prompt-form">${controls}</form>`;
+  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${hint}${error}<form id="prompt-form">${controls}</form>`;
   const form = document.getElementById("prompt-form");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -667,6 +672,7 @@ class BrowserPromptSession:
         allow_empty: bool = False,
         choices: Sequence[tuple[str, str]] | None = None,
         cancel_label: str = "Отмена",
+        hint: str = "",
     ) -> str:
         with self.condition:
             self.next_prompt_id += 1
@@ -680,6 +686,7 @@ class BrowserPromptSession:
                 "allow_empty": allow_empty,
                 "choices": list(choices or []),
                 "cancel_label": cancel_label,
+                "hint": hint,
                 "error": "",
             }
             self.condition.notify_all()
@@ -799,6 +806,7 @@ def prompt_value(
     allow_empty: bool = False,
     terminal_prompts: bool = False,
     cancel_label: str = "Отмена",
+    browser_hint: str = "",
 ) -> str:
     if not terminal_prompts:
         try:
@@ -807,6 +815,7 @@ def prompt_value(
                 hidden=hidden,
                 allow_empty=allow_empty,
                 cancel_label=cancel_label,
+                hint=browser_hint,
             )
         except BrowserPromptUnavailable:
             pass
@@ -882,9 +891,10 @@ def import_telethon():
     try:
         from telethon import TelegramClient
         from telethon.errors import SessionPasswordNeededError
+        from telethon.tl.functions.account import GetPasswordRequest
     except ImportError as error:
         raise TelegramRuntimeError("Telethon is unavailable. Run bootstrap first.") from error
-    return TelegramClient, SessionPasswordNeededError
+    return TelegramClient, SessionPasswordNeededError, GetPasswordRequest
 
 
 def import_qrcode():
@@ -916,7 +926,7 @@ def require_api_hash() -> str:
 
 
 def build_client(args: argparse.Namespace, identity: Identity):
-    TelegramClient, _ = import_telethon()
+    TelegramClient, _, _ = import_telethon()
     return TelegramClient(
         str(session_path(identity)),
         int(args.api_id),
@@ -931,6 +941,24 @@ async def ensure_authorized(client: Any) -> None:
     await client.connect()
     if not await client.is_user_authorized():
         raise TelegramRuntimeError("Local Telegram session is not authorized. Run login first.")
+
+
+def normalize_telegram_password_hint(value: Any) -> str:
+    """Keep Telegram's display-only 2FA hint bounded and on one safe UI line."""
+
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:MAX_PASSWORD_HINT_CHARS]
+
+
+async def telegram_password_hint(client: Any, GetPasswordRequest: Any) -> str:
+    """Read the optional hint without making login depend on hint availability."""
+
+    try:
+        password_state = await client(GetPasswordRequest())
+    except Exception:
+        return ""
+    return normalize_telegram_password_hint(getattr(password_state, "hint", ""))
 
 
 def login_method_for_args(args: argparse.Namespace) -> str:
@@ -954,6 +982,7 @@ async def authorize_with_code_login(
     client: Any,
     args: argparse.Namespace,
     SessionPasswordNeededError: Any,
+    GetPasswordRequest: Any,
 ) -> None:
     phone = prompt_value(
         "Телефон Telegram с кодом страны",
@@ -974,11 +1003,13 @@ async def authorize_with_code_login(
             phone_code_hash=sent.phone_code_hash,
         )
     except SessionPasswordNeededError:
+        password_hint = await telegram_password_hint(client, GetPasswordRequest)
         password = prompt_value(
             "Пароль 2FA Telegram",
             hidden=True,
             terminal_prompts=args.terminal_prompts,
             cancel_label="Назад",
+            browser_hint=password_hint,
         )
         await client.sign_in(password=password)
 
@@ -1009,6 +1040,7 @@ async def authorize_with_qr_login(
     client: Any,
     args: argparse.Namespace,
     SessionPasswordNeededError: Any,
+    GetPasswordRequest: Any,
 ) -> None:
     qrcode_module = import_qrcode()
     use_browser = not args.terminal_prompts
@@ -1050,11 +1082,13 @@ async def authorize_with_qr_login(
         except SessionPasswordNeededError:
             if BROWSER_PROMPT_SESSION is not None:
                 BROWSER_PROMPT_SESSION.clear_qr()
+            password_hint = await telegram_password_hint(client, GetPasswordRequest)
             password = prompt_value(
                 "Пароль 2FA Telegram",
                 hidden=True,
                 terminal_prompts=args.terminal_prompts,
                 cancel_label="Назад" if not args.qr else "Отмена",
+                browser_hint=password_hint,
             )
             await client.sign_in(password=password)
             return
@@ -1069,7 +1103,7 @@ async def authorize_with_qr_login(
 
 
 async def command_login_async(args: argparse.Namespace, identity: Identity) -> dict[str, Any]:
-    _, SessionPasswordNeededError = import_telethon()
+    _, SessionPasswordNeededError, GetPasswordRequest = import_telethon()
     client = build_client(args, identity)
     await client.connect()
     try:
@@ -1078,9 +1112,19 @@ async def command_login_async(args: argparse.Namespace, identity: Identity) -> d
                 method = login_method_for_args(args)
                 try:
                     if method == LOGIN_METHOD_QR:
-                        await authorize_with_qr_login(client, args, SessionPasswordNeededError)
+                        await authorize_with_qr_login(
+                            client,
+                            args,
+                            SessionPasswordNeededError,
+                            GetPasswordRequest,
+                        )
                     else:
-                        await authorize_with_code_login(client, args, SessionPasswordNeededError)
+                        await authorize_with_code_login(
+                            client,
+                            args,
+                            SessionPasswordNeededError,
+                            GetPasswordRequest,
+                        )
                     break
                 except PromptCancelled:
                     if args.qr or args.code:
