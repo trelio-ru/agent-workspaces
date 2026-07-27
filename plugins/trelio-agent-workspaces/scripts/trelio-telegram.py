@@ -11,17 +11,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import getpass
+import http.server
+import io
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
+import threading
+import time
+import urllib.parse
 import venv
+import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 
 SKILL_ID = "telegram-mtproto"
@@ -41,10 +49,24 @@ MAX_LINK_ENTITIES = 32
 MAX_LINK_TEXT_CHARS = 512
 MAX_LINK_URL_CHARS = 2_048
 MAX_REPLY_RESOLUTION_CONCURRENCY = 8
+DEFAULT_QR_LOGIN_TIMEOUT_SECONDS = 300
+DEFAULT_QR_REFRESH_SECONDS = 25
+MAX_PROMPT_BODY_BYTES = 4_096
+LOGIN_METHOD_CODE = "code"
+LOGIN_METHOD_QR = "qr"
+BROWSER_PROMPT_SESSION: "BrowserPromptSession | None" = None
 
 
 class TelegramRuntimeError(RuntimeError):
     """Expected, user-safe configuration or protocol error."""
+
+
+class PromptCancelled(TelegramRuntimeError):
+    """Raised when the user intentionally cancels a local login prompt."""
+
+
+class BrowserPromptUnavailable(TelegramRuntimeError):
+    """Raised when a protected local browser prompt cannot be delivered."""
 
 
 @dataclass(frozen=True)
@@ -200,6 +222,622 @@ def session_lock(identity: Identity) -> Iterator[None]:
         lock_file.close()
 
 
+def browser_prompt_app_page() -> bytes:
+    """Render the self-contained local login page without external assets."""
+
+    return """<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trelio Telegram</title>
+<style>
+  :root { color-scheme: light; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: #eef0f2;
+    color: #202124;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main {
+    width: min(620px, calc(100vw - 32px));
+    box-sizing: border-box;
+    background: #fff;
+    border: 1px solid #d9dce1;
+    border-radius: 12px;
+    box-shadow: 0 18px 48px rgba(0,0,0,.18);
+    padding: 24px;
+  }
+  h1 { margin: 0 0 16px; font-size: 20px; line-height: 1.35; font-weight: 650; }
+  form { display: grid; gap: 14px; }
+  input {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 44px;
+    border: 2px solid #1a73e8;
+    border-radius: 8px;
+    padding: 8px 10px;
+    color: #202124;
+    background: #fff;
+    font-size: 18px;
+  }
+  input:focus { outline: 3px solid rgba(26,115,232,.2); }
+  .actions { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+  button {
+    min-width: 120px;
+    min-height: 40px;
+    border: 1px solid #c9cdd3;
+    border-radius: 8px;
+    background: #eef0f2;
+    color: #202124;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  button.primary { border-color: #1a73e8; background: #1a73e8; color: #fff; }
+  .error { margin: 0 0 12px; color: #b00020; font-size: 14px; }
+  .muted { margin: 0; color: #5f6368; line-height: 1.45; }
+  .small { margin: 10px 0 0; color: #5f6368; font-size: 14px; line-height: 1.4; }
+  .qr-wrap { display: grid; place-items: center; margin: 4px 0 16px; }
+  .qr {
+    width: min(72vw, 440px);
+    height: auto;
+    image-rendering: pixelated;
+    background: #fff;
+    padding: 18px;
+    border: 1px solid #d9dce1;
+    border-radius: 8px;
+  }
+</style>
+<main id="app">
+  <h1>Trelio Telegram</h1>
+  <p class="muted">Жду следующий шаг входа…</p>
+</main>
+<script>
+const app = document.getElementById("app");
+let currentPromptId = null;
+let polling = true;
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function renderWaiting() {
+  currentPromptId = null;
+  app.innerHTML = `<h1>Trelio Telegram</h1><p class="muted">Жду следующий шаг входа…</p>`;
+}
+
+function renderFinished(data) {
+  currentPromptId = null;
+  polling = false;
+  app.innerHTML = `<h1>${escapeHtml(data.title || "Готово")}</h1>
+    <p class="muted">${escapeHtml(data.message || "Можно закрыть вкладку и вернуться в Codex.")}</p>`;
+}
+
+function renderQr(data) {
+  currentPromptId = "qr";
+  const seconds = data.expires_in
+    ? `<p class="small">QR обновится автоматически. Осталось примерно ${escapeHtml(data.expires_in)} сек.</p>`
+    : "";
+  app.innerHTML = `<h1>${escapeHtml(data.title || "Вход по QR-коду Telegram")}</h1>
+    <div class="qr-wrap"><img class="qr" alt="Telegram QR" src="${escapeHtml(data.image_data_url)}"></div>
+    <p class="muted">Telegram: Настройки → Устройства → Подключить устройство</p>
+    <p class="small">Сканируйте QR только из приложения Telegram. Не пересылайте и не фотографируйте эту страницу.</p>
+    ${seconds}`;
+}
+
+function renderPrompt(data) {
+  currentPromptId = data.id;
+  const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
+  const cancelLabel = escapeHtml(data.cancel_label || "Отмена");
+  let controls = "";
+  if (data.choices && data.choices.length) {
+    controls = `<div class="actions">
+      <button type="button" data-cancel="1">${cancelLabel}</button>
+      ${data.choices.map(([value, label]) =>
+        `<button class="primary" type="submit" name="choice" value="${escapeHtml(value)}">${escapeHtml(label)}</button>`
+      ).join("")}
+    </div>`;
+  } else {
+    const inputType = data.hidden ? "password" : "text";
+    const required = data.allow_empty ? "" : "required";
+    const autocomplete = data.hidden ? "one-time-code" : "tel";
+    controls = `<input autofocus name="value" type="${inputType}" autocomplete="${autocomplete}" ${required}>
+      <div class="actions">
+        <button type="button" data-cancel="1">${cancelLabel}</button>
+        <button class="primary" type="submit">Продолжить</button>
+      </div>`;
+  }
+  app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${error}<form id="prompt-form">${controls}</form>`;
+  const form = document.getElementById("prompt-form");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submitter = event.submitter;
+    const formData = new FormData(form);
+    if (submitter && submitter.name) formData.set(submitter.name, submitter.value);
+    formData.set("id", String(data.id));
+    await submitPrompt(data, formData);
+  });
+  const cancelButton = form.querySelector("[data-cancel]");
+  if (cancelButton) {
+    cancelButton.addEventListener("click", async () => {
+      const formData = new FormData();
+      formData.set("id", String(data.id));
+      formData.set("cancel", "1");
+      await submitPrompt(data, formData);
+    });
+  }
+  const input = form.querySelector("input");
+  if (input) input.focus();
+}
+
+async function submitPrompt(data, formData) {
+  const response = await fetch("submit", {
+    method: "POST",
+    headers: {"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+    body: new URLSearchParams(formData),
+    cache: "no-store",
+  });
+  const payload = await response.json();
+  if (!payload.ok && payload.error) {
+    data.error = payload.error;
+    renderPrompt(data);
+    return;
+  }
+  renderWaiting();
+}
+
+async function poll() {
+  try {
+    const response = await fetch("state?t=" + Date.now(), {cache: "no-store"});
+    const data = await response.json();
+    if (data.status === "prompt") {
+      if (data.id !== currentPromptId) renderPrompt(data);
+    } else if (data.status === "qr") {
+      renderQr(data);
+    } else if (data.status === "finished") {
+      renderFinished(data);
+      return;
+    } else if (currentPromptId !== null) {
+      renderWaiting();
+    }
+  } catch (_error) {
+    polling = false;
+    app.innerHTML = `<h1>Локальная страница закрыта</h1>
+      <p class="muted">Вернитесь в Codex и при необходимости запустите вход заново.</p>`;
+  } finally {
+    if (polling) setTimeout(poll, 350);
+  }
+}
+
+poll();
+</script>
+""".encode("utf-8")
+
+
+def open_browser_url(url: str) -> None:
+    """Open one loopback URL without leaking it into process output."""
+
+    if sys.platform == "darwin":
+        try:
+            completed = subprocess.run(
+                ["/usr/bin/open", url],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise BrowserPromptUnavailable("Cannot open the protected local Telegram login page.") from error
+        if completed.returncode != 0:
+            raise BrowserPromptUnavailable("Cannot open the protected local Telegram login page.")
+        return
+
+    if sys.platform.startswith("win"):
+        try:
+            startfile = getattr(os, "startfile", None)
+            if startfile is None:
+                raise OSError("Windows shell opener is unavailable")
+            startfile(url)
+            return
+        except OSError as error:
+            raise BrowserPromptUnavailable(
+                "Cannot open the protected local Telegram login page."
+            ) from error
+
+    try:
+        if not webbrowser.open(url, new=2):
+            raise BrowserPromptUnavailable("Cannot open the protected local Telegram login page.")
+    except webbrowser.Error as error:
+        raise BrowserPromptUnavailable("Cannot open the protected local Telegram login page.") from error
+
+
+class BrowserPromptSession:
+    """Serve one tokenized loopback page for a single login process."""
+
+    def __init__(self) -> None:
+        self.token = secrets.token_urlsafe(32)
+        self.condition = threading.Condition()
+        self.page_loaded = threading.Event()
+        self.current_prompt: dict[str, Any] | None = None
+        self.current_qr: dict[str, Any] | None = None
+        self.response: dict[str, Any] | None = None
+        self.finished: dict[str, str] | None = None
+        self.next_prompt_id = 0
+        self.opened = False
+        try:
+            self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        except OSError as error:
+            raise BrowserPromptUnavailable(
+                "The protected Telegram login page cannot bind to 127.0.0.1."
+            ) from error
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def port(self) -> int:
+        return int(self.server.server_address[1])
+
+    @property
+    def origin(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def base_path(self) -> str:
+        return f"/{self.token}"
+
+    @property
+    def url(self) -> str:
+        return f"{self.origin}{self.base_path}/"
+
+    def _handler_class(self) -> Any:
+        session = self
+
+        class PromptHandler(http.server.BaseHTTPRequestHandler):
+            server_version = "TrelioLoopback/1"
+            sys_version = ""
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def end_headers(self) -> None:
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "img-src data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
+                )
+                super().end_headers()
+
+            def send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+                self.close_connection = True
+
+            def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+                self.send_bytes(
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                    status,
+                )
+
+            def request_is_local(self) -> bool:
+                return (
+                    self.client_address[0] == "127.0.0.1"
+                    and self.headers.get("Host") == f"127.0.0.1:{session.port}"
+                )
+
+            def prompt_subpath(self) -> str | None:
+                path = urllib.parse.urlparse(self.path).path
+                if path == session.base_path:
+                    return "/"
+                prefix = session.base_path + "/"
+                if not path.startswith(prefix):
+                    return None
+                return "/" + path[len(prefix):]
+
+            def do_GET(self) -> None:  # noqa: N802 - stdlib callback name.
+                if not self.request_is_local():
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                subpath = self.prompt_subpath()
+                if subpath == "/":
+                    session.page_loaded.set()
+                    self.send_bytes(browser_prompt_app_page(), "text/html; charset=utf-8")
+                    return
+                if subpath == "/state":
+                    with session.condition:
+                        finished = dict(session.finished) if session.finished else None
+                        qr = dict(session.current_qr) if session.current_qr else None
+                        prompt = dict(session.current_prompt) if session.current_prompt else None
+                    if finished:
+                        self.send_json({"status": "finished", **finished})
+                    elif qr:
+                        self.send_json({"status": "qr", **qr})
+                    elif prompt:
+                        self.send_json({"status": "prompt", **prompt})
+                    else:
+                        self.send_json({"status": "waiting"})
+                    return
+                self.send_json({"ok": False, "error": "Not found."}, status=404)
+
+            def do_POST(self) -> None:  # noqa: N802 - stdlib callback name.
+                if not self.request_is_local() or self.prompt_subpath() != "/submit":
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                if self.headers.get("Origin") != session.origin:
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if content_type != "application/x-www-form-urlencoded":
+                    self.send_json({"ok": False, "error": "Unsupported request."}, status=415)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", ""))
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_PROMPT_BODY_BYTES:
+                    self.send_json({"ok": False, "error": "Invalid request size."}, status=413)
+                    return
+
+                try:
+                    raw_body = self.rfile.read(length).decode("utf-8", errors="strict")
+                    fields = urllib.parse.parse_qs(
+                        raw_body,
+                        keep_blank_values=True,
+                        max_num_fields=4,
+                    )
+                except (UnicodeError, ValueError):
+                    self.send_json({"ok": False, "error": "Invalid request body."}, status=400)
+                    return
+                try:
+                    prompt_id = int((fields.get("id") or [""])[0])
+                except ValueError:
+                    self.send_json({"ok": False, "error": "Этот шаг уже не актуален."}, status=409)
+                    return
+
+                with session.condition:
+                    prompt = session.current_prompt
+                    if not prompt or prompt["id"] != prompt_id:
+                        self.send_json({"ok": False, "error": "Этот шаг уже не актуален."}, status=409)
+                        return
+                    if fields.get("cancel"):
+                        session.response = {"cancelled": True}
+                    else:
+                        choices = prompt.get("choices") or []
+                        if choices:
+                            value = (fields.get("choice") or [""])[0]
+                            allowed_values = {choice_value for choice_value, _label in choices}
+                            if value not in allowed_values:
+                                self.send_json(
+                                    {"ok": False, "error": "Выберите один из вариантов."},
+                                    status=400,
+                                )
+                                return
+                        else:
+                            value = (fields.get("value") or [""])[0].strip()
+                            if not value and not prompt.get("allow_empty"):
+                                self.send_json(
+                                    {"ok": False, "error": "Нужно заполнить поле."},
+                                    status=400,
+                                )
+                                return
+                        session.response = {"cancelled": False, "value": value}
+                    session.current_prompt = None
+                    session.condition.notify_all()
+                self.send_json({"ok": True})
+
+        return PromptHandler
+
+    def open(self) -> None:
+        """Open the protected page and require the browser to fetch its exact URL."""
+
+        if self.opened:
+            return
+        self.page_loaded.clear()
+        open_browser_url(self.url)
+        if not self.page_loaded.wait(timeout=8):
+            raise BrowserPromptUnavailable(
+                "The default browser did not load the protected local Telegram login page."
+            )
+        self.opened = True
+
+    def ask(
+        self,
+        prompt: str,
+        *,
+        hidden: bool,
+        allow_empty: bool = False,
+        choices: Sequence[tuple[str, str]] | None = None,
+        cancel_label: str = "Отмена",
+    ) -> str:
+        with self.condition:
+            self.next_prompt_id += 1
+            self.response = None
+            self.finished = None
+            self.current_qr = None
+            self.current_prompt = {
+                "id": self.next_prompt_id,
+                "prompt": prompt,
+                "hidden": hidden,
+                "allow_empty": allow_empty,
+                "choices": list(choices or []),
+                "cancel_label": cancel_label,
+                "error": "",
+            }
+            self.condition.notify_all()
+        try:
+            self.open()
+        except BrowserPromptUnavailable:
+            with self.condition:
+                self.current_prompt = None
+            raise
+
+        with self.condition:
+            while self.response is None:
+                self.condition.wait()
+            response = self.response
+            self.response = None
+        if response.get("cancelled"):
+            raise PromptCancelled(f"Ввод отменён: {prompt}")
+        return str(response.get("value") or "")
+
+    def show_qr(self, *, image_data_url: str, expires_in: int) -> None:
+        with self.condition:
+            self.current_prompt = None
+            self.finished = None
+            self.current_qr = {
+                "title": "Вход по QR-коду Telegram",
+                "image_data_url": image_data_url,
+                "expires_in": expires_in,
+            }
+            self.condition.notify_all()
+        self.open()
+
+    def clear_qr(self) -> None:
+        with self.condition:
+            self.current_qr = None
+            self.condition.notify_all()
+
+    def finish(self, *, title: str, message: str) -> None:
+        with self.condition:
+            self.current_prompt = None
+            self.current_qr = None
+            self.response = None
+            self.finished = {"title": title, "message": message}
+            self.condition.notify_all()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+def ensure_browser_prompt_session() -> BrowserPromptSession:
+    global BROWSER_PROMPT_SESSION
+    if BROWSER_PROMPT_SESSION is None:
+        BROWSER_PROMPT_SESSION = BrowserPromptSession()
+    return BROWSER_PROMPT_SESSION
+
+
+def shutdown_browser_prompt_session() -> None:
+    global BROWSER_PROMPT_SESSION
+    if BROWSER_PROMPT_SESSION is None:
+        return
+    BROWSER_PROMPT_SESSION.close()
+    BROWSER_PROMPT_SESSION = None
+
+
+def prompt_value_terminal(
+    prompt: str,
+    *,
+    hidden: bool,
+    allow_empty: bool = False,
+    cancel_label: str = "Отмена",
+) -> str:
+    if not sys.stdin.isatty():
+        raise BrowserPromptUnavailable(
+            "The local browser login page is unavailable and no visible terminal is attached."
+        )
+    label = f"{prompt} (или {cancel_label}): "
+    value = getpass.getpass(label) if hidden else input(label)
+    value = value.strip()
+    if value.casefold() == cancel_label.casefold():
+        raise PromptCancelled(f"Ввод отменён: {prompt}")
+    if not value and not allow_empty:
+        raise TelegramRuntimeError(f"Нужно заполнить поле: {prompt}")
+    return value
+
+
+def prompt_choice_terminal(
+    prompt: str,
+    choices: Sequence[tuple[str, str]],
+    *,
+    cancel_label: str = "Отмена",
+) -> str:
+    if not sys.stdin.isatty():
+        raise BrowserPromptUnavailable(
+            "The local browser login page is unavailable and no visible terminal is attached."
+        )
+    print(prompt)
+    for index, (_value, label) in enumerate(choices, start=1):
+        print(f"  {index}. {label}")
+    print(f"  0. {cancel_label}")
+    while True:
+        answer = input("Выбор: ").strip().casefold()
+        if answer in {"0", "q", "quit", "cancel", "отмена", "назад"}:
+            raise PromptCancelled(f"Ввод отменён: {prompt}")
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            return choices[int(answer) - 1][0]
+        for value, label in choices:
+            if answer in {value.casefold(), label.casefold()}:
+                return value
+        print("Введите номер варианта.")
+
+
+def prompt_value(
+    prompt: str,
+    *,
+    hidden: bool = False,
+    allow_empty: bool = False,
+    terminal_prompts: bool = False,
+    cancel_label: str = "Отмена",
+) -> str:
+    if not terminal_prompts:
+        try:
+            return ensure_browser_prompt_session().ask(
+                prompt,
+                hidden=hidden,
+                allow_empty=allow_empty,
+                cancel_label=cancel_label,
+            )
+        except BrowserPromptUnavailable:
+            pass
+    return prompt_value_terminal(
+        prompt,
+        hidden=hidden,
+        allow_empty=allow_empty,
+        cancel_label=cancel_label,
+    )
+
+
+def prompt_choice(
+    prompt: str,
+    choices: Sequence[tuple[str, str]],
+    *,
+    terminal_prompts: bool = False,
+    cancel_label: str = "Отмена",
+) -> str:
+    if not terminal_prompts:
+        try:
+            return ensure_browser_prompt_session().ask(
+                prompt,
+                hidden=False,
+                choices=choices,
+                cancel_label=cancel_label,
+            )
+        except BrowserPromptUnavailable:
+            pass
+    return prompt_choice_terminal(prompt, choices, cancel_label=cancel_label)
+
+
 def command_bootstrap(_args: argparse.Namespace) -> dict[str, Any]:
     root = runtime_root()
     python = runtime_python()
@@ -214,6 +852,7 @@ def command_bootstrap(_args: argparse.Namespace) -> dict[str, Any]:
             "install",
             "--disable-pip-version-check",
             "telethon>=1.38,<2",
+            "qrcode[pil]>=8,<9",
         ],
         check=False,
         text=True,
@@ -248,6 +887,19 @@ def import_telethon():
     return TelegramClient, SessionPasswordNeededError
 
 
+def import_qrcode():
+    """Load QR rendering only for QR login after bootstrap installed it."""
+
+    try:
+        import qrcode
+        import PIL.Image  # noqa: F401 - validates the qrcode[pil] extra.
+    except ImportError as error:
+        raise TelegramRuntimeError(
+            "Telegram QR dependencies are unavailable. Run bootstrap first."
+        ) from error
+    return qrcode
+
+
 def session_path(identity: Identity) -> Path:
     state_dir = connection_root(identity) / "state"
     ensure_private_directory(state_dir)
@@ -278,7 +930,142 @@ def build_client(args: argparse.Namespace, identity: Identity):
 async def ensure_authorized(client: Any) -> None:
     await client.connect()
     if not await client.is_user_authorized():
-        raise TelegramRuntimeError("Local Telegram session is not authorized. Run login in a visible terminal.")
+        raise TelegramRuntimeError("Local Telegram session is not authorized. Run login first.")
+
+
+def login_method_for_args(args: argparse.Namespace) -> str:
+    """Choose code or QR before Telegram sends any one-time credential."""
+
+    if args.qr:
+        return LOGIN_METHOD_QR
+    if args.code:
+        return LOGIN_METHOD_CODE
+    return prompt_choice(
+        "Как войти в Telegram на этом компьютере?",
+        (
+            (LOGIN_METHOD_CODE, "Код Telegram"),
+            (LOGIN_METHOD_QR, "QR-код"),
+        ),
+        terminal_prompts=args.terminal_prompts,
+    )
+
+
+async def authorize_with_code_login(
+    client: Any,
+    args: argparse.Namespace,
+    SessionPasswordNeededError: Any,
+) -> None:
+    phone = prompt_value(
+        "Телефон Telegram с кодом страны",
+        terminal_prompts=args.terminal_prompts,
+        cancel_label="Назад",
+    )
+    sent = await client.send_code_request(phone)
+    code = prompt_value(
+        "Код входа Telegram",
+        hidden=True,
+        terminal_prompts=args.terminal_prompts,
+        cancel_label="Назад",
+    ).replace(" ", "")
+    try:
+        await client.sign_in(
+            phone=phone,
+            code=code,
+            phone_code_hash=sent.phone_code_hash,
+        )
+    except SessionPasswordNeededError:
+        password = prompt_value(
+            "Пароль 2FA Telegram",
+            hidden=True,
+            terminal_prompts=args.terminal_prompts,
+            cancel_label="Назад",
+        )
+        await client.sign_in(password=password)
+
+
+def qr_image_data_url(qrcode_module: Any, url: str) -> str:
+    """Render the short-lived Telegram login URL without writing it to disk."""
+
+    qr_image = qrcode_module.QRCode(border=3, box_size=14)
+    qr_image.add_data(url)
+    qr_image.make(fit=True)
+    rendered = qr_image.make_image(fill_color="black", back_color="white")
+    buffer = io.BytesIO()
+    rendered.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+def terminal_qr_ascii(qrcode_module: Any, url: str) -> str:
+    qr_image = qrcode_module.QRCode(border=2)
+    qr_image.add_data(url)
+    qr_image.make(fit=True)
+    output = io.StringIO()
+    qr_image.print_ascii(out=output, invert=True)
+    return output.getvalue()
+
+
+async def authorize_with_qr_login(
+    client: Any,
+    args: argparse.Namespace,
+    SessionPasswordNeededError: Any,
+) -> None:
+    qrcode_module = import_qrcode()
+    use_browser = not args.terminal_prompts
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + args.qr_timeout
+    qr_login = await client.qr_login()
+
+    while loop.time() < deadline:
+        expires_in = max(
+            1,
+            int(qr_login.expires.timestamp() - time.time()),
+        )
+        if use_browser:
+            try:
+                ensure_browser_prompt_session().show_qr(
+                    image_data_url=qr_image_data_url(qrcode_module, qr_login.url),
+                    expires_in=expires_in,
+                )
+            except BrowserPromptUnavailable:
+                use_browser = False
+        if not use_browser:
+            if not sys.stdin.isatty():
+                raise BrowserPromptUnavailable(
+                    "The local browser login page is unavailable and no visible terminal is attached."
+                )
+            print(terminal_qr_ascii(qrcode_module, qr_login.url))
+            print("Telegram: Настройки → Устройства → Подключить устройство")
+
+        wait_for = min(
+            max(1, expires_in - 2),
+            max(1, args.qr_refresh_seconds),
+            max(1, int(deadline - loop.time())),
+        )
+        try:
+            await asyncio.wait_for(qr_login.wait(), timeout=wait_for)
+            if BROWSER_PROMPT_SESSION is not None:
+                BROWSER_PROMPT_SESSION.clear_qr()
+            return
+        except SessionPasswordNeededError:
+            if BROWSER_PROMPT_SESSION is not None:
+                BROWSER_PROMPT_SESSION.clear_qr()
+            password = prompt_value(
+                "Пароль 2FA Telegram",
+                hidden=True,
+                terminal_prompts=args.terminal_prompts,
+                cancel_label="Назад" if not args.qr else "Отмена",
+            )
+            await client.sign_in(password=password)
+            return
+        except asyncio.TimeoutError:
+            if loop.time() >= deadline:
+                break
+            await qr_login.recreate()
+
+    raise TelegramRuntimeError(
+        "Время входа по QR истекло. Запустите login ещё раз и отсканируйте новый код."
+    )
 
 
 async def command_login_async(args: argparse.Namespace, identity: Identity) -> dict[str, Any]:
@@ -286,26 +1073,39 @@ async def command_login_async(args: argparse.Namespace, identity: Identity) -> d
     client = build_client(args, identity)
     await client.connect()
     try:
-        if await client.is_user_authorized():
-            me = await client.get_me()
-            return {"authorized": True, "userId": me.id, "username": me.username}
-        if not sys.stdin.isatty():
-            raise TelegramRuntimeError("Login requires a visible interactive terminal.")
-        phone = input("Телефон Telegram: ").strip()
-        if not phone:
-            raise TelegramRuntimeError("Phone is required.")
-        sent = await client.send_code_request(phone)
-        code = input("Код Telegram: ").strip()
-        try:
-            await client.sign_in(phone=phone, code=code, phone_code_hash=sent.phone_code_hash)
-        except SessionPasswordNeededError:
-            password = getpass.getpass("Пароль 2FA Telegram: ")
-            await client.sign_in(password=password)
+        if not await client.is_user_authorized():
+            while True:
+                method = login_method_for_args(args)
+                try:
+                    if method == LOGIN_METHOD_QR:
+                        await authorize_with_qr_login(client, args, SessionPasswordNeededError)
+                    else:
+                        await authorize_with_code_login(client, args, SessionPasswordNeededError)
+                    break
+                except PromptCancelled:
+                    if args.qr or args.code:
+                        raise
+                    continue
         me = await client.get_me()
         session_file = session_path(identity).with_suffix(".session")
         if session_file.exists() and os.name == "posix":
             session_file.chmod(0o600)
+        if BROWSER_PROMPT_SESSION is not None:
+            BROWSER_PROMPT_SESSION.finish(
+                title="Telegram подключён",
+                message="Личная авторизация сохранена. Можно закрыть вкладку и вернуться в Codex.",
+            )
+            await asyncio.sleep(0.7)
         return {"authorized": True, "userId": me.id, "username": me.username}
+    except TelegramRuntimeError:
+        raise
+    except Exception as error:
+        # Telethon exceptions may contain transport or RPC details that are not
+        # part of the agent-visible contract. Keep the local UI actionable while
+        # returning only a stable, secret-free category to Codex.
+        raise TelegramRuntimeError(
+            "Telegram не завершил вход. Проверьте данные или соединение и запустите login заново."
+        ) from error
     finally:
         await client.disconnect()
 
@@ -784,7 +1584,32 @@ def build_parser() -> argparse.ArgumentParser:
     policy_commands.add_parser("show")
     policy_set = policy_commands.add_parser("set")
     policy_set.add_argument("--send-mode", choices=POLICY_MODES, required=True)
-    commands.add_parser("login", help="Authorize the personal session in a visible terminal")
+    login = commands.add_parser(
+        "login",
+        help="Authorize the personal session through a protected local browser page",
+    )
+    login_method = login.add_mutually_exclusive_group()
+    login_method.add_argument("--qr", action="store_true", help="Open QR login immediately")
+    login_method.add_argument("--code", action="store_true", help="Open phone and code login immediately")
+    login.add_argument(
+        "--terminal-prompts",
+        action="store_true",
+        help="Use the current visible terminal instead of the protected local browser page",
+    )
+    login.add_argument(
+        "--qr-timeout",
+        type=int,
+        choices=range(30, 601),
+        default=DEFAULT_QR_LOGIN_TIMEOUT_SECONDS,
+        metavar="30..600",
+    )
+    login.add_argument(
+        "--qr-refresh-seconds",
+        type=int,
+        choices=range(5, 61),
+        default=DEFAULT_QR_REFRESH_SECONDS,
+        metavar="5..60",
+    )
     dialogs = commands.add_parser("dialogs", help="List or narrowly search dialogs")
     dialogs.add_argument("--query")
     dialogs.add_argument("--limit", type=int, choices=range(1, 101), default=20, metavar="1..100")
@@ -822,8 +1647,16 @@ def main() -> int:
         else:
             result = run_async_command(args)
     except (TelegramRuntimeError, OSError, UnicodeError, ValueError) as error:
+        if BROWSER_PROMPT_SESSION is not None:
+            BROWSER_PROMPT_SESSION.finish(
+                title="Вход не завершён",
+                message="Вернитесь в Codex, проверьте сообщение об ошибке и запустите вход заново.",
+            )
+            time.sleep(0.4)
         print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)
         return 2
+    finally:
+        shutdown_browser_prompt_session()
     print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
     return 0
 

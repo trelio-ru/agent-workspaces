@@ -1,9 +1,11 @@
 import asyncio
+import http.client
 import importlib.util
 import json
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -80,6 +82,192 @@ class TrelioTelegramTests(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(MODULE.require_api_hash(), "a" * 32)
+
+    def test_login_defaults_to_browser_method_choice(self):
+        args = MODULE.build_parser().parse_args(
+            [
+                "--company-id",
+                self.identity().company_id,
+                "--member-id",
+                self.identity().member_id,
+                "--connection-id",
+                self.identity().connection_id,
+                "--api-id",
+                "12345",
+                "login",
+            ]
+        )
+        with mock.patch.object(
+            MODULE,
+            "prompt_choice",
+            return_value=MODULE.LOGIN_METHOD_QR,
+        ) as prompt:
+            method = MODULE.login_method_for_args(args)
+
+        self.assertEqual(method, MODULE.LOGIN_METHOD_QR)
+        prompt.assert_called_once()
+        self.assertFalse(prompt.call_args.kwargs["terminal_prompts"])
+
+    def test_browser_prompt_page_contains_same_page_qr_and_security_copy(self):
+        page = MODULE.browser_prompt_app_page().decode("utf-8")
+
+        self.assertIn("Trelio Telegram", page)
+        self.assertIn('data.status === "qr"', page)
+        self.assertIn("Telegram: Настройки", page)
+        self.assertIn("Сканируйте QR только из приложения Telegram", page)
+        self.assertIn('type="button" data-cancel="1"', page)
+        self.assertNotIn("Vkus Telegram", page)
+
+    def test_macos_opener_uses_the_default_browser(self):
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(MODULE.sys, "platform", "darwin"), mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+
+        self.assertEqual(
+            run.call_args_list[0].args[0],
+            ["/usr/bin/open", "http://127.0.0.1:1234/token/"],
+        )
+
+    def test_windows_opener_uses_the_default_browser(self):
+        startfile = mock.Mock()
+        with mock.patch.object(MODULE.sys, "platform", "win32"), mock.patch.object(
+            MODULE.os,
+            "startfile",
+            startfile,
+            create=True,
+        ):
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+        startfile.assert_called_once_with("http://127.0.0.1:1234/token/")
+
+    def test_loopback_prompt_requires_exact_origin_and_never_exposes_value_in_state(self):
+        session = MODULE.BrowserPromptSession()
+        session.opened = True
+        received = []
+        errors = []
+
+        def ask():
+            try:
+                received.append(
+                    session.ask(
+                        "Код входа Telegram",
+                        hidden=True,
+                    )
+                )
+            except Exception as error:  # pragma: no cover - surfaced below.
+                errors.append(error)
+
+        worker = threading.Thread(target=ask)
+        worker.start()
+        try:
+            with session.condition:
+                ready = session.condition.wait_for(
+                    lambda: session.current_prompt is not None,
+                    timeout=2,
+                )
+                self.assertTrue(ready)
+                prompt_id = session.current_prompt["id"]
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", f"{session.base_path}/state")
+            state_response = connection.getresponse()
+            state_payload = state_response.read().decode("utf-8")
+            self.assertEqual(state_response.status, 200)
+            self.assertNotIn("12345", state_payload)
+            self.assertIn('"hidden": true', state_payload)
+            connection.close()
+
+            body = f"id={prompt_id}&value=12345"
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": "https://attacker.example",
+                },
+            )
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 403)
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request(
+                "POST",
+                f"{session.base_path}/submit",
+                body=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": session.origin,
+                },
+            )
+            accepted = connection.getresponse()
+            accepted.read()
+            self.assertEqual(accepted.status, 200)
+            connection.close()
+
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(received, ["12345"])
+            self.assertIsNone(session.response)
+            self.assertIsNone(session.current_prompt)
+        finally:
+            session.close()
+
+    def test_loopback_page_uses_no_store_csp_and_tokenized_path(self):
+        session = MODULE.BrowserPromptSession()
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", f"{session.base_path}/")
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
+            self.assertEqual(response.getheader("Referrer-Policy"), "no-referrer")
+            self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+            connection.close()
+
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", "/state")
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 404)
+            connection.close()
+        finally:
+            session.close()
+
+    def test_login_hides_raw_telegram_rpc_diagnostics(self):
+        client = SimpleNamespace(
+            connect=mock.AsyncMock(),
+            is_user_authorized=mock.AsyncMock(return_value=False),
+            disconnect=mock.AsyncMock(),
+        )
+        args = SimpleNamespace(qr=False, code=True)
+        with mock.patch.object(
+            MODULE,
+            "import_telethon",
+            return_value=(object(), RuntimeError),
+        ), mock.patch.object(
+            MODULE,
+            "build_client",
+            return_value=client,
+        ), mock.patch.object(
+            MODULE,
+            "authorize_with_code_login",
+            new=mock.AsyncMock(side_effect=RuntimeError("sensitive raw RPC detail")),
+        ):
+            with self.assertRaises(MODULE.TelegramRuntimeError) as raised:
+                asyncio.run(MODULE.command_login_async(args, self.identity()))
+
+        self.assertNotIn("sensitive raw RPC detail", str(raised.exception))
+        self.assertIn("login", str(raised.exception))
+        client.disconnect.assert_awaited_once()
 
     def test_public_entity_never_serializes_private_mtproto_fields(self):
         entity = SimpleNamespace(
