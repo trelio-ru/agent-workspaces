@@ -51,7 +51,7 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.2")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.3")
         self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.16")
 
     def _attachment_row(
@@ -361,7 +361,7 @@ class VkusHrRuntimeTests(unittest.TestCase):
     def test_attachment_download_is_exact_bounded_atomic_and_hashed(self) -> None:
         owner_id = "11111111-1111-4111-8111-111111111111"
         file_id = "22222222-2222-4222-8222-222222222222"
-        payload = b"employment contract bytes"
+        payload = self._pdf_payload()
         row = self._attachment_row(
             owner_id=owner_id,
             file_id=file_id,
@@ -414,18 +414,26 @@ class VkusHrRuntimeTests(unittest.TestCase):
                 result["integrity"]["status"],
                 "metadata_size_matched",
             )
+            self.assertEqual(
+                result["integrity"]["contentInspection"]["status"],
+                "passed",
+            )
             self.assertIn(
-                "/ФайлХранилище",
+                (
+                    "/БольничныйЛистПрисоединенныеФайлы/"
+                    "22222222-2222-4222-8222-222222222222"
+                ),
                 __import__("urllib.parse").parse.unquote(
                     opened.call_args.args[1],
                 ),
             )
+            self.assertIsNone(opened.call_args.kwargs["x_odata"])
             self.assertEqual(list(destination.parent.glob("*.part")), [])
 
     def test_attachment_size_mismatch_remains_fail_closed_by_default(self) -> None:
         owner_id = "11111111-1111-4111-8111-111111111111"
         file_id = "22222222-2222-4222-8222-222222222222"
-        payload = b"%PDF-1.4\ncontract\n%%EOF\n"
+        payload = self._pdf_payload()
         row = self._attachment_row(
             owner_id=owner_id,
             file_id=file_id,
@@ -475,6 +483,57 @@ class VkusHrRuntimeTests(unittest.TestCase):
             self.assertEqual(
                 caught.exception.code,
                 "attachment_contract_mismatch",
+            )
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_size_matched_pdf_still_requires_valid_basic_structure(self) -> None:
+        owner_id = "11111111-1111-4111-8111-111111111111"
+        file_id = "22222222-2222-4222-8222-222222222222"
+        payload = b"not a PDF"
+        row = self._attachment_row(
+            owner_id=owner_id,
+            file_id=file_id,
+            declared_size=len(payload),
+        )
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            destination = Path(directory) / "contract.pdf"
+            args = mock.Mock(
+                attachment_source_key=self.attachment_source["key"],
+                owner_id=owner_id,
+                file_id=file_id,
+                output=str(destination),
+                include_sensitive=True,
+                allow_unverified_size_mismatch=False,
+            )
+            with (
+                mock.patch.object(
+                    MODULE,
+                    "_request_attachment_rows",
+                    return_value=[row],
+                ),
+                mock.patch.object(
+                    MODULE,
+                    "_connected_context",
+                    return_value=(
+                        self._company_config(),
+                        MODULE.provider.Credentials("employee", "password"),
+                    ),
+                ),
+                mock.patch.object(
+                    MODULE.provider,
+                    "_http_open",
+                    return_value=Response(
+                        payload,
+                        {"Content-Length": str(len(payload))},
+                    ),
+                ),
+            ):
+                with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                    MODULE.command_download_attachment(args)
+
+            self.assertEqual(
+                caught.exception.code,
+                "invalid_attachment_response",
             )
             self.assertEqual(list(Path(directory).iterdir()), [])
 

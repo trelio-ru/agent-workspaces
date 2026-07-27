@@ -175,17 +175,17 @@ def verify_attachment_source(source: Mapping[str, Any]) -> dict[str, Any]:
                     "attachment_contract_mismatch",
                     "Exact attachment lookup неоднозначен.",
                 )
-            verification_stage = "stream_open"
+            verification_stage = "file_service_open"
             stream_response = runtime.provider._http_open(
                 "GET",
-                runtime._attachment_stream_url(
+                runtime._attachment_file_service_url(
                     config,
                     source,
                     file_id,
                 ),
                 credentials=credentials,
                 timeout=config.request_timeout_seconds,
-                x_odata=runtime.provider._require_x_odata(),
+                x_odata=None,
                 diagnostic_stage="file.new.download",
                 accept="*/*",
             )

@@ -30,7 +30,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.0.2"
+RUNTIME_VERSION = "1.0.3"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_QUERY_CHARS = 200
@@ -654,26 +654,31 @@ def _normalized_attachment(
     }
 
 
-def _attachment_stream_url(
+def _attachment_file_service_url(
     config: provider.CompanyConfig,
     source: Mapping[str, Any],
     file_id: str,
 ) -> str:
     entity = str(source["entity"])
-    content_field = str(source["contentField"])
     if (
         not ENTITY_RE.fullmatch(entity)
-        or content_field != "ФайлХранилище"
+        or not entity.startswith("Catalog_")
+        or source.get("contentField") != "ФайлХранилище"
     ):
         raise HrRuntimeError(
             "registry_invalid",
             "Кадровый attachment route повреждён.",
         )
     normalized_file = _uuid(file_id, "attachment file id")
+    catalog_name = entity.removeprefix("Catalog_")
+    if not catalog_name.endswith("ПрисоединенныеФайлы"):
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Кадровый attachment route повреждён.",
+        )
     return (
-        f"{config.odata_base_url}{urllib.parse.quote(entity, safe='_')}"
-        f"(guid'{normalized_file}')/"
-        f"{urllib.parse.quote(content_field, safe='')}"
+        f"{config.files_base_url}"
+        f"{urllib.parse.quote(catalog_name, safe='')}/{normalized_file}"
     )
 
 
@@ -852,10 +857,14 @@ def _download_attachment_bytes(
     try:
         response = provider._http_open(
             "GET",
-            _attachment_stream_url(config, source, file_id),
+            _attachment_file_service_url(config, source, file_id),
             credentials=credentials,
             timeout=config.request_timeout_seconds,
-            x_odata=provider._require_x_odata(),
+            # The fixed `/hs/files/` service authenticates the employee with
+            # Basic Auth and returns the resolved file bytes. X-OData belongs
+            # only to the preceding bounded metadata lookup and must not leak
+            # into this separate file service.
+            x_odata=None,
             diagnostic_stage="file.new.download",
             accept="*/*",
         )
@@ -896,6 +905,17 @@ def _download_attachment_bytes(
             )
         size_mismatch = declared_size is not None and total != declared_size
         digest_hex = digest.hexdigest()
+        content_inspection = (
+            _inspect_pdf_basic_structure(
+                temporary,
+                size_bytes=total,
+            )
+            if declared_extension == "pdf"
+            else {
+                "kind": "not_applicable",
+                "status": "not_performed",
+            }
+        )
         if size_mismatch:
             if not allow_unverified_size_mismatch:
                 raise HrRuntimeError(
@@ -906,17 +926,6 @@ def _download_attachment_bytes(
                 dt.datetime.now(dt.timezone.utc)
                 .isoformat()
                 .replace("+00:00", "Z")
-            )
-            content_inspection = (
-                _inspect_pdf_basic_structure(
-                    temporary,
-                    size_bytes=total,
-                )
-                if declared_extension == "pdf"
-                else {
-                    "kind": "not_applicable",
-                    "status": "not_performed",
-                }
             )
             unverified, manifest_path = _publish_unverified_attachment(
                 temporary,
@@ -979,6 +988,7 @@ def _download_attachment_bytes(
             ),
             "declaredSizeBytes": declared_size,
             "actualSizeBytes": total,
+            "contentInspection": content_inspection,
             "httpContentLengthBytes": response_size,
         },
     }
