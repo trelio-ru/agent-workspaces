@@ -1,6 +1,6 @@
 ---
 name: 1c-vkus
-description: Safely search and inspect the fixed read-only business reference, document and relationship capabilities published by the Vkus company's 1C through Trelio's signed runtime.
+description: Safely read fixed Vkus 1C references, documents, financial turnovers, accounting and stock balances, bank-operation headers, taxes, payroll aggregates and relationships through Trelio's signed read-only runtime.
 ---
 
 # 1С — Вкус
@@ -38,10 +38,11 @@ Every command that contacts 1C requires the existing `x_odata` binding:
    token to the returned `bridge.argvPrefix`.
 3. Append one fixed command below after the terminal `--`.
 
-`get-capabilities` and `get-balances --kind stock` perform no network query and
-therefore need no secret checkout. The first returns the static signed
-registry immediately. The second intentionally returns
-`unsupported / needs_custom_endpoint`; never imitate stock balances by
+`get-capabilities` and the deprecated compatibility command
+`get-balances --kind stock` perform no network query and therefore need no
+secret checkout. The first returns the static signed registry immediately.
+The second returns `unsupported / use_get_balance_and_turnovers`; use the
+verified `get-balance-and-turnovers` command and never imitate balances by
 summing movements.
 
 The runtime handles HTTP 429 itself for its idempotent GET/HEAD requests: it
@@ -52,11 +53,14 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 ## Fixed commands
 
 - `get-capabilities`
-- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse [--query TEXT] [--page 1..3] [--limit 1..25]`
-- `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse --id UUID`
+- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule [--query TEXT] [--page 1..3] [--limit 1..25]`
+- `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule --id UUID`
 - `search-documents --kind purchase|sale|receipt|return|transfer [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..3] [--limit 1..25]`
 - `get-document --kind purchase|sale|receipt|return|transfer --id UUID [--include-lines] [--line-limit 1..100]`
-- `get-balances --kind stock`
+- `get-financial-turnovers --kind sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `search-financial-records --kind account_entry|bank_receipt|bank_payment --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `get-balance-and-turnovers --kind accounts|stock --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--warehouse-id UUID] [--item-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `get-balances --kind stock` (deprecated compatibility response only)
 - `get-links --kind business_unit|contract|document --id UUID`
 
 Only filters listed by `get-capabilities` for the selected document kind are
@@ -71,6 +75,42 @@ Never substitute an organization-division UUID into that relation.
 `return` covers the two confirmed business source types
 `return_from_customer` and `return_to_supplier`. An exact UUID is probed only
 against those fixed entities and fails closed if it is ambiguous.
+
+## Financial source-data rules
+
+These commands provide bounded source data only. They do not assemble,
+classify or calculate a P&L, do not apply allocation rules and do not decide
+which accounting treatment is correct. A future governed P&L workflow must
+define those steps separately.
+
+Use `--include-sensitive` only when the current user request explicitly needs
+financial, payroll, tax, bank, accounting or inventory figures. The flag is
+required on every such command and is never persisted. The period is required,
+inclusive, limited to 93 calendar days, and every request must also contain at
+least one source-supported scope filter. Follow the `filters` and
+`requiredAny` contract returned by `get-capabilities`; do not broaden a
+rejected request. Also follow `filterSourceTypes`: payroll uses the
+`organization_division` UUID, while the other current finance sources use the
+separate `enterprise_structure` UUID. A pizzeria name can resolve to both;
+never substitute one UUID namespace for the other.
+
+The finance output is normalized into semantic `dimensions` and `metrics`.
+`payroll_accounting` reads accrual/withholding turnovers by organization,
+business unit, funding/expense article and operation reference, deliberately
+aggregating without employee/person IDs.
+`insurance_contribution` exposes organization totals only. Bank results are
+posted, non-deleted document headers and deliberately omit account numbers,
+payment purpose, statement contents and requisites. Accounting entries omit
+subconto/extended-dimension values. Never infer missing employee, bank or
+analytic detail from another field.
+
+`accounts` and `stock` use fixed reviewed virtual
+`BalanceAndTurnovers` tables. The accounting route intentionally omits the
+optional `Dimensions` function parameter because this Vkus deployment rejects
+it; the selected returned fields and UUID scope filters remain fixed.
+`sales_cost`, income/expense, payroll, contributions, depreciation and tax
+sources use fixed `Turnovers` virtual tables. The caller cannot select a
+register, function, dimension or raw field.
 
 ## Output and trust rules
 

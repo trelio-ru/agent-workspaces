@@ -223,22 +223,41 @@ Trelio-монорепозитории быть не должно.
   `get_agent_skill`.
   Реестр меняется только после отдельного development inventory и bounded
   sample GET, фиксирует digest осознанно проверенного профиля конфигурации и
-  затем входит в signed package. Произвольные entity/URL/OData,
-  персональные/зарплатные,
-  банковские/платёжные/кассовые данные, проводки, массовый экспорт и бинарные
-  файлы в широком навыке запрещены.
+  затем входит в signed package. Произвольные entity/URL/OData, персональные
+  payroll identifiers, банковские реквизиты/номера счетов, назначение платежа,
+  raw-выписка, subconto/ext dimensions, массовый экспорт и бинарные файлы в
+  широком навыке запрещены. Финансовые агрегаты, проводки и безопасные
+  заголовки банковских документов доступны только через перечисленные ниже
+  bounded source-data команды с явным `--include-sensitive`.
   Production registry широкого навыка фиксирует справочники `Организации`,
   `СтруктураПредприятия` / `ПодразделенияОрганизаций`, `Контрагенты`,
-  `Партнеры`, `ДоговорыКонтрагентов`, `Номенклатура`, `Склады` и документы
+  `Партнеры`, `ДоговорыКонтрагентов`, `Номенклатура`, `Склады`, план счетов,
+  статьи ДДС/прочих расходов, правила распределения и документы
   `ПриобретениеТоваровУслуг`, `РеализацияТоваровУслуг`,
   `ОприходованиеИзлишковТоваров`, оба направления возврата и
   `ПеремещениеТоваров`. Обычный результат не раскрывает source field names:
   только нормализованные business-поля, source kind/type/id, matchedBy,
   effective limits и truncation. Пагинация ограничена 25 строками × 3
-  страницы, строки документа – 100. Стандартная публикация не подтверждает
-  безопасную virtual balance table, поэтому `get-balances --kind stock`
-  возвращает только `unsupported / needs_custom_endpoint`; движения нельзя
-  суммировать как остатки. `get-links` следует только подтверждённому
+  страницы, строки документа – 100. Начиная с private runtime `1.0.17`,
+  отдельные finance-команды возвращают source data, но не собирают P&L:
+  fixed `Turnovers` для выручки/себестоимости, прочих доходов/расходов,
+  финансового результата, начислений/удержаний зарплаты без
+  physical-person/employee dimensions,
+  страховых взносов на уровне организации, амортизации и ЕНС/санкций; fixed
+  accounting-register records; posted/non-deleted bank receipt/payment
+  headers без реквизитов; fixed `BalanceAndTurnovers` для бухгалтерских счетов
+  и складских остатков. Период обязателен и не больше 93 дней, нужен хотя бы
+  один поддержанный UUID scope, `--include-sensitive`, page ≤ 3 и limit ≤ 50.
+  `get-capabilities.filterSourceTypes` фиксирует namespace каждого
+  business-unit filter: payroll использует `organization_division`, остальные
+  текущие finance sources – `enterprise_structure`; одноимённые UUID нельзя
+  взаимозаменять.
+  Accounting virtual route намеренно не передаёт `Dimensions`, потому что live
+  deployment отвергает этот optional parameter; stock использует только
+  `Номенклатура,Характеристика,Склад`. Deprecated `get-balances --kind stock`
+  остаётся локальным compatibility response
+  `unsupported / use_get_balance_and_turnovers`; движения нельзя суммировать
+  как остатки. `get-links` следует только подтверждённому
   `СтруктураПредприятия → ДоговорыКонтрагентов → хозяйственный документ → ЭДО`
   и не дублирует list/download файлов из `1c-edo`.
   Начиная с company-private runtime `1.0.14`, production broad-команды вообще

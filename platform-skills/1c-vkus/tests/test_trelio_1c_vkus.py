@@ -67,6 +67,26 @@ def source_record(
     }
 
 
+def finance_args(kind: str, **overrides: object) -> Namespace:
+    """Build the complete public finance command contract for one test."""
+
+    values: dict[str, object] = {
+        "kind": kind,
+        "date_from": "2026-07-01",
+        "date_to": "2026-07-31",
+        "organization_id": "",
+        "business_unit_id": "",
+        "account_id": "",
+        "warehouse_id": "",
+        "item_id": "",
+        "page": 1,
+        "limit": 25,
+        "include_sensitive": True,
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
 class OneCVkusRuntimeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -108,7 +128,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_reuses_provider_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.16")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.17")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-edo")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -258,19 +278,18 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             parser.parse_args(["developer-inventory-metadata"])
 
     def test_static_registry_is_complete_stable_and_network_free(self) -> None:
-        expected_capability_digests = {
-            "reference.organization": "sha256:c35936172ed9413a19b764098d3d0a59e69c040470300976a62cf1c5a7560631",
-            "reference.business_unit": "sha256:86dede737531b4e422434dd53ca430ec7cb212d04d1bfc344bd47811d0567d7f",
-            "reference.counterparty": "sha256:f45733e044e227dfa3790d112b916489dd4aca1ee6cfa6cdf71a93d9923f9b7c",
-            "reference.partner": "sha256:d56747cf59c1081c2f74913a3cf56cf2b038748cf7d6cf1e2f9d165a4039361f",
-            "reference.contract": "sha256:38a3f9f5c90f850a558f4839c56db1e804487d797ada22a6ea249b899ce335a8",
-            "reference.item": "sha256:4b45fc48224dbc764c54b5053cfacf96bc5cd1497ab91cba1ebcbc01d651f799",
-            "reference.warehouse": "sha256:d6bef1fc9b469ea4fd72de686dfb1d8c13bc3ae8fa6a3ff3945f5c61cd062649",
-            "document.purchase": "sha256:45449c750b1122c9cf9f6effb20df57c876a9493ed1a46fd6c73068a245e31b8",
-            "document.sale": "sha256:692d72dac092f15b1050cbf74a72eafbdab9ba3b429352f906d79b96aad5e4a1",
-            "document.receipt": "sha256:47054e9b3c52c52fc43c1440859c625c404247dd918482723739c42bfa19f682",
-            "document.return": "sha256:ce2909227b0c02f7807d144b8212cdaa7f3abc7e4344940a59853b5ff868e5f3",
-            "document.transfer": "sha256:5737be9028869c2c278a4a4199eabb95697afca287c6b466625d40d7b657ec45",
+        expected_capabilities = {
+            *(f"reference.{kind}" for kind in runtime.GENERAL_REFERENCE_SPECS),
+            *(f"document.{kind}" for kind in runtime.GENERAL_DOCUMENT_SPECS),
+            *(
+                f"financial_turnover.{kind}"
+                for kind in runtime.GENERAL_FINANCIAL_TURNOVER_SPECS
+            ),
+            *(
+                f"financial_record.{kind}"
+                for kind in runtime.GENERAL_FINANCIAL_RECORD_SPECS
+            ),
+            *(f"balance.{kind}" for kind in runtime.GENERAL_BALANCE_SPECS),
         }
         with (
             mock.patch.object(
@@ -286,18 +305,24 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         ):
             result = runtime.command_general_get_capabilities(Namespace())
 
-        self.assertEqual(result["registryVersion"], 2)
+        self.assertEqual(result["registryVersion"], 3)
         self.assertEqual(
             result["schema"]["registryDigest"],
-            "sha256:99c53e81aa674da61090f44b5066c71d72a6eee7e235687017d5d30b4746d63d",
+            "sha256:ddfc68ca0bf1ee5d4816a5c4759eef70fbaed3970b3e86a86785b97380d7c46d",
         )
         self.assertEqual(
             result["schema"]["profileSchemaDigest"],
             runtime.GENERAL_PROFILE_SCHEMA_DIGEST,
         )
         self.assertEqual(
-            result["schema"]["capabilityDigests"],
-            expected_capability_digests,
+            set(result["schema"]["capabilityDigests"]),
+            expected_capabilities,
+        )
+        self.assertTrue(
+            all(
+                len(value) == 71 and value.startswith("sha256:")
+                for value in result["schema"]["capabilityDigests"].values()
+            ),
         )
         self.assertEqual(
             result["schema"]["validation"],
@@ -308,8 +333,27 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                 "responseValidation": "fail_closed",
             },
         )
-        self.assertEqual(len(result["sections"]["references"]), 7)
+        self.assertEqual(len(result["sections"]["references"]), 11)
         self.assertEqual(len(result["sections"]["documents"]), 5)
+        self.assertEqual(len(result["sections"]["financialTurnovers"]), 9)
+        self.assertEqual(len(result["sections"]["financialRecords"]), 3)
+        self.assertEqual(len(result["sections"]["balances"]), 2)
+        turnover_capabilities = {
+            item["kind"]: item
+            for item in result["sections"]["financialTurnovers"]
+        }
+        self.assertEqual(
+            turnover_capabilities["payroll_accounting"]["filterSourceTypes"],
+            {"business_unit": "organization_division"},
+        )
+        self.assertEqual(
+            turnover_capabilities["sales_cost"]["filterSourceTypes"],
+            {"business_unit": "enterprise_structure"},
+        )
+        self.assertEqual(
+            result["reporting"],
+            {"pnlAssembly": False, "sourceDataOnly": True},
+        )
         self.assertNotIn("metadataBytes", result["limits"])
 
     def test_every_production_command_has_no_schema_discovery_request(self) -> None:
@@ -342,6 +386,18 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             "page": 1,
             "limit": 3,
         }
+        common_finance = {
+            "date_from": "2026-07-01",
+            "date_to": "2026-07-31",
+            "organization_id": "",
+            "business_unit_id": "",
+            "account_id": "",
+            "warehouse_id": "",
+            "item_id": "",
+            "page": 1,
+            "limit": 3,
+            "include_sensitive": True,
+        }
         commands = (
             lambda: runtime.command_general_search_reference_items(
                 Namespace(kind="organization", query="", page=1, limit=3),
@@ -363,7 +419,48 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             lambda: runtime.command_general_get_links(
                 Namespace(kind="document", id=DOCUMENT_ID),
             ),
+            lambda: runtime.command_general_get_financial_turnovers(
+                Namespace(
+                    **{
+                        **common_finance,
+                        "kind": "sales_cost",
+                        "business_unit_id": REFERENCE_ID,
+                    },
+                ),
+            ),
+            lambda: runtime.command_general_search_financial_records(
+                Namespace(
+                    **{
+                        **common_finance,
+                        "kind": "bank_receipt",
+                        "business_unit_id": REFERENCE_ID,
+                    },
+                ),
+            ),
+            lambda: runtime.command_general_get_balance_and_turnovers(
+                Namespace(
+                    **{
+                        **common_finance,
+                        "kind": "stock",
+                        "item_id": ITEM_ID,
+                    },
+                ),
+            ),
         )
+
+        def empty_virtual_source(
+            _config: object,
+            _credentials: object,
+            _spec: object,
+            _start: object,
+            _end: object,
+            _parameters: object,
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            self.assertTrue(diagnostic_stage.startswith("general."))
+            return {"value": []}
+
         with (
             mock.patch.object(
                 runtime,
@@ -371,6 +468,11 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                 side_effect=self.connected_context,
             ),
             mock.patch.object(runtime, "_request_odata", side_effect=empty_source),
+            mock.patch.object(
+                runtime,
+                "_request_general_virtual_table",
+                side_effect=empty_virtual_source,
+            ),
             mock.patch.object(runtime, "save_access_state"),
         ):
             for command in commands:
@@ -386,7 +488,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             side_effect=AssertionError("unsupported balance must be local"),
         ):
             balances = runtime.command_general_get_balances(Namespace(kind="stock"))
-        self.assertEqual(balances["reason"], "needs_custom_endpoint")
+        self.assertEqual(balances["reason"], "use_get_balance_and_turnovers")
 
     def test_reference_response_is_normalized_and_unselected_fields_never_leak(self) -> None:
         spec = runtime.GENERAL_REFERENCE_SPECS["counterparty"][0]
@@ -656,6 +758,264 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                 Namespace(**blocked),
                 runtime.GENERAL_DOCUMENT_SPECS["receipt"][0],
             )
+
+    def test_finance_requires_explicit_sensitive_basis_period_and_scope(self) -> None:
+        with mock.patch.object(
+            runtime,
+            "_connected_context",
+            side_effect=AssertionError("must fail before credentials"),
+        ):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime.command_general_get_financial_turnovers(
+                    finance_args(
+                        "sales_cost",
+                        business_unit_id=REFERENCE_ID,
+                        include_sensitive=False,
+                    ),
+                )
+        self.assertEqual(
+            caught.exception.code,
+            "sensitive_data_confirmation_required",
+        )
+
+        invalid_periods = (
+            finance_args("sales_cost", date_from="", business_unit_id=REFERENCE_ID),
+            finance_args(
+                "sales_cost",
+                date_from="2026-07-31",
+                date_to="2026-07-01",
+                business_unit_id=REFERENCE_ID,
+            ),
+            finance_args(
+                "sales_cost",
+                date_from="2026-01-01",
+                date_to="2026-07-01",
+                business_unit_id=REFERENCE_ID,
+            ),
+        )
+        expected_codes = ("period_required", "invalid_period", "period_too_large")
+        for args, expected_code in zip(invalid_periods, expected_codes, strict=True):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime._general_financial_period(args)
+            self.assertEqual(caught.exception.code, expected_code)
+
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_filter(
+                finance_args("sales_cost"),
+                runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["sales_cost"],
+            )
+        self.assertEqual(caught.exception.code, "scope_filter_required")
+
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_filter(
+                finance_args(
+                    "sales_cost",
+                    business_unit_id=REFERENCE_ID,
+                    organization_id=ITEM_ID,
+                ),
+                runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["sales_cost"],
+            )
+        self.assertEqual(caught.exception.code, "filter_unsupported")
+
+    def test_finance_virtual_routes_are_fixed_and_space_encoded(self) -> None:
+        account_url = runtime._general_virtual_url(
+            self.config,
+            runtime.GENERAL_BALANCE_SPECS["accounts"],
+            runtime.dt.date(2026, 7, 1),
+            runtime.dt.date(2026, 8, 1),
+            (("$filter", f"Account_Key eq guid'{REFERENCE_ID}'"),),
+        )
+        stock_url = runtime._general_virtual_url(
+            self.config,
+            runtime.GENERAL_BALANCE_SPECS["stock"],
+            runtime.dt.date(2026, 7, 1),
+            runtime.dt.date(2026, 8, 1),
+            (("$filter", f"Номенклатура_Key eq guid'{ITEM_ID}'"),),
+        )
+
+        self.assertIn("AccountingRegister_", account_url)
+        self.assertNotIn("Dimensions", account_url)
+        self.assertIn("%20", account_url)
+        self.assertNotIn("+", account_url)
+        self.assertIn("Dimensions=", stock_url)
+        self.assertIn(
+            "%D0%9D%D0%BE%D0%BC%D0%B5%D0%BD%D0%BA%D0%BB%D0%B0%D1%82%D1%83%D1%80%D0%B0",
+            stock_url,
+        )
+
+        unregistered = dict(runtime.GENERAL_BALANCE_SPECS["stock"])
+        unregistered["entity"] = "Catalog_Пользователи"
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_virtual_url(
+                self.config,
+                unregistered,
+                runtime.dt.date(2026, 7, 1),
+                runtime.dt.date(2026, 8, 1),
+                (),
+            )
+        self.assertEqual(caught.exception.code, "query_builder_error")
+
+    def test_account_scope_expands_only_to_fixed_debit_and_credit_fields(self) -> None:
+        filter_value, matched = runtime._general_financial_filter(
+            finance_args("account_entry", account_id=REFERENCE_ID),
+            runtime.GENERAL_FINANCIAL_RECORD_SPECS["account_entry"],
+        )
+
+        self.assertEqual(matched, ["account"])
+        self.assertIn(f"AccountDr_Key eq guid'{REFERENCE_ID}'", filter_value)
+        self.assertIn(f"AccountCr_Key eq guid'{REFERENCE_ID}'", filter_value)
+        self.assertNotIn("$", filter_value)
+        self.assertNotIn("substring", filter_value)
+
+    def test_financial_rows_are_normalized_and_sensitive_extras_never_leak(self) -> None:
+        spec = runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["payroll_accounting"]
+        row = source_record(spec["fields"])
+        row.update(
+            {
+                "Организация_Key": REFERENCE_ID,
+                "Подразделение_Key": ITEM_ID,
+                "СуммаTurnover": 123.45,
+                "ФизическоеЛицо_Key": DOCUMENT_ID,
+                "БанковскийСчет_Key": DOCUMENT_ID,
+                "НазначениеПлатежа": "must-not-leak",
+            },
+        )
+
+        normalized = runtime._general_financial_record(
+            "payroll_accounting",
+            spec,
+            row,
+            source_kind="virtual_table",
+        )
+        serialized = json.dumps(normalized, ensure_ascii=False)
+        self.assertEqual(normalized["dimensions"]["organizationId"], REFERENCE_ID)
+        self.assertEqual(normalized["dimensions"]["businessUnitId"], ITEM_ID)
+        self.assertEqual(normalized["metrics"]["amount"], 123.45)
+        self.assertNotIn(DOCUMENT_ID, serialized)
+        self.assertNotIn("Физическое", serialized)
+        self.assertNotIn("Банков", serialized)
+        self.assertNotIn("must-not-leak", serialized)
+
+        missing = dict(row)
+        missing.pop("СуммаTurnover")
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_record(
+                "payroll_accounting",
+                spec,
+                missing,
+                source_kind="virtual_table",
+            )
+        self.assertEqual(caught.exception.code, "capability_schema_changed")
+
+        changed = dict(row)
+        changed["СуммаTurnover"] = "123.45"
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_record(
+                "payroll_accounting",
+                spec,
+                changed,
+                source_kind="virtual_table",
+            )
+        self.assertEqual(caught.exception.code, "capability_schema_changed")
+
+    def test_finance_commands_cap_ignored_top_and_select_no_bank_requisites(self) -> None:
+        turnover_spec = runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["sales_cost"]
+        turnover_row = source_record(turnover_spec["fields"])
+        captured_virtual_parameters: list[tuple[str, object]] = []
+
+        def virtual_source(
+            _config: object,
+            _credentials: object,
+            _spec: object,
+            _start: object,
+            _end: object,
+            parameters: object,
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            self.assertEqual(
+                diagnostic_stage,
+                "general.financial.turnover.sales_cost.search",
+            )
+            captured_virtual_parameters.extend(parameters)
+            # Simulate a non-conforming server that ignores `$top`; the runtime
+            # must still normalize and expose no more than limit + lookahead.
+            return {"value": [dict(turnover_row) for _ in range(20)]}
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(
+                runtime,
+                "_request_general_virtual_table",
+                side_effect=virtual_source,
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            turnovers = runtime.command_general_get_financial_turnovers(
+                finance_args(
+                    "sales_cost",
+                    business_unit_id=REFERENCE_ID,
+                    limit=2,
+                ),
+            )
+        self.assertEqual(turnovers["count"], 2)
+        self.assertTrue(turnovers["pagination"]["truncated"])
+        self.assertIn(("$top", 3), captured_virtual_parameters)
+
+        bank_spec = runtime.GENERAL_FINANCIAL_RECORD_SPECS["bank_payment"]
+        bank_row = source_record(bank_spec["fields"], record_id=DOCUMENT_ID)
+        bank_row.update(
+            {
+                "БанковскийСчет_Key": REFERENCE_ID,
+                "НомерСчета": "40702810-must-not-leak",
+                "НазначениеПлатежа": "must-not-leak",
+            },
+        )
+        captured_record_parameters: list[tuple[str, object]] = []
+
+        def record_source(
+            _config: object,
+            _credentials: object,
+            entity: str,
+            parameters: object,
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            self.assertEqual(entity, bank_spec["entity"])
+            self.assertEqual(
+                diagnostic_stage,
+                "general.financial.record.bank_payment.search",
+            )
+            captured_record_parameters.extend(parameters)
+            return {"value": [bank_row]}
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(runtime, "_request_odata", side_effect=record_source),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            payments = runtime.command_general_search_financial_records(
+                finance_args(
+                    "bank_payment",
+                    business_unit_id=ITEM_ID,
+                    limit=2,
+                ),
+            )
+        query = json.dumps(captured_record_parameters, ensure_ascii=False)
+        serialized = json.dumps(payments, ensure_ascii=False)
+        self.assertNotIn("БанковскийСчет", query)
+        self.assertNotIn("НомерСчета", query)
+        self.assertNotIn("НазначениеПлатежа", query)
+        self.assertNotIn("must-not-leak", serialized)
+        self.assertNotIn("40702810", serialized)
 
     def test_entity_allowlist_and_read_only_method_guard_remain_closed(self) -> None:
         with self.assertRaisesRegex(runtime.OneCEdoError, "entity"):

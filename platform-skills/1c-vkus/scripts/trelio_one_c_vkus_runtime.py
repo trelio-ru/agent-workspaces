@@ -60,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # namespace. The backend resolves the existing 1c-edo connection id, so local
 # Basic Auth credentials remain usable without copying or migration.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.16"
+RUNTIME_VERSION = "1.0.17"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -241,6 +241,10 @@ DIAGNOSTIC_STAGES = frozenset(
                 "contract",
                 "item",
                 "warehouse",
+                "account",
+                "cash_flow_item",
+                "other_expense_item",
+                "expense_allocation_rule",
             )
             for action in ("search", "get")
         },
@@ -249,14 +253,40 @@ DIAGNOSTIC_STAGES = frozenset(
             for kind in ("purchase", "sale", "receipt", "return", "transfer")
             for action in ("search", "get", "links")
         },
+        *{
+            f"general.financial.turnover.{kind}.search"
+            for kind in (
+                "sales_cost",
+                "other_income",
+                "other_expense",
+                "financial_result",
+                "payroll_accounting",
+                "insurance_contribution",
+                "depreciation",
+                "tax_settlement",
+                "tax_penalty",
+            )
+        },
+        *{
+            f"general.financial.record.{kind}.search"
+            for kind in (
+                "account_entry",
+                "bank_receipt",
+                "bank_payment",
+            )
+        },
+        "general.balance.accounts.search",
+        "general.balance.stock.search",
     },
 )
 
 # The production broad 1C surface is intentionally frozen to the exact
 # entities and EDM field types reviewed from a development-only inventory on
-# 2026-07-26. Only fields listed here can enter a query or normalized response.
-# Banking, payment, cash, HR/payroll, contacts, binary fields and accounting
-# internals are deliberately absent even when the source entity publishes them.
+# 2026-07-28. Only fields listed here can enter a query or normalized response.
+# Contacts, binary fields, personal payroll identifiers and bank-account
+# requisites remain deliberately absent. Release 1.0.17 adds only bounded
+# normalized finance aggregates, accounting/stock balance virtual tables and
+# bank-document headers needed as source data for later governed reporting.
 #
 # The profile digest is provenance for that release review. Production does
 # not fetch the source metadata document and instead validates every returned
@@ -264,10 +294,12 @@ DIAGNOSTIC_STAGES = frozenset(
 GENERAL_PROFILE_SCHEMA_DIGEST = (
     "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
 )
-GENERAL_REGISTRY_VERSION = 2
+GENERAL_REGISTRY_VERSION = 3
 GENERAL_MAX_PAGE_SIZE = 25
 GENERAL_MAX_PAGES = 3
 GENERAL_MAX_LINES = 100
+GENERAL_MAX_FINANCIAL_PAGE_SIZE = 50
+GENERAL_MAX_FINANCIAL_PERIOD_DAYS = 93
 GENERAL_MAX_LINK_CONTRACTS = 20
 GENERAL_MAX_LINK_DOCUMENTS = 25
 GENERAL_MAX_LINK_EDO_DOCUMENTS = 25
@@ -404,6 +436,76 @@ GENERAL_REFERENCE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                 "DeletionMark": "Edm.Boolean",
             },
             "searchFields": ("Description",),
+        },
+    ),
+    "account": (
+        {
+            "entity": "ChartOfAccounts_Хозрасчетный",
+            "sourceType": "general_ledger_account",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Parent_Key": "Edm.Guid",
+                "OffBalance": "Edm.Boolean",
+                "Type": "Edm.String",
+                "УчетПоПодразделениям": "Edm.Boolean",
+                "УчетПоНаправлениямДеятельности": "Edm.Boolean",
+                "НалоговыйУчет": "Edm.Boolean",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "cash_flow_item": (
+        {
+            "entity": "Catalog_СтатьиДвиженияДенежныхСредств",
+            "sourceType": "cash_flow_item",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Parent_Key": "Edm.Guid",
+                "IsFolder": "Edm.Boolean",
+                "ВидДвиженияДенежныхСредств": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "other_expense_item": (
+        {
+            "entity": "Catalog_ПрочиеРасходы",
+            "sourceType": "other_expense_item",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Owner_Key": "Edm.Guid",
+                "Parent_Key": "Edm.Guid",
+                "IsFolder": "Edm.Boolean",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description",),
+        },
+    ),
+    "expense_allocation_rule": (
+        {
+            "entity": "Catalog_ПравилаРаспределенияРасходов",
+            "sourceType": "expense_allocation_rule",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+                "НазначениеПравила": "Edm.String",
+                "БазаРаспределения": "Edm.String",
+                "ПредставлениеПравила": "Edm.String",
+                "РаспределятьНаСтатьи": "Edm.Boolean",
+                "РаспределятьПоПодразделениям": "Edm.Boolean",
+                "ПодразделенияУказаныВручную": "Edm.Boolean",
+                "Подразделение_Key": "Edm.Guid",
+                "Устаревшее": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "ПредставлениеПравила"),
         },
     ),
 }
@@ -616,10 +718,593 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
         },
     ),
 }
+
+# These virtual-table profiles expose source data, not a P&L calculation.
+# Every route, grouping dimension, output field and caller-visible semantic key
+# is frozen from the reviewed Vkus metadata digest above. The caller supplies
+# only a bounded period and validated UUID filters; it cannot choose a
+# register, function, dimension, field or OData expression.
+GENERAL_FINANCIAL_TURNOVER_SPECS: dict[str, dict[str, Any]] = {
+    "sales_cost": {
+        "entity": "AccumulationRegister_ВыручкаИСебестоимостьПродаж",
+        "function": "Turnovers",
+        "sourceType": "sales_and_cost_turnovers",
+        "dimensions": ("Подразделение", "ХозяйственнаяОперация"),
+        "fields": {
+            "Подразделение_Key": "Edm.Guid",
+            "ХозяйственнаяОперация": "Edm.String",
+            "КоличествоTurnover": "Edm.Double",
+            "СуммаВыручкиTurnover": "Edm.Double",
+            "СуммаВыручкиБезНДСTurnover": "Edm.Double",
+            "СтоимостьTurnover": "Edm.Double",
+            "СтоимостьБезНДСTurnover": "Edm.Double",
+            "ДопРасходыTurnover": "Edm.Double",
+            "ДопРасходыБезНДСTurnover": "Edm.Double",
+            "СуммаВыручкиРеглTurnover": "Edm.Double",
+            "РасходыНаПродажуБезНДСTurnover": "Edm.Double",
+            "СуммаРучнойСкидкиTurnover": "Edm.Double",
+            "СуммаАвтоматическойСкидкиTurnover": "Edm.Double",
+        },
+        "output": {
+            "Подразделение_Key": "businessUnitId",
+            "ХозяйственнаяОперация": "operation",
+            "КоличествоTurnover": "quantity",
+            "СуммаВыручкиTurnover": "revenueWithVat",
+            "СуммаВыручкиБезНДСTurnover": "revenueWithoutVat",
+            "СтоимостьTurnover": "costWithVat",
+            "СтоимостьБезНДСTurnover": "costWithoutVat",
+            "ДопРасходыTurnover": "additionalCostWithVat",
+            "ДопРасходыБезНДСTurnover": "additionalCostWithoutVat",
+            "СуммаВыручкиРеглTurnover": "regulatedRevenue",
+            "РасходыНаПродажуБезНДСTurnover": "sellingExpenseWithoutVat",
+            "СуммаРучнойСкидкиTurnover": "manualDiscount",
+            "СуммаАвтоматическойСкидкиTurnover": "automaticDiscount",
+        },
+        "metrics": (
+            "КоличествоTurnover",
+            "СуммаВыручкиTurnover",
+            "СуммаВыручкиБезНДСTurnover",
+            "СтоимостьTurnover",
+            "СтоимостьБезНДСTurnover",
+            "ДопРасходыTurnover",
+            "ДопРасходыБезНДСTurnover",
+            "СуммаВыручкиРеглTurnover",
+            "РасходыНаПродажуБезНДСTurnover",
+            "СуммаРучнойСкидкиTurnover",
+            "СуммаАвтоматическойСкидкиTurnover",
+        ),
+        "filters": {"business_unit": ("Подразделение_Key",)},
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("business_unit",),
+    },
+    "other_income": {
+        "entity": "AccumulationRegister_ПрочиеДоходы",
+        "function": "Turnovers",
+        "sourceType": "other_income_turnovers",
+        "dimensions": (
+            "Организация",
+            "Подразделение",
+            "НаправлениеДеятельности",
+            "СтатьяДоходов",
+        ),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СтатьяДоходов_Key": "Edm.Guid",
+            "СуммаTurnover": "Edm.Double",
+            "СуммаРеглTurnover": "Edm.Double",
+            "СуммаУпрTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СтатьяДоходов_Key": "incomeItemId",
+            "СуммаTurnover": "amount",
+            "СуммаРеглTurnover": "regulatedAmount",
+            "СуммаУпрTurnover": "managementAmount",
+        },
+        "metrics": ("СуммаTurnover", "СуммаРеглTurnover", "СуммаУпрTurnover"),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "other_expense": {
+        "entity": "AccumulationRegister_ПрочиеРасходы",
+        "function": "Turnovers",
+        "sourceType": "other_expense_turnovers",
+        "dimensions": (
+            "Организация",
+            "Подразделение",
+            "НаправлениеДеятельности",
+            "СтатьяРасходов",
+        ),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "СуммаTurnover": "Edm.Double",
+            "СуммаБезНДСTurnover": "Edm.Double",
+            "СуммаРеглTurnover": "Edm.Double",
+            "СуммаУпрTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СтатьяРасходов_Key": "expenseItemId",
+            "СуммаTurnover": "amountWithVat",
+            "СуммаБезНДСTurnover": "amountWithoutVat",
+            "СуммаРеглTurnover": "regulatedAmount",
+            "СуммаУпрTurnover": "managementAmount",
+        },
+        "metrics": (
+            "СуммаTurnover",
+            "СуммаБезНДСTurnover",
+            "СуммаРеглTurnover",
+            "СуммаУпрTurnover",
+        ),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "financial_result": {
+        "entity": "AccumulationRegister_ФинансовыеРезультаты",
+        "function": "Turnovers",
+        "sourceType": "financial_result_turnovers",
+        "dimensions": (
+            "Организация",
+            "Подразделение",
+            "НаправлениеДеятельности",
+            "СтатьяДоходов",
+            "СтатьяРасходов",
+        ),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СтатьяДоходов_Key": "Edm.Guid",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "ДоходыTurnover": "Edm.Double",
+            "РасходыTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СтатьяДоходов_Key": "incomeItemId",
+            "СтатьяРасходов_Key": "expenseItemId",
+            "ДоходыTurnover": "income",
+            "РасходыTurnover": "expense",
+        },
+        "metrics": ("ДоходыTurnover", "РасходыTurnover"),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "payroll_accounting": {
+        "entity": "AccumulationRegister_НачисленияУдержанияПоСотрудникам",
+        "function": "Turnovers",
+        "sourceType": "payroll_accrual_and_withholding_turnovers",
+        # Physical person and employee are intentionally not grouping
+        # dimensions and never enter selected fields. The verified register
+        # remains useful for a pizzeria P&L because it exposes organization,
+        # business unit, expense/funding articles, operation type and amount.
+        "dimensions": (
+            "Организация",
+            "Подразделение",
+            "СтатьяФинансирования",
+            "СтатьяРасходов",
+            "НачислениеУдержание",
+        ),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "СтатьяФинансирования_Key": "Edm.Guid",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "НачислениеУдержание": "Edm.String",
+            "НачислениеУдержание_Type": "Edm.String",
+            "СуммаTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "СтатьяФинансирования_Key": "fundingItemId",
+            "СтатьяРасходов_Key": "expenseItemId",
+            "НачислениеУдержание": "accrualOrWithholdingReference",
+            "НачислениеУдержание_Type": "accrualOrWithholdingType",
+            "СуммаTurnover": "amount",
+        },
+        "metrics": ("СуммаTurnover",),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "organization_division"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "insurance_contribution": {
+        "entity": "AccumulationRegister_ИсчисленныеСтраховыеВзносы",
+        "function": "Turnovers",
+        "sourceType": "insurance_contribution_turnovers",
+        "dimensions": ("Организация",),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "ПФРПоСуммарномуТарифуTurnover": "Edm.Double",
+            "ПФРПоСуммарномуТарифуСПревышенияTurnover": "Edm.Double",
+            "ФССTurnover": "Edm.Double",
+            "ФССНесчастныеСлучаиTurnover": "Edm.Double",
+            "ФФОМСTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "ПФРПоСуммарномуТарифуTurnover": "pensionContribution",
+            "ПФРПоСуммарномуТарифуСПревышенияTurnover": "pensionContributionAboveLimit",
+            "ФССTurnover": "socialInsuranceContribution",
+            "ФССНесчастныеСлучаиTurnover": "accidentInsuranceContribution",
+            "ФФОМСTurnover": "medicalInsuranceContribution",
+        },
+        "metrics": (
+            "ПФРПоСуммарномуТарифуTurnover",
+            "ПФРПоСуммарномуТарифуСПревышенияTurnover",
+            "ФССTurnover",
+            "ФССНесчастныеСлучаиTurnover",
+            "ФФОМСTurnover",
+        ),
+        "filters": {"organization": ("Организация_Key",)},
+        "requiredAny": ("organization",),
+    },
+    "depreciation": {
+        "entity": "AccumulationRegister_АмортизацияОС",
+        "function": "Turnovers",
+        "sourceType": "fixed_asset_depreciation_turnovers",
+        "dimensions": (
+            "Организация",
+            "Подразделение",
+            "НаправлениеДеятельности",
+        ),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "АмортизацияTurnover": "Edm.Double",
+            "АмортизацияРеглTurnover": "Edm.Double",
+            "АмортизацияНУTurnover": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "АмортизацияTurnover": "depreciation",
+            "АмортизацияРеглTurnover": "regulatedDepreciation",
+            "АмортизацияНУTurnover": "taxDepreciation",
+        },
+        "metrics": (
+            "АмортизацияTurnover",
+            "АмортизацияРеглTurnover",
+            "АмортизацияНУTurnover",
+        ),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "tax_settlement": {
+        "entity": "AccumulationRegister_РасчетыПоНалогамНаЕдиномНалоговомСчете",
+        "function": "Turnovers",
+        "sourceType": "unified_tax_account_turnovers",
+        "dimensions": ("Организация", "СчетУчета", "Налог"),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "СчетУчета_Key": "Edm.Guid",
+            "Налог": "Edm.String",
+            "Налог_Type": "Edm.String",
+            "СуммаTurnover": "Edm.Double",
+            "СуммаReceipt": "Edm.Double",
+            "СуммаExpense": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "СчетУчета_Key": "accountId",
+            "Налог": "taxReference",
+            "Налог_Type": "taxReferenceType",
+            "СуммаTurnover": "amount",
+            "СуммаReceipt": "receipt",
+            "СуммаExpense": "expense",
+        },
+        "metrics": ("СуммаTurnover", "СуммаReceipt", "СуммаExpense"),
+        "filters": {"organization": ("Организация_Key",)},
+        "requiredAny": ("organization",),
+    },
+    "tax_penalty": {
+        "entity": "AccumulationRegister_РасчетыПоСанкциямНаЕдиномНалоговомСчете",
+        "function": "Turnovers",
+        "sourceType": "unified_tax_penalty_turnovers",
+        "dimensions": ("Организация", "ВидПлатежа"),
+        "fields": {
+            "Организация_Key": "Edm.Guid",
+            "ВидПлатежа": "Edm.String",
+            "СуммаTurnover": "Edm.Double",
+            "СуммаReceipt": "Edm.Double",
+            "СуммаExpense": "Edm.Double",
+        },
+        "output": {
+            "Организация_Key": "organizationId",
+            "ВидПлатежа": "paymentType",
+            "СуммаTurnover": "amount",
+            "СуммаReceipt": "receipt",
+            "СуммаExpense": "expense",
+        },
+        "metrics": ("СуммаTurnover", "СуммаReceipt", "СуммаExpense"),
+        "filters": {"organization": ("Организация_Key",)},
+        "requiredAny": ("organization",),
+    },
+}
+
+GENERAL_FINANCIAL_RECORD_SPECS: dict[str, dict[str, Any]] = {
+    "account_entry": {
+        "entity": "AccountingRegister_Хозрасчетный_RecordType",
+        "sourceType": "general_ledger_entry",
+        "dateField": "Period",
+        "stateClauses": ("Active eq true",),
+        "fields": {
+            "Recorder": "Edm.String",
+            "Recorder_Type": "Edm.String",
+            "Period": "Edm.DateTime",
+            "LineNumber": "Edm.Int64",
+            "Active": "Edm.Boolean",
+            "AccountDr_Key": "Edm.Guid",
+            "AccountCr_Key": "Edm.Guid",
+            "Организация_Key": "Edm.Guid",
+            "ПодразделениеDr_Key": "Edm.Guid",
+            "ПодразделениеCr_Key": "Edm.Guid",
+            "НаправлениеДеятельностиDr_Key": "Edm.Guid",
+            "НаправлениеДеятельностиCr_Key": "Edm.Guid",
+            "Сумма": "Edm.Double",
+            "СуммаУУ": "Edm.Double",
+            "СуммаФО": "Edm.Double",
+            "Сторно": "Edm.Boolean",
+        },
+        "output": {
+            "Recorder": "sourceDocumentReference",
+            "Recorder_Type": "sourceDocumentType",
+            "Period": "period",
+            "LineNumber": "lineNumber",
+            "Active": "active",
+            "AccountDr_Key": "debitAccountId",
+            "AccountCr_Key": "creditAccountId",
+            "Организация_Key": "organizationId",
+            "ПодразделениеDr_Key": "debitBusinessUnitId",
+            "ПодразделениеCr_Key": "creditBusinessUnitId",
+            "НаправлениеДеятельностиDr_Key": "debitBusinessDirectionId",
+            "НаправлениеДеятельностиCr_Key": "creditBusinessDirectionId",
+            "Сумма": "amount",
+            "СуммаУУ": "managementAmount",
+            "СуммаФО": "financialAmount",
+            "Сторно": "reversal",
+        },
+        "metrics": ("Сумма", "СуммаУУ", "СуммаФО"),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("ПодразделениеDr_Key", "ПодразделениеCr_Key"),
+            "account": ("AccountDr_Key", "AccountCr_Key"),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit", "account"),
+    },
+    "bank_receipt": {
+        "entity": "Document_ПоступлениеБезналичныхДенежныхСредств",
+        "sourceType": "bank_receipt",
+        "dateField": "Date",
+        "stateClauses": ("DeletionMark eq false", "Posted eq true"),
+        "fields": {
+            "Ref_Key": "Edm.Guid",
+            "Number": "Edm.String",
+            "Date": "Edm.DateTime",
+            "DeletionMark": "Edm.Boolean",
+            "Posted": "Edm.Boolean",
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "Контрагент_Key": "Edm.Guid",
+            "Партнер_Key": "Edm.Guid",
+            "Валюта_Key": "Edm.Guid",
+            "СтатьяДвиженияДенежныхСредств_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СуммаДокумента": "Edm.Double",
+            "СуммаКомиссии": "Edm.Double",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "ПеречислениеВБюджет": "Edm.Boolean",
+            "ТипНалога_Key": "Edm.Guid",
+            "ХозяйственнаяОперация": "Edm.String",
+            "ОтражатьКомиссию": "Edm.Boolean",
+        },
+        "output": {
+            "Ref_Key": "id",
+            "Number": "number",
+            "Date": "date",
+            "DeletionMark": "deleted",
+            "Posted": "posted",
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "Контрагент_Key": "counterpartyId",
+            "Партнер_Key": "partnerId",
+            "Валюта_Key": "currencyId",
+            "СтатьяДвиженияДенежныхСредств_Key": "cashFlowItemId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СуммаДокумента": "amount",
+            "СуммаКомиссии": "commissionAmount",
+            "СтатьяРасходов_Key": "expenseItemId",
+            "ПеречислениеВБюджет": "budgetPayment",
+            "ТипНалога_Key": "taxTypeId",
+            "ХозяйственнаяОперация": "operation",
+            "ОтражатьКомиссию": "commissionRecorded",
+        },
+        "metrics": ("СуммаДокумента", "СуммаКомиссии"),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+    "bank_payment": {
+        "entity": "Document_СписаниеБезналичныхДенежныхСредств",
+        "sourceType": "bank_payment",
+        "dateField": "Date",
+        "stateClauses": ("DeletionMark eq false", "Posted eq true"),
+        "fields": {
+            "Ref_Key": "Edm.Guid",
+            "Number": "Edm.String",
+            "Date": "Edm.DateTime",
+            "DeletionMark": "Edm.Boolean",
+            "Posted": "Edm.Boolean",
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "Контрагент_Key": "Edm.Guid",
+            "Партнер_Key": "Edm.Guid",
+            "Валюта_Key": "Edm.Guid",
+            "СтатьяДвиженияДенежныхСредств_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СуммаДокумента": "Edm.Double",
+            "СуммаКомиссии": "Edm.Double",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "ПеречислениеВБюджет": "Edm.Boolean",
+            "ТипНалога_Key": "Edm.Guid",
+            "ХозяйственнаяОперация": "Edm.String",
+            "ОтражатьКомиссию": "Edm.Boolean",
+        },
+        "output": {
+            "Ref_Key": "id",
+            "Number": "number",
+            "Date": "date",
+            "DeletionMark": "deleted",
+            "Posted": "posted",
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "Контрагент_Key": "counterpartyId",
+            "Партнер_Key": "partnerId",
+            "Валюта_Key": "currencyId",
+            "СтатьяДвиженияДенежныхСредств_Key": "cashFlowItemId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СуммаДокумента": "amount",
+            "СуммаКомиссии": "commissionAmount",
+            "СтатьяРасходов_Key": "expenseItemId",
+            "ПеречислениеВБюджет": "budgetPayment",
+            "ТипНалога_Key": "taxTypeId",
+            "ХозяйственнаяОперация": "operation",
+            "ОтражатьКомиссию": "commissionRecorded",
+        },
+        "metrics": ("СуммаДокумента", "СуммаКомиссии"),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit"),
+    },
+}
+
+GENERAL_BALANCE_SPECS: dict[str, dict[str, Any]] = {
+    "accounts": {
+        "entity": "AccountingRegister_Хозрасчетный",
+        "function": "BalanceAndTurnovers",
+        "sourceType": "general_ledger_balance_and_turnovers",
+        # Live 1C accepts the virtual table but returns HTTP 500 when this
+        # deployment receives an explicit accounting `Dimensions` parameter.
+        # Omitting it is the verified route and still returns the fixed regular
+        # dimensions below. `$filter`, `$top` and `$skip` remain bounded.
+        "dimensions": (),
+        "fields": {
+            "Account_Key": "Edm.Guid",
+            "Организация_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "НаправлениеДеятельности_Key": "Edm.Guid",
+            "СуммаOpeningBalance": "Edm.Double",
+            "СуммаTurnoverDr": "Edm.Double",
+            "СуммаTurnoverCr": "Edm.Double",
+            "СуммаClosingBalance": "Edm.Double",
+        },
+        "output": {
+            "Account_Key": "accountId",
+            "Организация_Key": "organizationId",
+            "Подразделение_Key": "businessUnitId",
+            "НаправлениеДеятельности_Key": "businessDirectionId",
+            "СуммаOpeningBalance": "openingBalance",
+            "СуммаTurnoverDr": "debitTurnover",
+            "СуммаTurnoverCr": "creditTurnover",
+            "СуммаClosingBalance": "closingBalance",
+        },
+        "metrics": (
+            "СуммаOpeningBalance",
+            "СуммаTurnoverDr",
+            "СуммаTurnoverCr",
+            "СуммаClosingBalance",
+        ),
+        "filters": {
+            "organization": ("Организация_Key",),
+            "business_unit": ("Подразделение_Key",),
+            "account": ("Account_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("organization", "business_unit", "account"),
+    },
+    "stock": {
+        "entity": "AccumulationRegister_ТоварыНаСкладах",
+        "function": "BalanceAndTurnovers",
+        "sourceType": "stock_balance_and_turnovers",
+        "dimensions": ("Номенклатура", "Характеристика", "Склад"),
+        "fields": {
+            "Номенклатура_Key": "Edm.Guid",
+            "Характеристика_Key": "Edm.Guid",
+            "Склад_Key": "Edm.Guid",
+            "ВНаличииOpeningBalance": "Edm.Double",
+            "ВНаличииReceipt": "Edm.Double",
+            "ВНаличииExpense": "Edm.Double",
+            "ВНаличииClosingBalance": "Edm.Double",
+        },
+        "output": {
+            "Номенклатура_Key": "itemId",
+            "Характеристика_Key": "variantId",
+            "Склад_Key": "warehouseId",
+            "ВНаличииOpeningBalance": "openingQuantity",
+            "ВНаличииReceipt": "receivedQuantity",
+            "ВНаличииExpense": "issuedQuantity",
+            "ВНаличииClosingBalance": "closingQuantity",
+        },
+        "metrics": (
+            "ВНаличииOpeningBalance",
+            "ВНаличииReceipt",
+            "ВНаличииExpense",
+            "ВНаличииClosingBalance",
+        ),
+        "filters": {
+            "warehouse": ("Склад_Key",),
+            "item": ("Номенклатура_Key",),
+        },
+        "requiredAny": ("warehouse", "item"),
+    },
+}
+
 GENERAL_ODATA_ENTITIES = frozenset(
     spec["entity"]
     for specs in (*GENERAL_REFERENCE_SPECS.values(), *GENERAL_DOCUMENT_SPECS.values())
     for spec in specs
+) | frozenset(
+    spec["entity"]
+    for spec in GENERAL_FINANCIAL_RECORD_SPECS.values()
 )
 
 
@@ -2968,16 +3653,21 @@ def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
     ordinary production results never expose internal 1C field names.
     """
 
-    source = (
-        GENERAL_REFERENCE_SPECS if section == "reference"
-        else GENERAL_DOCUMENT_SPECS
-    )
-    specs = source.get(kind)
+    registries: dict[str, Mapping[str, Any]] = {
+        "reference": GENERAL_REFERENCE_SPECS,
+        "document": GENERAL_DOCUMENT_SPECS,
+        "financial_turnover": GENERAL_FINANCIAL_TURNOVER_SPECS,
+        "financial_record": GENERAL_FINANCIAL_RECORD_SPECS,
+        "balance": GENERAL_BALANCE_SPECS,
+    }
+    source = registries.get(section)
+    specs = source.get(kind) if source is not None else None
     if specs is None:
         raise OneCEdoError(
             "capability_blocked",
             "Запрошенная capability не входит в фиксированный registry.",
         )
+    normalized_specs = specs if isinstance(specs, tuple) else (specs,)
     return {
         "registryVersion": GENERAL_REGISTRY_VERSION,
         "section": section,
@@ -2986,11 +3676,28 @@ def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
             {
                 "entity": spec["entity"],
                 "sourceType": spec["sourceType"],
+                "function": spec.get("function"),
+                "dimensions": list(spec.get("dimensions", ())),
                 "fields": dict(sorted(spec["fields"].items())),
                 "lineFields": dict(sorted(spec.get("lineFields", {}).items())),
-                "filters": list(spec.get("filters", ())),
+                "output": dict(sorted(spec.get("output", {}).items())),
+                "metrics": list(spec.get("metrics", ())),
+                "filters": (
+                    {
+                        name: list(fields)
+                        for name, fields in sorted(spec.get("filters", {}).items())
+                    }
+                    if isinstance(spec.get("filters"), dict)
+                    else list(spec.get("filters", ()))
+                ),
+                "filterSourceTypes": dict(
+                    sorted(spec.get("filterSourceTypes", {}).items()),
+                ),
+                "requiredAny": list(spec.get("requiredAny", ())),
+                "dateField": spec.get("dateField"),
+                "stateClauses": list(spec.get("stateClauses", ())),
             }
-            for spec in specs
+            for spec in normalized_specs
         ],
     }
 
@@ -3014,6 +3721,9 @@ def _general_registry_digest() -> str:
             for section, registry in (
                 ("reference", GENERAL_REFERENCE_SPECS),
                 ("document", GENERAL_DOCUMENT_SPECS),
+                ("financial_turnover", GENERAL_FINANCIAL_TURNOVER_SPECS),
+                ("financial_record", GENERAL_FINANCIAL_RECORD_SPECS),
+                ("balance", GENERAL_BALANCE_SPECS),
             )
             for kind in registry
         ],
@@ -3157,6 +3867,31 @@ def _general_reference_record(
         "contractType": _general_text(safe.get("ТипДоговора")),
         "operation": _general_text(safe.get("ХозяйственнаяОперация")),
         "approved": _normalized_boolean(safe.get("Согласован")),
+        "accountType": _general_text(safe.get("Type")),
+        "offBalance": _normalized_boolean(safe.get("OffBalance")),
+        "tracksBusinessUnits": _normalized_boolean(
+            safe.get("УчетПоПодразделениям"),
+        ),
+        "tracksBusinessDirections": _normalized_boolean(
+            safe.get("УчетПоНаправлениямДеятельности"),
+        ),
+        "taxAccounting": _normalized_boolean(safe.get("НалоговыйУчет")),
+        "cashFlowType": _general_text(
+            safe.get("ВидДвиженияДенежныхСредств"),
+        ),
+        "allocationPurpose": _general_text(safe.get("НазначениеПравила")),
+        "allocationBase": _general_text(safe.get("БазаРаспределения")),
+        "allocationDisplay": _general_text(safe.get("ПредставлениеПравила")),
+        "allocateToItems": _normalized_boolean(
+            safe.get("РаспределятьНаСтатьи"),
+        ),
+        "allocateByBusinessUnit": _normalized_boolean(
+            safe.get("РаспределятьПоПодразделениям"),
+        ),
+        "businessUnitsManual": _normalized_boolean(
+            safe.get("ПодразделенияУказаныВручную"),
+        ),
+        "obsolete": _normalized_boolean(safe.get("Устаревшее")),
         "matchedBy": matched_by,
         "source": {
             "kind": "reference",
@@ -3242,6 +3977,15 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
     all_capabilities = [
         *(("reference", kind) for kind in GENERAL_REFERENCE_SPECS),
         *(("document", kind) for kind in GENERAL_DOCUMENT_SPECS),
+        *(
+            ("financial_turnover", kind)
+            for kind in GENERAL_FINANCIAL_TURNOVER_SPECS
+        ),
+        *(
+            ("financial_record", kind)
+            for kind in GENERAL_FINANCIAL_RECORD_SPECS
+        ),
+        *(("balance", kind) for kind in GENERAL_BALANCE_SPECS),
     ]
     schema = _general_signed_contract(all_capabilities)
     references = [
@@ -3265,19 +4009,60 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
         }
         for kind, specs in GENERAL_DOCUMENT_SPECS.items()
     ]
+    financial_turnovers = [
+        {
+            "kind": kind,
+            "status": "supported",
+            "type": spec["sourceType"],
+            "filters": list(spec["filters"]),
+            "filterSourceTypes": dict(spec.get("filterSourceTypes", {})),
+            "periodRequired": True,
+            "sensitiveConfirmationRequired": True,
+            "capabilityDigest": schema["capabilityDigests"][
+                f"financial_turnover.{kind}"
+            ],
+        }
+        for kind, spec in GENERAL_FINANCIAL_TURNOVER_SPECS.items()
+    ]
+    financial_records = [
+        {
+            "kind": kind,
+            "status": "supported",
+            "type": spec["sourceType"],
+            "filters": list(spec["filters"]),
+            "filterSourceTypes": dict(spec.get("filterSourceTypes", {})),
+            "periodRequired": True,
+            "sensitiveConfirmationRequired": True,
+            "capabilityDigest": schema["capabilityDigests"][
+                f"financial_record.{kind}"
+            ],
+        }
+        for kind, spec in GENERAL_FINANCIAL_RECORD_SPECS.items()
+    ]
+    balances = [
+        {
+            "kind": kind,
+            "status": "supported",
+            "type": spec["sourceType"],
+            "filters": list(spec["filters"]),
+            "filterSourceTypes": dict(spec.get("filterSourceTypes", {})),
+            "periodRequired": True,
+            "sensitiveConfirmationRequired": True,
+            "capabilityDigest": schema["capabilityDigests"][
+                f"balance.{kind}"
+            ],
+        }
+        for kind, spec in GENERAL_BALANCE_SPECS.items()
+    ]
     return {
         "registryVersion": GENERAL_REGISTRY_VERSION,
         "schema": schema,
         "sections": {
             "references": references,
             "documents": documents,
-            "balances": [
-                {
-                    "kind": "stock",
-                    "status": "unsupported",
-                    "reason": "needs_custom_endpoint",
-                },
-            ],
+            "financialTurnovers": financial_turnovers,
+            "financialRecords": financial_records,
+            "balances": balances,
             "links": [
                 {
                     "kind": "business_unit",
@@ -3290,10 +4075,19 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
         },
         "limits": {
             "maxPageSize": min(config.max_rows, GENERAL_MAX_PAGE_SIZE),
+            "maxFinancialPageSize": min(
+                config.max_rows,
+                GENERAL_MAX_FINANCIAL_PAGE_SIZE,
+            ),
             "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
             "maxLines": GENERAL_MAX_LINES,
+            "maxFinancialPeriodDays": GENERAL_MAX_FINANCIAL_PERIOD_DAYS,
             "requestTimeoutSeconds": config.request_timeout_seconds,
             "responseBytes": MAX_ODATA_RESPONSE_BYTES,
+        },
+        "reporting": {
+            "pnlAssembly": False,
+            "sourceDataOnly": True,
         },
         "readOnly": True,
     }
@@ -3800,14 +4594,535 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _general_require_sensitive(args: argparse.Namespace) -> None:
+    """Require an explicit per-command basis before returning finance data.
+
+    The flag is intentionally not persisted. A later agent may have a
+    different task and must independently establish that reading financial or
+    payroll aggregates is necessary for the user's request.
+    """
+
+    if not bool(getattr(args, "include_sensitive", False)):
+        raise OneCEdoError(
+            "sensitive_data_confirmation_required",
+            "Для финансовых данных нужен явный --include-sensitive в рамках текущей задачи.",
+        )
+
+
+def _general_financial_period(args: argparse.Namespace) -> tuple[dt.date, dt.date]:
+    """Return inclusive start and exclusive end for a bounded finance period."""
+
+    date_from = _general_parse_date(args.date_from, "date-from")
+    date_to = _general_parse_date(args.date_to, "date-to")
+    if date_from is None or date_to is None:
+        raise OneCEdoError(
+            "period_required",
+            "Для финансовых данных обязательны date-from и date-to.",
+        )
+    if date_from > date_to:
+        raise OneCEdoError(
+            "invalid_period",
+            "date-from не может быть позже date-to.",
+        )
+    if (date_to - date_from).days + 1 > GENERAL_MAX_FINANCIAL_PERIOD_DAYS:
+        raise OneCEdoError(
+            "period_too_large",
+            (
+                "Период финансового запроса не может превышать "
+                f"{GENERAL_MAX_FINANCIAL_PERIOD_DAYS} календарных дней."
+            ),
+        )
+    return date_from, date_to + dt.timedelta(days=1)
+
+
+def _general_financial_page(
+    args: argparse.Namespace,
+    config: CompanyConfig,
+) -> tuple[int, int]:
+    """Validate finance pagination against both company and package limits."""
+
+    page = int(args.page)
+    limit = int(args.limit)
+    max_pages = min(config.max_pages, GENERAL_MAX_PAGES)
+    max_limit = min(config.max_rows, GENERAL_MAX_FINANCIAL_PAGE_SIZE)
+    if page < 1 or page > max_pages:
+        raise OneCEdoError(
+            "page_out_of_range",
+            f"page должна быть от 1 до {max_pages}.",
+        )
+    if limit < 1 or limit > max_limit:
+        raise OneCEdoError(
+            "limit_out_of_range",
+            f"limit должен быть от 1 до {max_limit}.",
+        )
+    return page, limit
+
+
+def _general_financial_filter(
+    args: argparse.Namespace,
+    spec: Mapping[str, Any],
+) -> tuple[str, list[str]]:
+    """Build one fixed UUID-only scope filter for a finance source.
+
+    A caller can choose values but cannot introduce a field, operator or OData
+    fragment. Multi-field concepts such as debit/credit account are expanded
+    from the signed registry and joined with OR inside one bounded clause.
+    """
+
+    requested = {
+        "organization": str(getattr(args, "organization_id", "") or ""),
+        "business_unit": str(getattr(args, "business_unit_id", "") or ""),
+        "account": str(getattr(args, "account_id", "") or ""),
+        "warehouse": str(getattr(args, "warehouse_id", "") or ""),
+        "item": str(getattr(args, "item_id", "") or ""),
+    }
+    supported_filters = spec.get("filters", {})
+    unsupported = [
+        name
+        for name, value in requested.items()
+        if value and name not in supported_filters
+    ]
+    if unsupported:
+        raise OneCEdoError(
+            "filter_unsupported",
+            f"Фильтр {unsupported[0]} не поддержан для этого финансового источника.",
+        )
+    required_any = tuple(spec.get("requiredAny", ()))
+    if required_any and not any(requested.get(name) for name in required_any):
+        public_labels = {
+            "organization": "organization-id",
+            "business_unit": "business-unit-id",
+            "account": "account-id",
+            "warehouse": "warehouse-id",
+            "item": "item-id",
+        }
+        choices = ", ".join(public_labels[name] for name in required_any)
+        raise OneCEdoError(
+            "scope_filter_required",
+            f"Нужен хотя бы один ограничивающий фильтр: {choices}.",
+        )
+
+    clauses: list[str] = []
+    matched: list[str] = []
+    for name, raw_value in requested.items():
+        if not raw_value:
+            continue
+        fields = tuple(supported_filters[name])
+        reference = _uuid(raw_value, f"{name} id")
+        alternatives = " or ".join(
+            f"{field} eq guid'{reference}'"
+            for field in fields
+        )
+        clauses.append(f"({alternatives})")
+        matched.append(name)
+    return " and ".join(clauses), matched
+
+
+def _general_virtual_url(
+    config: CompanyConfig,
+    spec: Mapping[str, Any],
+    start: dt.date,
+    end_exclusive: dt.date,
+    parameters: Iterable[tuple[str, str | int]],
+) -> str:
+    """Build only a reviewed finance virtual-table route.
+
+    Unlike `_odata_url`, this path contains function parameters. The complete
+    entity/function/dimension tuple must match a signed spec before it is
+    encoded, preventing this helper from becoming a generic path escape hatch.
+    """
+
+    signature = (
+        spec.get("entity"),
+        spec.get("function"),
+        tuple(spec.get("dimensions", ())),
+    )
+    allowed_signatures = {
+        (
+            candidate["entity"],
+            candidate["function"],
+            tuple(candidate.get("dimensions", ())),
+        )
+        for candidate in (
+            *GENERAL_FINANCIAL_TURNOVER_SPECS.values(),
+            *GENERAL_BALANCE_SPECS.values(),
+        )
+    }
+    if signature not in allowed_signatures:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний virtual-table route не входит в подписанный registry.",
+        )
+
+    start_literal = f"datetime'{start.isoformat()}T00:00:00'"
+    end_literal = f"datetime'{end_exclusive.isoformat()}T00:00:00'"
+    function_parameters = [
+        f"StartPeriod={start_literal}",
+        f"EndPeriod={end_literal}",
+    ]
+    dimensions = tuple(spec.get("dimensions", ()))
+    if dimensions:
+        function_parameters.append(f"Dimensions='{','.join(dimensions)}'")
+    route = (
+        f"{spec['entity']}/{spec['function']}"
+        f"({','.join(function_parameters)})"
+    )
+    encoded_route = urllib.parse.quote(route, safe="_/'(),=:")
+    query = _odata_query(parameters)
+    return f"{config.odata_base_url}{encoded_route}?{query}"
+
+
+def _request_general_virtual_table(
+    config: CompanyConfig,
+    credentials: Credentials,
+    spec: Mapping[str, Any],
+    start: dt.date,
+    end_exclusive: dt.date,
+    parameters: Iterable[tuple[str, str | int]],
+    *,
+    diagnostic_stage: str,
+) -> dict[str, Any]:
+    """Read one fixed virtual table with the standard response-size guard."""
+
+    url = _general_virtual_url(
+        config,
+        spec,
+        start,
+        end_exclusive,
+        parameters,
+    )
+    response = _http_open(
+        "GET",
+        url,
+        credentials=credentials,
+        timeout=config.request_timeout_seconds,
+        x_odata=_require_x_odata(),
+        diagnostic_stage=diagnostic_stage,
+    )
+    with response:
+        raw = _read_limited(response, MAX_ODATA_RESPONSE_BYTES)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула ответ, не соответствующий подписанному source contract.",
+        ) from error
+    if not isinstance(value, dict):
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "1С вернула ответ, не соответствующий подписанному source contract.",
+        )
+    return value
+
+
+def _general_financial_value(
+    value: Any,
+    expected_type: str,
+    public_label: str,
+) -> Any:
+    """Normalize one already-validated scalar into the public finance schema."""
+
+    if expected_type == "Edm.Guid":
+        return _general_uuid_value(value, public_label)
+    if expected_type == "Edm.String":
+        return _general_text(value)
+    if expected_type == "Edm.Boolean":
+        return _normalized_boolean(value)
+    if expected_type == "Edm.DateTime":
+        return _normalized_1c_datetime(value, field_label=public_label)
+    if expected_type == "Edm.Double":
+        return _general_number(value)
+    if expected_type == "Edm.Int64":
+        return _general_integer(value)
+    raise OneCEdoError(
+        "query_builder_error",
+        "Подписанный finance registry содержит неподдержанный scalar type.",
+    )
+
+
+def _general_financial_record(
+    kind: str,
+    spec: Mapping[str, Any],
+    raw: dict[str, Any],
+    *,
+    source_kind: str,
+) -> dict[str, Any]:
+    """Return only semantic fields from one validated financial source row."""
+
+    fields = spec["fields"]
+    _validate_general_source_record(raw, fields)
+    safe = _safe_selected_record(raw, fields)
+    metric_fields = frozenset(spec.get("metrics", ()))
+    dimensions: dict[str, Any] = {}
+    metrics: dict[str, Any] = {}
+    for source_field, public_label in spec["output"].items():
+        normalized = _general_financial_value(
+            safe.get(source_field),
+            fields[source_field],
+            public_label,
+        )
+        target = metrics if source_field in metric_fields else dimensions
+        target[public_label] = normalized
+    return {
+        "kind": kind,
+        "type": spec["sourceType"],
+        "dimensions": dimensions,
+        "metrics": metrics,
+        "source": {
+            "kind": source_kind,
+            "type": spec["sourceType"],
+        },
+    }
+
+
+def _general_financial_result(
+    *,
+    kind: str,
+    rows: list[dict[str, Any]],
+    page: int,
+    limit: int,
+    start: dt.date,
+    end_exclusive: dt.date,
+    matched_by: list[str],
+    schema: dict[str, Any],
+    config: CompanyConfig,
+) -> dict[str, Any]:
+    """Build the stable bounded envelope shared by all finance commands."""
+
+    visible = rows[:limit]
+    return {
+        "kind": kind,
+        "rows": visible,
+        "count": len(visible),
+        "period": {
+            "dateFrom": start.isoformat(),
+            "dateTo": (end_exclusive - dt.timedelta(days=1)).isoformat(),
+        },
+        "matchedBy": ["period", *matched_by],
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "truncated": len(rows) > limit,
+        },
+        "schema": schema,
+        "limits": {
+            "maxPeriodDays": GENERAL_MAX_FINANCIAL_PERIOD_DAYS,
+            "maxPageSize": min(
+                config.max_rows,
+                GENERAL_MAX_FINANCIAL_PAGE_SIZE,
+            ),
+            "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
+        },
+        "readOnly": True,
+    }
+
+
+def command_general_get_financial_turnovers(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Read a bounded aggregate register; never calculate a P&L."""
+
+    _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    spec = GENERAL_FINANCIAL_TURNOVER_SPECS[kind]
+    start, end_exclusive = _general_financial_period(args)
+    page, limit = _general_financial_page(args, config)
+    filter_value, matched_by = _general_financial_filter(args, spec)
+    dimension_fields = [
+        field for field in spec["fields"] if field not in spec["metrics"]
+    ]
+    parameters: list[tuple[str, str | int]] = [
+        ("$select", _selected_fields(spec["fields"])),
+    ]
+    if filter_value:
+        parameters.append(("$filter", filter_value))
+    if dimension_fields:
+        parameters.append(
+            ("$orderby", ",".join(f"{field} asc" for field in dimension_fields)),
+        )
+    parameters.extend([
+        ("$skip", (page - 1) * limit),
+        ("$top", limit + 1),
+    ])
+    schema = _general_signed_contract((("financial_turnover", kind),))
+    try:
+        raw_rows = _odata_rows(
+            _request_general_virtual_table(
+                config,
+                credentials,
+                spec,
+                start,
+                end_exclusive,
+                parameters,
+                diagnostic_stage=f"general.financial.turnover.{kind}.search",
+            ),
+        )
+        rows = [
+            _general_financial_record(
+                kind,
+                spec,
+                raw,
+                source_kind="virtual_table",
+            )
+            for raw in raw_rows[:limit + 1]
+        ]
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return _general_financial_result(
+        kind=kind,
+        rows=rows,
+        page=page,
+        limit=limit,
+        start=start,
+        end_exclusive=end_exclusive,
+        matched_by=matched_by,
+        schema=schema,
+        config=config,
+    )
+
+
+def command_general_search_financial_records(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Read bounded ledger entries or bank-document headers."""
+
+    _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    spec = GENERAL_FINANCIAL_RECORD_SPECS[kind]
+    start, end_exclusive = _general_financial_period(args)
+    page, limit = _general_financial_page(args, config)
+    scope_filter, matched_by = _general_financial_filter(args, spec)
+    date_field = str(spec["dateField"])
+    clauses = [
+        *spec.get("stateClauses", ()),
+        f"{date_field} ge datetime'{start.isoformat()}T00:00:00'",
+        f"{date_field} lt datetime'{end_exclusive.isoformat()}T00:00:00'",
+    ]
+    if scope_filter:
+        clauses.append(scope_filter)
+    schema = _general_signed_contract((("financial_record", kind),))
+    try:
+        raw_rows = _odata_rows(
+            _request_odata(
+                config,
+                credentials,
+                spec["entity"],
+                (
+                    ("$select", _selected_fields(spec["fields"])),
+                    (
+                        "$filter",
+                        " and ".join(f"({clause})" for clause in clauses),
+                    ),
+                    ("$orderby", f"{date_field} desc"),
+                    ("$skip", (page - 1) * limit),
+                    ("$top", limit + 1),
+                ),
+                diagnostic_stage=f"general.financial.record.{kind}.search",
+            ),
+        )
+        rows = [
+            _general_financial_record(
+                kind,
+                spec,
+                raw,
+                source_kind=(
+                    "register_record"
+                    if kind == "account_entry"
+                    else "document"
+                ),
+            )
+            for raw in raw_rows[:limit + 1]
+        ]
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return _general_financial_result(
+        kind=kind,
+        rows=rows,
+        page=page,
+        limit=limit,
+        start=start,
+        end_exclusive=end_exclusive,
+        matched_by=matched_by,
+        schema=schema,
+        config=config,
+    )
+
+
+def command_general_get_balance_and_turnovers(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Read a verified bounded accounting or stock balance virtual table."""
+
+    _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
+    kind = str(args.kind)
+    spec = GENERAL_BALANCE_SPECS[kind]
+    start, end_exclusive = _general_financial_period(args)
+    page, limit = _general_financial_page(args, config)
+    filter_value, matched_by = _general_financial_filter(args, spec)
+    dimension_fields = [
+        field for field in spec["fields"] if field not in spec["metrics"]
+    ]
+    parameters: list[tuple[str, str | int]] = [
+        ("$select", _selected_fields(spec["fields"])),
+        ("$filter", filter_value),
+        ("$orderby", ",".join(f"{field} asc" for field in dimension_fields)),
+        ("$skip", (page - 1) * limit),
+        ("$top", limit + 1),
+    ]
+    schema = _general_signed_contract((("balance", kind),))
+    try:
+        raw_rows = _odata_rows(
+            _request_general_virtual_table(
+                config,
+                credentials,
+                spec,
+                start,
+                end_exclusive,
+                parameters,
+                diagnostic_stage=f"general.balance.{kind}.search",
+            ),
+        )
+        rows = [
+            _general_financial_record(
+                kind,
+                spec,
+                raw,
+                source_kind="virtual_table",
+            )
+            for raw in raw_rows[:limit + 1]
+        ]
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return _general_financial_result(
+        kind=kind,
+        rows=rows,
+        page=page,
+        limit=limit,
+        start=start,
+        end_exclusive=end_exclusive,
+        matched_by=matched_by,
+        schema=schema,
+        config=config,
+    )
+
+
 def command_general_get_balances(args: argparse.Namespace) -> dict[str, Any]:
-    # The standard publication exposes no verified bounded virtual balance
-    # table for this deployment.  Movements must never be summed as a fake
-    # stock balance.
+    # Retain the old command so existing agents fail safely with an actionable
+    # transition instead of silently changing a previously unsupported shape.
     return {
         "kind": str(args.kind),
         "status": "unsupported",
-        "reason": "needs_custom_endpoint",
+        "reason": "use_get_balance_and_turnovers",
         "balances": [],
         "readOnly": True,
     }
@@ -4194,6 +5509,48 @@ def build_general_parser() -> argparse.ArgumentParser:
     get_document.add_argument("--include-lines", action="store_true")
     get_document.add_argument("--line-limit", type=int, default=50)
     get_document.set_defaults(handler=command_general_get_document)
+
+    def add_financial_arguments(
+        command: argparse.ArgumentParser,
+        kinds: Iterable[str],
+    ) -> None:
+        """Attach the same bounded scope contract to every finance command."""
+
+        command.add_argument("--kind", choices=tuple(kinds), required=True)
+        command.add_argument("--date-from", required=True)
+        command.add_argument("--date-to", required=True)
+        command.add_argument("--organization-id", default="")
+        command.add_argument("--business-unit-id", default="")
+        command.add_argument("--account-id", default="")
+        command.add_argument("--warehouse-id", default="")
+        command.add_argument("--item-id", default="")
+        command.add_argument("--page", type=int, default=1)
+        command.add_argument("--limit", type=int, default=25)
+        command.add_argument("--include-sensitive", action="store_true")
+
+    financial_turnovers = subparsers.add_parser("get-financial-turnovers")
+    add_financial_arguments(
+        financial_turnovers,
+        GENERAL_FINANCIAL_TURNOVER_SPECS,
+    )
+    financial_turnovers.set_defaults(
+        handler=command_general_get_financial_turnovers,
+    )
+
+    financial_records = subparsers.add_parser("search-financial-records")
+    add_financial_arguments(
+        financial_records,
+        GENERAL_FINANCIAL_RECORD_SPECS,
+    )
+    financial_records.set_defaults(
+        handler=command_general_search_financial_records,
+    )
+
+    balance_turnovers = subparsers.add_parser("get-balance-and-turnovers")
+    add_financial_arguments(balance_turnovers, GENERAL_BALANCE_SPECS)
+    balance_turnovers.set_defaults(
+        handler=command_general_get_balance_and_turnovers,
+    )
 
     balances = subparsers.add_parser("get-balances")
     balances.add_argument("--kind", choices=["stock"], required=True)
