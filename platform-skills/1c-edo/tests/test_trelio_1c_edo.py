@@ -103,7 +103,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         return identity, config, credentials
 
     def test_browser_connect_release_and_cli_contract(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.15")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.16")
 
         default_args = MODULE.build_parser().parse_args(["connect"])
         terminal_args = MODULE.build_parser().parse_args(
@@ -1438,6 +1438,276 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertEqual(
             MODULE.load_access_state(identity, config)["status"],
             "needs_reconnect",
+        )
+
+    def test_session_019fa89f_structured_filters_do_not_scan_recent_window(self) -> None:
+        """Regression for the July addenda search that stopped at 3 × 50 rows.
+
+        The target date was weeks older than the recent window and its document
+        was not linked through the expected contract. The new path must put the
+        date, counterparty and exact document number directly into the server
+        filter instead of relying on either recent pagination or contract
+        traversal.
+        """
+
+        self.store_connected_credentials()
+        dodo_counterparty_id = "b88a7861-30f7-11e8-baa2-38d547b779c5"
+        seen_document_filter = ""
+
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            nonlocal seen_document_filter
+            query = dict(parameters)
+            if entity == MODULE.DOCUMENT_ENTITIES["incoming"]:
+                self.assertEqual(
+                    diagnostic_stage,
+                    "search.documents.incoming.structured",
+                )
+                seen_document_filter = str(query["$filter"])
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": DOCUMENT_ID,
+                            "Number": "00000062001",
+                            "Date": "2026-07-05T12:30:00",
+                            "ДатаДокумента": "2026-07-03T00:00:00",
+                            "Контрагент": dodo_counterparty_id,
+                            "НомерДокумента": "16143",
+                        },
+                    ],
+                }
+            if entity == MODULE.STATUS_REGISTER_ENTITY:
+                return {"value": []}
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        args = argparse.Namespace(
+            direction="incoming",
+            query="",
+            exact=False,
+            received_from="2026-07-03",
+            received_to="2026-07-06",
+            document_date_from="",
+            document_date_to="",
+            counterparty_id=dodo_counterparty_id,
+            counterparty_name="",
+            contract_id="",
+            contract_number="",
+            organization_id="",
+            document_number="16143",
+        )
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            result = MODULE.command_search_documents(args)
+
+        self.assertEqual(result["count"], 1)
+        self.assertIn(
+            "Date ge datetime'2026-07-03T00:00:00'",
+            seen_document_filter,
+        )
+        self.assertIn(
+            "Date lt datetime'2026-07-07T00:00:00'",
+            seen_document_filter,
+        )
+        self.assertIn(
+            f"Контрагент eq cast(guid'{dodo_counterparty_id}', "
+            f"'{MODULE.COUNTERPARTY_ENTITY}')",
+            seen_document_filter,
+        )
+        self.assertIn("НомерДокумента eq '16143'", seen_document_filter)
+        self.assertNotIn("substringof", seen_document_filter)
+        self.assertEqual(result["coverage"]["newest"], "2026-07-05T12:30:00")
+        self.assertFalse(result["coverage"]["truncated"])
+
+    def test_exact_query_uses_equality_and_date_range_is_bounded(self) -> None:
+        self.store_connected_credentials()
+        filters: list[str] = []
+
+        def fake_request(
+            _config,
+            _credentials,
+            _entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertIn(diagnostic_stage, MODULE.DIAGNOSTIC_STAGES)
+            query = dict(parameters)
+            if "$filter" in query:
+                filters.append(str(query["$filter"]))
+            return {"value": []}
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            MODULE.command_search_documents(
+                argparse.Namespace(
+                    direction="incoming",
+                    query="16143",
+                    exact=True,
+                ),
+            )
+        self.assertTrue(filters)
+        self.assertTrue(all("substringof" not in value for value in filters))
+        self.assertTrue(any("Номер eq '16143'" in value for value in filters))
+        self.assertTrue(
+            any("НомерДокумента eq '16143'" in value for value in filters),
+        )
+
+        with self.assertRaisesRegex(MODULE.OneCEdoError, "93"):
+            MODULE._parse_date_range(
+                "2026-01-01",
+                "2026-04-04",
+                label="получения/отправки",
+            )
+
+    def test_search_files_resolves_new_and_old_chains_without_recent_scan(self) -> None:
+        self.store_connected_credentials()
+        old_file_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        calls: list[tuple[str, str]] = []
+
+        def fake_request(
+            _config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            calls.append((entity, diagnostic_stage))
+            query = dict(parameters)
+            if entity == MODULE.NEW_FILE_ENTITY:
+                self.assertIn("substringof", str(query["$filter"]))
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": FILE_ID,
+                            "Description": (
+                                "21_2_Доп_соглашение_к_ДКК_536.pdf"
+                            ),
+                            "ВладелецФайла": DOCUMENT_ID,
+                            "ВладелецФайла_Type": (
+                                MODULE.DOCUMENT_ENTITIES["incoming"]
+                            ),
+                            "ПодписанЭП": True,
+                        },
+                    ],
+                }
+            if entity == MODULE.OLD_FILE_ENTITY:
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": old_file_id,
+                            "Description": (
+                                "21_2_Доп_соглашение_к_ДКК_536.docx"
+                            ),
+                            "ВладелецФайла_Key": MESSAGE_ID,
+                            "ПодписанЭП": False,
+                        },
+                    ],
+                }
+            if (
+                entity == MODULE.OLD_MESSAGE_ENTITY
+                and diagnostic_stage == "search.files.old.messages"
+            ):
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": MESSAGE_ID,
+                            "ЭлектронныйДокумент": OUTGOING_DOCUMENT_ID,
+                            "ЭлектронныйДокумент_Type": (
+                                "StandardODATA."
+                                f"{MODULE.DOCUMENT_ENTITIES['outgoing']}"
+                            ),
+                        },
+                    ],
+                }
+            if entity == MODULE.DOCUMENT_ENTITIES["incoming"]:
+                self.assertIn(DOCUMENT_ID, str(query["$filter"]))
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": DOCUMENT_ID,
+                            "Date": "2026-07-05T12:30:00",
+                        },
+                    ],
+                }
+            if entity == MODULE.DOCUMENT_ENTITIES["outgoing"]:
+                self.assertIn(OUTGOING_DOCUMENT_ID, str(query["$filter"]))
+                return {
+                    "value": [
+                        {
+                            "Ref_Key": OUTGOING_DOCUMENT_ID,
+                            "Date": "2026-07-06T09:15:00",
+                        },
+                    ],
+                }
+            if entity == MODULE.STATUS_REGISTER_ENTITY:
+                return {"value": []}
+            raise AssertionError(f"unexpected entity: {entity}")
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            result = MODULE.command_search_files(
+                argparse.Namespace(
+                    direction="both",
+                    filename="21_2_Доп_соглашение",
+                    exact=False,
+                ),
+            )
+
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["documentCount"], 2)
+        self.assertEqual(
+            {item["scheme"] for item in result["matches"]},
+            {"new", "old"},
+        )
+        self.assertEqual(
+            {
+                item.get("messageId")
+                for item in result["matches"]
+                if item["scheme"] == "old"
+            },
+            {MESSAGE_ID},
+        )
+        self.assertFalse(
+            any(stage.endswith(".recent") for _entity, stage in calls),
+        )
+        self.assertEqual(result["coverage"]["newest"], "2026-07-06T09:15:00")
+
+    def test_coverage_reports_unknown_has_more_at_exact_bounded_window(self) -> None:
+        _, _config, credentials = self.store_connected_credentials()
+        os.environ["TRELIO_SKILL_CONNECTION_CONFIG_JSON"] = json.dumps(
+            company_config(maxRows=2, maxPages=1),
+        )
+        config = MODULE.load_company_config()
+        coverage: list[dict[str, object]] = []
+        rows = [
+            {"Ref_Key": DOCUMENT_ID},
+            {"Ref_Key": OUTGOING_DOCUMENT_ID},
+        ]
+        with mock.patch.object(
+            MODULE,
+            "_request_odata",
+            return_value={"value": rows},
+        ):
+            result = MODULE._bounded_odata_rows(
+                config,
+                credentials,
+                MODULE.DOCUMENT_ENTITIES["incoming"],
+                parameters=(("$orderby", "Date desc"),),
+                limit=2,
+                diagnostic_stage="search.documents.incoming.recent",
+                coverage=coverage,
+            )
+
+        self.assertEqual(len(result), 2)
+        self.assertTrue(coverage[0]["truncated"])
+        self.assertIsNone(coverage[0]["hasMore"])
+        self.assertEqual(
+            coverage[0]["reason"],
+            "bounded_window_exhausted",
         )
 
     def test_forget_credentials_does_not_echo_secret(self) -> None:

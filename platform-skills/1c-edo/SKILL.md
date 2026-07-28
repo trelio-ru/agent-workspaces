@@ -76,9 +76,9 @@ For the current active Agent Run:
    environment.
 
 The secret is needed for `connect`, `doctor`, `search-documents`,
-`get-document` and `list-files`. `download-file` still uses the same approved
-secret-exec wrapper for a uniform one-use execution boundary, although the
-file endpoint itself receives only personal Basic Auth.
+`search-files`, `get-document` and `list-files`. `download-file` still uses the
+same approved secret-exec wrapper for a uniform one-use execution boundary,
+although the file endpoint itself receives only personal Basic Auth.
 
 The runtime handles HTTP 429 itself for its idempotent GET/HEAD requests: it
 honors a valid `Retry-After`, otherwise uses bounded exponential backoff with
@@ -90,15 +90,37 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 Use these runtime commands:
 
 - `search-documents --direction incoming|outgoing|both [--query TEXT]`
-  without a query returns a bounded recent list. With a query it first searches
-  the fixed business-object and contract fields, follows only the confirmed
-  `Catalog_СтруктураПредприятия` (`Подразделение_Key`) or business-direction →
-  contract → `ДоговорКонтрагента` relation, and merges that result with fixed
-  direct document-card text matches. `Catalog_ПодразделенияОрганизаций` is
-  still a searchable business-object catalog, but its UUID is not substituted
-  for the separate `Catalog_СтруктураПредприятия` relation.
-  Results include normalized `businessObjects`, `contracts`, document
-  `matchedBy` reasons and the effective limits. Every document also contains:
+  without any search criteria returns a bounded recent list. Structured
+  criteria are applied server-side and do not scan only the recent window:
+  - `--received-from YYYY-MM-DD --received-to YYYY-MM-DD` filters the system
+    `Date` (received for incoming, sent for outgoing);
+  - `--document-date-from YYYY-MM-DD --document-date-to YYYY-MM-DD` filters the
+    separate source-document date;
+  - `--counterparty-id UUID` or `--counterparty-name TEXT`;
+  - `--contract-id UUID` or exact `--contract-number TEXT`;
+  - `--organization-id UUID`;
+  - exact `--document-number TEXT`.
+  Each date pair is inclusive and limited to 93 days. Both endpoints of a pair
+  are required. `--counterparty-name` first resolves a bounded set of
+  `Catalog_Контрагенты` UUIDs and never drops the filter when no match exists.
+  `--exact` changes `--query` and name matching from substring to equality; use
+  it or an exact number option when a short number such as `16143` must not
+  match a longer unrelated value.
+  With `--query`, the runtime still searches the fixed business-object and
+  contract fields, follows only the confirmed `Catalog_СтруктураПредприятия`
+  (`Подразделение_Key`) or business-direction → contract →
+  `ДоговорКонтрагента` relation, and merges that result with fixed direct
+  document-card matches. `Catalog_ПодразделенияОрганизаций` is searchable but
+  its UUID is not substituted for the separate
+  `Catalog_СтруктураПредприятия` relation.
+  Results include normalized `counterparties`, `businessObjects`, `contracts`,
+  document `matchedBy` reasons, effective limits and `coverage`.
+  `coverage.truncated=true` means at least one bounded route exhausted its
+  window. `coverage.hasMore=true` is returned only when the server proved extra
+  rows; `null` means the window was full but an exact remaining count is not
+  available. `newest`, `oldest`, `truncationCause` and `truncationStages`
+  identify the returned date span and limiting route. Every document also
+  contains:
   - `signature.isSigned`, `signature.signedAt` and
     `signature.basis=document_signing_date`, derived only from the published
     document field `ДатаПодписания`; the empty/minimum 1C timestamp means
@@ -119,6 +141,15 @@ Use these runtime commands:
     used.
   The runtime escapes OData string literals itself; never pre-escape the text
   or add OData syntax.
+- `search-files --direction incoming|outgoing|both --filename TEXT` searches
+  `Description` in both fixed attachment catalogs. It resolves a new file
+  directly through its composite owner and an old file through its exact
+  `Document_СообщениеЭДО`, then fetches only those document UUIDs. The command
+  accepts the same `--exact`, date, counterparty, contract, organization and
+  document-number criteria as `search-documents`. Each match returns the
+  normalized document ID/card and file ID/card; old-chain matches also return
+  `messageId`. This is the preferred route when the user knows a PDF/DOCX
+  filename or a stable fragment of it.
 - `get-document --direction incoming|outgoing --document-id UUID` retrieves
   one exact document.
 - `list-files --direction incoming|outgoing --document-id UUID` follows both

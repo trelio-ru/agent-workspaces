@@ -212,7 +212,17 @@ Trelio-монорепозитории быть не должно.
   самостоятельный EDO runtime разрешает только фиксированные GET/HEAD цепочки
   новой и старой схемы ЭДО. Начиная с patch `1.0.13`, его package снова
   основан на проверенном release `1.0.6` / runtime `1.0.5` и не содержит
-  broad handlers, capability registry или metadata cache.
+  broad handlers, capability registry или metadata cache. Patch `1.0.16`
+  добавляет server-side structured search по парным диапазонам `Date` и
+  `ДатаДокумента` не больше 93 дней, exact UUID/номерным фильтрам и
+  разрешённому по имени `Catalog_Контрагенты`; `--exact` исключает ложные
+  substring-совпадения коротких номеров. Отдельный `search-files` ищет
+  `Description` в фиксированных new/old attachment catalogs, нормализует
+  composite document type, для old-chain bounded batch-ом разрешает
+  `ВладелецФайла_Key` через exact `Document_СообщениеЭДО` и возвращает
+  document/file/message IDs. Оба поиска отдают честный coverage с
+  newest/oldest, truncation cause/stages и `hasMore=null`, когда полный
+  bounded window не позволяет доказать наличие следующей строки.
   Company-private пользовательская поверхность
   `platform-skills/1c-vkus` принадлежит только компании «Вкус» и имеет
   самостоятельный signed package/release cycle. Backend безопасно разрешает

@@ -42,13 +42,13 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.15"
+RUNTIME_VERSION = "1.0.16"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -69,6 +69,7 @@ DOCUMENT_ENTITIES = {
     "outgoing": "Document_ЭлектронныйДокументИсходящийЭДО",
 }
 CONTRACT_ENTITY = "Catalog_ДоговорыКонтрагентов"
+COUNTERPARTY_ENTITY = "Catalog_Контрагенты"
 BUSINESS_ENTITY_SPECS = {
     "Catalog_ОбъектыСтроительства": {
         "kind": "construction_object",
@@ -110,6 +111,7 @@ CONTRACT_SELECT_FIELDS = (
 )
 CONTRACT_TERM_FIELDS = (
     "Description",
+    "Номер",
     "Комментарий",
     "НаименованиеДляПечати",
 )
@@ -129,7 +131,7 @@ DOCUMENT_SELECT_FIELDS = (
     "Остановлен",
     "СуммаДокумента",
 )
-DOCUMENT_TERM_FIELDS = ("Комментарий", "НомерДокумента")
+DOCUMENT_TERM_FIELDS = ("Number", "Комментарий", "НомерДокумента")
 DOCUMENT_SIGNATURE_BASIS = "document_signing_date"
 STATUS_REGISTER_ENTITY = "InformationRegister_СостоянияДокументовЭДО"
 STATUS_REGISTER_SELECT_FIELDS = (
@@ -148,6 +150,31 @@ CONTRACT_RELATION_DIAGNOSTIC_STAGES = {
 NEW_FILE_ENTITY = "Catalog_КэшВизуализацииДокументовЭДОПрисоединенныеФайлы"
 OLD_MESSAGE_ENTITY = "Document_СообщениеЭДО"
 OLD_FILE_ENTITY = "Catalog_СообщениеЭДОПрисоединенныеФайлы"
+COUNTERPARTY_SELECT_FIELDS = (
+    "Ref_Key",
+    "Description",
+    "НаименованиеПолное",
+)
+COUNTERPARTY_TERM_FIELDS = ("Description", "НаименованиеПолное")
+NEW_FILE_SELECT_FIELDS = (
+    "Ref_Key",
+    "Description",
+    "ВладелецФайла",
+    "ВладелецФайла_Type",
+    "ПодписанЭП",
+)
+OLD_MESSAGE_SELECT_FIELDS = (
+    "Ref_Key",
+    "ЭлектронныйДокумент",
+    "ЭлектронныйДокумент_Type",
+)
+OLD_FILE_SELECT_FIELDS = (
+    "Ref_Key",
+    "Description",
+    "ВладелецФайла_Key",
+    "ПодписанЭП",
+)
+PUBLIC_FILE_FIELDS = ("Ref_Key", "Description", "ПодписанЭП")
 FILE_METADATA = {
     "new": "КэшВизуализацииДокументовЭДОПрисоединенныеФайлы",
     "old": "СообщениеЭДОПрисоединенныеФайлы",
@@ -160,11 +187,16 @@ MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
 MAX_EDO_STATUS_CHARS = 512
+MAX_DATE_RANGE_DAYS = 93
 MAX_BUSINESS_MATCHES_PER_ENTITY = 5
 MAX_RELATED_BUSINESS_OBJECTS = 20
 MAX_RELATED_CONTRACTS = 20
+MAX_COUNTERPARTY_MATCHES = 20
 MAX_SEARCH_DOCUMENTS = 200
 MAX_DOCUMENTS_PER_CONTRACT_DIRECTION = 50
+MAX_FILE_SEARCH_MATCHES = 100
+MAX_FILE_SEARCH_DOCUMENTS = 100
+REFERENCE_LOOKUP_BATCH_SIZE = 20
 MAX_STATUS_LOOKUP_DOCUMENTS = MAX_SEARCH_DOCUMENTS
 STATUS_LOOKUP_BATCH_SIZE = 20
 DIAGNOSTIC_STAGES = frozenset(
@@ -175,6 +207,7 @@ DIAGNOSTIC_STAGES = frozenset(
         "search.business.business-direction",
         "search.business.subdivision",
         "search.business.enterprise-structure",
+        "search.counterparties.text",
         "search.contracts.by-business-direction",
         "search.contracts.by-subdivision",
         "search.contracts.text",
@@ -182,8 +215,15 @@ DIAGNOSTIC_STAGES = frozenset(
         "search.documents.outgoing.by-contract",
         "search.documents.incoming.text",
         "search.documents.outgoing.text",
+        "search.documents.incoming.structured",
+        "search.documents.outgoing.structured",
         "search.documents.incoming.recent",
         "search.documents.outgoing.recent",
+        "search.files.new.text",
+        "search.files.old.text",
+        "search.files.old.messages",
+        "search.files.incoming.documents",
+        "search.files.outgoing.documents",
         "document.incoming.get",
         "document.outgoing.get",
         "status.incoming.lookup",
@@ -262,6 +302,35 @@ class CompanyConfig:
 class Credentials:
     username: str
     password: str
+
+
+@dataclass(frozen=True)
+class DateRange:
+    """One inclusive calendar range accepted from the CLI.
+
+    The runtime converts the inclusive upper date to an exclusive midnight
+    bound in the fixed OData expression. Keeping the parsed dates here avoids
+    ever placing the original CLI string into a query.
+    """
+
+    start: dt.date
+    end: dt.date
+
+
+@dataclass(frozen=True)
+class SearchCriteria:
+    """Validated structured filters shared by document and file search."""
+
+    term: str
+    exact: bool
+    received_range: DateRange | None
+    document_date_range: DateRange | None
+    counterparty_name: str
+    counterparty_ids: tuple[str, ...]
+    contract_id: str | None
+    contract_number: str
+    organization_id: str | None
+    document_number: str
 
 
 class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -1175,6 +1244,7 @@ def _odata_url(
     allowed = {
         *DOCUMENT_ENTITIES.values(),
         CONTRACT_ENTITY,
+        COUNTERPARTY_ENTITY,
         *BUSINESS_ENTITY_SPECS,
         STATUS_REGISTER_ENTITY,
         NEW_FILE_ENTITY,
@@ -1738,6 +1808,261 @@ def _substring_filter(term: str, fields: Iterable[str]) -> str:
     return " or ".join(f"substringof({literal},{field})" for field in fields)
 
 
+def _exact_text_filter(term: str, fields: Iterable[str]) -> str:
+    """Build equality-only text alternatives from fixed field names."""
+
+    literal = _odata_string_literal(term)
+    return " or ".join(f"{field} eq {literal}" for field in fields)
+
+
+def _text_filter(term: str, fields: Iterable[str], *, exact: bool) -> str:
+    return (
+        _exact_text_filter(term, fields)
+        if exact
+        else _substring_filter(term, fields)
+    )
+
+
+def _combine_filter_clauses(clauses: Iterable[str]) -> str:
+    """AND fixed clauses while preserving the precedence of each OR group."""
+
+    normalized = [clause for clause in clauses if clause]
+    return " and ".join(f"({clause})" for clause in normalized)
+
+
+def _parse_date_range(
+    raw_start: Any,
+    raw_end: Any,
+    *,
+    label: str,
+) -> DateRange | None:
+    """Validate a paired, inclusive and deliberately short date range."""
+
+    start_text = str(raw_start or "").strip()
+    end_text = str(raw_end or "").strip()
+    if not start_text and not end_text:
+        return None
+    if not start_text or not end_text:
+        raise OneCEdoError(
+            "date_range_incomplete",
+            f"Для фильтра {label} нужны обе даты: from и to.",
+        )
+    try:
+        start = dt.date.fromisoformat(start_text)
+        end = dt.date.fromisoformat(end_text)
+    except ValueError as error:
+        raise OneCEdoError(
+            "invalid_date",
+            f"Дата {label} должна иметь формат YYYY-MM-DD.",
+        ) from error
+    days = (end - start).days + 1
+    if days <= 0:
+        raise OneCEdoError(
+            "invalid_date_range",
+            f"Начало периода {label} должно быть не позже окончания.",
+        )
+    if days > MAX_DATE_RANGE_DAYS:
+        raise OneCEdoError(
+            "date_range_too_wide",
+            f"Период {label} не может превышать {MAX_DATE_RANGE_DAYS} дня.",
+        )
+    return DateRange(start=start, end=end)
+
+
+def _validated_optional_uuid(value: Any, label: str) -> str | None:
+    normalized = str(value or "").strip()
+    return _uuid(normalized, label) if normalized else None
+
+
+def _search_criteria_from_args(args: argparse.Namespace) -> SearchCriteria:
+    """Normalize only declared CLI filters; no OData fragment is accepted."""
+
+    counterparty_id = _validated_optional_uuid(
+        getattr(args, "counterparty_id", ""),
+        "counterparty id",
+    )
+    counterparty_name = _search_term(getattr(args, "counterparty_name", ""))
+    if counterparty_id and counterparty_name:
+        raise OneCEdoError(
+            "filter_conflict",
+            "Укажите counterparty-id или counterparty-name, но не оба сразу.",
+        )
+    return SearchCriteria(
+        term=_search_term(getattr(args, "query", "")),
+        exact=bool(getattr(args, "exact", False)),
+        received_range=_parse_date_range(
+            getattr(args, "received_from", ""),
+            getattr(args, "received_to", ""),
+            label="получения/отправки",
+        ),
+        document_date_range=_parse_date_range(
+            getattr(args, "document_date_from", ""),
+            getattr(args, "document_date_to", ""),
+            label="документа",
+        ),
+        counterparty_name=counterparty_name,
+        counterparty_ids=(counterparty_id,) if counterparty_id else (),
+        contract_id=_validated_optional_uuid(
+            getattr(args, "contract_id", ""),
+            "contract id",
+        ),
+        contract_number=_search_term(getattr(args, "contract_number", "")),
+        organization_id=_validated_optional_uuid(
+            getattr(args, "organization_id", ""),
+            "organization id",
+        ),
+        document_number=_search_term(getattr(args, "document_number", "")),
+    )
+
+
+def _datetime_range_filter(field: str, value: DateRange) -> str:
+    """Build an inclusive-date OData v3 datetime range for one fixed field."""
+
+    if field not in {"Date", "ДатаДокумента"}:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний date query получил неизвестное поле.",
+        )
+    exclusive_end = value.end + dt.timedelta(days=1)
+    start_literal = value.start.isoformat()
+    end_literal = exclusive_end.isoformat()
+    return (
+        f"{field} ge datetime'{start_literal}T00:00:00' and "
+        f"{field} lt datetime'{end_literal}T00:00:00'"
+    )
+
+
+def _guid_alternatives(field: str, values: Iterable[str]) -> str:
+    """Build an OR group for a fixed scalar GUID field."""
+
+    allowed = {
+        "Ref_Key",
+        "Контрагент_Key",
+        "Организация_Key",
+        "ВладелецФайла_Key",
+    }
+    if field not in allowed:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний GUID query получил неизвестное поле.",
+        )
+    normalized = tuple(_uuid(value, f"{field} id") for value in values)
+    if not normalized:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний GUID query получил пустой список.",
+        )
+    return " or ".join(f"{field} eq guid'{value}'" for value in normalized)
+
+
+def _typed_reference_alternatives(
+    field: str,
+    values: Iterable[str],
+    entity: str,
+) -> str:
+    """Build an OR group for one fixed 1C composite reference field."""
+
+    allowed = {
+        ("Контрагент", COUNTERPARTY_ENTITY),
+        ("ДоговорКонтрагента", CONTRACT_ENTITY),
+    }
+    if (field, entity) not in allowed:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний reference query получил неизвестную связь.",
+        )
+    normalized = tuple(_uuid(value, f"{field} id") for value in values)
+    if not normalized:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний reference query получил пустой список.",
+        )
+    return " or ".join(
+        f"{field} eq cast(guid'{value}', '{entity}')"
+        for value in normalized
+    )
+
+
+def _document_filter_clauses(
+    criteria: SearchCriteria,
+    *,
+    contract_ids: Iterable[str] = (),
+) -> list[str]:
+    """Translate structured criteria into fixed document-card clauses."""
+
+    clauses: list[str] = []
+    if criteria.received_range:
+        clauses.append(_datetime_range_filter("Date", criteria.received_range))
+    if criteria.document_date_range:
+        clauses.append(
+            _datetime_range_filter("ДатаДокумента", criteria.document_date_range),
+        )
+    if criteria.counterparty_ids:
+        clauses.append(
+            _typed_reference_alternatives(
+                "Контрагент",
+                criteria.counterparty_ids,
+                COUNTERPARTY_ENTITY,
+            ),
+        )
+    if criteria.organization_id:
+        clauses.append(
+            _guid_alternatives("Организация_Key", (criteria.organization_id,)),
+        )
+    effective_contract_ids = tuple(contract_ids)
+    if effective_contract_ids:
+        clauses.append(
+            _typed_reference_alternatives(
+                "ДоговорКонтрагента",
+                effective_contract_ids,
+                CONTRACT_ENTITY,
+            ),
+        )
+    if criteria.document_number:
+        clauses.append(
+            _exact_text_filter(
+                criteria.document_number,
+                ("Number", "НомерДокумента"),
+            ),
+        )
+    return clauses
+
+
+def _contract_filter_clauses(criteria: SearchCriteria) -> list[str]:
+    """Translate only confirmed contract catalog fields into fixed clauses."""
+
+    clauses: list[str] = []
+    if criteria.counterparty_ids:
+        clauses.append(
+            _guid_alternatives("Контрагент_Key", criteria.counterparty_ids),
+        )
+    if criteria.organization_id:
+        clauses.append(
+            _guid_alternatives("Организация_Key", (criteria.organization_id,)),
+        )
+    if criteria.contract_id:
+        clauses.append(_guid_alternatives("Ref_Key", (criteria.contract_id,)))
+    if criteria.contract_number:
+        clauses.append(
+            _exact_text_filter(criteria.contract_number, ("Номер",)),
+        )
+    return clauses
+
+
+def _has_structured_document_filters(criteria: SearchCriteria) -> bool:
+    return any(
+        (
+            criteria.received_range,
+            criteria.document_date_range,
+            criteria.counterparty_ids,
+            criteria.contract_id,
+            criteria.contract_number,
+            criteria.organization_id,
+            criteria.document_number,
+        ),
+    )
+
+
 def _selected_fields(fields: Iterable[str]) -> str:
     return ",".join(fields)
 
@@ -1750,6 +2075,7 @@ def _bounded_odata_rows(
     parameters: Iterable[tuple[str, str | int]],
     limit: int,
     diagnostic_stage: str,
+    coverage: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Page a fixed query without trusting the server to honor `$top`.
 
@@ -1769,6 +2095,8 @@ def _bounded_odata_rows(
         )
 
     result: list[dict[str, Any]] = []
+    ended_with_short_page = False
+    server_proved_more = False
     for page in range(config.max_pages):
         remaining = bounded_limit - len(result)
         if remaining <= 0:
@@ -1787,9 +2115,36 @@ def _bounded_odata_rows(
         )
         remote_rows = _odata_rows(payload)
         # A server that ignores `$top` cannot bypass local row/fan-out limits.
+        if len(remote_rows) > page_size:
+            server_proved_more = True
         result.extend(remote_rows[:page_size])
         if len(remote_rows) < page_size:
+            ended_with_short_page = True
             break
+    if coverage is not None:
+        saturated = len(result) >= bounded_limit and not ended_with_short_page
+        coverage.append(
+            {
+                "stage": diagnostic_stage,
+                "returned": len(result),
+                "limit": bounded_limit,
+                "truncated": saturated,
+                # A server response longer than `$top` proves that more rows
+                # existed. A full final page only proves that the bounded
+                # window was exhausted, so `null` is more honest than a
+                # guessed boolean.
+                "hasMore": (
+                    True
+                    if server_proved_more
+                    else (None if saturated else False)
+                ),
+                "reason": (
+                    "server_ignored_top"
+                    if server_proved_more
+                    else ("bounded_window_exhausted" if saturated else None)
+                ),
+            },
+        )
     return result
 
 
@@ -1925,10 +2280,97 @@ def _document_directions(direction: str) -> list[str]:
     return [direction]
 
 
+def _coverage_payload(
+    documents: dict[tuple[str, str], dict[str, Any]],
+    routes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarize bounded search coverage without claiming an exact total."""
+
+    timestamps = [
+        item["document"].get("Date")
+        for item in documents.values()
+        if isinstance(item.get("document"), dict)
+        and isinstance(item["document"].get("Date"), str)
+    ]
+    truncated_routes = [route for route in routes if route["truncated"]]
+    route_has_more = [route["hasMore"] for route in truncated_routes]
+    has_more: bool | None
+    if any(value is True for value in route_has_more):
+        has_more = True
+    elif truncated_routes:
+        has_more = None
+    else:
+        has_more = False
+    return {
+        "truncated": bool(truncated_routes),
+        "hasMore": has_more,
+        "newest": max(timestamps) if timestamps else None,
+        "oldest": min(timestamps) if timestamps else None,
+        "truncationCause": (
+            sorted(
+                {
+                    str(route["reason"])
+                    for route in truncated_routes
+                    if route.get("reason")
+                },
+            )
+            or None
+        ),
+        "truncationStages": [
+            route["stage"]
+            for route in truncated_routes
+        ],
+    }
+
+
+def _search_counterparties(
+    config: CompanyConfig,
+    credentials: Credentials,
+    criteria: SearchCriteria,
+    coverage: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve a human name to bounded exact UUID candidates."""
+
+    if not criteria.counterparty_name:
+        return []
+    rows = _bounded_odata_rows(
+        config,
+        credentials,
+        COUNTERPARTY_ENTITY,
+        parameters=(
+            ("$select", _selected_fields(COUNTERPARTY_SELECT_FIELDS)),
+            (
+                "$filter",
+                _text_filter(
+                    criteria.counterparty_name,
+                    COUNTERPARTY_TERM_FIELDS,
+                    exact=criteria.exact,
+                ),
+            ),
+        ),
+        limit=MAX_COUNTERPARTY_MATCHES,
+        diagnostic_stage="search.counterparties.text",
+        coverage=coverage,
+    )
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_row in rows:
+        safe_row = _safe_selected_record(raw_row, COUNTERPARTY_SELECT_FIELDS)
+        reference = _record_uuid(safe_row)
+        if reference is None or reference in seen:
+            continue
+        seen.add(reference)
+        result.append(safe_row)
+    return result
+
+
 def _search_business_objects(
     config: CompanyConfig,
     credentials: Credentials,
     term: str,
+    *,
+    exact: bool = False,
+    coverage: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Find bounded business-object candidates through fixed description filters."""
 
@@ -1944,10 +2386,14 @@ def _search_business_objects(
             entity,
             parameters=(
                 ("$select", _selected_fields(BUSINESS_SELECT_FIELDS)),
-                ("$filter", _substring_filter(term, ("Description",))),
+                (
+                    "$filter",
+                    _text_filter(term, ("Description",), exact=exact),
+                ),
             ),
             limit=min(MAX_BUSINESS_MATCHES_PER_ENTITY, remaining),
             diagnostic_stage=spec["diagnosticStage"],
+            coverage=coverage,
         )
         for raw_row in rows:
             safe_row = _safe_selected_record(raw_row, BUSINESS_SELECT_FIELDS)
@@ -1992,12 +2438,14 @@ def _add_contract(
 def _search_contracts(
     config: CompanyConfig,
     credentials: Credentials,
-    term: str,
+    criteria: SearchCriteria,
     business_objects: list[dict[str, Any]],
+    coverage: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """Resolve fixed business-object relations and direct contract text matches."""
 
     contracts: dict[str, dict[str, Any]] = {}
+    structured_clauses = _contract_filter_clauses(criteria)
     related_by_field: dict[str, list[dict[str, str]]] = {}
     for item in business_objects:
         relation_field = item["_contractRelationField"]
@@ -2016,9 +2464,14 @@ def _search_contracts(
         remaining = MAX_RELATED_CONTRACTS - len(contracts)
         if remaining <= 0:
             break
-        relation_filter = " or ".join(
-            f"{relation_field} eq guid'{item['id']}'"
-            for item in objects
+        relation_filter = _combine_filter_clauses(
+            (
+                " or ".join(
+                    f"{relation_field} eq guid'{item['id']}'"
+                    for item in objects
+                ),
+                *structured_clauses,
+            ),
         )
         rows = _bounded_odata_rows(
             config,
@@ -2035,6 +2488,7 @@ def _search_contracts(
             ),
             limit=remaining,
             diagnostic_stage=CONTRACT_RELATION_DIAGNOSTIC_STAGES[relation_field],
+            coverage=coverage,
         )
         for raw_row in rows:
             raw_relation = raw_row.get(relation_field)
@@ -2063,21 +2517,46 @@ def _search_contracts(
                 break
 
     remaining = MAX_RELATED_CONTRACTS - len(contracts)
-    if remaining > 0:
+    should_query_directly = bool(
+        criteria.term
+        or criteria.contract_id
+        or criteria.contract_number
+    )
+    if remaining > 0 and should_query_directly:
+        direct_clauses = list(structured_clauses)
+        if criteria.term:
+            direct_clauses.insert(
+                0,
+                _text_filter(
+                    criteria.term,
+                    CONTRACT_TERM_FIELDS,
+                    exact=criteria.exact,
+                ),
+            )
         direct_rows = _bounded_odata_rows(
             config,
             credentials,
             CONTRACT_ENTITY,
             parameters=(
                 ("$select", _selected_fields(CONTRACT_SELECT_FIELDS)),
-                ("$filter", _substring_filter(term, CONTRACT_TERM_FIELDS)),
+                ("$filter", _combine_filter_clauses(direct_clauses)),
                 ("$orderby", "Дата desc"),
             ),
             limit=remaining,
             diagnostic_stage="search.contracts.text",
+            coverage=coverage,
         )
         for raw_row in direct_rows:
-            _add_contract(contracts, raw_row, {"kind": "contract_text"})
+            match_kind = (
+                "contract_text"
+                if criteria.term
+                else (
+                    "contract_number"
+                    if criteria.contract_number
+                    else "contract_id"
+                )
+            )
+            _add_contract(contracts, raw_row, {"kind": match_kind})
     return contracts
 
 
@@ -2114,6 +2593,8 @@ def _search_documents_for_contracts(
     contracts: dict[str, dict[str, Any]],
     documents: dict[tuple[str, str], dict[str, Any]],
     document_limit: int,
+    criteria: SearchCriteria,
+    coverage: list[dict[str, Any]],
 ) -> None:
     """Follow only the confirmed `ДоговорКонтрагента` relation."""
 
@@ -2122,9 +2603,15 @@ def _search_documents_for_contracts(
             remaining = document_limit - len(documents)
             if remaining <= 0:
                 return
-            contract_filter = (
-                "ДоговорКонтрагента eq "
-                f"cast(guid'{contract_id}', '{CONTRACT_ENTITY}')"
+            contract_filter = _combine_filter_clauses(
+                (
+                    _typed_reference_alternatives(
+                        "ДоговорКонтрагента",
+                        (contract_id,),
+                        CONTRACT_ENTITY,
+                    ),
+                    *_document_filter_clauses(criteria),
+                ),
             )
             rows = _bounded_odata_rows(
                 config,
@@ -2137,6 +2624,7 @@ def _search_documents_for_contracts(
                 ),
                 limit=min(MAX_DOCUMENTS_PER_CONTRACT_DIRECTION, remaining),
                 diagnostic_stage=f"search.documents.{direction}.by-contract",
+                coverage=coverage,
             )
             for raw_row in rows:
                 _add_document(
@@ -2154,6 +2642,9 @@ def _search_direct_documents(
     term: str,
     documents: dict[tuple[str, str], dict[str, Any]],
     document_limit: int,
+    criteria: SearchCriteria,
+    contract_ids: Iterable[str],
+    coverage: list[dict[str, Any]],
 ) -> None:
     """Preserve useful direct card search without scanning recent pages."""
 
@@ -2161,17 +2652,31 @@ def _search_direct_documents(
         remaining = document_limit - len(documents)
         if remaining <= 0:
             return
+        direct_filter = _combine_filter_clauses(
+            (
+                _text_filter(
+                    term,
+                    DOCUMENT_TERM_FIELDS,
+                    exact=criteria.exact,
+                ),
+                *_document_filter_clauses(
+                    criteria,
+                    contract_ids=contract_ids,
+                ),
+            ),
+        )
         rows = _bounded_odata_rows(
             config,
             credentials,
             DOCUMENT_ENTITIES[direction],
             parameters=(
                 ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
-                ("$filter", _substring_filter(term, DOCUMENT_TERM_FIELDS)),
+                ("$filter", direct_filter),
                 ("$orderby", "Date desc"),
             ),
             limit=remaining,
             diagnostic_stage=f"search.documents.{direction}.text",
+            coverage=coverage,
         )
         for raw_row in rows:
             _add_document(
@@ -2182,11 +2687,59 @@ def _search_direct_documents(
             )
 
 
+def _search_structured_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    directions: list[str],
+    criteria: SearchCriteria,
+    contract_ids: Iterable[str],
+    document_limit: int,
+    coverage: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Search directly by server-side structured fields, not recent pages."""
+
+    structured_filter = _combine_filter_clauses(
+        _document_filter_clauses(criteria, contract_ids=contract_ids),
+    )
+    if not structured_filter:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний structured search получил пустой filter.",
+        )
+    documents: dict[tuple[str, str], dict[str, Any]] = {}
+    for direction in directions:
+        remaining = document_limit - len(documents)
+        if remaining <= 0:
+            break
+        rows = _bounded_odata_rows(
+            config,
+            credentials,
+            DOCUMENT_ENTITIES[direction],
+            parameters=(
+                ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                ("$filter", structured_filter),
+                ("$orderby", "Date desc"),
+            ),
+            limit=remaining,
+            diagnostic_stage=f"search.documents.{direction}.structured",
+            coverage=coverage,
+        )
+        for raw_row in rows:
+            _add_document(
+                documents,
+                direction=direction,
+                raw_row=raw_row,
+                match={"kind": "structured_filters"},
+            )
+    return documents
+
+
 def _browse_documents(
     config: CompanyConfig,
     credentials: Credentials,
     directions: list[str],
     document_limit: int,
+    coverage: list[dict[str, Any]],
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Return a bounded recent list when the user did not supply a term."""
 
@@ -2205,6 +2758,7 @@ def _browse_documents(
             ),
             limit=remaining,
             diagnostic_stage=f"search.documents.{direction}.recent",
+            coverage=coverage,
         )
         for raw_row in rows:
             _add_document(
@@ -2218,39 +2772,124 @@ def _browse_documents(
 
 def command_search_documents(args: argparse.Namespace) -> dict[str, Any]:
     identity, config, credentials = _connected_context()
-    term = _search_term(args.query)
+    criteria = _search_criteria_from_args(args)
     directions = _document_directions(args.direction)
     document_limit = min(
         MAX_SEARCH_DOCUMENTS,
         config.max_rows * config.max_pages * len(directions),
     )
     business_objects: list[dict[str, Any]] = []
+    counterparties: list[dict[str, Any]] = []
     contracts: dict[str, dict[str, Any]] = {}
+    coverage: list[dict[str, Any]] = []
     try:
-        if term:
-            business_objects = _search_business_objects(config, credentials, term)
+        counterparties = _search_counterparties(
+            config,
+            credentials,
+            criteria,
+            coverage,
+        )
+        if criteria.counterparty_name:
+            criteria = replace(
+                criteria,
+                counterparty_ids=tuple(
+                    reference
+                    for item in counterparties
+                    if (reference := _record_uuid(item)) is not None
+                ),
+            )
+            # A resolved-name filter with no candidates must return an empty
+            # result. Dropping the clause would accidentally widen the search.
+            if not criteria.counterparty_ids:
+                documents: dict[tuple[str, str], dict[str, Any]] = {}
+                save_access_state(identity, config, "connected")
+                return {
+                    "documents": [],
+                    "count": 0,
+                    "contracts": [],
+                    "counterparties": [],
+                    "businessObjects": [],
+                    "coverage": _coverage_payload(documents, coverage),
+                    "limits": {
+                        "maxRows": config.max_rows,
+                        "maxPages": config.max_pages,
+                        "maxBusinessObjects": MAX_RELATED_BUSINESS_OBJECTS,
+                        "maxCounterparties": MAX_COUNTERPARTY_MATCHES,
+                        "maxContracts": MAX_RELATED_CONTRACTS,
+                        "maxDocuments": document_limit,
+                        "maxDocumentsPerContractDirection": (
+                            MAX_DOCUMENTS_PER_CONTRACT_DIRECTION
+                        ),
+                        "maxDateRangeDays": MAX_DATE_RANGE_DAYS,
+                    },
+                }
+        if criteria.term:
+            business_objects = _search_business_objects(
+                config,
+                credentials,
+                criteria.term,
+                exact=criteria.exact,
+                coverage=coverage,
+            )
+        if (
+            criteria.term
+            or criteria.contract_id
+            or criteria.contract_number
+        ):
             contracts = _search_contracts(
                 config,
                 credentials,
-                term,
+                criteria,
                 business_objects,
+                coverage,
             )
+        filter_contract_ids: tuple[str, ...] = ()
+        if criteria.contract_number:
+            filter_contract_ids = tuple(contracts)
+            if criteria.contract_id:
+                filter_contract_ids = tuple(
+                    contract_id
+                    for contract_id in filter_contract_ids
+                    if contract_id == criteria.contract_id
+                )
+        elif criteria.contract_id:
+            filter_contract_ids = (criteria.contract_id,)
+
+        if criteria.term:
             documents: dict[tuple[str, str], dict[str, Any]] = {}
-            _search_documents_for_contracts(
+            if not (criteria.contract_number and not filter_contract_ids):
+                _search_documents_for_contracts(
+                    config,
+                    credentials,
+                    directions,
+                    contracts,
+                    documents,
+                    document_limit,
+                    criteria,
+                    coverage,
+                )
+                _search_direct_documents(
+                    config,
+                    credentials,
+                    directions,
+                    criteria.term,
+                    documents,
+                    document_limit,
+                    criteria,
+                    filter_contract_ids,
+                    coverage,
+                )
+        elif criteria.contract_number and not filter_contract_ids:
+            documents = {}
+        elif _has_structured_document_filters(criteria):
+            documents = _search_structured_documents(
                 config,
                 credentials,
                 directions,
-                contracts,
-                documents,
+                criteria,
+                filter_contract_ids,
                 document_limit,
-            )
-            _search_direct_documents(
-                config,
-                credentials,
-                directions,
-                term,
-                documents,
-                document_limit,
+                coverage,
             )
         else:
             documents = _browse_documents(
@@ -2258,6 +2897,7 @@ def command_search_documents(args: argparse.Namespace) -> dict[str, Any]:
                 credentials,
                 directions,
                 document_limit,
+                coverage,
             )
         _attach_register_statuses(config, credentials, documents)
         save_access_state(identity, config, "connected")
@@ -2273,16 +2913,20 @@ def command_search_documents(args: argparse.Namespace) -> dict[str, Any]:
         "documents": list(documents.values()),
         "count": len(documents),
         "contracts": list(contracts.values()),
+        "counterparties": counterparties,
         "businessObjects": public_business_objects,
+        "coverage": _coverage_payload(documents, coverage),
         "limits": {
             "maxRows": config.max_rows,
             "maxPages": config.max_pages,
             "maxBusinessObjects": MAX_RELATED_BUSINESS_OBJECTS,
+            "maxCounterparties": MAX_COUNTERPARTY_MATCHES,
             "maxContracts": MAX_RELATED_CONTRACTS,
             "maxDocuments": document_limit,
             "maxDocumentsPerContractDirection": (
                 MAX_DOCUMENTS_PER_CONTRACT_DIRECTION
             ),
+            "maxDateRangeDays": MAX_DATE_RANGE_DAYS,
         },
     }
 
@@ -2368,11 +3012,21 @@ def _new_files(
             config,
             credentials,
             NEW_FILE_ENTITY,
-            (("$filter", owner_filter), ("$top", config.max_rows)),
+            (
+                ("$select", _selected_fields(NEW_FILE_SELECT_FIELDS)),
+                ("$filter", owner_filter),
+                ("$top", config.max_rows),
+            ),
             diagnostic_stage=f"files.{direction}.new",
         ),
     )
-    return [{"scheme": "new", "file": _safe_scalar_record(row)} for row in rows]
+    return [
+        {
+            "scheme": "new",
+            "file": _safe_selected_record(row, NEW_FILE_SELECT_FIELDS),
+        }
+        for row in rows
+    ]
 
 
 def _old_files(
@@ -2402,7 +3056,11 @@ def _old_files(
             config,
             credentials,
             OLD_MESSAGE_ENTITY,
-            (("$filter", document_filter), ("$top", config.max_rows)),
+            (
+                ("$select", _selected_fields(OLD_MESSAGE_SELECT_FIELDS)),
+                ("$filter", document_filter),
+                ("$top", config.max_rows),
+            ),
             diagnostic_stage=f"files.{direction}.old-messages",
         ),
     )
@@ -2419,7 +3077,11 @@ def _old_files(
                 config,
                 credentials,
                 OLD_FILE_ENTITY,
-                (("$filter", file_filter), ("$top", config.max_rows)),
+                (
+                    ("$select", _selected_fields(OLD_FILE_SELECT_FIELDS)),
+                    ("$filter", file_filter),
+                    ("$top", config.max_rows),
+                ),
                 diagnostic_stage=f"files.{direction}.old-files",
             ),
         )
@@ -2427,7 +3089,7 @@ def _old_files(
             {
                 "scheme": "old",
                 "messageId": str(uuid.UUID(message_id)),
-                "file": _safe_scalar_record(row),
+                "file": _safe_selected_record(row, OLD_FILE_SELECT_FIELDS),
             }
             for row in file_rows
         )
@@ -2456,6 +3118,392 @@ def command_list_files(args: argparse.Namespace) -> dict[str, Any]:
         "documentId": document_id,
         "files": files,
         "count": len(files),
+    }
+
+
+def _document_reference_from_composite(
+    row: dict[str, Any],
+    *,
+    field: str,
+) -> tuple[str, str] | None:
+    """Normalize one composite link only when it targets an EDO document."""
+
+    if field not in {"ВладелецФайла", "ЭлектронныйДокумент"}:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний file search получил неизвестную composite-ссылку.",
+        )
+    raw_type = row.get(f"{field}_Type")
+    direction = next(
+        (
+            candidate
+            for candidate, entity in DOCUMENT_ENTITIES.items()
+            if raw_type in {entity, f"StandardODATA.{entity}"}
+        ),
+        None,
+    )
+    # The shared file/message catalogs may legitimately contain links to
+    # non-EDO objects. Those rows are outside this skill, not malformed.
+    if direction is None:
+        return None
+    raw_reference = row.get(field)
+    if not isinstance(raw_reference, str) or not UUID_RE.fullmatch(raw_reference):
+        raise OneCEdoError(
+            "invalid_odata_response",
+            "1С вернула некорректную ссылку файла на документ ЭДО.",
+        )
+    return direction, str(uuid.UUID(raw_reference))
+
+
+def _public_file(row: dict[str, Any]) -> dict[str, Any]:
+    """Remove owner/message implementation fields from the public file card."""
+
+    return _safe_selected_record(row, PUBLIC_FILE_FIELDS)
+
+
+def _search_file_rows_by_name(
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    entity: str,
+    selected_fields: tuple[str, ...],
+    filename: str,
+    exact: bool,
+    diagnostic_stage: str,
+    coverage: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Search one fixed attachment catalog without scanning document pages."""
+
+    return [
+        _safe_selected_record(row, selected_fields)
+        for row in _bounded_odata_rows(
+            config,
+            credentials,
+            entity,
+            parameters=(
+                ("$select", _selected_fields(selected_fields)),
+                (
+                    "$filter",
+                    _text_filter(filename, ("Description",), exact=exact),
+                ),
+            ),
+            limit=MAX_FILE_SEARCH_MATCHES,
+            diagnostic_stage=diagnostic_stage,
+            coverage=coverage,
+        )
+    ]
+
+
+def _append_new_file_candidates(
+    candidates: dict[tuple[str, str], list[dict[str, Any]]],
+    rows: Iterable[dict[str, Any]],
+    directions: set[str],
+) -> None:
+    for row in rows:
+        document_key = _document_reference_from_composite(
+            row,
+            field="ВладелецФайла",
+        )
+        if document_key is None or document_key[0] not in directions:
+            continue
+        file_id = _record_uuid(row)
+        if file_id is None:
+            continue
+        candidates.setdefault(document_key, []).append(
+            {
+                "scheme": "new",
+                "file": _public_file(row),
+            },
+        )
+
+
+def _append_old_file_candidates(
+    config: CompanyConfig,
+    credentials: Credentials,
+    candidates: dict[tuple[str, str], list[dict[str, Any]]],
+    rows: Iterable[dict[str, Any]],
+    directions: set[str],
+) -> None:
+    """Resolve old file owner messages in small exact, fail-closed batches."""
+
+    files_by_message: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        raw_message_id = row.get("ВладелецФайла_Key")
+        file_id = _record_uuid(row)
+        if (
+            file_id is None
+            or not isinstance(raw_message_id, str)
+            or not UUID_RE.fullmatch(raw_message_id)
+        ):
+            continue
+        message_id = str(uuid.UUID(raw_message_id))
+        files_by_message.setdefault(message_id, []).append(
+            {
+                "scheme": "old",
+                "messageId": message_id,
+                "file": _public_file(row),
+            },
+        )
+
+    message_ids = sorted(files_by_message)
+    for start in range(0, len(message_ids), REFERENCE_LOOKUP_BATCH_SIZE):
+        batch = message_ids[start : start + REFERENCE_LOOKUP_BATCH_SIZE]
+        expected = set(batch)
+        payload = _request_odata(
+            config,
+            credentials,
+            OLD_MESSAGE_ENTITY,
+            (
+                ("$select", _selected_fields(OLD_MESSAGE_SELECT_FIELDS)),
+                ("$filter", _guid_alternatives("Ref_Key", batch)),
+                ("$top", len(batch)),
+            ),
+            diagnostic_stage="search.files.old.messages",
+        )
+        seen: set[str] = set()
+        for raw_message in _odata_rows(payload):
+            message = _safe_selected_record(
+                raw_message,
+                OLD_MESSAGE_SELECT_FIELDS,
+            )
+            message_id = _record_uuid(message)
+            if message_id not in expected:
+                raise OneCEdoError(
+                    "invalid_odata_response",
+                    "1С вернула постороннее сообщение для file search.",
+                )
+            if message_id in seen:
+                raise OneCEdoError(
+                    "invalid_odata_response",
+                    "1С вернула дублирующее сообщение для file search.",
+                )
+            seen.add(message_id)
+            document_key = _document_reference_from_composite(
+                message,
+                field="ЭлектронныйДокумент",
+            )
+            if document_key is None or document_key[0] not in directions:
+                continue
+            candidates.setdefault(document_key, []).extend(
+                files_by_message[message_id],
+            )
+
+
+def _fetch_candidate_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    candidates: dict[tuple[str, str], list[dict[str, Any]]],
+    criteria: SearchCriteria,
+    contract_ids: Iterable[str],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Fetch only candidate document UUIDs and apply all structured filters."""
+
+    documents: dict[tuple[str, str], dict[str, Any]] = {}
+    for direction, entity in DOCUMENT_ENTITIES.items():
+        direction_ids = sorted(
+            document_id
+            for candidate_direction, document_id in candidates
+            if candidate_direction == direction
+        )
+        for start in range(0, len(direction_ids), REFERENCE_LOOKUP_BATCH_SIZE):
+            batch = direction_ids[start : start + REFERENCE_LOOKUP_BATCH_SIZE]
+            expected = set(batch)
+            document_filter = _combine_filter_clauses(
+                (
+                    _guid_alternatives("Ref_Key", batch),
+                    *_document_filter_clauses(
+                        criteria,
+                        contract_ids=contract_ids,
+                    ),
+                ),
+            )
+            payload = _request_odata(
+                config,
+                credentials,
+                entity,
+                (
+                    ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                    ("$filter", document_filter),
+                    ("$top", len(batch)),
+                ),
+                diagnostic_stage=f"search.files.{direction}.documents",
+            )
+            seen: set[str] = set()
+            for raw_row in _odata_rows(payload):
+                safe_row = _normalize_document(
+                    _safe_selected_record(raw_row, DOCUMENT_SELECT_FIELDS),
+                )
+                reference = _record_uuid(safe_row)
+                if reference not in expected:
+                    raise OneCEdoError(
+                        "invalid_odata_response",
+                        "1С вернула посторонний документ для file search.",
+                    )
+                if reference in seen:
+                    raise OneCEdoError(
+                        "invalid_odata_response",
+                        "1С вернула дублирующий документ для file search.",
+                    )
+                seen.add(reference)
+                documents[(direction, reference)] = {
+                    "direction": direction,
+                    "document": safe_row,
+                    "matchedBy": [{"kind": "file_name"}],
+                }
+    return documents
+
+
+def command_search_files(args: argparse.Namespace) -> dict[str, Any]:
+    """Find attachment cards by filename, then resolve their exact documents."""
+
+    identity, config, credentials = _connected_context()
+    filename = _search_term(getattr(args, "filename", ""))
+    if not filename:
+        raise OneCEdoError(
+            "filename_required",
+            "search-files требует непустой filename.",
+        )
+    criteria = _search_criteria_from_args(args)
+    directions = set(_document_directions(args.direction))
+    coverage: list[dict[str, Any]] = []
+    counterparties: list[dict[str, Any]] = []
+    contracts: dict[str, dict[str, Any]] = {}
+    try:
+        counterparties = _search_counterparties(
+            config,
+            credentials,
+            criteria,
+            coverage,
+        )
+        if criteria.counterparty_name:
+            criteria = replace(
+                criteria,
+                counterparty_ids=tuple(
+                    reference
+                    for item in counterparties
+                    if (reference := _record_uuid(item)) is not None
+                ),
+            )
+            if not criteria.counterparty_ids:
+                save_access_state(identity, config, "connected")
+                return {
+                    "matches": [],
+                    "count": 0,
+                    "documentCount": 0,
+                    "contracts": [],
+                    "counterparties": [],
+                    "coverage": _coverage_payload({}, coverage),
+                    "limits": {
+                        "maxRows": config.max_rows,
+                        "maxPages": config.max_pages,
+                        "maxFileMatchesPerScheme": MAX_FILE_SEARCH_MATCHES,
+                        "maxDocuments": MAX_FILE_SEARCH_DOCUMENTS,
+                        "maxDateRangeDays": MAX_DATE_RANGE_DAYS,
+                    },
+                }
+        if criteria.contract_id or criteria.contract_number:
+            contracts = _search_contracts(
+                config,
+                credentials,
+                criteria,
+                [],
+                coverage,
+            )
+        contract_ids: tuple[str, ...] = ()
+        if criteria.contract_number:
+            contract_ids = tuple(contracts)
+            if criteria.contract_id:
+                contract_ids = tuple(
+                    value
+                    for value in contract_ids
+                    if value == criteria.contract_id
+                )
+        elif criteria.contract_id:
+            contract_ids = (criteria.contract_id,)
+
+        candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        if not (criteria.contract_number and not contract_ids):
+            new_rows = _search_file_rows_by_name(
+                config,
+                credentials,
+                entity=NEW_FILE_ENTITY,
+                selected_fields=NEW_FILE_SELECT_FIELDS,
+                filename=filename,
+                exact=criteria.exact,
+                diagnostic_stage="search.files.new.text",
+                coverage=coverage,
+            )
+            _append_new_file_candidates(candidates, new_rows, directions)
+            old_rows = _search_file_rows_by_name(
+                config,
+                credentials,
+                entity=OLD_FILE_ENTITY,
+                selected_fields=OLD_FILE_SELECT_FIELDS,
+                filename=filename,
+                exact=criteria.exact,
+                diagnostic_stage="search.files.old.text",
+                coverage=coverage,
+            )
+            _append_old_file_candidates(
+                config,
+                credentials,
+                candidates,
+                old_rows,
+                directions,
+            )
+
+        # The two file catalogs can each return a bounded window. Apply one
+        # additional combined cap before status fan-out and public output.
+        limited_candidates = dict(
+            list(candidates.items())[:MAX_FILE_SEARCH_DOCUMENTS],
+        )
+        if len(candidates) > len(limited_candidates):
+            coverage.append(
+                {
+                    "stage": "search.files.combined",
+                    "returned": len(limited_candidates),
+                    "limit": MAX_FILE_SEARCH_DOCUMENTS,
+                    "truncated": True,
+                    "hasMore": True,
+                    "reason": "combined_document_limit",
+                },
+            )
+        documents = _fetch_candidate_documents(
+            config,
+            credentials,
+            limited_candidates,
+            criteria,
+            contract_ids,
+        )
+        _attach_register_statuses(config, credentials, documents)
+        matches = [
+            {
+                "direction": key[0],
+                "document": documents[key]["document"],
+                **file_entry,
+            }
+            for key, file_entries in limited_candidates.items()
+            if key in documents
+            for file_entry in file_entries
+        ]
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return {
+        "matches": matches,
+        "count": len(matches),
+        "documentCount": len(documents),
+        "contracts": list(contracts.values()),
+        "counterparties": counterparties,
+        "coverage": _coverage_payload(documents, coverage),
+        "limits": {
+            "maxRows": config.max_rows,
+            "maxPages": config.max_pages,
+            "maxFileMatchesPerScheme": MAX_FILE_SEARCH_MATCHES,
+            "maxDocuments": MAX_FILE_SEARCH_DOCUMENTS,
+            "maxDateRangeDays": MAX_DATE_RANGE_DAYS,
+        },
     }
 
 
@@ -2533,6 +3581,49 @@ def command_forget_credentials(_: argparse.Namespace) -> dict[str, Any]:
     return {"status": "unknown", "credentialsRemoved": removed}
 
 
+def _add_structured_search_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    include_query: bool,
+) -> None:
+    """Expose only fixed high-level filters shared by search commands."""
+
+    parser.add_argument(
+        "--direction",
+        choices=["incoming", "outgoing", "both"],
+        default="both",
+    )
+    if include_query:
+        parser.add_argument("--query", default="")
+    parser.add_argument(
+        "--exact",
+        action="store_true",
+        help="Use equality for query/name text instead of substring search",
+    )
+    parser.add_argument(
+        "--received-from",
+        "--exchange-from",
+        dest="received_from",
+        default="",
+        help="Inclusive Date range start in YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--received-to",
+        "--exchange-to",
+        dest="received_to",
+        default="",
+        help="Inclusive Date range end in YYYY-MM-DD",
+    )
+    parser.add_argument("--document-date-from", default="")
+    parser.add_argument("--document-date-to", default="")
+    parser.add_argument("--counterparty-id", default="")
+    parser.add_argument("--counterparty-name", default="")
+    parser.add_argument("--contract-id", default="")
+    parser.add_argument("--contract-number", default="")
+    parser.add_argument("--organization-id", default="")
+    parser.add_argument("--document-number", default="")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trelio-1c-edo",
@@ -2565,9 +3656,13 @@ def build_parser() -> argparse.ArgumentParser:
     access_reset.set_defaults(handler=command_access_reset)
 
     search = subparsers.add_parser("search-documents")
-    search.add_argument("--direction", choices=["incoming", "outgoing", "both"], default="both")
-    search.add_argument("--query", default="")
+    _add_structured_search_arguments(search, include_query=True)
     search.set_defaults(handler=command_search_documents)
+
+    search_files = subparsers.add_parser("search-files")
+    _add_structured_search_arguments(search_files, include_query=False)
+    search_files.add_argument("--filename", required=True)
+    search_files.set_defaults(handler=command_search_files)
 
     get_document = subparsers.add_parser("get-document")
     get_document.add_argument("--direction", choices=["incoming", "outgoing"], required=True)
