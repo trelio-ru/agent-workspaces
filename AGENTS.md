@@ -407,6 +407,13 @@ Trelio-монорепозитории быть не должно.
   явным подтверждением широкой видимости. Досье остаётся agent-only субъектом
   без web-страницы; участник связанной задачи получает только read-only доступ,
   а write, Run и управление связями требуют независимых owner-scope прав.
+- Patch `1.5.9` делает `trelio-workspace` логическим launcher текущего
+  установленного плагина для bridge и `runtimeExecution.command`. Агент
+  разрешает launcher до выполнения: использует PATH-вариант либо заменяет
+  только первый токен на Node.js 22+ и bundled `scripts/trelio-workspace.mjs`
+  этой же версии. Штатно отсутствующий PATH-entry не порождает пробный
+  неуспешный запуск или техническое сообщение оператору; поиск другой версии
+  в plugin cache запрещён.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

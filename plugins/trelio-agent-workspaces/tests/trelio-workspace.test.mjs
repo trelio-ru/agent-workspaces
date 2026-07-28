@@ -1151,7 +1151,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.8");
+  assert.equal(BRIDGE_VERSION, "1.5.9");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1227,6 +1227,28 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(bridgeSource, /--task-outcome/u);
   assert.doesNotMatch(skillMarkdown, /--task-comment/u);
   assert.doesNotMatch(bridgeSource, /task-comment/u);
+});
+
+test("skills resolve the logical bridge launcher before runtime execution", async () => {
+  const catalogSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
+    "utf8",
+  );
+  const workspaceSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+  const bridgeSource = await readFile(bridgePath, "utf8");
+
+  for (const instructions of [catalogSkill, workspaceSkill, bridgeSource]) {
+    assert.match(instructions, /logical launcher|логическим launcher/u);
+    assert.match(instructions, /Node\.js 22\+/u);
+    assert.match(instructions, /not a fallback|не fallback/u);
+    assert.match(instructions, /do not announce|не сообщай/iu);
+  }
+  assert.match(catalogSkill, /never scan plugin caches/u);
+  assert.match(workspaceSkill, /never scan plugin caches/u);
+  assert.match(workspaceSkill, /pre-resolved approved launcher/u);
 });
 
 test("1C EDO secret checkout instructions avoid a nested bridge executable", async () => {
