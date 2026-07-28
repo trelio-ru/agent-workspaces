@@ -175,7 +175,7 @@ Trelio-монорепозитории быть не должно.
   autonomous, но не включить его за пользователя. Telegram/MAX ограничены
   `chat-only`, email — `mail-only`: входящий контент не даёт полномочий в
   других системах.
-- Telegram platform release `1.1.3` использует runtime `1.0.3`: `login` по
+- Telegram platform release `1.1.5` переиспользует runtime `1.0.4`: `login` по
   умолчанию открывает защищённую одноразовую страницу на `127.0.0.1` в
   системном браузере. macOS и Windows имеют отдельные проверяемые opener-пути;
   при недоступном браузере допустим только явный `--terminal-prompts` в видимом
@@ -188,18 +188,30 @@ Trelio-монорепозитории быть не должно.
   argv, workspace или логи.
   Tokenized path, exact loopback Host/Origin, bounded form body, no-store,
   no-referrer и CSP закрывают межсайтовый submit; значения входа не попадают в
-  JSON, MCP, argv, workspace или логи. Команды `read` и `search` сохраняют
-  прежний JSON/CLI и additive возвращают `linkEntities` только для `url` /
-  `text_url`, а также одноуровневый `replyContext` с message id, безопасными
-  author/chat scalar-полями, текстом сообщения и quote-header, ссылками и
-  явным `unavailable` для удалённой или недоступной цитаты. Runtime ограничивает
-  текст, URL и число entities, понимает Telegram UTF-16 offsets, не рекурсирует
-  reply-chain и никогда не сериализует phone, session, api_hash, credentials,
-  raw peer или access_hash. Канонический executable source и regression
-  остаются в
+  JSON, MCP, argv, workspace или логи. Каждая интерактивная форма и поле
+  задаёт `autocomplete=off`, чтобы не предлагать браузеру сохранять телефон,
+  одноразовый код или 2FA-пароль.
+  Перед подготовкой исходящего сообщения инструкция `1.1.5` требует прочитать
+  последние 5–10 содержательных реплик exact диалога и, если есть, сообщение,
+  на которое готовится ответ. Агент сохраняет сложившиеся обращение, форму
+  `ты/вы`, степень формальности и тон именно этого диалога; общий стиль
+  пользователя служит только запасным ориентиром, явная инструкция для
+  конкретного сообщения имеет приоритет. В групповом чате учитывается стиль
+  общения с конкретным адресатом, а не усреднённый стиль всей группы. Этот
+  instruction-only patch переиспользует immutable runtime `1.0.4`.
+  Команды `read` и `search` сохраняют прежний JSON/CLI и additive возвращают
+  `linkEntities` только для `url` / `text_url`, а также одноуровневый
+  `replyContext` с message id, безопасными author/chat scalar-полями, текстом
+  сообщения и quote-header, ссылками и явным `unavailable` для удалённой или
+  недоступной цитаты. Runtime ограничивает текст, URL и число entities,
+  понимает Telegram UTF-16 offsets, не рекурсирует reply-chain и никогда не
+  сериализует phone, session, api_hash, credentials, raw peer или access_hash.
+  Канонический executable source и regression остаются в
   `plugins/trelio-agent-workspaces/scripts/trelio-telegram.py` и
-  `plugins/trelio-agent-workspaces/tests/test_trelio_telegram.py`; patch
-  публикуется как новый signed internal package без изменения plugin version.
+  `plugins/trelio-agent-workspaces/tests/test_trelio_telegram.py`; executable
+  patch публикуется как новый signed internal package, а instruction-only patch
+  может переиспользовать текущий artifact. Plugin version в обоих случаях не
+  меняется.
 - Начиная с plugin `1.4.8` live signed-runtime resolve может вернуть безопасный
   company connection и stable `company/member/connection` identity. Host
   валидирует exact company/project/skill/connection, ограничивает config,
