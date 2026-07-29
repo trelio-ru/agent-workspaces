@@ -426,6 +426,15 @@ Trelio-монорепозитории быть не должно.
   этой же версии. Штатно отсутствующий PATH-entry не порождает пробный
   неуспешный запуск или техническое сообщение оператору; поиск другой версии
   в plugin cache запрещён.
+- Patch `1.5.10` добавляет отдельный `trelio-project-onboarding` и первый
+  starter prompt для настройки текущего Codex-проекта. Агент безопасно создаёт
+  или обновляет только размеченный Trelio-блок в локальном `AGENTS.md`, делает
+  pairing через `trelio-workspace login` без тестового Run и один раз читает
+  живой skill catalog точного company/project context. Навыки не подключаются
+  массово: пользователь выбирает нужные, `get_agent_skill` вызывается только
+  непосредственно перед настройкой, а отсутствующая общая конфигурация
+  помечается `требуется настройка администратором компании`. Project-only
+  навыки предлагаются just in time; credential values не проходят через чат.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

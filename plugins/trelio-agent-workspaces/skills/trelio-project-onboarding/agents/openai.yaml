@@ -1,0 +1,4 @@
+interface:
+  display_name: "Настройка Trelio"
+  short_description: "Подключает проект и доступные навыки Trelio"
+  default_prompt: "Используй $trelio-project-onboarding, чтобы настроить Trelio и доступные навыки для текущего проекта."

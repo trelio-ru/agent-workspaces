@@ -1151,7 +1151,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.9");
+  assert.equal(BRIDGE_VERSION, "1.5.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1161,6 +1161,29 @@ test("bridge release version stays synchronized across executable and manifests"
     cwd: ".",
     tool_timeout_sec: 660,
   });
+});
+
+test("plugin exposes safe project onboarding before ordinary task work", async () => {
+  const codexManifest = JSON.parse(await readFile(
+    path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
+    "utf8",
+  ));
+  const onboardingSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    "utf8",
+  );
+
+  assert.deepEqual(codexManifest.interface.defaultPrompt, [
+    "Настрой Trelio и доступные навыки для текущего проекта.",
+    "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат и сохрани материалы в рабочем пространстве.",
+  ]);
+  assert.match(onboardingSkill, /<!-- trelio-agent-workspaces:start -->/u);
+  assert.match(onboardingSkill, /AGENTS\.override\.md/u);
+  assert.match(onboardingSkill, /get_agent_instructions/u);
+  assert.match(onboardingSkill, /trelio-workspace login/u);
+  assert.match(onboardingSkill, /требуется настройка администратором компании/u);
+  assert.match(onboardingSkill, /Do not open a company workspace/u);
+  assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {
