@@ -33,6 +33,16 @@ marketplace в фоне. При обязательном gate он сначал�
 `TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE=1` отключает автоматический путь и
 возвращает ручной update fallback, но не ослабляет server hard gate.
 
+Начиная с `1.6.0`, change-prone платформенные правила приходят с
+авторизованного backend Trelio. Compatibility preflight передаёт SHA-256
+локального cache: при совпадении backend возвращает только metadata, при
+изменении — exact immutable revision с Markdown. Bridge повторно считает
+SHA-256, ограничивает размер, атомарно сохраняет проверенный cache и повторяет
+preflight до отдельного ответа `current`, после чего передаёт hash в
+start/claim. Exact revision затем входит в pinned
+`context/agent-instructions.md`; активный Run не меняет правила посреди работы.
+Универсальные security/transport invariants остаются в plugin bootstrap.
+
 Источник, ранее добавленный с `--ref vX.Y.Z`, остаётся на выбранном tag. Чтобы
 перевести его на обновляемый default branch, один раз выполните:
 

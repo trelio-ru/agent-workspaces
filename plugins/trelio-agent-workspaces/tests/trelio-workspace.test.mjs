@@ -27,6 +27,7 @@ import {
   BridgePluginUpgradeRequiredError,
   BrowserOpenError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
+  applyAgentRulesHandshake,
   buildAgentSkillPackage,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
@@ -141,6 +142,70 @@ const pathExists = async (filePath) => {
     throw error;
   }
 };
+
+test("platform rules handshake reuses a matching hash and verifies updated bytes", async () => {
+  const rulesMarkdown = "# Platform rules\n\nLink only human-facing results.\n";
+  const sha256 = createHash("sha256").update(rulesMarkdown, "utf8").digest("hex");
+  const cached = {
+    revisionId: "44444444-4444-4444-8444-444444444444",
+    version: 3,
+    sha256,
+    rulesMarkdown,
+  };
+
+  assert.deepEqual(
+    await applyAgentRulesHandshake("https://trelio.ru", {
+      status: "current",
+      revisionId: cached.revisionId,
+      version: cached.version,
+      sha256,
+    }, cached),
+    cached,
+  );
+
+  let restoredMetadata = null;
+  const restored = await applyAgentRulesHandshake("https://trelio.ru", {
+    status: "current",
+    revisionId: "55555555-5555-4555-8555-555555555555",
+    version: 4,
+    sha256,
+  }, cached, {
+    cacheRules: async (_origin, snapshot) => {
+      restoredMetadata = snapshot;
+      return snapshot;
+    },
+  });
+  assert.equal(restored.version, 4);
+  assert.equal(restored.rulesMarkdown, rulesMarkdown);
+  assert.equal(restoredMetadata.revisionId, restored.revisionId);
+
+  let saved = null;
+  const updated = await applyAgentRulesHandshake("https://trelio.ru", {
+    status: "update_required",
+    ...cached,
+  }, null, {
+    cacheRules: async (origin, snapshot) => {
+      saved = { origin, snapshot };
+      return snapshot;
+    },
+  });
+  assert.equal(updated.sha256, sha256);
+  assert.equal(saved.origin, "https://trelio.ru");
+  assert.equal(saved.snapshot.rulesMarkdown, rulesMarkdown);
+
+  await assert.rejects(
+    applyAgentRulesHandshake("https://trelio.ru", {
+      status: "update_required",
+      ...cached,
+      rulesMarkdown: `${rulesMarkdown}tampered`,
+    }, null, {
+      cacheRules: async () => {
+        throw new Error("tampered rules must not reach cache");
+      },
+    }),
+    /SHA-256/u,
+  );
+});
 
 test("Codex plugin updater is scoped to an active Codex task and supports opt-out", () => {
   assert.equal(isCodexPluginAutoUpdateEnvironment({
@@ -643,6 +708,16 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
   const homeDirectory = path.join(temporaryDirectory, "home");
   const rootDirectory = path.join(temporaryDirectory, "materialized-run");
   const writableWorkspaceId = "44444444-4444-4444-8444-444444444444";
+  const platformRulesRevisionId = "88888888-8888-4888-8888-888888888888";
+  const platformRulesMarkdown = [
+    "# Платформенные правила Agent Workspaces",
+    "",
+    "Маркер проверенного правила локальных ссылок.",
+    "",
+  ].join("\n");
+  const platformRulesSha256 = createHash("sha256")
+    .update(platformRulesMarkdown, "utf8")
+    .digest("hex");
   const largeDigest = "d".repeat(64);
   const largePointer = [
     "version https://trelio.ru/spec/workspace-object/v1",
@@ -661,6 +736,7 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     }),
   ]);
   const seenUrls = [];
+  let compatibilityRequests = 0;
   let serverError = null;
 
   const server = createServer(async (request, response) => {
@@ -670,8 +746,23 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       assert.equal(request.headers.authorization, "Bearer integration-token");
 
       if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        compatibilityRequests += 1;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        const hasCurrentRules = (
+          request.headers["x-trelio-agent-rules-sha256"]
+          === platformRulesSha256
+        );
+        response.end(JSON.stringify({
+          supported: true,
+          minimumVersion: BRIDGE_VERSION,
+          agentRules: {
+            status: hasCurrentRules ? "current" : "update_required",
+            revisionId: platformRulesRevisionId,
+            version: 1,
+            sha256: platformRulesSha256,
+            ...(hasCurrentRules ? {} : { rulesMarkdown: platformRulesMarkdown }),
+          },
+        }));
         return;
       }
 
@@ -679,6 +770,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
         request.method === "POST"
         && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}/runs`
       ) {
+        const startPayload = JSON.parse(
+          (await readRequestBody(request)).toString("utf8"),
+        );
+        assert.equal(startPayload.platformRulesSha256, platformRulesSha256);
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
           run: {
@@ -695,10 +790,21 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
               },
             },
             agentInstructionsSnapshotJson: {
-              schemaVersion: 1,
+              schemaVersion: 2,
+              platform: {
+                revisionId: platformRulesRevisionId,
+                version: 1,
+                sha256: platformRulesSha256,
+                rulesMarkdown: platformRulesMarkdown,
+              },
               company: null,
               project: null,
-              compiledMarkdown: "# Рабочие правила агентов Trelio\n",
+              compiledMarkdown: [
+                "# Рабочие правила агентов Trelio",
+                "",
+                platformRulesMarkdown.trim(),
+                "",
+              ].join("\n"),
             },
             userProfileSnapshotJson: {
               schemaVersion: 1,
@@ -805,6 +911,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       await readFile(path.join(rootDirectory, "context", "user-profile.md"), "utf8"),
       "# Как агенту работать со мной\n\nПиши коротко.\n",
     );
+    assert.match(
+      await readFile(path.join(rootDirectory, "context", "agent-instructions.md"), "utf8"),
+      /Маркер проверенного правила локальных ссылок/u,
+    );
     const contextIndex = JSON.parse(
       await readFile(path.join(rootDirectory, "context", "index.json"), "utf8"),
     );
@@ -844,6 +954,11 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.equal(
       seenUrls.filter((url) => url.includes("/objects/") || url.includes("/context-objects/")).length,
       0,
+    );
+    assert.equal(
+      compatibilityRequests,
+      2,
+      "bridge must confirm the freshly cached SHA-256 in a second preflight",
     );
     assert.ifError(serverError);
   } finally {
@@ -1538,7 +1653,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.11");
+  assert.equal(BRIDGE_VERSION, "1.6.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

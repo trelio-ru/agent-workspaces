@@ -453,6 +453,18 @@ Trelio-монорепозитории быть не должно.
   пишутся системными комментариями, уведомление создаётся только при снятии
   общего контроля. Personal-контроли не раскрываются в общей ленте, а
   завершение Run или смена статуса не снимают их автоматически.
+- Minor `1.6.0` добавляет server-managed платформенные правила Agent
+  Workspaces. Bridge отправляет SHA-256 локального проверенного cache во время
+  compatibility preflight; backend возвращает только metadata при совпадении
+  либо exact новую immutable revision. Bridge проверяет размер и SHA-256,
+  атомарно сохраняет правила в приватном локальном state, повторяет preflight
+  до отдельного ответа `current` и подтверждает exact hash при start/claim.
+  Новый Run закрепляет platform revision вместе с
+  company/project snapshot, поэтому дальнейшая публикация применяется только к
+  следующей работе. Change-prone правила общения, включая ссылки только на
+  содержательные локальные результаты, теперь публикуются backend-ом без
+  plugin release; безопасность, transport и обязанность прочитать pinned
+  `context/agent-instructions.md` остаются в универсальном bootstrap плагина.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

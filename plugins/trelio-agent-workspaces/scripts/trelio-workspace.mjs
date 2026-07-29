@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.5.11";
+export const BRIDGE_VERSION = "1.6.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
@@ -57,6 +57,7 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
 export const AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN = "@AGENTS.md\n";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
+const AGENT_RULES_SHA256_HEADER = "x-trelio-agent-rules-sha256";
 // Legacy OAuth остаётся только как явный rollback для старого backend. Даже
 // там bridge не просит права на рабочие правила и чтение metadata секретов:
 // эти операции принадлежат уже авторизованному MCP control plane.
@@ -94,6 +95,7 @@ const PAIRING_FILE = path.join(CONFIG_DIRECTORY, "pairings.json");
 const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "credentials.json");
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
+const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
 const CODEX_MARKETPLACE_NAME = "trelio-plugins";
@@ -733,6 +735,160 @@ export const writePrivateJsonFile = async (filePath, value) => {
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
+};
+
+const normalizeAgentRulesSnapshot = (rawSnapshot, { requireMarkdown = true } = {}) => {
+  if (!rawSnapshot || typeof rawSnapshot !== "object") {
+    throw new Error("Trelio вернул некорректный снимок платформенных правил.");
+  }
+
+  const revisionId = rawSnapshot.revisionId === null
+    ? null
+    : String(rawSnapshot.revisionId || "");
+  const version = Number(rawSnapshot.version);
+  const sha256 = String(rawSnapshot.sha256 || "").trim().toLowerCase();
+  const rulesMarkdown = typeof rawSnapshot.rulesMarkdown === "string"
+    ? rawSnapshot.rulesMarkdown
+    : null;
+
+  if (
+    (revisionId !== null && !UUID_PATTERN.test(revisionId))
+    || !Number.isSafeInteger(version)
+    || version < 0
+    || !/^[0-9a-f]{64}$/u.test(sha256)
+    || (requireMarkdown && rulesMarkdown === null)
+  ) {
+    throw new Error("Trelio вернул некорректную metadata платформенных правил.");
+  }
+
+  if (rulesMarkdown !== null) {
+    const sizeBytes = Buffer.byteLength(rulesMarkdown, "utf8");
+    const calculatedSha256 = crypto
+      .createHash("sha256")
+      .update(rulesMarkdown, "utf8")
+      .digest("hex");
+
+    if (
+      sizeBytes < 1
+      || sizeBytes > 128 * 1024
+      || calculatedSha256 !== sha256
+    ) {
+      throw new Error(
+        "Содержимое платформенных правил не прошло проверку SHA-256 и размера.",
+      );
+    }
+  }
+
+  return {
+    revisionId,
+    version,
+    sha256,
+    ...(rulesMarkdown !== null ? { rulesMarkdown } : {}),
+  };
+};
+
+const readAgentRulesCacheState = async () => {
+  try {
+    const state = await readPrivateJsonFile(AGENT_RULES_CACHE_FILE);
+    return state && typeof state === "object" ? state : {};
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      // Повреждённый необязательный cache можно безопасно заменить ответом
+      // authenticated backend. Ошибки owner/mode/symlink остаются fail-closed.
+      return {};
+    }
+    throw error;
+  }
+};
+
+export const readCachedAgentRules = async (origin) => {
+  const state = await readAgentRulesCacheState();
+  const originKey = crypto.createHash("sha256").update(origin).digest("hex");
+  const cached = state?.origins?.[originKey];
+
+  if (!cached) {
+    return null;
+  }
+
+  try {
+    return normalizeAgentRulesSnapshot(cached);
+  } catch {
+    // Content mismatch означает только cache miss: authenticated backend
+    // повторно пришлёт exact bytes, а unsafe filesystem state уже проверен
+    // readPrivateJsonFile выше и не маскируется этим fallback.
+    return null;
+  }
+};
+
+export const cacheAgentRules = async (origin, rawSnapshot) => {
+  const snapshot = normalizeAgentRulesSnapshot(rawSnapshot);
+  const state = await readAgentRulesCacheState();
+  const originKey = crypto.createHash("sha256").update(origin).digest("hex");
+  const entries = Object.entries(
+    state?.origins && typeof state.origins === "object" ? state.origins : {},
+  )
+    .filter(([key]) => key !== originKey)
+    .slice(-19);
+  const origins = Object.fromEntries(entries);
+
+  origins[originKey] = {
+    ...snapshot,
+    origin,
+    updatedAt: new Date().toISOString(),
+  };
+  await writePrivateJsonFile(AGENT_RULES_CACHE_FILE, {
+    schemaVersion: 1,
+    origins,
+  });
+
+  return snapshot;
+};
+
+export const applyAgentRulesHandshake = async (
+  origin,
+  rawHandshake,
+  cachedSnapshot = null,
+  { cacheRules = cacheAgentRules } = {},
+) => {
+  if (rawHandshake === undefined || rawHandshake === null) {
+    // Backward-compatible окно: plugin 1.6.0 публикуется раньше backend,
+    // поэтому старый Trelio ещё не знает dynamic rules handshake.
+    return null;
+  }
+
+  if (rawHandshake?.status === "current") {
+    const metadata = normalizeAgentRulesSnapshot(rawHandshake, {
+      requireMarkdown: false,
+    });
+
+    if (!cachedSnapshot || cachedSnapshot.sha256 !== metadata.sha256) {
+      throw new Error(
+        "Trelio подтвердил хэш правил, которых нет в локальном проверенном cache.",
+      );
+    }
+
+    if (
+      cachedSnapshot.revisionId !== metadata.revisionId
+      || cachedSnapshot.version !== metadata.version
+    ) {
+      // Restore может опубликовать прежние bytes новой immutable revision.
+      // Hash уже подтверждает содержимое, но локальную metadata обновляем до
+      // exact current revision, чтобы context index не ссылался на старую.
+      return cacheRules(origin, {
+        ...metadata,
+        rulesMarkdown: cachedSnapshot.rulesMarkdown,
+      });
+    }
+
+    return cachedSnapshot;
+  }
+
+  if (rawHandshake?.status !== "update_required") {
+    throw new Error("Trelio вернул неизвестное состояние платформенных правил.");
+  }
+
+  const verifiedSnapshot = normalizeAgentRulesSnapshot(rawHandshake);
+  return cacheRules(origin, verifiedSnapshot);
 };
 
 const parseJsonCommandOutput = (rawOutput, commandLabel) => {
@@ -3464,9 +3620,13 @@ const normalizeAgentInstructionsSnapshot = (rawSnapshot) => {
         }
       : null
   );
+  const platform = snapshot.platform === undefined
+    ? null
+    : normalizeAgentRulesSnapshot(snapshot.platform);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: platform ? 2 : 1,
+    platform,
     company: normalizeRevision(snapshot.company),
     project: normalizeRevision(snapshot.project),
     compiledMarkdown,
@@ -3533,6 +3693,7 @@ const writeAgentInstructionsSnapshot = async (rootDirectory, rawSnapshot) => {
 
   return {
     path: instructionsPath,
+    platform: snapshot.platform,
     company: snapshot.company,
     project: snapshot.project,
   };
@@ -3690,18 +3851,54 @@ export const ensureBridgeCompatibility = async (
   { signal } = {},
 ) => {
   try {
-    const compatibility = await readJsonResponse(await request(
-      origin,
-      token,
-      "/api/agent-workspaces/bridge-compatibility",
-      { signal },
-    ));
+    let cachedAgentRules = await readCachedAgentRules(origin);
 
-    if (compatibility?.supported === true) {
-      return compatibility;
+    // Update считается завершённым только после отдельного ответа `current`.
+    // Поэтому bridge не начинает start/claim сразу после записи новых bytes:
+    // он повторно отправляет их SHA-256 backend-у. Три bounded попытки также
+    // закрывают редкую гонку нескольких последовательных публикаций правил.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const compatibility = await readJsonResponse(await request(
+        origin,
+        token,
+        "/api/agent-workspaces/bridge-compatibility",
+        {
+          signal,
+          headers: cachedAgentRules
+            ? { [AGENT_RULES_SHA256_HEADER]: cachedAgentRules.sha256 }
+            : {},
+        },
+      ));
+
+      if (compatibility?.supported !== true) {
+        throw new BridgePluginUpgradeRequiredError(compatibility);
+      }
+
+      const activeAgentRules = await applyAgentRulesHandshake(
+        origin,
+        compatibility.agentRules,
+        cachedAgentRules,
+      );
+
+      // Старый backend в коротком release-окне не возвращает agentRules.
+      // Новый backend разрешает работу только после явного подтверждения hash.
+      if (
+        compatibility.agentRules === undefined
+        || compatibility.agentRules === null
+        || compatibility.agentRules.status === "current"
+      ) {
+        return {
+          ...compatibility,
+          agentRules: activeAgentRules,
+        };
+      }
+
+      cachedAgentRules = activeAgentRules;
     }
 
-    throw new BridgePluginUpgradeRequiredError(compatibility);
+    throw new Error(
+      "Платформенные правила Trelio изменились несколько раз подряд и не были подтверждены.",
+    );
   } catch (error) {
     if (error instanceof TrelioApiError && error.statusCode === 404) {
       // Плагин публикуется раньше backend hard gate. Короткое окно deploy
@@ -3758,7 +3955,8 @@ const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOpti
 
 const openWorkspace = async (origin, options) => {
   const token = await requireToken(origin);
-  await ensureBridgeCompatibility(origin, token);
+  let compatibility = await ensureBridgeCompatibility(origin, token);
+  let activeAgentRules = compatibility?.agentRules ?? null;
   await cleanLocalRuns({
     origin,
     token,
@@ -3791,6 +3989,15 @@ const openWorkspace = async (origin, options) => {
     if (!existingRun) {
       throw new Error("Run не найден в указанном workspace или недоступен пользователю.");
     }
+    const pinnedAgentRules = existingRun.agentInstructionsSnapshotJson?.platform;
+
+    if (pinnedAgentRules) {
+      // Claim продолжает exact immutable Run, поэтому его pinned revision
+      // важнее более новой live revision, уже загруженной preflight-ом.
+      activeAgentRules = await cacheAgentRules(origin, pinnedAgentRules);
+    } else {
+      activeAgentRules = null;
+    }
     const claimedRun = await readJsonResponse(await request(
       origin,
       token,
@@ -3803,28 +4010,61 @@ const openWorkspace = async (origin, options) => {
           clientKind: "workspace-bridge",
           clientVersion: BRIDGE_VERSION,
           runtimeAttestation,
+          ...(activeAgentRules
+            ? { platformRulesSha256: activeAgentRules.sha256 }
+            : {}),
         }),
       },
     ));
     runPayload = { run: claimedRun, workspace: overview.workspace };
   } else {
-    runPayload = await readJsonResponse(await request(
-      origin,
-      token,
-      `/api/agent-workspaces/workspaces/${workspaceId}/runs`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          clientKind: "workspace-bridge",
-          clientVersion: BRIDGE_VERSION,
-          runtimeAttestation,
-        }),
-      },
-    ));
+    // Если super-admin опубликовал новую revision между preflight и start,
+    // backend отклонит старый hash до создания Run. Bridge перечитывает
+    // правила и повторяет только безопасный идемпотентный start максимум дважды.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        runPayload = await readJsonResponse(await request(
+          origin,
+          token,
+          `/api/agent-workspaces/workspaces/${workspaceId}/runs`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              clientKind: "workspace-bridge",
+              clientVersion: BRIDGE_VERSION,
+              runtimeAttestation,
+              ...(activeAgentRules
+                ? { platformRulesSha256: activeAgentRules.sha256 }
+                : {}),
+            }),
+          },
+        ));
+        break;
+      } catch (error) {
+        if (
+          !(error instanceof TrelioApiError)
+          || error.code !== "AGENT_WORKSPACE_RULES_CHANGED"
+          || attempt === 2
+        ) {
+          throw error;
+        }
+
+        compatibility = await ensureBridgeCompatibility(origin, token);
+        activeAgentRules = compatibility?.agentRules ?? null;
+      }
+    }
   }
 
+  if (!runPayload) {
+    throw new Error("Trelio не создал Agent Run после синхронизации правил.");
+  }
   const agentRun = runPayload.run;
+  const pinnedRunAgentRules = agentRun.agentInstructionsSnapshotJson?.platform;
+
+  if (pinnedRunAgentRules) {
+    activeAgentRules = await cacheAgentRules(origin, pinnedRunAgentRules);
+  }
   const runId = requireUuid(agentRun.id, "run");
   const materializedHead = GIT_OBJECT_PATTERN.test(String(agentRun.draftHead || ""))
     ? String(agentRun.draftHead)
