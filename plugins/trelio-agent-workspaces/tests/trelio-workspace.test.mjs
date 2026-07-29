@@ -1653,7 +1653,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.0");
+  assert.equal(BRIDGE_VERSION, "1.6.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1688,6 +1688,26 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /full restart only if the new task/u);
   assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
+});
+
+test("project access skill preserves owner-only plan/apply and moderator confirmation", async () => {
+  const projectAccessSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-project-access", "SKILL.md"),
+    "utf8",
+  );
+
+  // Эти проверки намеренно фиксируют не текст целиком, а ключевые policy
+  // инварианты, без которых агент мог бы обойти точечный MCP-контракт.
+  assert.match(projectAccessSkill, /company owner or a company\s+administrator/u);
+  assert.match(projectAccessSkill, /plan_project_access_change/u);
+  assert.match(projectAccessSkill, /apply_project_access_change/u);
+  assert.match(projectAccessSkill, /expectedStateHash/u);
+  assert.match(projectAccessSkill, /mcp:project-access:manage/u);
+  assert.match(projectAccessSkill, /Granting or revoking moderator rights always/u);
+  assert.match(projectAccessSkill, /project moderator cannot initiate/u);
+  assert.match(projectAccessSkill, /Existing connections do not acquire the new scope/u);
+  assert.match(projectAccessSkill, /full project PATCH/u);
+  assert.doesNotMatch(projectAccessSkill, /\[TODO:/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {

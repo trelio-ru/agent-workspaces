@@ -1,0 +1,4 @@
+interface:
+  display_name: "Доступ к проектам Trelio"
+  short_description: "Безопасно меняет роли участников проектов"
+  default_prompt: "Используй $trelio-project-access, чтобы безопасно изменить доступ участника к проекту Trelio."

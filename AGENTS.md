@@ -465,6 +465,17 @@ Trelio-монорепозитории быть не должно.
   содержательные локальные результаты, теперь публикуются backend-ом без
   plugin release; безопасность, transport и обязанность прочитать pinned
   `context/agent-instructions.md` остаются в универсальном bootstrap плагина.
+- Patch `1.6.1` добавляет отдельный `trelio-project-access` для точечного
+  изменения прямой роли проекта только владельцем или администратором компании.
+  Агент обязан разрешить exact `memberId`, вызвать
+  `plan_project_access_change` и применить только тот же `expectedStateHash`
+  со стабильным idempotency key. Прямая команда на участника, наблюдателя или
+  удаление не требует второго вопроса; предложение агента, неоднозначность и
+  любое назначение/снятие модератора требуют показа плана и явного
+  подтверждения. Project moderator, группы, bulk PATCH и self-membership не
+  являются обходом. Новый `mcp:project-access:manage` требует повторного OAuth
+  consent у старых подключений. После публикации `1.6.1` в marketplace
+  backend minimum поднимается до этой версии; release ordering обязателен.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio
