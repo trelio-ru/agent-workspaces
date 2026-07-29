@@ -41,7 +41,7 @@ checkpoint, submit, or restore. State a fallback reason only when choosing
 another implementation for an operation that a relevant catalog skill could
 handle.
 
-Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. The bridge may cache verified package bytes by digest, but it must still resolve the release on every invocation. If the server returns `AGENT_SKILL_RELEASE_CHANGED`, call `get_agent_skill` again once and use the new instruction and exact command; never force the stale release. If the required runtime host or `minPluginVersion` is newer than the installed plugin, stop and ask the user to update the plugin.
+Do not cache a returned skill as a permanent local copy and do not pin it to an Agent Run. A later call may return a newer published version. The bridge may cache verified package bytes by digest, but it must still resolve the release on every invocation. If the server returns `AGENT_SKILL_RELEASE_CHANGED`, call `get_agent_skill` again once and use the new instruction and exact command; never force the stale release. If the required runtime host or `minPluginVersion` is newer than the installed plugin, let the bridge attempt its quiet official Codex update first. Continue in the same task after successful re-dispatch; otherwise start a new task, and require a full restart only if that task still sees the old version.
 
 ## Connected integrations
 

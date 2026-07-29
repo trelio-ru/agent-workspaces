@@ -13,8 +13,9 @@ read the current skill catalog and connection state from Trelio.
 
 1. Require callable Trelio MCP tools, not only this skill text. If tools are
    missing, ask the user to open `Plugins -> Trelio Agent Workspaces`, complete
-   Trelio OAuth, fully restart Codex, and start a new task. If the marketplace
-   itself is missing, use
+   Trelio OAuth, and start a new task. Require a full Codex restart only if that
+   new task still lacks the tools or reports the old plugin version. If the
+   marketplace itself is missing, use
    `codex plugin marketplace add trelio-ru/agent-workspaces`; its
    `INSTALLED_BY_DEFAULT` policy makes a separate plugin-add command
    unnecessary.
@@ -109,7 +110,10 @@ cancel a disposable result merely to test the connection.
      consumers of the `1c-edo` connection share its administrator blocker and
      must not look like separate company connections.
    - If `minPluginVersion` or the runtime host requires a newer plugin, stop
-     setup for that item and explain the update/restart/new-task requirement.
+     setup for that item and let the bridge attempt its quiet official Codex
+     update first. Continue in the same task after successful re-dispatch;
+     otherwise use a new task, and require a full restart only if the new task
+     still sees the old version.
 4. Briefly ask which available skills the user wants to configure. Do not
    connect everything automatically. In a company-wide setup, explain that
    project-only skills will be offered just in time when a concrete Trelio

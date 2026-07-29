@@ -379,10 +379,18 @@ Trelio-монорепозитории быть не должно.
 - Backend требует последнюю опубликованную стабильную версию плагина для
   каждого bridge-запроса. Bridge передаёт единый
   `x-trelio-agent-workspaces-version`, выполняет совместимый preflight до
-  start/claim и на `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` останавливает
-  работу до `codex plugin marketplace upgrade trelio-plugins`, полного
-  перезапуска и новой задачи. Текущий Run можно продолжить повторным `open`;
-  подделывать version header или обходить gate другим `clientKind` нельзя.
+  start/claim и на `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` не продолжает
+  старый network process. Начиная с `1.5.11`, Codex bridge с приватным
+  single-flight state тихо обновляет только официальный `trelio-plugins`,
+  повторяет временные сетевые ошибки не больше трёх раз, получает exact
+  installed path через штатный `codex plugin add --json`, сверяет
+  manifest/version/entrypoint без symlink и при разрешении backend
+  перезапускает новый bridge в той же задаче. Если hot retry невозможен, первой
+  ступенью остаётся новая задача; полный restart требуется только когда новая
+  задача всё ещё использует старую версию или не видит MCP tools. Текущий Run
+  можно продолжить повторным `open`; подделывать version header, сканировать
+  cache, выбирать произвольный entrypoint или обходить gate другим `clientKind`
+  нельзя.
 - Начиная с `1.5.2` blocker checkpoint является двухфазной переносимой
   остановкой: bridge сначала готовит и загружает полный проверенный draft,
   включая external objects, и только затем создаёт blocker с exact
@@ -435,6 +443,16 @@ Trelio-монорепозитории быть не должно.
   непосредственно перед настройкой, а отсутствующая общая конфигурация
   помечается `требуется настройка администратором компании`. Project-only
   навыки предлагаются just in time; credential values не проходят через чат.
+- Patch `1.5.11` добавляет тихое self-update Codex plugin и task controls в
+  Agent Workspace workflow. Updater запускается после успешных bridge-команд
+  не чаще одного раза в шесть часов и не задерживает пользовательскую работу;
+  обязательная несовместимость синхронно использует тот же bounded path.
+  `get_task` возвращает общие и только собственные личные контроли, а
+  `create_task_control`, `update_task_control` и `clear_task_control` сохраняют
+  штатные task ACL и privacy. Наступление даты не уведомляет; shared-действия
+  пишутся системными комментариями, уведомление создаётся только при снятии
+  общего контроля. Personal-контроли не раскрываются в общей ленте, а
+  завершение Run или смена статуса не снимают их автоматически.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

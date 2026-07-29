@@ -24,6 +24,7 @@ import {
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
+  BridgePluginUpgradeRequiredError,
   BrowserOpenError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   buildAgentSkillPackage,
@@ -31,13 +32,19 @@ import {
   buildBridgeRequestHeaders,
   hardenWindowsPrivatePath,
   inspectWorkspaceFile,
+  isCodexPluginAutoUpdateEnvironment,
   isProtectedWorkspaceControlPath,
+  isStableVersionAtLeast,
+  isTransientCodexMarketplaceUpdateError,
   materializeRuntimeControlFiles,
   normalizeAgentSkillPackagePath,
   openBrowser,
   parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
+  recoverBridgePluginUpgrade,
+  request,
   resolveWorkspaceBridgeConfigDirectory,
+  updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
 } from "../scripts/trelio-workspace.mjs";
 
@@ -134,6 +141,386 @@ const pathExists = async (filePath) => {
     throw error;
   }
 };
+
+test("Codex plugin updater is scoped to an active Codex task and supports opt-out", () => {
+  assert.equal(isCodexPluginAutoUpdateEnvironment({
+    CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
+  }), true);
+  assert.equal(isCodexPluginAutoUpdateEnvironment({
+    CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
+    TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
+  }), false);
+  assert.equal(isCodexPluginAutoUpdateEnvironment({
+    CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
+    CLAUDE_CODE_ENTRYPOINT: "cli",
+  }), false);
+  assert.equal(isCodexPluginAutoUpdateEnvironment({}), false);
+});
+
+test("every bridge transport request preserves upgrade compatibility for recovery", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(409, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      code: "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED",
+      message: "upgrade required",
+      packageName: "trelio-ru/agent-workspaces",
+      installedVersion: "1.5.10",
+      minimumVersion: "1.5.11",
+      supported: false,
+      update: {
+        automaticCodexUpdate: true,
+        sameTaskRetryAllowed: true,
+      },
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    await assert.rejects(
+      request(
+        `http://127.0.0.1:${address.port}`,
+        "bridge-session",
+        "/api/agent-workspaces/example",
+      ),
+      (error) => (
+        error instanceof BridgePluginUpgradeRequiredError
+        && error.compatibility.minimumVersion === "1.5.11"
+        && error.compatibility.update.sameTaskRetryAllowed === true
+      ),
+    );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (
+      error ? reject(error) : resolve()
+    )));
+  }
+});
+
+test("runtime-host upgrade uses the same quiet plugin recovery contract", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(409, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      code: "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
+      message: "runtime host upgrade required",
+      installedVersion: "1.5.11",
+      minimumVersion: "1.5.12",
+      updateCommand: "codex plugin marketplace upgrade trelio-plugins",
+      update: {
+        automaticCodexUpdate: true,
+        sameTaskRetryAllowed: true,
+      },
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    await assert.rejects(
+      request(
+        `http://127.0.0.1:${address.port}`,
+        "bridge-session",
+        "/api/agent-skills/runtime/resolve",
+      ),
+      (error) => (
+        error instanceof BridgePluginUpgradeRequiredError
+        && error.compatibility.minimumVersion === "1.5.12"
+        && error.compatibility.update.sameTaskRetryAllowed === true
+      ),
+    );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (
+      error ? reject(error) : resolve()
+    )));
+  }
+});
+
+test("Codex plugin updater retries transient network failures and validates exact install", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-plugin-update-"));
+  const installedPath = path.join(temporaryDirectory, "trelio-agent-workspaces", "1.5.12");
+  const invocations = [];
+  const waits = [];
+  let marketplaceAttempt = 0;
+
+  try {
+    await Promise.all([
+      mkdir(path.join(installedPath, ".codex-plugin"), { recursive: true }),
+      mkdir(path.join(installedPath, "scripts"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(installedPath, ".codex-plugin", "plugin.json"),
+        JSON.stringify({ name: "trelio-agent-workspaces", version: "1.5.12" }),
+      ),
+      writeFile(
+        path.join(installedPath, "scripts", "trelio-workspace.mjs"),
+        "export const BRIDGE_VERSION = '1.5.12';\n",
+      ),
+    ]);
+
+    const installation = await updateCodexPluginMarketplace({
+      minimumVersion: "1.5.12",
+      environment: {
+        CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
+      },
+      waitForRetry: async (milliseconds) => {
+        waits.push(milliseconds);
+      },
+      execFileCommand: async (command, args, options) => {
+        invocations.push({ command, args, options });
+
+        if (args[1] === "marketplace" && args[2] === "list") {
+          return {
+            stdout: JSON.stringify({
+              marketplaces: [{
+                name: "trelio-plugins",
+                root: temporaryDirectory,
+                marketplaceSource: {
+                  sourceType: "git",
+                  source: "https://github.com/trelio-ru/agent-workspaces.git",
+                },
+              }],
+            }),
+            stderr: "",
+          };
+        }
+
+        if (args[1] === "marketplace" && args[2] === "upgrade") {
+          marketplaceAttempt += 1;
+          if (marketplaceAttempt < 3) {
+            const error = new Error("temporary marketplace failure");
+            error.stderr = marketplaceAttempt === 1
+              ? "SSL_ERROR_SYSCALL in connection to github.com"
+              : "git ls-remote failed: ECONNRESET";
+            throw error;
+          }
+          return {
+            stdout: JSON.stringify({
+              selectedMarketplaces: ["trelio-plugins"],
+              upgradedRoots: [temporaryDirectory],
+              errors: [],
+            }),
+            stderr: "",
+          };
+        }
+
+        assert.deepEqual(args, [
+          "plugin",
+          "add",
+          "trelio-agent-workspaces@trelio-plugins",
+          "--json",
+        ]);
+        return {
+          stdout: JSON.stringify({
+            pluginId: "trelio-agent-workspaces@trelio-plugins",
+            name: "trelio-agent-workspaces",
+            marketplaceName: "trelio-plugins",
+            version: "1.5.12",
+            installedPath,
+          }),
+          stderr: "",
+        };
+      },
+    });
+
+    assert.equal(installation.version, "1.5.12");
+    assert.equal(installation.bridgePath, path.join(
+      installedPath,
+      "scripts",
+      "trelio-workspace.mjs",
+    ));
+    assert.deepEqual(waits, [1_000, 3_000]);
+    assert.equal(invocations.length, 5);
+    for (const invocation of invocations) {
+      assert.equal(invocation.command, "codex");
+      assert.equal(invocation.options.shell, false);
+      assert.equal(invocation.options.timeout, 120_000);
+      assert.equal(invocation.options.env.GIT_TERMINAL_PROMPT, "0");
+    }
+    assert.equal(isTransientCodexMarketplaceUpdateError({
+      stderr: "fatal: unable to access repository: TLS handshake failed",
+    }), true);
+    assert.equal(isTransientCodexMarketplaceUpdateError({
+      killed: true,
+      message: "Command failed without stderr",
+    }), true);
+    assert.equal(isStableVersionAtLeast("1.5.12", "1.5.11"), true);
+    assert.equal(isStableVersionAtLeast("1.5.10", "1.5.11"), false);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("Codex plugin updater refuses a marketplace name redirected to another source", async () => {
+  let invocationCount = 0;
+
+  await assert.rejects(
+    updateCodexPluginMarketplace({
+      execFileCommand: async () => {
+        invocationCount += 1;
+        return {
+          stdout: JSON.stringify({
+            marketplaces: [{
+              name: "trelio-plugins",
+              root: "/tmp/not-official",
+              marketplaceSource: {
+                sourceType: "git",
+                source: "https://example.com/lookalike.git",
+              },
+            }],
+          }),
+          stderr: "",
+        };
+      },
+    }),
+    /только для официального Git marketplace Trelio/u,
+  );
+  assert.equal(invocationCount, 1);
+});
+
+test("Codex plugin updater does not report success when the required release is absent", async () => {
+  await assert.rejects(
+    updateCodexPluginMarketplace({
+      minimumVersion: "1.5.12",
+      execFileCommand: async (_command, args) => {
+        if (args[1] === "marketplace" && args[2] === "list") {
+          return {
+            stdout: JSON.stringify({
+              marketplaces: [{
+                name: "trelio-plugins",
+                marketplaceSource: {
+                  sourceType: "git",
+                  source: "https://github.com/trelio-ru/agent-workspaces.git",
+                },
+              }],
+            }),
+            stderr: "",
+          };
+        }
+        if (args[1] === "marketplace" && args[2] === "upgrade") {
+          return {
+            stdout: JSON.stringify({
+              selectedMarketplaces: ["trelio-plugins"],
+              upgradedRoots: [],
+              errors: [],
+            }),
+            stderr: "",
+          };
+        }
+        return {
+          stdout: JSON.stringify({
+            pluginId: "trelio-agent-workspaces@trelio-plugins",
+            marketplaceName: "trelio-plugins",
+            version: "1.5.11",
+            installedPath: "/unused/below-minimum",
+          }),
+          stderr: "",
+        };
+      },
+    }),
+    /не установил требуемую стабильную версию v1\.5\.12/u,
+  );
+});
+
+test("upgrade-required re-dispatches the exact installed bridge in the same Codex task", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-plugin-reexec-"));
+  const installedPath = path.join(temporaryDirectory, "trelio-agent-workspaces", "1.5.12");
+  const bridgePath = path.join(installedPath, "scripts", "trelio-workspace.mjs");
+  const spawned = [];
+
+  try {
+    await Promise.all([
+      mkdir(path.join(installedPath, ".codex-plugin"), { recursive: true }),
+      mkdir(path.dirname(bridgePath), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(installedPath, ".codex-plugin", "plugin.json"),
+        JSON.stringify({ name: "trelio-agent-workspaces", version: "1.5.12" }),
+      ),
+      writeFile(bridgePath, "export const BRIDGE_VERSION = '1.5.12';\n"),
+    ]);
+
+    const environment = {
+      CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
+    };
+    const recovery = await recoverBridgePluginUpgrade(
+      new BridgePluginUpgradeRequiredError({
+        minimumVersion: "1.5.12",
+        update: {
+          sameTaskRetryAllowed: true,
+          codexCommand: "codex plugin marketplace upgrade trelio-plugins",
+        },
+      }),
+      {
+        rawArguments: ["open", "--workspace", companyWorkspaceId],
+        environment,
+        execFileCommand: async (command, args, options) => {
+          assert.equal(command, "codex");
+          if (args[1] === "marketplace") {
+            assert.deepEqual(args, [
+              "plugin",
+              "marketplace",
+              "list",
+              "--json",
+            ]);
+            return {
+              stdout: JSON.stringify({
+                marketplaces: [{
+                  name: "trelio-plugins",
+                  root: temporaryDirectory,
+                  marketplaceSource: {
+                    sourceType: "git",
+                    source: "https://github.com/trelio-ru/agent-workspaces.git",
+                  },
+                }],
+              }),
+              stderr: "",
+            };
+          }
+          assert.deepEqual(args, [
+            "plugin",
+            "add",
+            "trelio-agent-workspaces@trelio-plugins",
+            "--json",
+          ]);
+          assert.equal(options.shell, false);
+          return {
+            stdout: JSON.stringify({
+              pluginId: "trelio-agent-workspaces@trelio-plugins",
+              name: "trelio-agent-workspaces",
+              marketplaceName: "trelio-plugins",
+              version: "1.5.12",
+              installedPath,
+            }),
+            stderr: "",
+          };
+        },
+        spawnProcess: (command, args, options) => {
+          const child = new EventEmitter();
+          spawned.push({ command, args, options });
+          queueMicrotask(() => child.emit("exit", 0, null));
+          return child;
+        },
+      },
+    );
+
+    assert.deepEqual(recovery, { handled: true, exitCode: 0 });
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].command, process.execPath);
+    assert.deepEqual(spawned[0].args, [
+      bridgePath,
+      "open",
+      "--workspace",
+      companyWorkspaceId,
+    ]);
+    assert.equal(spawned[0].options.shell, false);
+    assert.equal(spawned[0].options.env.TRELIO_WORKSPACE_AUTO_UPDATE_REEXEC, "1");
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
 
 test("browser opener waits for a successful process exit instead of spawn", async () => {
   const child = new EventEmitter();
@@ -1151,7 +1538,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.5.10");
+  assert.equal(BRIDGE_VERSION, "1.5.11");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1183,6 +1570,8 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /trelio-workspace login/u);
   assert.match(onboardingSkill, /требуется настройка администратором компании/u);
   assert.match(onboardingSkill, /Do not open a company workspace/u);
+  assert.match(onboardingSkill, /full restart only if the new task/u);
+  assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
 });
 
@@ -1250,6 +1639,26 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(bridgeSource, /--task-outcome/u);
   assert.doesNotMatch(skillMarkdown, /--task-comment/u);
   assert.doesNotMatch(bridgeSource, /task-comment/u);
+});
+
+test("workspace skill and protected runtime preserve task control privacy and notification semantics", async () => {
+  const skillMarkdown = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+  const bridgeSource = await readFile(bridgePath, "utf8");
+
+  for (const toolName of ["create_task_control", "update_task_control", "clear_task_control"]) {
+    assert.match(skillMarkdown, new RegExp(toolName, "u"));
+    assert.match(bridgeSource, new RegExp(toolName, "u"));
+  }
+
+  assert.match(skillMarkdown, /Reaching or passing `controlDate` never sends a notification/u);
+  assert.match(skillMarkdown, /Never widen a personal control to shared/u);
+  assert.match(skillMarkdown, /Clearing a shared control additionally notifies/u);
+  assert.match(skillMarkdown, /Do not clear a control merely because the Run completed/u);
+  assert.match(bridgeSource, /Наступление даты не уведомляет/u);
+  assert.match(bridgeSource, /personal-контроли не попадают в общую ленту/u);
 });
 
 test("skills resolve the logical bridge launcher before runtime execution", async () => {

@@ -32,9 +32,10 @@ Trelio browser problem.
    unavailable, tell the user that a workspace admin must enable it for their
    role. Do not suggest resetting Trelio credentials before that policy blocker
    is resolved.
-5. After installation or OAuth, require a full Codex restart and a new task so
-   the callable MCP tool list is loaded again. Then retry the original Trelio
-   read once.
+5. After installation or OAuth, start a new task so Codex rebuilds its callable
+   MCP tool list, then retry the original low-risk Trelio read once. Require a
+   full Codex restart only if that new task still lacks the MCP tools or reports
+   the old plugin version.
 
 Never claim that setup succeeded merely because the skill text is visible. A
 successful low-risk MCP read such as `get_my_context` or `get_task` is the
@@ -44,19 +45,28 @@ readiness check.
 
 Trelio intentionally requires the latest published stable version of
 `trelio-ru/agent-workspaces` for every bridge operation. If the bridge or API
-returns `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, stop workspace work and do
-not retry with the old process.
+returns `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, never retry the old network
+process or bypass the gate.
 
-1. Tell the user which installed and minimum versions the error reports.
-2. For Codex, give the exact command
-   `codex plugin marketplace upgrade trelio-plugins`. For Claude, direct the
-   user to refresh the `trelio-plugins` marketplace through its plugin manager.
-3. Require a full client restart and a new task so both executable code and
-   skill instructions are reloaded.
-4. Preserve the existing local Run directory. After restart, execute the same
-   `trelio-workspace open --workspace <uuid> --run <uuid>` command; the updated
-   bridge claim refreshes lease/fencing and continues the Run without deleting
-   local changes.
+1. In Codex, let the bridge handle the update first. It uses the exact official
+   `trelio-plugins` marketplace through the Codex CLI, performs bounded retries
+   for transient network failures, validates the exact installed manifest and
+   entrypoint, and, when the server permits it, re-dispatches that new bridge in
+   the same task. Do not ask the user to run an update command before this
+   automatic path finishes, and do not scan plugin caches yourself.
+2. If the re-dispatched bridge succeeds, continue the current task without an
+   update notice.
+3. If the bridge says the plugin was updated but the current task could not
+   safely reload it, ask only for a new task and preserve the existing local Run
+   directory. In that new task execute the same `trelio-workspace open
+   --workspace <uuid> --run <uuid>` command.
+4. Require a full Codex restart only if the new task still reports the old
+   version or lacks MCP tools. If automatic Codex update itself failed, show the
+   exact fallback command returned by the bridge, then use the same retry order:
+   current task, new task, full restart.
+5. Claude does not use the Codex updater. Refresh `trelio-plugins` through its
+   plugin manager, run `/reload-plugins` when available or start a new task, and
+   use a full restart only as the final fallback.
 
 Do not bypass the version gate with direct HTTP calls, a different
 `clientKind`, edited metadata, or a forged header. The gate is an operational
@@ -99,6 +109,34 @@ After confirmation, use the task's own scope as the writable workspace for task-
 Discover additional context autonomously when it is likely to change the quality of the requested work, but do not crawl every workspace by default. `get_task` returns accessible linked dossiers in addition to task links and work-case members; `list_dossiers` discovers the exact project or company collection. A dossier is an agent-only subject without a standalone browser page or public URL. `task_full` on a linked task grants read-only dossier access, but never exposes the owner project or grants dossier write, Run, approval, or link-management permissions. Creating or removing a task–dossier link requires independent owner-scope management access to the dossier plus edit access to the task; access derived from another link is insufficient. Use `search_agent_workspace_files` for concepts, names, decisions, or prior materials across every workspace available to the user, then read an exact hit with `get_agent_workspace_file`. Use `get_dossier` for dossier metadata and its visible task links, and `get_agent_workspace_by_scope` when a linked task/project/company/dossier UUID is already known. Every tool reapplies ordinary ACL. Do not create a missing unrelated workspace merely to use it as context.
 
 When the requested work itself needs to connect tasks, prefer `create_task_relation` for an ordinary pair. Describe `relationType` in precise human language for that pair; suggestions such as “Блокирует” are examples, not an enum. Set `isDirectional` only when source-to-target order matters. Create a work case only when multiple tasks genuinely represent one shared subject from different perspectives, and pass a stable unique `clientRequestId` to `create_work_case`. Do not force unrelated or merely adjacent tasks into a case.
+
+## Use task controls deliberately
+
+`get_task` returns every active shared control visible on the task and only the
+authenticated user's personal controls. Treat these date-only controls as
+repeatable check points, not as extra deadlines.
+
+1. Use `create_task_control`, `update_task_control`, or `clear_task_control`
+   only when the user's request, the task, or a pinned working rule calls for a
+   concrete future check. Do not manufacture follow-up dates merely because a
+   task has an Agent Workspace Run.
+2. Choose `personal` when the check is only for the authenticated user. Choose
+   `shared` only when everyone with task access should see it.
+   Never widen a personal control to shared from an inference; obtain clear
+   authority first.
+3. Put the exact action to verify in `note`. Keep the result of that later
+   check in an ordinary task comment when communication is needed; controls do
+   not have a separate result field.
+4. Reaching or passing `controlDate` never sends a notification. Trelio's
+   dashboard filters surface the nearest visible date across the deadline and
+   active controls.
+5. Shared create/update/visibility/clear actions produce system comments.
+   Clearing a shared control additionally notifies the task audience,
+   including its creator when another person clears it. Personal controls and
+   their changes never appear in shared comments or notifications.
+6. Do not clear a control merely because the Run completed or the task changed
+   status. Clear only the exact control whose check has actually been handled
+   or when the user explicitly asks to remove it.
 
 ## Execute the work
 
