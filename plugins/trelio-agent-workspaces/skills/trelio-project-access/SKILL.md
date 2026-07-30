@@ -22,8 +22,11 @@ company, edit groups, or perform bulk membership replacement.
    `mcp:read`. Existing connections do not acquire the new scope
    automatically. If the scope is missing, ask the user to reconnect Trelio
    OAuth and retry in a new task.
-4. Never attempt to change the authenticated user's own direct project role
-   through this flow.
+4. The authenticated user may target their own direct project role through
+   this same guarded flow. Because only a company owner or administrator can
+   call it, removing that direct role does not remove their company-wide
+   project access. Still preserve every warning and the separate moderator
+   confirmation rule.
 
 ## Resolve exact identities
 
@@ -66,10 +69,10 @@ do not call apply.
 
 ## Decide whether to pause
 
-An exact direct user command naming the project, person, and participant or
-observer role – or explicitly asking to remove that person – authorizes apply
-after the plan when `confirmationRequired=false`. Do not ask a ceremonial
-second question.
+An exact direct user command naming the project, person (including the
+authenticated user), and participant or observer role – or explicitly asking
+to remove that person – authorizes apply after the plan when
+`confirmationRequired=false`. Do not ask a ceremonial second question.
 
 Show the complete plan and wait for explicit confirmation when any of these is
 true:
@@ -110,9 +113,10 @@ will have no direct moderator.
 
 State the project, exact person, previous direct role, new direct role, and
 effective access after the change. Include every remaining-access warning.
-Mention that the target receives the ordinary Trelio project membership
-notification and that the action is recorded as an MCP company activity event.
+Mention that a different target receives the ordinary Trelio project
+membership notification, while a self-change does not create a redundant
+self-notification. Every change is recorded as an MCP company activity event.
 
 Never work around this contract with a full project PATCH, a group edit,
 several single-member calls presented as an unreviewed bulk action, direct
-database access, or the authenticated user's own membership.
+database access, or any route other than this exact plan/apply flow.

@@ -1679,7 +1679,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.6");
+  assert.equal(BRIDGE_VERSION, "1.6.7");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1746,6 +1746,13 @@ test("project access skill preserves owner-only plan/apply and moderator confirm
   assert.match(projectAccessSkill, /Granting or revoking moderator rights always/u);
   assert.match(projectAccessSkill, /project moderator cannot initiate/u);
   assert.match(projectAccessSkill, /Existing connections do not acquire the new scope/u);
+  assert.match(projectAccessSkill, /may target their own direct project role/u);
+  assert.match(projectAccessSkill, /does not remove their company-wide\s+project access/u);
+  assert.match(projectAccessSkill, /self-change does not create a redundant\s+self-notification/u);
+  assert.doesNotMatch(
+    projectAccessSkill,
+    /Never attempt to change the authenticated user's own direct project role/u,
+  );
   assert.match(projectAccessSkill, /full project PATCH/u);
   assert.doesNotMatch(projectAccessSkill, /\[TODO:/u);
 });

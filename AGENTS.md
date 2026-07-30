@@ -544,6 +544,12 @@ Trelio-монорепозитории быть не должно.
   равно явно подтверждает новые права; logout, копирование credential и
   авторизация только одним новым scope запрещены, чтобы не потерять уже
   выданные права. Новых постоянных env и plugin-side OAuth scopes нет.
+- Patch `1.6.7` разрешает company owner/admin менять собственную direct project
+  role через тот же `plan_project_access_change` /
+  `apply_project_access_change` flow. Удаление direct role не отзывает
+  company-wide доступ; warnings, actor-bound CAS и отдельное подтверждение
+  moderator grant/revoke сохраняются. Self-change не создаёт уведомление
+  самому инициатору. Новых migration, env и OAuth scopes нет.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

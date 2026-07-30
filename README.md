@@ -3,6 +3,11 @@
 Официальный публичный дистрибутив плагина Codex и Claude для работы с
 управляемыми Agent Workspaces и живыми навыками Trelio.
 
+Patch `1.6.7` разрешает владельцу или администратору компании менять
+собственную прямую роль проекта через тот же guarded plan/apply flow:
+company-wide доступ сохраняется, а подтверждение moderator grant/revoke
+остаётся обязательным.
+
 Плагин подключает:
 
 - production MCP `https://trelio.ru/mcp` с OAuth 2.1;
