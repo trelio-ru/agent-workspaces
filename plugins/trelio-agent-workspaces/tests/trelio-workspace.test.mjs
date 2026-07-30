@@ -950,6 +950,11 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Handoff и submit от manual comment не зависят/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /filePaths/u);
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /не прикладывай все workspace-файлы/u,
+    );
     assert.equal(
       await getGitStatus(path.join(rootDirectory, "workspace")),
       "",
@@ -1679,7 +1684,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.9");
+  assert.equal(BRIDGE_VERSION, "1.6.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1813,6 +1818,10 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(skillMarkdown, /lastPublished\.coverageThroughAt/u);
   assert.match(skillMarkdown, /Never call `create_comment` for this proposal/u);
   assert.match(skillMarkdown, /do not pause the requested work/u);
+  assert.match(skillMarkdown, /After a successful task-scoped acceptance/u);
+  assert.match(skillMarkdown, /Include exact `filePaths`/u);
+  assert.match(skillMarkdown, /Do not attach every workspace file/u);
+  assert.match(skillMarkdown, /ordinary task attachments are created only when the operator publishes/u);
   assert.match(skillMarkdown, /Submission requires the meaningful handoff but never a manual task comment/u);
   assert.match(skillMarkdown, /work_completed/u);
   assert.match(skillMarkdown, /review_passed/u);
