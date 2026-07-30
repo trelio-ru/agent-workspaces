@@ -527,6 +527,15 @@ Trelio-монорепозитории быть не должно.
   стандартной локальной учёткой без административных прав. После публикации
   `1.6.4` backend minimum поднимается до этой версии; новых постоянных env,
   migration и OAuth scopes нет.
+- Patch `1.6.5` делает workspace object pointer переносимым между Git
+  checkout-ами. Канонический serializer по-прежнему пишет LF, а parser
+  дополнительно принимает полностью CRLF-файл, который Windows мог получить
+  через `core.autocrlf`. Смешанные line endings и одиночный carriage return
+  остаются fail-closed; SHA-256, size, content type, число строк и terminal
+  newline проверяются без послаблений. Regression обязан покрывать LF/CRLF как
+  string/Buffer и отклонять mixed/lone-CR. После публикации `1.6.5` backend
+  minimum поднимается до этой версии; новых постоянных env, migration и OAuth
+  scopes нет.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

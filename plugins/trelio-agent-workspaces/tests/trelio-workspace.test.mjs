@@ -1679,7 +1679,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.4");
+  assert.equal(BRIDGE_VERSION, "1.6.5");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -3445,6 +3445,16 @@ test("bridge recognizes exact object pointers and classifies binary bytes", asyn
     sizeBytes: 3,
     contentType: "application/octet-stream",
   });
+  assert.deepEqual(
+    parseWorkspaceObjectPointer(Buffer.from(pointer.replaceAll("\n", "\r\n"), "utf8")),
+    {
+      sha256: digest,
+      sizeBytes: 3,
+      contentType: "application/octet-stream",
+    },
+  );
+  assert.equal(parseWorkspaceObjectPointer(pointer.replace("\n", "\r\n")), null);
+  assert.equal(parseWorkspaceObjectPointer(pointer.replace("\n", "\r")), null);
   assert.equal(parseWorkspaceObjectPointer(`${pointer}\n`), null);
 
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-object-test-"));
