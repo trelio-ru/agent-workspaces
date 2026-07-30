@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
@@ -32,12 +33,14 @@ import {
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   hardenWindowsPrivatePath,
+  getGitStatus,
   inspectWorkspaceFile,
   isCodexPluginAutoUpdateEnvironment,
   isProtectedWorkspaceControlPath,
   isStableVersionAtLeast,
   isTransientCodexMarketplaceUpdateError,
   materializeRuntimeControlFiles,
+  ensureWorkspaceWorklog,
   normalizeAgentSkillPackagePath,
   openBrowser,
   parseAndValidateAgentSkillPackage,
@@ -930,9 +933,14 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       /Handoff и submit от manual comment не зависят/u,
     );
     assert.equal(
-      (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
+      await getGitStatus(path.join(rootDirectory, "workspace")),
       "",
-      "runtime-generated control files must stay outside candidate Git state",
+      "runtime control files and an untouched reproducible WORKLOG fallback must not make the Run dirty",
+    );
+    assert.equal(
+      (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
+      "?? WORKLOG.md\n",
+      "the default WORKLOG stays a normal candidate file once substantive Run changes exist",
     );
     assert.equal(
       (await runGit(path.join(rootDirectory, "workspace"), [
@@ -1653,7 +1661,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.1");
+  assert.equal(BRIDGE_VERSION, "1.6.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -3366,6 +3374,11 @@ test("runtime bootstrap replaces legacy tracked copies without entering a candid
     );
     await writeFile(path.join(workspaceDirectory, "CLAUDE.md"), "@AGENTS.md\n", "utf8");
     await writeFile(path.join(workspaceDirectory, "PROJECT_CONTEXT.md"), "# Контекст\n", "utf8");
+    await writeFile(
+      path.join(workspaceDirectory, "WORKLOG.md"),
+      "# Собственный формат журнала\n",
+      "utf8",
+    );
     await runGit(workspaceDirectory, ["add", "--all"]);
     await runGit(workspaceDirectory, ["commit", "-m", "Legacy workspace"]);
 
@@ -3378,6 +3391,11 @@ test("runtime bootstrap replaces legacy tracked copies without entering a candid
     assert.equal(
       await readFile(path.join(workspaceDirectory, "CLAUDE.md"), "utf8"),
       AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
+    );
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
+      "# Собственный формат журнала\n",
+      "saved workspace WORKLOG must never be replaced with a newer default",
     );
     assert.equal((await runGit(workspaceDirectory, ["status", "--porcelain"])).stdout, "");
 
@@ -3392,6 +3410,48 @@ test("runtime bootstrap replaces legacy tracked copies without entering a candid
     if (process.platform !== "win32") {
       await execFileAsync("chmod", ["-R", "u+w", workspaceDirectory]).catch(() => undefined);
     }
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge creates a default WORKLOG only when missing and preserves later edits", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-worklog-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "PROJECT_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Workspace without a worklog"]);
+
+    const created = await ensureWorkspaceWorklog(workspaceDirectory);
+    assert.deepEqual(created, { created: true, isDefault: true });
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
+      AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
+    );
+    assert.equal(
+      await getGitStatus(workspaceDirectory),
+      "",
+      "an untouched reproducible fallback must not make an abandoned Run permanently dirty",
+    );
+
+    await writeFile(
+      path.join(workspaceDirectory, "WORKLOG.md"),
+      "# Формат журнала компании\n",
+      "utf8",
+    );
+    assert.equal(await getGitStatus(workspaceDirectory), "?? WORKLOG.md");
+    assert.deepEqual(
+      await ensureWorkspaceWorklog(workspaceDirectory),
+      { created: false, isDefault: false },
+    );
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
+      "# Формат журнала компании\n",
+    );
+  } finally {
     await rm(workspaceDirectory, { recursive: true, force: true });
   }
 });
