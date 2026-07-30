@@ -1716,6 +1716,20 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
 });
 
+test("workspace skill recovers stale OAuth grants without discarding existing scopes", async () => {
+  const workspaceSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(workspaceSkill, /mcp\/www_authenticate/u);
+  assert.match(workspaceSkill, /`codex mcp login trelio`/u);
+  assert.match(workspaceSkill, /Do not log out first/u);
+  assert.match(workspaceSkill, /narrow the command to only the newly missing scope/u);
+  assert.match(workspaceSkill, /user must still review and approve/u);
+  assert.match(workspaceSkill, /retry the exact low-risk read once/u);
+});
+
 test("project access skill preserves owner-only plan/apply and moderator confirmation", async () => {
   const projectAccessSkill = await readFile(
     path.join(pluginDirectory, "skills", "trelio-project-access", "SKILL.md"),

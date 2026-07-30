@@ -41,6 +41,30 @@ Never claim that setup succeeded merely because the skill text is visible. A
 successful low-risk MCP read such as `get_my_context` or `get_task` is the
 readiness check.
 
+## Missing OAuth scopes
+
+If a Trelio MCP tool is present but reports that the current OAuth token lacks
+one or more `mcp:*` scopes, treat this as a stale grant rather than missing
+plugin setup or a Trelio ACL denial.
+
+1. Prefer the native OAuth reauthorization card triggered by the tool's
+   `mcp/www_authenticate` challenge. The user must still review and approve the
+   new permissions in the browser; never claim that consent can be bypassed.
+2. After the browser flow completes, retry the exact low-risk read once in the
+   current task. Do not replace it with browser access or another integration.
+3. If the current Codex host does not surface the native OAuth card, run
+   `codex mcp login trelio` yourself from the terminal. Do not log out first,
+   narrow the command to only the newly missing scope, print the authorization
+   URL, or inspect/copy stored credentials. The scope-less command asks Trelio
+   for its current complete grant, so existing rights are not accidentally
+   replaced by the single new permission.
+4. Wait for the command to finish while the user completes browser consent,
+   then retry the same read once. If the current task still uses the old
+   connection, ask for a new task; require a full Codex restart only if the new
+   task also keeps the stale grant.
+5. Outside Codex, use the host's native reconnect flow. Do not assume the Codex
+   CLI manages another host's credential store.
+
 ## Required plugin version
 
 Trelio intentionally requires the latest published stable version of
