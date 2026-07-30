@@ -140,7 +140,7 @@ export const resolveWorkspaceBridgeConfigDirectory = ({
     return path.win32.join(localAppData, "Trelio", "workspace-bridge");
   }
 
-  return path.join(homeDirectory, ".config", "trelio", "workspace-bridge");
+  return path.posix.join(homeDirectory, ".config", "trelio", "workspace-bridge");
 };
 
 const LEGACY_HOME_CONFIG_DIRECTORY = path.join(
