@@ -30,6 +30,7 @@ import {
   WINDOWS_PRIVATE_ACL_SCRIPT,
   applyAgentRulesHandshake,
   buildAgentSkillPackage,
+  buildWindowsPrivateAclPowerShellInvocation,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   hardenWindowsPrivatePath,
@@ -1678,7 +1679,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.2");
+  assert.equal(BRIDGE_VERSION, "1.6.3");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1988,15 +1989,56 @@ test("bridge private credential path and Windows ACL are explicit and user-scope
   assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /unexpected\.Count -ne 0/u);
 });
 
+test("Windows ACL command transports its path without PowerShell argument parsing", () => {
+  const targetPath = String.raw`C:\Users\Влад\App Data\Trelio\path with 'quotes' & symbols`;
+  const invocation = buildWindowsPrivateAclPowerShellInvocation(
+    targetPath,
+    "directory",
+  );
+
+  assert.equal(invocation.args.at(-2), "-Command");
+  assert.equal(invocation.args.at(-1), WINDOWS_PRIVATE_ACL_SCRIPT);
+  assert.equal(invocation.args.includes(targetPath), false);
+  assert.equal(
+    Buffer.from(
+      invocation.environment.TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64,
+      "base64",
+    ).toString("utf8"),
+    targetPath,
+  );
+  assert.equal(
+    invocation.environment.TRELIO_WINDOWS_PRIVATE_ACL_KIND,
+    "directory",
+  );
+  assert.match(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /GetEnvironmentVariable\(\s*"TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64"/u,
+  );
+  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /^param\(/mu);
+  assert.throws(
+    () => buildWindowsPrivateAclPowerShellInvocation("", "directory"),
+    /non-empty string/u,
+  );
+  assert.throws(
+    () => buildWindowsPrivateAclPowerShellInvocation(targetPath, "junction"),
+    /Unsupported Windows private path kind/u,
+  );
+});
+
 test("Windows bridge applies and verifies a current-user-only ACL", {
   skip: process.platform !== "win32",
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-windows-acl-"));
-  const credentialFile = path.join(temporaryDirectory, "credentials.json");
+  const privateDirectory = path.join(
+    temporaryDirectory,
+    "private path with spaces ' and Unicode Ж",
+  );
+  const credentialFile = path.join(privateDirectory, "credentials.json");
 
   try {
+    await mkdir(privateDirectory);
     await writeFile(credentialFile, "{}\n", "utf8");
-    await hardenWindowsPrivatePath(temporaryDirectory, "directory");
+    await hardenWindowsPrivatePath(privateDirectory, "directory");
     await hardenWindowsPrivatePath(credentialFile, "file");
     assert.equal((await stat(credentialFile)).isFile(), true);
   } finally {

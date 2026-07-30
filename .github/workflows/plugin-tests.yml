@@ -1,0 +1,45 @@
+name: Plugin tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  node-tests:
+    name: Node tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Keep the exact test paths explicit so every runner, including Windows
+      # PowerShell, passes the same files to Node without shell-specific glob
+      # expansion. The Windows job executes the real private-ACL integration
+      # test that POSIX runners intentionally skip.
+      - name: Run plugin Node tests
+        run: >-
+          node --test
+          plugins/trelio-agent-workspaces/tests/trelio-messaging.test.mjs
+          plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
+          plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
+          plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs

@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.2";
+export const BRIDGE_VERSION = "1.6.3";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
@@ -590,8 +590,31 @@ const deleteKeychainValue = async (service, origin) => {
 };
 
 export const WINDOWS_PRIVATE_ACL_SCRIPT = String.raw`
-param([string]$TargetPath, [string]$TargetKind)
 $ErrorActionPreference = "Stop"
+$encodedTargetPath = [Environment]::GetEnvironmentVariable(
+  "TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64",
+  [EnvironmentVariableTarget]::Process
+)
+$TargetKind = [Environment]::GetEnvironmentVariable(
+  "TRELIO_WINDOWS_PRIVATE_ACL_KIND",
+  [EnvironmentVariableTarget]::Process
+)
+if ([string]::IsNullOrWhiteSpace($encodedTargetPath)) {
+  throw "Private path transport is missing."
+}
+try {
+  $TargetPath = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($encodedTargetPath)
+  )
+} catch {
+  throw "Private path transport decoding failed."
+}
+if ([string]::IsNullOrWhiteSpace($TargetPath)) {
+  throw "Private path transport decoded an empty path."
+}
+if ($TargetKind -ne "directory" -and $TargetKind -ne "file") {
+  throw "Private path kind is invalid."
+}
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($TargetKind -eq "directory") {
   $acl = New-Object System.Security.AccessControl.DirectorySecurity
@@ -635,19 +658,50 @@ if ($unexpected.Count -ne 0) {
 }
 `;
 
+export const buildWindowsPrivateAclPowerShellInvocation = (targetPath, targetKind) => {
+  if (typeof targetPath !== "string" || targetPath.length === 0) {
+    throw new Error("Windows private path must be a non-empty string.");
+  }
+  if (targetKind !== "directory" && targetKind !== "file") {
+    throw new Error(`Unsupported Windows private path kind: ${targetKind}`);
+  }
+
+  return {
+    args: [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      WINDOWS_PRIVATE_ACL_SCRIPT,
+    ],
+    environment: {
+      // Windows PowerShell treats everything following `-Command` as command
+      // text rather than positional parameters for a leading `param(...)`
+      // block. Transport the path through the child-process environment so
+      // spaces, Unicode and PowerShell metacharacters never participate in
+      // parsing. Base64 keeps the environment value scalar and lossless.
+      TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64: Buffer.from(
+        targetPath,
+        "utf8",
+      ).toString("base64"),
+      TRELIO_WINDOWS_PRIVATE_ACL_KIND: targetKind,
+    },
+  };
+};
+
 export const hardenWindowsPrivatePath = async (targetPath, targetKind) => {
-  await execFileAsync("powershell.exe", [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    WINDOWS_PRIVATE_ACL_SCRIPT,
+  const invocation = buildWindowsPrivateAclPowerShellInvocation(
     targetPath,
     targetKind,
-  ], {
+  );
+  await execFileAsync("powershell.exe", invocation.args, {
     encoding: "utf8",
+    env: {
+      ...process.env,
+      ...invocation.environment,
+    },
     windowsHide: true,
   });
 };
