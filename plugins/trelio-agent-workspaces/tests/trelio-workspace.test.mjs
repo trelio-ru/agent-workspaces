@@ -1684,7 +1684,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.10");
+  assert.equal(BRIDGE_VERSION, "1.6.11");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1760,6 +1760,22 @@ test("project access skill preserves owner-only plan/apply and moderator confirm
   );
   assert.match(projectAccessSkill, /full project PATCH/u);
   assert.doesNotMatch(projectAccessSkill, /\[TODO:/u);
+});
+
+test("workspace skill transfers dossiers only with two-sided management authority", async () => {
+  const workspaceSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(workspaceSkill, /plan_dossier_transfer/u);
+  assert.match(workspaceSkill, /apply_dossier_transfer/u);
+  assert.match(workspaceSkill, /management rights on both sides/u);
+  assert.match(workspaceSkill, /linked task never satisfies either check/u);
+  assert.match(workspaceSkill, /confirmCompanyWideAccess: true/u);
+  assert.match(workspaceSkill, /DOSSIER_TRANSFER_OUTDATED/u);
+  assert.match(workspaceSkill, /Do not cancel another Run/u);
+  assert.match(workspaceSkill, /dossier UUID, accepted Git\s+history, revisions, and every task link must remain unchanged/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {

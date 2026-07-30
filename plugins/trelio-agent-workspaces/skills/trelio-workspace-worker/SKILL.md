@@ -195,6 +195,43 @@ Discover additional context autonomously when it is likely to change the quality
 
 When the requested work itself needs to connect tasks, prefer `create_task_relation` for an ordinary pair. Describe `relationType` in precise human language for that pair; suggestions such as “Блокирует” are examples, not an enum. Set `isDirectional` only when source-to-target order matters. Create a work case only when multiple tasks genuinely represent one shared subject from different perspectives, and pass a stable unique `clientRequestId` to `create_work_case`. Do not force unrelated or merely adjacent tasks into a case.
 
+## Transfer an existing dossier
+
+Move a dossier only through the guarded owner-transfer flow. Transfer changes
+the direct reader and management scope; it does not create a second dossier.
+
+1. Resolve the exact existing `dossierId`, current owner, company, and target
+   project or company. Never infer a target from a similar project name.
+2. Call `plan_dossier_transfer` before every transfer. The authenticated user
+   must independently have management rights on both sides:
+   - company scope requires company owner/admin;
+   - project scope requires project admin or company owner/admin.
+   Read-only access inherited from a linked task never satisfies either check.
+3. Inspect and preserve the complete plan: source and target, permission checks,
+   linked-task count, open-Run count, warnings, and actor-bound
+   `expectedStateHash`. Do not copy workspace files, create a replacement
+   dossier, or unlink tasks as an implementation of transfer.
+4. When the user's current request already identifies the exact dossier and
+   exact target project, that direct instruction is sufficient to apply the
+   current project-target plan. If the agent suggested the move, selected the
+   target, or resolved an ambiguity, show the complete plan and wait for
+   explicit confirmation.
+5. A transfer to company scope always widens direct reading to every active
+   company member. Provide a concrete `companyScopeReason`, show the plan, and
+   wait for a separate explicit confirmation before passing
+   `confirmCompanyWideAccess: true`.
+6. Do not apply while the plan reports unfinished `running`,
+   `waiting_for_human`, legacy `review`, or claimable `expired` Runs.
+   Do not cancel another Run merely to unblock transfer; finish it normally or
+   obtain explicit authority to cancel it, then prepare a fresh plan.
+7. Call `apply_dossier_transfer` with the exact target, reason when applicable,
+   `expectedStateHash`, and a stable `clientRequestId`. Never reuse the hash
+   with another actor or target. On `DOSSIER_TRANSFER_OUTDATED`, read a fresh
+   plan and reassess it instead of retrying stale state.
+8. Verify the returned owner after apply. The dossier UUID, accepted Git
+   history, revisions, and every task link must remain unchanged; only its
+   owner scope and parent company/project context change.
+
 ## Use task controls deliberately
 
 `get_task` returns every active shared control visible on the task and only the

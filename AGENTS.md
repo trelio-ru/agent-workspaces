@@ -470,6 +470,17 @@ Trelio-монорепозитории быть не должно.
   явным подтверждением широкой видимости. Досье остаётся agent-only субъектом
   без web-страницы; участник связанной задачи получает только read-only доступ,
   а write, Run и управление связями требуют независимых owner-scope прав.
+- Patch `1.6.11` добавляет перенос существующего досье через отдельный guarded
+  `plan_dossier_transfer` / `apply_dossier_transfer` flow. Actor обязан
+  независимо управлять исходной и целевой областью; task-derived read не
+  подходит. Plan привязан к actor, target, текущему owner, workspace head,
+  task links и открытым Run. Незавершённый или claimable expired Run блокирует
+  перенос, company target всегда требует причины и отдельного подтверждения
+  широкой видимости.
+  Операция сохраняет dossier UUID, Git-историю, ревизии и task links, меняя
+  только owner scope и parent context. Новых migration, env и OAuth scopes нет.
+  После публикации `1.6.11` live plugin policy Trelio поднимает latest/minimum
+  до этой версии.
 - Backend meeting contract хранит расшифровку и свободный итог в отдельной
   private agent-only сущности с exact ACL, а не в Agent Workspace. Подтверждённый
   участник может получить viewer-доступ; упомянутый или неразрешённый человек
