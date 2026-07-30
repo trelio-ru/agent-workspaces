@@ -62,3 +62,10 @@ jobs:
           node --test
           --test-name-pattern="Windows ACL command|Windows bridge applies"
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
+
+      # GitHub's Windows runner account is an administrator. Re-run the real
+      # bridge guard as a disposable standard user so an accidental dependency
+      # on SeSecurityPrivilege or another elevated token right fails in CI.
+      - name: Run Windows ACL regression as a standard user
+        shell: pwsh
+        run: ./.github/scripts/run-windows-acl-standard-user.ps1

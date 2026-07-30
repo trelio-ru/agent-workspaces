@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.3";
+export const BRIDGE_VERSION = "1.6.4";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
@@ -591,12 +591,6 @@ const deleteKeychainValue = async (service, origin) => {
 
 export const WINDOWS_PRIVATE_ACL_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
-$securityModuleManifest = Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
-# Codex can inherit PSModulePath from PowerShell 7 while this guard deliberately
-# runs Windows PowerShell 5.1. Import the inbox security module by its trusted
-# PSHOME path so Set-Acl/Get-Acl do not depend on the parent's module search
-# path or profile.
-Import-Module -Name $securityModuleManifest -ErrorAction Stop
 $encodedTargetPath = [Environment]::GetEnvironmentVariable(
   "TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64",
   [EnvironmentVariableTarget]::Process
@@ -623,6 +617,7 @@ if ($TargetKind -ne "directory" -and $TargetKind -ne "file") {
 }
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($TargetKind -eq "directory") {
+  $targetInfo = New-Object System.IO.DirectoryInfo($TargetPath)
   $acl = New-Object System.Security.AccessControl.DirectorySecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     $sid,
@@ -632,6 +627,7 @@ if ($TargetKind -eq "directory") {
     [System.Security.AccessControl.AccessControlType]::Allow
   )
 } else {
+  $targetInfo = New-Object System.IO.FileInfo($TargetPath)
   $acl = New-Object System.Security.AccessControl.FileSecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     $sid,
@@ -639,19 +635,38 @@ if ($TargetKind -eq "directory") {
     [System.Security.AccessControl.AccessControlType]::Allow
   )
 }
-$acl.SetOwner($sid)
+
+# The bridge creates the private directory and credential file itself, so the
+# current user must already own them. Verify that invariant instead of trying
+# to rewrite the Owner section, which would require elevated token privileges
+# on some Windows configurations.
+$ownerSecurity = $targetInfo.GetAccessControl(
+  [System.Security.AccessControl.AccessControlSections]::Owner
+)
+$ownerSid = $ownerSecurity.GetOwner(
+  [System.Security.Principal.SecurityIdentifier]
+).Value
+if ($ownerSid -ne $sid.Value) {
+  throw "Private path owner verification failed before ACL update."
+}
+
+# Only these two calls mark the discretionary ACL (DACL) as modified. Persist
+# it through the typed .NET API so Owner, Group and the system audit ACL (SACL)
+# are not requested from Windows. Set-Acl may include extra descriptor sections
+# and can consequently demand SeSecurityPrivilege from a normal desktop user.
 $acl.SetAccessRuleProtection($true, $false)
 $acl.SetAccessRule($rule)
-Set-Acl -LiteralPath $TargetPath -AclObject $acl
+$targetInfo.SetAccessControl($acl)
 
-$verified = Get-Acl -LiteralPath $TargetPath
-$ownerSid = $verified.Owner
-try {
-  $ownerSid = ([System.Security.Principal.NTAccount]$verified.Owner).Translate(
-    [System.Security.Principal.SecurityIdentifier]
-  ).Value
-} catch {}
-if ($ownerSid -ne $sid.Value) {
+$verificationSections = (
+  [System.Security.AccessControl.AccessControlSections]::Access -bor
+  [System.Security.AccessControl.AccessControlSections]::Owner
+)
+$verified = $targetInfo.GetAccessControl($verificationSections)
+$verifiedOwnerSid = $verified.GetOwner(
+  [System.Security.Principal.SecurityIdentifier]
+).Value
+if ($verifiedOwnerSid -ne $sid.Value) {
   throw "Private path owner verification failed."
 }
 $unexpected = @($verified.Access | Where-Object {
@@ -661,6 +676,16 @@ $unexpected = @($verified.Access | Where-Object {
 })
 if ($unexpected.Count -ne 0) {
   throw "Private path ACL verification failed."
+}
+$expected = @($verified.Access | Where-Object {
+  $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value -and
+  $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+  -not $_.IsInherited -and
+  ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -eq
+    [System.Security.AccessControl.FileSystemRights]::FullControl
+})
+if ($expected.Count -eq 0) {
+  throw "Private path current-user ACL verification failed."
 }
 `;
 
