@@ -494,6 +494,18 @@ Trelio-монорепозитории быть не должно.
   fallback-шаблон не делает брошенный локальный Run dirty; при появлении
   содержательной записи обычный candidate сохраняет и шаблон, и новый файл.
   После публикации `1.6.2` backend minimum поднимается до этой версии.
+- Patch `1.6.3` исправляет Windows ACL guard локальных приватных путей.
+  `powershell.exe -Command` не получает path/kind отдельными позиционными
+  аргументами: Windows PowerShell не связывает их с начальным `param(...)`, и
+  `$TargetPath` мог оставаться пустым. Bridge передаёт UTF-8 Base64 пути и
+  фиксированный `directory` / `file` через environment только дочернего
+  процесса, валидирует transport до `Set-Acl`, а inbox-модуль
+  `Microsoft.PowerShell.Security` загружает по доверенному `$PSHOME`, независимо
+  от унаследованного `PSModulePath`. Fail-closed проверка владельца и отсутствия
+  посторонних ACL сохраняется. Регрессия обязана покрывать пробелы, Unicode и
+  PowerShell-метасимволы в пути и выполняться на реальном Windows runner. После
+  публикации `1.6.3` backend minimum поднимается до этой версии; новых
+  постоянных env, migration и OAuth scopes нет.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

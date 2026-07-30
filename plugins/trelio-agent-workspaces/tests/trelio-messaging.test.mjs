@@ -33,7 +33,12 @@ test("MAX local policy defaults to confirm and keeps state outside workspace", (
   try {
     const options = parseArguments([...identityArguments, "doctor"]);
     assert.deepEqual(loadPolicy(options), { sendMode: "confirm" });
-    assert.match(connectionRoot(options), /integrations\/max-web/u);
+    assert.equal(
+      connectionRoot(options).includes(
+        path.join("integrations", "max-web"),
+      ),
+      true,
+    );
     assert.doesNotMatch(connectionRoot(options), /\.trelio/u);
   } finally {
     if (previousConfigHome === undefined) delete process.env.TRELIO_CONFIG_HOME;
