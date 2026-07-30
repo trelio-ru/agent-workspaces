@@ -1802,6 +1802,34 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.doesNotMatch(bridgeSource, /task-comment/u);
 });
 
+test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {
+  const skillMarkdown = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+
+  for (const toolName of [
+    "create_meeting",
+    "set_meeting_access",
+    "record_meeting_result",
+    "plan_meeting_context_updates",
+    "confirm_meeting_context_updates",
+    "record_meeting_context_update_outcome",
+  ]) {
+    assert.match(skillMarkdown, new RegExp(toolName, "u"));
+  }
+
+  assert.match(skillMarkdown, /not a fifth Agent\s+Workspace scope/u);
+  assert.match(skillMarkdown, /do not put the full transcript/u);
+  assert.match(skillMarkdown, /mentioned or unresolved\s+person/u);
+  assert.match(skillMarkdown, /expectedAccessRevision/u);
+  assert.match(skillMarkdown, /one free-form Markdown document/u);
+  assert.match(skillMarkdown, /one task,\s+or many targets/u);
+  assert.match(skillMarkdown, /Show the complete target-grouped list/u);
+  assert.match(skillMarkdown, /never grants task\s+participants access to the meeting/u);
+  assert.match(skillMarkdown, /never silently rewrite already distributed workspaces/u);
+});
+
 test("workspace skill and protected runtime preserve task control privacy and notification semantics", async () => {
   const skillMarkdown = await readFile(
     path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
