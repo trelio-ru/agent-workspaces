@@ -2014,6 +2014,10 @@ test("Windows ACL command transports its path without PowerShell argument parsin
     WINDOWS_PRIVATE_ACL_SCRIPT,
     /GetEnvironmentVariable\(\s*"TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64"/u,
   );
+  assert.match(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /\$PSHOME[\s\S]*Microsoft\.PowerShell\.Security\.psd1/u,
+  );
   assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /^param\(/mu);
   assert.throws(
     () => buildWindowsPrivateAclPowerShellInvocation("", "directory"),

@@ -9,7 +9,9 @@ Patch `1.6.3` исправляет Windows-запуск приватного ACL
 которые Windows PowerShell не связывает с начальным `param(...)`. Путь
 передаётся в environment дочернего процесса как UTF-8 Base64, проверяется и
 декодируется до `Set-Acl`; пробелы, Unicode и PowerShell-метасимволы не
-участвуют в разборе команды. Guard по-прежнему fail-closed устанавливает и
+участвуют в разборе команды. Inbox-модуль `Microsoft.PowerShell.Security`
+загружается по доверенному пути `$PSHOME`, а не через унаследованный от
+PowerShell 7 `PSModulePath`. Guard по-прежнему fail-closed устанавливает и
 повторно проверяет ACL только текущего пользователя. После публикации `1.6.3`
 backend patch поднимает общий hard minimum до этой версии; миграции, новые
 постоянные env и OAuth scopes не требуются.

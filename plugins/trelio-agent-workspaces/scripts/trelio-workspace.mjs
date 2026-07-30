@@ -591,6 +591,12 @@ const deleteKeychainValue = async (service, origin) => {
 
 export const WINDOWS_PRIVATE_ACL_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
+$securityModuleManifest = Join-Path $PSHOME "Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1"
+# Codex can inherit PSModulePath from PowerShell 7 while this guard deliberately
+# runs Windows PowerShell 5.1. Import the inbox security module by its trusted
+# PSHOME path so Set-Acl/Get-Acl do not depend on the parent's module search
+# path or profile.
+Import-Module -Name $securityModuleManifest -ErrorAction Stop
 $encodedTargetPath = [Environment]::GetEnvironmentVariable(
   "TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64",
   [EnvironmentVariableTarget]::Process

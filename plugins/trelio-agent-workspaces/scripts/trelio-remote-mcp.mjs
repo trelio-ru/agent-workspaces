@@ -195,7 +195,7 @@ const resolveTrelioConfigHome = ({
   environment = process.env,
   homeDirectory = os.homedir(),
 } = {}) => {
-  const pathModule = platform === "win32" ? path.win32 : path;
+  const pathModule = platform === "win32" ? path.win32 : path.posix;
   if (environment.TRELIO_CONFIG_HOME) {
     return pathModule.resolve(String(environment.TRELIO_CONFIG_HOME));
   }
@@ -205,7 +205,7 @@ const resolveTrelioConfigHome = ({
           || path.win32.join(environment.USERPROFILE || homeDirectory, "AppData", "Local"),
         "Trelio",
       )
-    : path.join(homeDirectory, ".config", "trelio");
+    : path.posix.join(homeDirectory, ".config", "trelio");
 };
 
 export const resolveRemoteMcpCredentialFile = (identity, options = {}) => {
@@ -220,7 +220,7 @@ export const resolveRemoteMcpCredentialFile = (identity, options = {}) => {
   }
   const pathModule = (options.platform ?? process.platform) === "win32"
     ? path.win32
-    : path;
+    : path.posix;
   return pathModule.join(
     resolveTrelioConfigHome(options),
     "integrations",
