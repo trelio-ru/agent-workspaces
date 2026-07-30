@@ -1991,8 +1991,12 @@ test("bridge private credential path and Windows ACL are explicit and user-scope
     /GetAccessControl\([\s\S]*AccessControlSections\]::Owner/u,
   );
   assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /\$targetInfo\.SetAccessControl\(\$acl\)/u);
+  assert.match(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /\$ownerAcl\.SetOwner\(\$sid\)[\s\S]*\$targetInfo\.SetAccessControl\(\$ownerAcl\)/u,
+  );
   assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /(?:^|\n)\s*Set-Acl\b/u);
-  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /\.SetOwner\(/u);
+  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /\$acl\.SetOwner\(/u);
   assert.doesNotMatch(
     WINDOWS_PRIVATE_ACL_SCRIPT,
     /AccessControlSections\]::Audit/u,

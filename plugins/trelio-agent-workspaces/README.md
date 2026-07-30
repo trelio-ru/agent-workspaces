@@ -6,8 +6,9 @@ Trelio уровня компании, проекта, досье и задачи
 
 Patch `1.6.4` убирает зависимость Windows ACL guard от повышенной
 `SeSecurityPrivilege`. Guard больше не передаёт целый security descriptor в
-`Set-Acl`: он отдельно проверяет владельца и через typed .NET API записывает
-только DACL с FullControl текущего SID. Owner, Group и SACL не меняются.
+`Set-Acl`: он отдельно читает владельца, при необходимости нормализует его
+owner-only descriptor-ом и другой операцией typed .NET API записывает только
+DACL с FullControl текущего SID. Group и SACL не запрашиваются для записи.
 Реальный Windows regression выполняется также под отдельной стандартной
 локальной учёткой и повторяет hardening существующего файла. После публикации
 `1.6.4` backend patch поднимает общий hard minimum до этой версии; миграции,

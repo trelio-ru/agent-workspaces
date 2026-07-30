@@ -618,6 +618,7 @@ if ($TargetKind -ne "directory" -and $TargetKind -ne "file") {
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($TargetKind -eq "directory") {
   $targetInfo = New-Object System.IO.DirectoryInfo($TargetPath)
+  $ownerAcl = New-Object System.Security.AccessControl.DirectorySecurity
   $acl = New-Object System.Security.AccessControl.DirectorySecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     $sid,
@@ -628,6 +629,7 @@ if ($TargetKind -eq "directory") {
   )
 } else {
   $targetInfo = New-Object System.IO.FileInfo($TargetPath)
+  $ownerAcl = New-Object System.Security.AccessControl.FileSecurity
   $acl = New-Object System.Security.AccessControl.FileSecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
     $sid,
@@ -636,10 +638,11 @@ if ($TargetKind -eq "directory") {
   )
 }
 
-# The bridge creates the private directory and credential file itself, so the
-# current user must already own them. Verify that invariant instead of trying
-# to rewrite the Owner section, which would require elevated token privileges
-# on some Windows configurations.
+# A normal desktop user already owns paths created by this bridge. Elevated
+# Windows processes can instead assign the Administrators group as owner. In
+# that exceptional case, persist an Owner-only descriptor before touching the
+# DACL. Keeping the descriptor sections separate prevents either operation from
+# requesting the system audit ACL (SACL) or SeSecurityPrivilege.
 $ownerSecurity = $targetInfo.GetAccessControl(
   [System.Security.AccessControl.AccessControlSections]::Owner
 )
@@ -647,13 +650,23 @@ $ownerSid = $ownerSecurity.GetOwner(
   [System.Security.Principal.SecurityIdentifier]
 ).Value
 if ($ownerSid -ne $sid.Value) {
-  throw "Private path owner verification failed before ACL update."
+  $ownerAcl.SetOwner($sid)
+  $targetInfo.SetAccessControl($ownerAcl)
+  $ownerSecurity = $targetInfo.GetAccessControl(
+    [System.Security.AccessControl.AccessControlSections]::Owner
+  )
+  $ownerSid = $ownerSecurity.GetOwner(
+    [System.Security.Principal.SecurityIdentifier]
+  ).Value
+  if ($ownerSid -ne $sid.Value) {
+    throw "Private path owner update verification failed."
+  }
 }
 
 # Only these two calls mark the discretionary ACL (DACL) as modified. Persist
 # it through the typed .NET API so Owner, Group and the system audit ACL (SACL)
-# are not requested from Windows. Set-Acl may include extra descriptor sections
-# and can consequently demand SeSecurityPrivilege from a normal desktop user.
+# are not requested together. Set-Acl may include extra descriptor sections and
+# can consequently demand SeSecurityPrivilege from a normal desktop user.
 $acl.SetAccessRuleProtection($true, $false)
 $acl.SetAccessRule($rule)
 $targetInfo.SetAccessControl($acl)
