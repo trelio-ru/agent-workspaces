@@ -536,14 +536,14 @@ Trelio-монорепозитории быть не должно.
   string/Buffer и отклонять mixed/lone-CR. После публикации `1.6.5` backend
   minimum поднимается до этой версии; новых постоянных env, migration и OAuth
   scopes нет.
-- Следующий plugin patch должен уметь восстанавливать устаревший OAuth grant
+- Patch `1.6.6` восстанавливает устаревший OAuth grant
   без ручной навигации в Plugins. Сначала агент использует нативную карточку,
   которую Trelio MCP инициирует через `mcp/www_authenticate`; если текущий
   Codex host её не показал, агент сам запускает `codex mcp login trelio`,
   ждёт browser consent и повторяет исходный low-risk read. Пользователь всё
   равно явно подтверждает новые права; logout, копирование credential и
   авторизация только одним новым scope запрещены, чтобы не потерять уже
-  выданные права. Версия и tag меняются только в отдельном release-flow.
+  выданные права. Новых постоянных env и plugin-side OAuth scopes нет.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio
