@@ -328,6 +328,13 @@ owner-only descriptor-ом, если elevated-процесс создал пут
 backend patch поднимает общий minimum до этой версии; миграции, новые
 постоянные env и OAuth scopes не требуются.
 
+Patch release `1.6.5` делает workspace object pointer совместимым с Windows
+checkout: parser принимает канонический LF и полностью CRLF-файл, который мог
+создать `core.autocrlf`. Mixed line endings и одиночный carriage return
+отклоняются, а SHA-256, размер, content type и точная структура остаются
+fail-closed. Большие исходные файлы и Excel-модели не переписываются. После
+публикации `1.6.5` backend patch поднимает общий minimum до этой версии.
+
 После обновления начните новую задачу или перечитайте plugins штатной командой
 клиента; полный restart оставьте только для случая, когда новый контекст всё
 ещё использует старую версию. Источник, закреплённый на `--ref vX.Y.Z`,

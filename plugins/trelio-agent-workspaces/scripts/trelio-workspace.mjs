@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.4";
+export const BRIDGE_VERSION = "1.6.5";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
@@ -2042,7 +2042,21 @@ const writeResponseToFile = async (response, destination) => {
 };
 
 export const parseWorkspaceObjectPointer = (value) => {
-  const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
+  const rawText = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
+  let text = rawText;
+
+  if (rawText.includes("\r")) {
+    // Git can check out this small text pointer with CRLF on Windows even
+    // though the canonical bridge serializer writes LF. Accept one uniform
+    // line-ending convention only: mixed endings and lone carriage returns
+    // remain invalid so normalization cannot hide malformed pointer content.
+    const contentWithoutCrLf = rawText.replaceAll("\r\n", "");
+
+    if (contentWithoutCrLf.includes("\r") || contentWithoutCrLf.includes("\n")) {
+      return null;
+    }
+    text = rawText.replaceAll("\r\n", "\n");
+  }
   const lines = text.split("\n");
 
   if (
