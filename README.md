@@ -367,6 +367,10 @@ Patch release `1.6.6` позволяет агенту восстановить �
 подтверждает новые права, а повторный grant сохраняет ранее выданные scopes.
 Миграции и новые постоянные env не требуются.
 
+Patch release `1.6.9` поднимает кадровый 1С runtime до `1.0.5`, потому что
+immutable production version `1.0.4` уже занята прежним shared-provider
+артефактом. Поведение независимого browser-first подключения не меняется.
+
 Patch release `1.6.8` переводит Email setup с нативных окон на защищённую
 browser-first loopback-страницу, добавляет каноническое предупреждение о
 возможном password-manager prompt в Email, Remote MCP, Telegram 2FA и 1С и

@@ -30,7 +30,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.0.4"
+RUNTIME_VERSION = "1.0.5"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_QUERY_CHARS = 200

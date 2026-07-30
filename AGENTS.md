@@ -359,7 +359,7 @@ Trelio-монорепозитории быть не должно.
 - Company-private runtime `1c-vkus-kadry` назначается только проекту
   `vkus/kadrovyy-uchet`, использует собственные company connection, X-OData,
   connection id и локальный namespace `integrations/1c-vkus-kadry/...`.
-  Runtime `1.0.4` добавляет собственные browser-first `connect`, `doctor`,
+  Runtime `1.0.5` добавляет собственные browser-first `connect`, `doctor`,
   `access-status` и `forget-credentials`; legacy lookup и перенос credentials
   из `1c-edo` отсутствуют. Навык содержит полный signed кадровый registry с
   отдельными ограничениями чувствительных данных и точечных вложений. Начиная
@@ -593,6 +593,9 @@ Trelio-монорепозитории быть не должно.
   1С-навыка. `autocomplete=off` остаётся только best-effort hint; нативные окна
   ОС не используются, terminal fallback допустим лишь явным флагом в видимом
   TTY.
+- Patch `1.6.9` резервирует новый immutable runtime `1.0.5` для кадрового
+  1С-навыка: production `1.0.4` уже был опубликован со старым shared-provider
+  контуром и не перезаписывается.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

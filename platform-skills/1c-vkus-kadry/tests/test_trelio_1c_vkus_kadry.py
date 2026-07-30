@@ -51,8 +51,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.4")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.4")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.5")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.5")
         self.assertEqual(
             MODULE.provider.SUPPORTED_SKILL_IDS,
             {MODULE.HR_SKILL_ID},
