@@ -465,6 +465,12 @@ Trelio-монорепозитории быть не должно.
   содержательные локальные результаты, теперь публикуются backend-ом без
   plugin release; безопасность, transport и обязанность прочитать pinned
   `context/agent-instructions.md` остаются в универсальном bootstrap плагина.
+- Backend snapshot schema `3` может добавлять управляемую company-политику
+  плановых проверок в `followUpPolicy`; transport плагина не интерпретирует
+  эту metadata и материализует exact `compiledMarkdown`. Такой backend patch
+  совместим с plugin `1.6.2` и не требует изменения manifest/minimum, пока
+  bridge regression подтверждает присутствие текста политики в
+  `context/agent-instructions.md`.
 - Patch `1.6.1` добавляет отдельный `trelio-project-access` для точечного
   изменения прямой роли проекта только владельцем или администратором компании.
   Агент обязан разрешить exact `memberId`, вызвать

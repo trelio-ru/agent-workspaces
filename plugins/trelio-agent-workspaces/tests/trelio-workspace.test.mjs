@@ -793,7 +793,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
               },
             },
             agentInstructionsSnapshotJson: {
-              schemaVersion: 2,
+              // Backend может добавлять управляемые policy metadata без
+              // обновления transport: bridge обязан материализовать exact
+              // compiledMarkdown и не отбрасывать новую инструкцию.
+              schemaVersion: 3,
               platform: {
                 revisionId: platformRulesRevisionId,
                 version: 1,
@@ -802,10 +805,20 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
               },
               company: null,
               project: null,
+              followUpPolicy: {
+                mode: "confirm",
+                revisionId: null,
+                version: 0,
+                instructionsMarkdown: "Спроси пользователя перед созданием автопроверки.",
+              },
               compiledMarkdown: [
                 "# Рабочие правила агентов Trelio",
                 "",
                 platformRulesMarkdown.trim(),
+                "",
+                "## Плановые проверки агентом",
+                "",
+                "Спроси пользователя перед созданием автопроверки.",
                 "",
               ].join("\n"),
             },
@@ -917,6 +930,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.match(
       await readFile(path.join(rootDirectory, "context", "agent-instructions.md"), "utf8"),
       /Маркер проверенного правила локальных ссылок/u,
+    );
+    assert.match(
+      await readFile(path.join(rootDirectory, "context", "agent-instructions.md"), "utf8"),
+      /Спроси пользователя перед созданием автопроверки/u,
     );
     const contextIndex = JSON.parse(
       await readFile(path.join(rootDirectory, "context", "index.json"), "utf8"),
