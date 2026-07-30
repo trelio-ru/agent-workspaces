@@ -4,11 +4,21 @@
 Trelio уровня компании, проекта, досье и задачи, а также с актуальными навыками,
 которые компания или отдельный проект включили для агентов.
 
+Patch `1.6.4` убирает зависимость Windows ACL guard от повышенной
+`SeSecurityPrivilege`. Guard больше не передаёт целый security descriptor в
+`Set-Acl`: он отдельно читает владельца, при необходимости нормализует его
+owner-only descriptor-ом и другой операцией typed .NET API записывает только
+DACL с FullControl текущего SID. Group и SACL не запрашиваются для записи.
+Реальный Windows regression выполняется также под отдельной стандартной
+локальной учёткой и повторяет hardening существующего файла. После публикации
+`1.6.4` backend patch поднимает общий hard minimum до этой версии; миграции,
+новые постоянные env и OAuth scopes не требуются.
+
 Patch `1.6.3` исправляет Windows-запуск приватного ACL guard. Bridge больше не
 передаёт путь и тип отдельными аргументами после `powershell.exe -Command`,
 которые Windows PowerShell не связывает с начальным `param(...)`. Путь
 передаётся в environment дочернего процесса как UTF-8 Base64, проверяется и
-декодируется до `Set-Acl`; пробелы, Unicode и PowerShell-метасимволы не
+декодируется до ACL-операции; пробелы, Unicode и PowerShell-метасимволы не
 участвуют в разборе команды. Inbox-модуль `Microsoft.PowerShell.Security`
 загружается по доверенному пути `$PSHOME`, а не через унаследованный от
 PowerShell 7 `PSModulePath`. Guard по-прежнему fail-closed устанавливает и

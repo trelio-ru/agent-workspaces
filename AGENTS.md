@@ -506,6 +506,17 @@ Trelio-монорепозитории быть не должно.
   PowerShell-метасимволы в пути и выполняться на реальном Windows runner. После
   публикации `1.6.3` backend minimum поднимается до этой версии; новых
   постоянных env, migration и OAuth scopes нет.
+- Patch `1.6.4` устраняет зависимость Windows ACL guard от повышенной
+  `SeSecurityPrivilege`. Bridge читает Owner отдельно; обычный пользователь уже
+  владеет созданным им путём, а elevated-процесс при необходимости нормализует
+  Owner отдельным owner-only descriptor. Затем typed .NET API другой операцией
+  сохраняет только защищённый DACL с FullControl текущего SID. Group и SACL не
+  запрашиваются для записи, owner и DACL не смешиваются, `Set-Acl` не
+  используется. Windows regression обязан запускать реальный guard повторно
+  для каталога и существующего файла как под runner-ом, так и под отдельной
+  стандартной локальной учёткой без административных прав. После публикации
+  `1.6.4` backend minimum поднимается до этой версии; новых постоянных env,
+  migration и OAuth scopes нет.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

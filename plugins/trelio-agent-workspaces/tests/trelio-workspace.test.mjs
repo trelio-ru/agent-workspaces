@@ -1679,7 +1679,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.3");
+  assert.equal(BRIDGE_VERSION, "1.6.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1986,6 +1986,21 @@ test("bridge private credential path and Windows ACL are explicit and user-scope
   );
   assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /SetAccessRuleProtection\(\$true, \$false\)/u);
   assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /WindowsIdentity\]::GetCurrent\(\)\.User/u);
+  assert.match(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /GetAccessControl\([\s\S]*AccessControlSections\]::Owner/u,
+  );
+  assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /\$targetInfo\.SetAccessControl\(\$acl\)/u);
+  assert.match(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /\$ownerAcl\.SetOwner\(\$sid\)[\s\S]*\$targetInfo\.SetAccessControl\(\$ownerAcl\)/u,
+  );
+  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /(?:^|\n)\s*Set-Acl\b/u);
+  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /\$acl\.SetOwner\(/u);
+  assert.doesNotMatch(
+    WINDOWS_PRIVATE_ACL_SCRIPT,
+    /AccessControlSections\]::Audit/u,
+  );
   assert.match(WINDOWS_PRIVATE_ACL_SCRIPT, /unexpected\.Count -ne 0/u);
 });
 
@@ -2014,10 +2029,7 @@ test("Windows ACL command transports its path without PowerShell argument parsin
     WINDOWS_PRIVATE_ACL_SCRIPT,
     /GetEnvironmentVariable\(\s*"TRELIO_WINDOWS_PRIVATE_ACL_PATH_BASE64"/u,
   );
-  assert.match(
-    WINDOWS_PRIVATE_ACL_SCRIPT,
-    /\$PSHOME[\s\S]*Microsoft\.PowerShell\.Security\.psd1/u,
-  );
+  assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /Import-Module/u);
   assert.doesNotMatch(WINDOWS_PRIVATE_ACL_SCRIPT, /^param\(/mu);
   assert.throws(
     () => buildWindowsPrivateAclPowerShellInvocation("", "directory"),
@@ -2042,6 +2054,10 @@ test("Windows bridge applies and verifies a current-user-only ACL", {
   try {
     await mkdir(privateDirectory);
     await writeFile(credentialFile, "{}\n", "utf8");
+    await hardenWindowsPrivatePath(privateDirectory, "directory");
+    await hardenWindowsPrivatePath(credentialFile, "file");
+    // Existing credentials are hardened on every read/write. A second pass
+    // catches descriptor state that only appears after the initial DACL write.
     await hardenWindowsPrivatePath(privateDirectory, "directory");
     await hardenWindowsPrivatePath(credentialFile, "file");
     assert.equal((await stat(credentialFile)).isFile(), true);
