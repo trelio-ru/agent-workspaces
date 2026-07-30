@@ -56,11 +56,10 @@ from typing import Any, BinaryIO, Iterable, Mapping
 
 VKUS_SKILL_ID = "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus"
 SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
-# The Vkus-private broad surface intentionally uses the universal EDO provider
-# namespace. The backend resolves the existing 1c-edo connection id, so local
-# Basic Auth credentials remain usable without copying or migration.
-CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
-RUNTIME_VERSION = "1.0.17"
+# The broad Vkus surface owns its connection and local credentials. There is
+# intentionally no lookup or migration from the former 1c-edo namespace.
+CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
+RUNTIME_VERSION = "1.0.18"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -1759,6 +1758,8 @@ def browser_prompt_app_page() -> bytes:
     background:#eef0f2; color:#202124; font-size:16px; cursor:pointer; }
   button.primary { border-color:#1a73e8; background:#1a73e8; color:#fff; }
   .error { margin:0 0 12px; color:#b00020; font-size:14px; }
+  .password-manager-warning { margin:0; padding:10px 12px; border-radius:8px;
+    background:#fff8e1; color:#5f4200; font-size:14px; line-height:1.4; }
   .muted { margin:0; color:#5f6368; line-height:1.45; }
   .small { margin:12px 0 0; color:#5f6368; font-size:14px; line-height:1.4; }
 </style>
@@ -1785,10 +1786,14 @@ function renderPrompt(data) {
   const inputType = data.hidden ? "password" : "text";
   const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
   const maxLength = Number.isInteger(data.max_length) ? data.max_length : 2048;
+  const passwordManagerWarning = data.hidden
+    ? `<p class="password-manager-warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>`
+    : "";
   app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${error}
     <form id="prompt-form" autocomplete="off">
       <input autofocus name="value" type="${inputType}" autocomplete="off"
         autocapitalize="none" spellcheck="false" maxlength="${escapeHtml(maxLength)}" required>
+      ${passwordManagerWarning}
       <div class="actions"><button type="button" data-cancel="1">Отмена</button>
         <button class="primary" type="submit">Продолжить</button></div>
     </form>
@@ -2926,16 +2931,36 @@ def _connected_context() -> tuple[Identity, CompanyConfig, Credentials]:
     return identity, config, credentials
 
 
+def _probe_personal_connection(
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    diagnostic_stage: str,
+) -> None:
+    """Probe one fixed broad-registry source without entering the EDO contour."""
+
+    source = GENERAL_REFERENCE_SPECS["organization"][0]
+    first_field = next(iter(source["fields"]))
+    _request_odata(
+        config,
+        credentials,
+        source["entity"],
+        (
+            ("$select", first_field),
+            ("$top", 1),
+        ),
+        diagnostic_stage=diagnostic_stage,
+    )
+
+
 def command_connect(args: argparse.Namespace) -> dict[str, Any]:
     identity = load_identity()
     config = load_company_config()
     credentials = prompt_credentials(args)
     try:
-        _request_odata(
+        _probe_personal_connection(
             config,
             credentials,
-            next(iter(DOCUMENT_ENTITIES.values())),
-            (("$top", 1),),
             diagnostic_stage="connect.probe",
         )
     except AuthenticationError:
@@ -2972,11 +2997,9 @@ def command_doctor(_: argparse.Namespace) -> dict[str, Any]:
     if state["status"] in {"connected", "needs_reconnect"}:
         try:
             credentials = load_credentials(identity, config)
-            _request_odata(
+            _probe_personal_connection(
                 config,
                 credentials,
-                next(iter(DOCUMENT_ENTITIES.values())),
-                (("$top", 1),),
                 diagnostic_stage="doctor.probe",
             )
             save_access_state(identity, config, "connected")
@@ -5467,6 +5490,34 @@ def build_general_parser() -> argparse.ArgumentParser:
         description="Broad read-only local 1C business runtime.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    connect = subparsers.add_parser(
+        "connect",
+        help="Connect personal credentials through a protected local browser page",
+    )
+    connect.add_argument(
+        "--terminal-prompts",
+        action="store_true",
+        help="Use the current visible terminal instead of the protected local browser page",
+    )
+    connect.set_defaults(handler=command_connect)
+
+    doctor = subparsers.add_parser("doctor")
+    doctor.set_defaults(handler=command_doctor)
+
+    access = subparsers.add_parser("access-status")
+    access_subparsers = access.add_subparsers(dest="access_command", required=True)
+    access_show = access_subparsers.add_parser("show")
+    access_show.set_defaults(handler=command_access_show)
+    access_set = access_subparsers.add_parser("set")
+    access_set.add_argument("status", choices=["no-access"])
+    access_set.add_argument("--confirmed", action="store_true")
+    access_set.set_defaults(handler=command_access_no_access)
+    access_reset = access_subparsers.add_parser("reset")
+    access_reset.set_defaults(handler=command_access_reset)
+
+    forget = subparsers.add_parser("forget-credentials")
+    forget.set_defaults(handler=command_forget_credentials)
 
     capabilities = subparsers.add_parser("get-capabilities")
     capabilities.set_defaults(handler=command_general_get_capabilities)

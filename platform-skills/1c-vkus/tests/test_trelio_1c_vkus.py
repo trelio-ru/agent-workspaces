@@ -125,11 +125,11 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def connected_context(self) -> tuple[object, object, object]:
         return self.identity, self.config, self.credentials
 
-    def test_release_reuses_provider_credentials_and_has_no_metadata_code_path(self) -> None:
+    def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.17")
-        self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-edo")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.18")
+        self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
         self.assertNotIn("def _request_metadata", source)
@@ -141,13 +141,15 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertNotIn("osascript", source)
         self.assertNotIn("System.Windows.Forms", source)
 
-    def test_latent_provider_connect_uses_protected_browser_without_autocomplete(self) -> None:
+    def test_connect_uses_protected_browser_without_autocomplete(self) -> None:
         page = runtime.browser_prompt_app_page().decode("utf-8")
         expected = runtime.Credentials("employee", "password")
 
         self.assertIn("Trelio — 1С", page)
         self.assertIn('<form id="prompt-form" autocomplete="off">', page)
         self.assertIn('type="${inputType}" autocomplete="off"', page)
+        self.assertIn("Сохранять данные в браузере не нужно", page)
+        self.assertIn("подключение будет сохранено отдельно на этом устройстве", page)
         with mock.patch.object(
             runtime,
             "_prompt_credentials_browser",
@@ -164,7 +166,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             browser_prompt.assert_called_once()
             terminal_prompt.assert_not_called()
 
-    def test_latent_provider_connect_openers_use_default_browser(self) -> None:
+    def test_connect_openers_use_default_browser(self) -> None:
         completed = SimpleNamespace(returncode=0)
         with mock.patch.object(runtime.sys, "platform", "darwin"), mock.patch.object(
             runtime.subprocess,
@@ -187,7 +189,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             runtime.open_browser_url("http://127.0.0.1:1234/token/")
         startfile.assert_called_once_with("http://127.0.0.1:1234/token/")
 
-    def test_latent_provider_loopback_rejects_cross_origin_submit(self) -> None:
+    def test_connect_loopback_rejects_cross_origin_submit(self) -> None:
         session = runtime.BrowserPromptSession()
         session.opened = True
         received: list[str] = []
@@ -274,8 +276,34 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                     for option in child_action.option_strings
                 )
         self.assertTrue(forbidden.isdisjoint(option_strings))
+        self.assertIs(
+            parser.parse_args(["connect"]).handler,
+            runtime.command_connect,
+        )
+        self.assertIs(
+            parser.parse_args(["doctor"]).handler,
+            runtime.command_doctor,
+        )
+        self.assertIs(
+            parser.parse_args(["access-status", "show"]).handler,
+            runtime.command_access_show,
+        )
         with self.assertRaises(SystemExit):
             parser.parse_args(["developer-inventory-metadata"])
+
+    def test_connection_probe_uses_only_the_signed_broad_registry(self) -> None:
+        with mock.patch.object(runtime, "_request_odata", return_value={}) as request:
+            runtime._probe_personal_connection(
+                self.config,
+                self.credentials,
+                diagnostic_stage="doctor.probe",
+            )
+
+        self.assertEqual(request.call_args.args[2], "Catalog_Организации")
+        self.assertEqual(
+            request.call_args.args[3],
+            (("$select", "Ref_Key"), ("$top", 1)),
+        )
 
     def test_static_registry_is_complete_stable_and_network_free(self) -> None:
         expected_capabilities = {

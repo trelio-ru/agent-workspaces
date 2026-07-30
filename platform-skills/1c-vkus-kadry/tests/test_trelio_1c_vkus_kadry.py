@@ -51,8 +51,16 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.3")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.16")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.4")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.4")
+        self.assertEqual(
+            MODULE.provider.SUPPORTED_SKILL_IDS,
+            {MODULE.HR_SKILL_ID},
+        )
+        self.assertEqual(
+            MODULE.provider.CREDENTIAL_PROVIDER_NAMESPACE,
+            "1c-vkus-kadry",
+        )
 
     def _attachment_row(
         self,
@@ -305,6 +313,24 @@ class VkusHrRuntimeTests(unittest.TestCase):
         self.assertNotIn("--field", help_text)
         self.assertNotIn("--filter", help_text)
         self.assertNotIn("--url", help_text)
+
+    def test_parser_exposes_independent_browser_first_connection_commands(self) -> None:
+        parser = MODULE.build_parser()
+
+        connect = parser.parse_args(["connect"])
+        self.assertFalse(connect.terminal_prompts)
+        self.assertIs(connect.handler, MODULE.command_connect)
+        self.assertIs(
+            parser.parse_args(["doctor"]).handler,
+            MODULE.command_doctor,
+        )
+        self.assertIs(
+            parser.parse_args(["access-status", "show"]).handler,
+            MODULE.command_access_show,
+        )
+        page = MODULE.provider.browser_prompt_app_page().decode("utf-8")
+        self.assertIn("Сохранять данные в браузере не нужно", page)
+        self.assertIn('autocomplete="off"', page)
 
     def test_parser_requires_explicit_unverified_download_flag(self) -> None:
         parsed = MODULE.build_parser().parse_args(

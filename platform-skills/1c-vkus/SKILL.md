@@ -15,21 +15,28 @@ assigned only to project `vkus/avtomatizatsiya-upravleniya`. Do not widen it
 to the whole company without an explicit assignment change, and never copy,
 publish or enable it in another company.
 
-## Shared connection and personal access
+## Independent connection and personal access
 
-The backend resolves the existing `1c-edo` provider connection for this skill:
-the same safe company config, connection id and `x_odata` Agent Secret binding.
-The runtime deliberately reuses the existing local credential namespace:
+This skill owns a separate company connection: its own safe URLs and limits,
+its own `x_odata` Agent Secret binding and its own stable connection id. Never
+substitute the settings or secret from `1c-edo` or `1c-vkus-kadry`.
 
-`<trelio-config-home>/integrations/1c-edo/<company-id>/<member-id>/<connection-id>/`
+Personal Basic Auth credentials are stored only under:
 
-Do not connect again, copy credentials or ask the user to re-enter a
-login/password when `1c-edo` is already connected. If the local personal
-access is missing or needs reconnection, use the established `1c-edo`
-`access-status` / `connect` flow; never request credentials in chat, MCP,
-arguments, environment variables or workspace files.
+`<trelio-config-home>/integrations/1c-vkus/<company-id>/<member-id>/<connection-id>/`
 
-Every command that contacts 1C requires the existing `x_odata` binding:
+Do not inspect another 1C namespace or migrate old credential files. Start
+with `access-status show`; when the state is `unknown` or `needs_reconnect`,
+offer this skill's own `connect` flow. Run `connect` only at the user's request.
+It opens a protected one-time page in the default browser on `127.0.0.1`.
+`autocomplete=off` is only a best-effort hint, so the page says:
+`Сохранять данные в браузере не нужно – подключение будет сохранено отдельно
+на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет,
+спасибо».` Never request login/password in chat, MCP, arguments, environment
+variables or workspace files. `connect --terminal-prompts` is allowed only as
+an explicit fallback in a visible local TTY.
+
+Every command that contacts 1C requires this skill's own `x_odata` binding:
 
 1. Call `prepare_agent_secret_checkout` for the active Agent Run with delivery
    `env`, environment `TRELIO_1C_EDO_X_ODATA` and exact executable
@@ -52,6 +59,12 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 
 ## Fixed commands
 
+- `connect [--terminal-prompts]`
+- `doctor`
+- `access-status show`
+- `access-status set no-access --confirmed`
+- `access-status reset`
+- `forget-credentials`
 - `get-capabilities`
 - `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule [--query TEXT] [--page 1..3] [--limit 1..25]`
 - `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule --id UUID`

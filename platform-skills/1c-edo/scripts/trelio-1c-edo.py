@@ -48,7 +48,7 @@ from typing import Any, BinaryIO, Iterable
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.16"
+RUNTIME_VERSION = "1.0.17"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -742,6 +742,15 @@ def browser_prompt_app_page() -> bytes:
   }
   button.primary { border-color: #1a73e8; background: #1a73e8; color: #fff; }
   .error { margin: 0 0 12px; color: #b00020; font-size: 14px; }
+  .password-manager-warning {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #fff8e1;
+    color: #5f4200;
+    font-size: 14px;
+    line-height: 1.4;
+  }
   .muted { margin: 0; color: #5f6368; line-height: 1.45; }
   .small { margin: 12px 0 0; color: #5f6368; font-size: 14px; line-height: 1.4; }
 </style>
@@ -780,11 +789,15 @@ function renderPrompt(data) {
   const inputType = data.hidden ? "password" : "text";
   const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
   const maxLength = Number.isInteger(data.max_length) ? data.max_length : 2048;
+  const passwordManagerWarning = data.hidden
+    ? `<p class="password-manager-warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>`
+    : "";
   app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>
     ${error}
     <form id="prompt-form" autocomplete="off">
       <input autofocus name="value" type="${inputType}" autocomplete="off"
         autocapitalize="none" spellcheck="false" maxlength="${escapeHtml(maxLength)}" required>
+      ${passwordManagerWarning}
       <div class="actions">
         <button type="button" data-cancel="1">Отмена</button>
         <button class="primary" type="submit">Продолжить</button>

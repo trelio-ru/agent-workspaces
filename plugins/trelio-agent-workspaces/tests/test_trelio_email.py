@@ -1,8 +1,11 @@
 import email
+import http.client
 import importlib.util
 import pathlib
 import sys
+import threading
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -156,47 +159,152 @@ class TrelioEmailTests(unittest.TestCase):
             smtp_security="ssl",
             credential_store="file",
         )
-        with mock.patch.object(MODULE.getpass, "getpass", return_value="secret-value") as getpass_mock:
+        with (
+            mock.patch.object(MODULE.sys.stdin, "isatty", return_value=True),
+            mock.patch.object(MODULE.sys.stderr, "isatty", return_value=True),
+            mock.patch.object(MODULE.getpass, "getpass", return_value="secret-value") as getpass_mock,
+        ):
             self.assertEqual(MODULE.prompt_password(account, "terminal"), "secret-value")
         getpass_mock.assert_called_once()
 
-    def test_macos_dialog_returns_secret_without_putting_it_in_process_arguments(self):
-        completed = MODULE.subprocess.CompletedProcess(
-            args=["osascript"],
-            returncode=0,
-            stdout="abcd efgh ijkl mnop\n",
-            stderr="",
+    def test_terminal_password_mode_requires_visible_tty(self):
+        account = MODULE.Account(
+            name="work",
+            email_address="person@example.com",
+            display_name="",
+            username="person@example.com",
+            imap_host="imap.example.com",
+            imap_port=993,
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            smtp_security="ssl",
+            credential_store="file",
         )
         with (
-            mock.patch.object(MODULE.shutil, "which", return_value="/usr/bin/osascript"),
-            mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run_mock,
+            mock.patch.object(MODULE.sys.stdin, "isatty", return_value=False),
+            mock.patch.object(MODULE.sys.stderr, "isatty", return_value=False),
+            self.assertRaisesRegex(MODULE.ProtectedPromptUnavailable, "видимый"),
         ):
-            password = MODULE.prompt_password_macos("Title", "Prompt")
+            MODULE.prompt_password(account, "terminal")
 
-        self.assertEqual(password, "abcd efgh ijkl mnop")
-        process_arguments = run_mock.call_args.args[0]
-        self.assertNotIn(password, process_arguments)
-
-    def test_windows_dialog_returns_secret_without_putting_it_in_process_arguments(self):
-        completed = MODULE.subprocess.CompletedProcess(
-            args=["powershell.exe"],
-            returncode=0,
-            stdout="abcd efgh ijkl mnop",
-            stderr="",
+    def test_browser_password_page_is_truthful_about_password_manager(self):
+        account = MODULE.Account(
+            name="work",
+            email_address="person@example.com",
+            display_name="",
+            username="person@example.com",
+            imap_host="imap.example.com",
+            imap_port=993,
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            smtp_security="ssl",
+            credential_store="file",
         )
-        with (
-            mock.patch.object(MODULE.shutil, "which", return_value="C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"),
-            mock.patch.object(MODULE.subprocess, "run", return_value=completed) as run_mock,
+        page = MODULE.browser_password_page(account).decode("utf-8")
+
+        self.assertIn('<form id="password-form" autocomplete="off">', page)
+        self.assertIn('type="password" autocomplete="off"', page)
+        self.assertIn("Сохранять данные в браузере не нужно", page)
+        self.assertIn("подключение будет сохранено отдельно на этом устройстве", page)
+        self.assertNotIn("браузер не сохранит", page.lower())
+
+    def test_browser_openers_use_default_browser(self):
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(MODULE.sys, "platform", "darwin"), mock.patch.object(
+            MODULE.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/open", "http://127.0.0.1:1234/token/"],
+        )
+
+        startfile = mock.Mock()
+        with mock.patch.object(MODULE.sys, "platform", "win32"), mock.patch.object(
+            MODULE.os,
+            "startfile",
+            startfile,
+            create=True,
         ):
-            password = MODULE.prompt_password_windows("Title", "Prompt")
+            MODULE.open_browser_url("http://127.0.0.1:1234/token/")
+        startfile.assert_called_once_with("http://127.0.0.1:1234/token/")
 
-        self.assertEqual(password, "abcd efgh ijkl mnop")
-        process_arguments = run_mock.call_args.args[0]
-        self.assertNotIn(password, process_arguments)
+    def test_loopback_password_prompt_requires_exact_origin(self):
+        account = MODULE.Account(
+            name="gmail",
+            email_address="person@gmail.com",
+            display_name="",
+            username="person@gmail.com",
+            imap_host="imap.gmail.com",
+            imap_port=993,
+            smtp_host="smtp.gmail.com",
+            smtp_port=465,
+            smtp_security="ssl",
+            credential_store="file",
+        )
+        session = MODULE.BrowserPasswordSession(account)
+        received: list[str] = []
+        try:
+            connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+            connection.request("GET", session.base_path + "/")
+            page_response = connection.getresponse()
+            page_response.read()
+            self.assertEqual(page_response.status, 200)
+            self.assertEqual(page_response.getheader("Cache-Control"), "no-store")
+            self.assertIn("default-src 'none'", page_response.getheader("Content-Security-Policy"))
+            connection.close()
 
-    def test_configure_uses_native_window_mode_by_default(self):
+            with mock.patch.object(MODULE, "open_browser_url"):
+                worker = threading.Thread(target=lambda: received.append(session.ask()))
+                worker.start()
+
+                body = "password=abcd+efgh+ijkl+mnop"
+                connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+                connection.request(
+                    "POST",
+                    f"{session.base_path}/submit",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Origin": "https://attacker.example",
+                    },
+                )
+                rejected = connection.getresponse()
+                rejected_body = rejected.read().decode("utf-8")
+                self.assertEqual(rejected.status, 403)
+                self.assertNotIn("abcdefghijklmnop", rejected_body)
+                connection.close()
+
+                connection = http.client.HTTPConnection("127.0.0.1", session.port, timeout=2)
+                connection.request(
+                    "POST",
+                    f"{session.base_path}/submit",
+                    body=body,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Origin": session.origin,
+                    },
+                )
+                accepted = connection.getresponse()
+                accepted_body = accepted.read().decode("utf-8")
+                self.assertEqual(accepted.status, 200)
+                self.assertNotIn("abcdefghijklmnop", accepted_body)
+                connection.close()
+
+                worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(received, ["abcdefghijklmnop"])
+        finally:
+            session.close()
+
+    def test_configure_uses_browser_mode_by_default(self):
         args = MODULE.build_parser().parse_args(["configure", "--account", "work"])
-        self.assertEqual(args.password_input, "auto")
+        self.assertEqual(args.password_input, "browser")
+        self.assertFalse(args.terminal_prompts)
+        self.assertEqual(MODULE.canonical_password_input_mode("auto"), "browser")
+        self.assertEqual(MODULE.canonical_password_input_mode("window"), "browser")
 
     def test_gmail_configure_persists_only_compact_password(self):
         args = MODULE.build_parser().parse_args(["configure", "--account", "gmail"])

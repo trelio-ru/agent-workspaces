@@ -359,6 +359,16 @@ const submitAcceptedLoopbackCredential = async (originMode) => {
       );
       assert.equal(page.headers.connection, "close");
       assert.equal(page.body.includes(credential), false);
+      assert.equal(
+        page.body.includes("Сохранять данные в браузере не нужно"),
+        true,
+      );
+      assert.equal(
+        page.body.includes("подключение будет сохранено отдельно на этом устройстве"),
+        true,
+      );
+      assert.equal(page.body.includes('autocomplete="off"'), true);
+      assert.equal(page.body.includes('autocomplete="new-password"'), false);
 
       const origin = originMode === "exact"
         ? expectedOrigin
@@ -1410,7 +1420,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.6.7");
+  assert.equal(frames[0].result.serverInfo.version, "1.6.8");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /do not announce/u);

@@ -120,6 +120,8 @@ class TrelioTelegramTests(unittest.TestCase):
         self.assertIn('type="button" data-cancel="1"', page)
         self.assertIn('<form id="prompt-form" autocomplete="off">', page)
         self.assertIn('type="${inputType}" autocomplete="off"', page)
+        self.assertIn("Сохранять данные в браузере не нужно", page)
+        self.assertIn("подключение будет сохранено отдельно на этом устройстве", page)
         self.assertNotIn('autocomplete="one-time-code"', page)
         self.assertNotIn('autocomplete="tel"', page)
         self.assertNotIn("Vkus Telegram", page)

@@ -279,6 +279,15 @@ def browser_prompt_app_page() -> bytes:
   button.primary { border-color: #1a73e8; background: #1a73e8; color: #fff; }
   .error { margin: 0 0 12px; color: #b00020; font-size: 14px; }
   .prompt-hint { margin: 0 0 12px; color: #5f6368; font-size: 14px; line-height: 1.45; }
+  .password-manager-warning {
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: #fff8e1;
+    color: #5f4200;
+    font-size: 14px;
+    line-height: 1.4;
+  }
   .muted { margin: 0; color: #5f6368; line-height: 1.45; }
   .small { margin: 10px 0 0; color: #5f6368; font-size: 14px; line-height: 1.4; }
   .qr-wrap { display: grid; place-items: center; margin: 4px 0 16px; }
@@ -352,7 +361,11 @@ function renderPrompt(data) {
   } else {
     const inputType = data.hidden ? "password" : "text";
     const required = data.allow_empty ? "" : "required";
+    const passwordManagerWarning = data.hidden
+      ? `<p class="password-manager-warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>`
+      : "";
     controls = `<input autofocus name="value" type="${inputType}" autocomplete="off" ${required}>
+      ${passwordManagerWarning}
       <div class="actions">
         <button type="button" data-cancel="1">${cancelLabel}</button>
         <button class="primary" type="submit">Продолжить</button>

@@ -56,9 +56,9 @@ from typing import Any, BinaryIO, Iterable, Mapping
 
 VKUS_SKILL_ID = "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus"
 SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
-# The Vkus-private broad surface intentionally uses the universal EDO provider
-# namespace. The backend resolves the existing 1c-edo connection id, so local
-# Basic Auth credentials remain usable without copying or migration.
+# Default values preserve this helper's original broad-runtime behavior. A
+# signed wrapper may replace them once at process startup with compile-time
+# constants through `configure_connection_surface`.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-edo"
 RUNTIME_VERSION = "1.0.16"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
@@ -76,6 +76,32 @@ MAX_RATE_LIMIT_WAIT_SECONDS = 30.0
 MAX_RATE_LIMIT_TOTAL_WAIT_SECONDS = 30.0
 MAX_RETRY_AFTER_HEADER_CHARS = 128
 RATE_LIMIT_JITTER_MILLISECONDS = 250
+
+
+def configure_connection_surface(
+    *,
+    skill_id: str,
+    credential_namespace: str,
+    runtime_version: str,
+) -> None:
+    """Bind shared transport primitives to one signed runtime surface.
+
+    The helper is packaged with the HR entrypoint only to reuse the audited
+    browser, HTTP and private-storage implementation. The caller passes signed
+    constants, never argv or environment input, and one process serves exactly
+    one skill identity.
+    """
+
+    if (
+        not skill_id
+        or not re.fullmatch(r"[a-z0-9-]{1,120}", credential_namespace)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", runtime_version)
+    ):
+        raise RuntimeError("Invalid signed 1C connection surface.")
+    global SUPPORTED_SKILL_IDS, CREDENTIAL_PROVIDER_NAMESPACE, RUNTIME_VERSION
+    SUPPORTED_SKILL_IDS = frozenset({skill_id})
+    CREDENTIAL_PROVIDER_NAMESPACE = credential_namespace
+    RUNTIME_VERSION = runtime_version
 DOCUMENT_ENTITIES = {
     "incoming": "Document_ЭлектронныйДокументВходящийЭДО",
     "outgoing": "Document_ЭлектронныйДокументИсходящийЭДО",
@@ -1074,6 +1100,8 @@ def browser_prompt_app_page() -> bytes:
     background:#eef0f2; color:#202124; font-size:16px; cursor:pointer; }
   button.primary { border-color:#1a73e8; background:#1a73e8; color:#fff; }
   .error { margin:0 0 12px; color:#b00020; font-size:14px; }
+  .password-manager-warning { margin:0; padding:10px 12px; border-radius:8px;
+    background:#fff8e1; color:#5f4200; font-size:14px; line-height:1.4; }
   .muted { margin:0; color:#5f6368; line-height:1.45; }
   .small { margin:12px 0 0; color:#5f6368; font-size:14px; line-height:1.4; }
 </style>
@@ -1100,10 +1128,14 @@ function renderPrompt(data) {
   const inputType = data.hidden ? "password" : "text";
   const error = data.error ? `<p class="error">${escapeHtml(data.error)}</p>` : "";
   const maxLength = Number.isInteger(data.max_length) ? data.max_length : 2048;
+  const passwordManagerWarning = data.hidden
+    ? `<p class="password-manager-warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>`
+    : "";
   app.innerHTML = `<h1>${escapeHtml(data.prompt)}</h1>${error}
     <form id="prompt-form" autocomplete="off">
       <input autofocus name="value" type="${inputType}" autocomplete="off"
         autocapitalize="none" spellcheck="false" maxlength="${escapeHtml(maxLength)}" required>
+      ${passwordManagerWarning}
       <div class="actions"><button type="button" data-cancel="1">Отмена</button>
         <button class="primary" type="submit">Продолжить</button></div>
     </form>

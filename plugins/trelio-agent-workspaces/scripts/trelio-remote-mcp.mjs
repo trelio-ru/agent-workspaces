@@ -1292,6 +1292,7 @@ const renderCredentialPage = ({ resolved, nonce, errorMessage = "" }) => {
     input, button { box-sizing: border-box; width: 100%; padding: .8rem; font: inherit; }
     .muted { opacity: .72; }
     .error { color: #b42318; }
+    .warning { padding: .75rem; border-radius: .5rem; background: #fff4cc; color: #5f4200; }
   </style>
 </head>
 <body>
@@ -1306,8 +1307,9 @@ const renderCredentialPage = ({ resolved, nonce, errorMessage = "" }) => {
     <input type="hidden" name="nonce" value="${escapeHtml(nonce)}">
     <label>
       Personal Bearer PAT
-      <input type="password" name="credential" minlength="8" maxlength="${MAX_CREDENTIAL_BYTES}" required autocomplete="new-password" autofocus>
+      <input type="password" name="credential" minlength="8" maxlength="${MAX_CREDENTIAL_BYTES}" required autocomplete="off" autofocus>
     </label>
+    <p class="warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>
     <button type="submit">Проверить и сохранить на устройстве</button>
   </form>
 </body>

@@ -13,16 +13,21 @@ import datetime as dt
 import email
 import getpass
 import html
+import http.server
 import imaplib
 import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import smtplib
 import ssl
 import subprocess
 import sys
+import threading
+import urllib.parse
+import webbrowser
 from dataclasses import dataclass
 from email.header import decode_header
 from email.message import EmailMessage, Message
@@ -48,84 +53,22 @@ GOOGLE_APP_PASSWORDS_URL = "https://myaccount.google.com/apppasswords"
 GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
 GMAIL_IMAP_HOST = "imap.gmail.com"
 GMAIL_SMTP_HOST = "smtp.gmail.com"
-
-# AppleScript получает только безопасный заголовок/текст через argv. Сам пароль
-# вводится уже внутри системного hidden-answer поля и возвращается через stdout,
-# поэтому не попадает в shell history или аргументы процесса.
-MACOS_PASSWORD_DIALOG_SCRIPT = r'''
-on run argv
-  set promptText to item 1 of argv
-  set dialogTitle to item 2 of argv
-  set dialogResult to display dialog promptText default answer "" with hidden answer buttons {"Отмена", "Сохранить"} default button "Сохранить" cancel button "Отмена" with title dialogTitle
-  return text returned of dialogResult
-end run
-'''.strip()
-
-# На Windows используем стандартное WinForms-окно с системным password mask.
-# Код статичен, секрет не передаётся в command line или environment: PowerShell
-# печатает его только в pipe родительского Python-процесса после нажатия OK.
-WINDOWS_PASSWORD_DIALOG_SCRIPT = r'''
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-$form = New-Object System.Windows.Forms.Form
-$form.Text = $env:TRELIO_EMAIL_DIALOG_TITLE
-$form.StartPosition = 'CenterScreen'
-$form.FormBorderStyle = 'FixedDialog'
-$form.MinimizeBox = $false
-$form.MaximizeBox = $false
-$form.ShowInTaskbar = $true
-$form.TopMost = $true
-$form.ClientSize = New-Object System.Drawing.Size(500, 165)
-
-$label = New-Object System.Windows.Forms.Label
-$label.Text = $env:TRELIO_EMAIL_DIALOG_PROMPT
-$label.AutoSize = $false
-$label.Location = New-Object System.Drawing.Point(16, 16)
-$label.Size = New-Object System.Drawing.Size(468, 64)
-$form.Controls.Add($label)
-
-$passwordBox = New-Object System.Windows.Forms.TextBox
-$passwordBox.Location = New-Object System.Drawing.Point(16, 82)
-$passwordBox.Size = New-Object System.Drawing.Size(468, 24)
-$passwordBox.UseSystemPasswordChar = $true
-$form.Controls.Add($passwordBox)
-
-$okButton = New-Object System.Windows.Forms.Button
-$okButton.Text = 'Сохранить'
-$okButton.Location = New-Object System.Drawing.Point(304, 122)
-$okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-$form.Controls.Add($okButton)
-$form.AcceptButton = $okButton
-
-$cancelButton = New-Object System.Windows.Forms.Button
-$cancelButton.Text = 'Отмена'
-$cancelButton.Location = New-Object System.Drawing.Point(404, 122)
-$cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-$form.Controls.Add($cancelButton)
-$form.CancelButton = $cancelButton
-
-$form.Add_Shown({ $passwordBox.Select() })
-$result = $form.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-  [Console]::Out.Write($passwordBox.Text)
-  $form.Dispose()
-  exit 0
-}
-$form.Dispose()
-exit 3
-'''.strip()
+MAX_PASSWORD_CHARS = 2_048
+MAX_PROMPT_BODY_BYTES = 8 * 1024
+BROWSER_LOAD_TIMEOUT_SECONDS = 8
+BROWSER_INPUT_TIMEOUT_SECONDS = 5 * 60
 
 
 class MailboxError(RuntimeError):
     """Expected configuration, protocol, or user-input error."""
 
 
-class PasswordDialogUnavailable(MailboxError):
-    """Native password dialog cannot be shown in the current environment."""
+class ProtectedPromptUnavailable(MailboxError):
+    """Protected browser prompt cannot be shown in the current environment."""
 
 
 class PasswordEntryCancelled(MailboxError):
-    """The operator explicitly cancelled native password entry."""
+    """The operator explicitly cancelled local password entry."""
 
 
 @dataclass(frozen=True)
@@ -323,79 +266,382 @@ def normalize_password_for_account(account: Account, raw_password: str) -> str:
     return password
 
 
-def prompt_password_macos(title: str, message: str) -> str:
-    if not shutil.which("osascript"):
-        raise PasswordDialogUnavailable("osascript is not available.")
-    try:
-        result = subprocess.run(
-            ["osascript", "-e", MACOS_PASSWORD_DIALOG_SCRIPT, message, title],
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise PasswordDialogUnavailable(f"macOS password dialog failed: {error}") from error
-    if result.returncode == 0:
-        return result.stdout.rstrip("\n")
-    if "-128" in result.stderr or "User canceled" in result.stderr:
-        raise PasswordEntryCancelled("Password entry was cancelled.")
-    raise PasswordDialogUnavailable(result.stderr.strip() or "macOS password dialog failed.")
+def browser_password_page(account: Account) -> bytes:
+    """Render one self-contained page for local email credential entry.
 
-
-def prompt_password_windows(title: str, message: str) -> str:
-    powershell = shutil.which("powershell.exe") or shutil.which("powershell") or shutil.which("pwsh")
-    if not powershell:
-        raise PasswordDialogUnavailable("PowerShell is not available.")
-    dialog_environment = os.environ.copy()
-    dialog_environment["TRELIO_EMAIL_DIALOG_TITLE"] = title
-    dialog_environment["TRELIO_EMAIL_DIALOG_PROMPT"] = message
-    try:
-        result = subprocess.run(
-            [powershell, "-NoProfile", "-STA", "-Command", WINDOWS_PASSWORD_DIALOG_SCRIPT],
-            capture_output=True,
-            text=True,
-            timeout=300,
-            env=dialog_environment,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise PasswordDialogUnavailable(f"Windows password dialog failed: {error}") from error
-    if result.returncode == 0:
-        return result.stdout.rstrip("\r\n")
-    if result.returncode == 3:
-        raise PasswordEntryCancelled("Password entry was cancelled.")
-    raise PasswordDialogUnavailable(result.stderr.strip() or "Windows password dialog failed.")
-
-
-def prompt_password(account: Account, input_mode: str = "auto") -> str:
-    """Prefer a native masked window and keep getpass as a headless fallback."""
+    The page deliberately keeps ``autocomplete=off`` as a best-effort browser
+    hint, but does not claim that it disables password managers. Chromium may
+    still offer to save any ``type=password`` value, so the operator sees that
+    limitation next to the field before submitting a reusable secret.
+    """
 
     gmail_account = is_gmail_account(account.email_address, account.imap_host, account.smtp_host)
-    title = "Trelio – пароль приложения Gmail" if gmail_account else "Trelio – пароль почты"
-    message = (
-        "Вставьте 16-символьный пароль приложения Gmail. Пробелы будут удалены автоматически.\n"
-        f"Создать пароль: {GOOGLE_APP_PASSWORDS_URL}"
+    title = "Пароль приложения Gmail" if gmail_account else "Пароль почты"
+    instructions = (
+        "Вставьте 16-символьный пароль приложения Gmail. Пробелы будут удалены автоматически."
         if gmail_account
         else f"Введите пароль или пароль приложения для {account.email_address}."
     )
+    gmail_help = (
+        f'<p><a href="{html.escape(GOOGLE_APP_PASSWORDS_URL)}" target="_blank" '
+        'rel="noopener noreferrer">Создать пароль приложения в Google</a></p>'
+        if gmail_account
+        else ""
+    )
+    return f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Trelio — {html.escape(title)}</title>
+  <style>
+    :root {{ color-scheme: light; }}
+    body {{
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #eef0f2;
+      color: #202124;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    main {{
+      width: min(560px, calc(100vw - 32px));
+      box-sizing: border-box;
+      background: #fff;
+      border: 1px solid #d9dce1;
+      border-radius: 12px;
+      box-shadow: 0 18px 48px rgba(0,0,0,.18);
+      padding: 24px;
+    }}
+    h1 {{ margin: 0 0 12px; font-size: 22px; line-height: 1.35; font-weight: 650; }}
+    p {{ line-height: 1.45; }}
+    form {{ display: grid; gap: 14px; }}
+    input {{
+      box-sizing: border-box;
+      width: 100%;
+      min-height: 44px;
+      border: 2px solid #1a73e8;
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: #202124;
+      background: #fff;
+      font-size: 18px;
+    }}
+    input:focus {{ outline: 3px solid rgba(26,115,232,.2); }}
+    .actions {{ display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }}
+    button {{
+      min-width: 120px;
+      min-height: 40px;
+      border: 1px solid #c9cdd3;
+      border-radius: 8px;
+      background: #eef0f2;
+      color: #202124;
+      font-size: 16px;
+      cursor: pointer;
+    }}
+    button.primary {{ border-color: #1a73e8; background: #1a73e8; color: #fff; }}
+    .error {{ color: #b00020; font-size: 14px; }}
+    .muted {{ color: #5f6368; }}
+    .warning {{
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fff8e1;
+      color: #5f4200;
+      font-size: 14px;
+    }}
+  </style>
+</head>
+<body>
+<main id="app">
+  <h1>{html.escape(title)}</h1>
+  <p>{html.escape(instructions)}</p>
+  {gmail_help}
+  <p class="warning">Сохранять данные в браузере не нужно – подключение будет сохранено отдельно на этом устройстве. Если браузер предложит сохранить данные, выберите «Нет, спасибо».</p>
+  <form id="password-form" autocomplete="off">
+    <input autofocus name="password" type="password" autocomplete="off"
+      autocapitalize="none" spellcheck="false" maxlength="{MAX_PASSWORD_CHARS}" required>
+    <p id="error" class="error" hidden></p>
+    <div class="actions">
+      <button type="button" id="cancel">Отмена</button>
+      <button class="primary" type="submit">Продолжить</button>
+    </div>
+  </form>
+</main>
+<script>
+const app = document.getElementById("app");
+const form = document.getElementById("password-form");
+const error = document.getElementById("error");
 
-    if input_mode != "terminal":
-        try:
-            if sys.platform == "darwin":
-                return prompt_password_macos(title, message)
-            if os.name == "nt":
-                return prompt_password_windows(title, message)
-            if input_mode == "window":
-                raise PasswordDialogUnavailable("Native password window is supported on macOS and Windows only.")
-        except PasswordEntryCancelled:
-            raise
-        except PasswordDialogUnavailable as error:
-            if input_mode == "window":
-                raise
-            print(
-                f"Native password window is unavailable ({error}); using hidden terminal input.",
-                file=sys.stderr,
+async function submit(values) {{
+  const response = await fetch("submit", {{
+    method: "POST",
+    headers: {{"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}},
+    body: new URLSearchParams(values),
+    cache: "no-store",
+  }});
+  const payload = await response.json();
+  if (!payload.ok) {{
+    error.textContent = payload.error || "Не удалось принять значение.";
+    error.hidden = false;
+    return;
+  }}
+  app.innerHTML = `<h1>${{payload.cancelled ? "Настройка отменена" : "Данные приняты"}}</h1>
+    <p class="muted">${{payload.cancelled
+      ? "Можно закрыть вкладку и вернуться в Codex."
+      : "Вернитесь в Codex — настройка продолжается на этом компьютере."}}</p>`;
+}}
+
+form.addEventListener("submit", async (event) => {{
+  event.preventDefault();
+  error.hidden = true;
+  await submit(new FormData(form));
+}});
+document.getElementById("cancel").addEventListener("click", async () => {{
+  const values = new FormData();
+  values.set("cancel", "1");
+  await submit(values);
+}});
+</script>
+</body>
+</html>
+""".encode("utf-8")
+
+
+def open_browser_url(url: str) -> None:
+    """Open one loopback URL without returning it in process output."""
+
+    try:
+        if sys.platform == "darwin":
+            completed = subprocess.run(
+                ["/usr/bin/open", url],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
             )
+            if completed.returncode != 0:
+                raise OSError("default browser opener failed")
+            return
+        if sys.platform.startswith("win"):
+            startfile = getattr(os, "startfile", None)
+            if startfile is None:
+                raise OSError("Windows shell opener is unavailable")
+            startfile(url)
+            return
+        if not webbrowser.open(url, new=2):
+            raise OSError("default browser opener failed")
+    except (OSError, subprocess.TimeoutExpired, webbrowser.Error) as error:
+        raise ProtectedPromptUnavailable(
+            "Не удалось открыть защищённую локальную страницу настройки почты."
+        ) from error
 
+
+class BrowserPasswordSession:
+    """Serve one tokenized loopback page for one email configure process."""
+
+    def __init__(self, account: Account) -> None:
+        self.account = account
+        self.token = secrets.token_urlsafe(32)
+        self.page_loaded = threading.Event()
+        self.response_ready = threading.Event()
+        self.password: str | None = None
+        self.cancelled = False
+        try:
+            self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
+        except OSError as error:
+            raise ProtectedPromptUnavailable(
+                "Защищённая страница настройки почты не может занять локальный порт."
+            ) from error
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def port(self) -> int:
+        return int(self.server.server_address[1])
+
+    @property
+    def origin(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def base_path(self) -> str:
+        return f"/{self.token}"
+
+    @property
+    def url(self) -> str:
+        return f"{self.origin}{self.base_path}/"
+
+    def _handler_class(self) -> Any:
+        session = self
+
+        class PasswordHandler(http.server.BaseHTTPRequestHandler):
+            server_version = "TrelioLoopback/1"
+            sys_version = ""
+
+            def log_message(self, _format: str, *_args: Any) -> None:
+                return
+
+            def end_headers(self) -> None:
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("X-Frame-Options", "DENY")
+                self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
+                )
+                super().end_headers()
+
+            def send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(body)
+                self.close_connection = True
+
+            def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+                self.send_bytes(
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json; charset=utf-8",
+                    status,
+                )
+
+            def request_is_local(self) -> bool:
+                return (
+                    self.client_address[0] == "127.0.0.1"
+                    and self.headers.get("Host") == f"127.0.0.1:{session.port}"
+                )
+
+            def prompt_subpath(self) -> str | None:
+                path = urllib.parse.urlparse(self.path).path
+                if path == session.base_path:
+                    return "/"
+                prefix = session.base_path + "/"
+                if not path.startswith(prefix):
+                    return None
+                return "/" + path[len(prefix):]
+
+            def do_GET(self) -> None:  # noqa: N802 - stdlib callback name.
+                if not self.request_is_local() or self.prompt_subpath() != "/":
+                    self.send_json({"ok": False, "error": "Not found."}, status=404)
+                    return
+                session.page_loaded.set()
+                self.send_bytes(browser_password_page(session.account), "text/html; charset=utf-8")
+
+            def do_POST(self) -> None:  # noqa: N802 - stdlib callback name.
+                if not self.request_is_local() or self.prompt_subpath() != "/submit":
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                if self.headers.get("Origin") != session.origin:
+                    self.send_json({"ok": False, "error": "Forbidden."}, status=403)
+                    return
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if content_type != "application/x-www-form-urlencoded":
+                    self.send_json({"ok": False, "error": "Unsupported request."}, status=415)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", ""))
+                except ValueError:
+                    length = -1
+                if length < 0 or length > MAX_PROMPT_BODY_BYTES:
+                    self.send_json({"ok": False, "error": "Invalid request size."}, status=413)
+                    return
+                try:
+                    raw_body = self.rfile.read(length).decode("utf-8", errors="strict")
+                    fields = urllib.parse.parse_qs(
+                        raw_body,
+                        keep_blank_values=True,
+                        max_num_fields=2,
+                    )
+                except (UnicodeError, ValueError):
+                    self.send_json({"ok": False, "error": "Invalid request body."}, status=400)
+                    return
+
+                if fields.get("cancel"):
+                    session.cancelled = True
+                    self.send_json({"ok": True, "cancelled": True})
+                    session.response_ready.set()
+                    return
+
+                raw_password = (fields.get("password") or [""])[0]
+                if not raw_password or len(raw_password) > MAX_PASSWORD_CHARS:
+                    self.send_json({"ok": False, "error": "Проверьте введённое значение."}, status=400)
+                    return
+                try:
+                    session.password = normalize_password_for_account(session.account, raw_password)
+                except MailboxError as error:
+                    self.send_json({"ok": False, "error": str(error)}, status=400)
+                    return
+                self.send_json({"ok": True, "cancelled": False})
+                session.response_ready.set()
+
+        return PasswordHandler
+
+    def ask(self) -> str:
+        """Open the exact page and wait for one bounded local response."""
+
+        open_browser_url(self.url)
+        if not self.page_loaded.wait(timeout=BROWSER_LOAD_TIMEOUT_SECONDS):
+            raise ProtectedPromptUnavailable(
+                "Браузер не загрузил защищённую локальную страницу настройки почты."
+            )
+        if not self.response_ready.wait(timeout=BROWSER_INPUT_TIMEOUT_SECONDS):
+            raise ProtectedPromptUnavailable(
+                "Время ожидания ввода пароля почты истекло."
+            )
+        if self.cancelled:
+            raise PasswordEntryCancelled("Ввод пароля отменён пользователем.")
+        if self.password is None:
+            raise ProtectedPromptUnavailable(
+                "Защищённая локальная страница не вернула пароль."
+            )
+        return self.password
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+def prompt_password_browser(account: Account) -> str:
+    """Collect and validate one password through the browser-first flow."""
+
+    session = BrowserPasswordSession(account)
+    try:
+        return session.ask()
+    finally:
+        session.close()
+
+
+def canonical_password_input_mode(input_mode: str) -> str:
+    """Keep old window/auto flags working while routing both to the browser."""
+
+    if input_mode in {"browser", "auto", "window"}:
+        return "browser"
+    if input_mode == "terminal":
+        return "terminal"
+    raise MailboxError("Password input mode must be browser or terminal.")
+
+
+def prompt_password(account: Account, input_mode: str = "browser") -> str:
+    """Use the system browser first and keep terminal input explicitly opt-in."""
+
+    mode = canonical_password_input_mode(input_mode)
+    if mode == "browser":
+        return prompt_password_browser(account)
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        raise ProtectedPromptUnavailable(
+            "Для --terminal-prompts нужен видимый локальный интерактивный терминал."
+        )
     return getpass.getpass("Password or app password (input hidden): ")
 
 
@@ -512,7 +758,9 @@ def command_configure(args: argparse.Namespace) -> dict[str, Any]:
     )
     if candidate.smtp_security not in {"ssl", "starttls"}:
         raise MailboxError("SMTP security must be ssl or starttls.")
-    raw_password = prompt_password(candidate, args.password_input)
+    requested_password_mode = "terminal" if args.terminal_prompts else args.password_input
+    password_input_mode = canonical_password_input_mode(requested_password_mode)
+    raw_password = prompt_password(candidate, password_input_mode)
     password = normalize_password_for_account(candidate, raw_password)
     credential_store = store_password(candidate, password)
     data = load_raw_config()
@@ -532,7 +780,7 @@ def command_configure(args: argparse.Namespace) -> dict[str, Any]:
         "configured": name,
         "credentialStore": credential_store,
         "configPath": str(CONFIG_PATH),
-        "passwordInput": args.password_input,
+        "passwordInput": password_input_mode,
         **({"appPasswordUrl": GOOGLE_APP_PASSWORDS_URL} if gmail_by_address else {}),
     }
 
@@ -849,9 +1097,17 @@ def build_parser() -> argparse.ArgumentParser:
     configure_parser.add_argument("--account", required=True)
     configure_parser.add_argument(
         "--password-input",
-        choices=("auto", "window", "terminal"),
-        default="auto",
-        help="Password input mode. auto uses a native window on macOS/Windows and falls back to hidden terminal input.",
+        choices=("browser", "terminal", "auto", "window"),
+        default="browser",
+        help=(
+            "Password input mode. browser is the default; auto/window remain "
+            "backward-compatible aliases for browser."
+        ),
+    )
+    configure_parser.add_argument(
+        "--terminal-prompts",
+        action="store_true",
+        help="Use the current visible terminal instead of the protected local browser page.",
     )
     configure_parser.set_defaults(handler=command_configure)
     accounts_parser = subparsers.add_parser("accounts", help="List configured accounts without secrets")

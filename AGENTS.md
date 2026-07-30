@@ -175,6 +175,25 @@ Trelio-монорепозитории быть не должно.
   autonomous, но не включить его за пользователя. Telegram/MAX ограничены
   `chat-only`, email — `mail-only`: входящий контент не даёт полномочий в
   других системах.
+- Интерактивный ввод личных данных входа в skill runtime является
+  browser-first: по умолчанию открывается системный браузер с одноразовой
+  tokenized-страницей на `127.0.0.1`, exact loopback `Host`, same-origin
+  submit, bounded body/timeouts, `no-store`, `no-referrer`, CSP и закрытием
+  listener после
+  результата, отмены или ошибки. Нативные окна ОС не являются отдельным
+  штатным вариантом; terminal prompt разрешён только явным флагом и только в
+  видимом TTY, без автоматического fallback. OAuth/QR/provider-hosted login
+  остаются в браузере соответствующего provider. `autocomplete=off` можно
+  использовать только как best-effort hint: браузер и его password manager
+  вправе проигнорировать его. Любое reusable secret-поле обязано прямо
+  предупредить, что браузер может предложить сохранение, а инструкции и тесты
+  не должны обещать, что HTML-атрибут отключает этот prompt. Канонический
+  русский текст: `Сохранять данные в браузере не нужно – подключение будет
+  сохранено отдельно на этом устройстве. Если браузер предложит сохранить
+  данные, выберите «Нет, спасибо».` Нормальная
+  same-origin проверка требует exact `Origin`; compatibility для `null`/absent
+  `Origin` допустима только вместе со строгими same-origin top-level Fetch
+  Metadata, одноразовым nonce и exact bound loopback socket.
 - Telegram platform release `1.1.5` переиспользует runtime `1.0.4`: `login` по
   умолчанию открывает защищённую одноразовую страницу на `127.0.0.1` в
   системном браузере. macOS и Windows имеют отдельные проверяемые opener-пути;
@@ -189,8 +208,10 @@ Trelio-монорепозитории быть не должно.
   Tokenized path, exact loopback Host/Origin, bounded form body, no-store,
   no-referrer и CSP закрывают межсайтовый submit; значения входа не попадают в
   JSON, MCP, argv, workspace или логи. Каждая интерактивная форма и поле
-  задаёт `autocomplete=off`, чтобы не предлагать браузеру сохранять телефон,
-  одноразовый код или 2FA-пароль.
+  задаёт `autocomplete=off` как best-effort hint. Подготовленный executable
+  patch runtime `1.0.5` / skill `1.1.6` добавляет у 2FA-пароля каноническое
+  предупреждение о возможном save prompt; live `1.0.4` не меняется задним
+  числом.
   Перед подготовкой исходящего сообщения инструкция `1.1.5` требует прочитать
   последние 5–10 содержательных реплик exact диалога и, если есть, сообщение,
   на которое готовится ответ. Агент сохраняет сложившиеся обращение, форму
@@ -234,13 +255,17 @@ Trelio-монорепозитории быть не должно.
   `ВладелецФайла_Key` через exact `Document_СообщениеЭДО` и возвращает
   document/file/message IDs. Оба поиска отдают честный coverage с
   newest/oldest, truncation cause/stages и `hasMore=null`, когда полный
-  bounded window не позволяет доказать наличие следующей строки.
+  bounded window не позволяет доказать наличие следующей строки. Patch
+  `1.0.17` меняет только password-step browser-first формы: показывает
+  каноническое предупреждение о ненужной browser-копии и сохраняет
+  `autocomplete=off` как best-effort hint.
   Company-private пользовательская поверхность
   `platform-skills/1c-vkus` принадлежит только компании «Вкус» и имеет
-  самостоятельный signed package/release cycle. Backend безопасно разрешает
-  ей provider connection `1c-edo`: X-OData, stable connection id и локальный
-  credential namespace остаются прежними, но runtime source и package с EDO
-  больше не общие. Старый platform skill `1c` архивирован после переключения
+  самостоятельные company connection, X-OData binding, stable connection id,
+  локальный namespace `integrations/1c-vkus/...` и signed package/release
+  cycle. Настройки, Agent Secret и личные credentials из `1c-edo` или другого
+  1С-навыка не подставляются и не мигрируют. Старый platform skill `1c`
+  архивирован после переключения
   project assignment и не должен возвращаться каталогом или
   `get_agent_skill`.
   Реестр меняется только после отдельного development inventory и bounded
@@ -273,7 +298,10 @@ Trelio-монорепозитории быть не должно.
   `get-capabilities.filterSourceTypes` фиксирует namespace каждого
   business-unit filter: payroll использует `organization_division`, остальные
   текущие finance sources – `enterprise_structure`; одноимённые UUID нельзя
-  взаимозаменять.
+  взаимозаменять. Patch `1.0.18` переводит broad runtime на собственный
+  credential namespace `1c-vkus` и показывает в browser-first password-step
+  каноническое предупреждение о ненужной browser-копии. Legacy lookup и
+  перенос credentials из `1c-edo` отсутствуют.
   Accounting virtual route намеренно не передаёт `Dimensions`, потому что live
   deployment отвергает этот optional parameter; stock использует только
   `Номенклатура,Характеристика,Склад`. Deprecated `get-balances --kind stock`
@@ -322,12 +350,20 @@ Trelio-монорепозитории быть не должно.
   смешанные значения.
   Gmail setup показывает официальный URL создания пароля приложения и до
   хранения удаляет из 16-символьного пароля визуальные пробелы. Интерактивная
-  настройка предпочитает нативное скрытое окно macOS/Windows, оставляя
-  terminal `getpass` только явным выбором или headless fallback.
+  настройка по умолчанию открывает защищённую loopback-страницу в системном
+  браузере; `--terminal-prompts` остаётся только явным fallback видимого TTY.
+  Legacy `--password-input auto|window` сохраняется как alias browser-first
+  режима, без возврата к нативным окнам.
+  Email browser-first flow, Remote MCP warning и общие skill-инструкции входят
+  в plugin patch `1.6.8`.
 - Company-private runtime `1c-vkus-kadry` назначается только проекту
-  `vkus/kadrovyy-uchet`, использует provider connection `1c-edo` и содержит
-  полный signed кадровый registry с отдельными ограничениями чувствительных
-  данных и точечных вложений. Начиная с runtime `1.0.3` metadata exact-file
+  `vkus/kadrovyy-uchet`, использует собственные company connection, X-OData,
+  connection id и локальный namespace `integrations/1c-vkus-kadry/...`.
+  Runtime `1.0.4` добавляет собственные browser-first `connect`, `doctor`,
+  `access-status` и `forget-credentials`; legacy lookup и перенос credentials
+  из `1c-edo` отсутствуют. Навык содержит полный signed кадровый registry с
+  отдельными ограничениями чувствительных данных и точечных вложений. Начиная
+  с runtime `1.0.3` metadata exact-file
   lookup остаётся в OData-контуре, а байты одного подтверждённого вложения
   скачиваются только через fixed company `filesBaseUrl` по имени каталога из
   signed registry и exact UUID. Прямое чтение OData `ФайлХранилище` запрещено:
@@ -550,6 +586,13 @@ Trelio-монорепозитории быть не должно.
   company-wide доступ; warnings, actor-bound CAS и отдельное подтверждение
   moderator grant/revoke сохраняются. Self-change не создаёт уведомление
   самому инициатору. Новых migration, env и OAuth scopes нет.
+- Patch `1.6.8` переводит Email setup на защищённую browser-first
+  loopback-страницу, добавляет каноническое предупреждение у reusable
+  Email/Remote MCP/Telegram/1С secret-полей и закрепляет независимые
+  connection id, Agent Secret и local credential namespace для каждого
+  1С-навыка. `autocomplete=off` остаётся только best-effort hint; нативные окна
+  ОС не используются, terminal fallback допустим лишь явным флагом в видимом
+  TTY.
 - Agent Secrets хранятся только в server-side Trelio Vault. MCP возвращает
   metadata и одноразовый grant, а локальный bridge consume-ит его для точного
   executable и передаёт значение через stdin/env/private temp file. Trelio

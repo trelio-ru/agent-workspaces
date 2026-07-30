@@ -106,9 +106,9 @@ cancel a disposable result merely to test the connection.
      `требуется настройка администратором компании`. Do not ask for the user's
      personal 1C login or other local credential until that company blocker is
      resolved.
-   - Deduplicate skills that reuse the same provider connection. For example,
-     consumers of the `1c-edo` connection share its administrator blocker and
-     must not look like separate company connections.
+   - Show every enabled 1C skill as a separate company connection. Never merge
+     their administrator blockers or reuse config, Agent Secret, connection id
+     or personal local credentials from another 1C skill.
    - If `minPluginVersion` or the runtime host requires a newer plugin, stop
      setup for that item and let the bridge attempt its quiet official Codex
      update first. Continue in the same task after successful re-dispatch;
@@ -132,6 +132,12 @@ cancel a disposable result merely to test the connection.
 - Use the skill's protected local `127.0.0.1` connection flow or exact trusted
   runtime command. A declarative Remote MCP credential is usable only after its
   local doctor succeeds.
+- Treat local credential entry as browser-first. Do not substitute a native OS
+  dialog. Use terminal input only through an explicit runtime fallback in a
+  visible TTY. Explain that a browser copy is unnecessary because the runtime
+  saves the verified connection separately on this device, and tell the user
+  to decline any password-manager prompt. Never claim that `autocomplete=off`
+  disables that policy.
 - A missing company value belongs in the protected Trelio company connection
   form and requires an administrator. A personal session belongs only to the
   current member's private local integration directory.

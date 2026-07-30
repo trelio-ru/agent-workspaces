@@ -30,7 +30,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.0.3"
+RUNTIME_VERSION = "1.0.4"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_QUERY_CHARS = 200
@@ -44,6 +44,14 @@ ENTITY_RE = re.compile(
     r"^(?:Catalog|Document|InformationRegister|AccumulationRegister|"
     r"CalculationRegister|ChartOfCharacteristicTypes|"
     r"ChartOfCalculationTypes)_[A-Za-zА-Яа-яЁё0-9]+(?:_RecordType)?$",
+)
+
+# The HR runtime owns a separate connection and credential directory. There is
+# deliberately no fallback to the old `1c-edo` identity or local files.
+provider.configure_connection_surface(
+    skill_id=HR_SKILL_ID,
+    credential_namespace="1c-vkus-kadry",
+    runtime_version=RUNTIME_VERSION,
 )
 
 
@@ -201,6 +209,113 @@ def _connected_context() -> tuple[
     config = provider.load_company_config()
     credentials = provider.load_credentials(identity, config)
     return config, credentials
+
+
+def _probe_personal_connection(
+    config: provider.CompanyConfig,
+    credentials: provider.Credentials,
+    *,
+    diagnostic_stage: str,
+) -> None:
+    """Probe one fixed HR source without expanding the signed data contour."""
+
+    registry = _load_registry()
+    source = registry["sources"][0]
+    fields = source.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Подписанный кадровый registry не содержит поле для проверки доступа.",
+        )
+    provider._request_odata(
+        config,
+        credentials,
+        source["entity"],
+        (
+            ("$select", fields[0]["name"]),
+            ("$top", 1),
+        ),
+        diagnostic_stage=diagnostic_stage,
+    )
+
+
+def command_connect(args: argparse.Namespace) -> dict[str, Any]:
+    identity = _current_identity()
+    config = provider.load_company_config()
+    credentials = provider.prompt_credentials(args)
+    try:
+        _probe_personal_connection(
+            config,
+            credentials,
+            diagnostic_stage="connect.probe",
+        )
+    except provider.AuthenticationError:
+        provider._mark_auth_failure(identity, config)
+        raise
+    provider.save_credentials(identity, config, credentials)
+    provider.save_access_state(identity, config, "connected")
+    if provider.BROWSER_PROMPT_SESSION is not None:
+        provider.BROWSER_PROMPT_SESSION.finish(
+            title="1С подключена",
+            message="Личные данные проверены и сохранены только на этом компьютере.",
+        )
+    return {"status": "connected"}
+
+
+def command_doctor(_: argparse.Namespace) -> dict[str, Any]:
+    identity = _current_identity()
+    config = provider.load_company_config()
+    state = provider.load_access_state(identity, config)
+    result: dict[str, Any] = {
+        "status": state["status"],
+        "connectionChanged": state["connectionChanged"],
+        "companyConfig": {
+            "configured": True,
+            "maxRows": config.max_rows,
+            "maxPages": config.max_pages,
+            "maxFileBytes": config.max_file_bytes,
+            "requestTimeoutSeconds": config.request_timeout_seconds,
+        },
+        "network": "not_checked",
+    }
+    if state["status"] in {"connected", "needs_reconnect"}:
+        try:
+            credentials = provider.load_credentials(identity, config)
+            _probe_personal_connection(
+                config,
+                credentials,
+                diagnostic_stage="doctor.probe",
+            )
+            provider.save_access_state(identity, config, "connected")
+            result["status"] = "connected"
+            result["network"] = "ok"
+        except provider.AuthenticationError:
+            provider._mark_auth_failure(identity, config)
+            result["status"] = "needs_reconnect"
+            result["network"] = "authentication_failed"
+        except provider.NetworkError:
+            result["network"] = "unreachable"
+    return result
+
+
+def command_access_show(args: argparse.Namespace) -> dict[str, Any]:
+    _current_identity()
+    return provider.command_access_show(args)
+
+
+def command_access_no_access(args: argparse.Namespace) -> dict[str, Any]:
+    _current_identity()
+    return provider.command_access_no_access(args)
+
+
+def command_access_reset(args: argparse.Namespace) -> dict[str, Any]:
+    _current_identity()
+    return provider.command_access_reset(args)
+
+
+def command_forget_credentials(args: argparse.Namespace) -> dict[str, Any]:
+    _current_identity()
+    return provider.command_forget_credentials(args)
 
 
 def _source_by_key(registry: Mapping[str, Any], key: str) -> dict[str, Any]:
@@ -1402,6 +1517,34 @@ def build_parser() -> argparse.ArgumentParser:
         description="Read-only signed Vkus HR 1C runtime.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    connect = subparsers.add_parser(
+        "connect",
+        help="Connect personal credentials through a protected local browser page",
+    )
+    connect.add_argument(
+        "--terminal-prompts",
+        action="store_true",
+        help="Use the current visible terminal instead of the protected local browser page",
+    )
+    connect.set_defaults(handler=command_connect)
+
+    doctor = subparsers.add_parser("doctor")
+    doctor.set_defaults(handler=command_doctor)
+
+    access = subparsers.add_parser("access-status")
+    access_subparsers = access.add_subparsers(dest="access_command", required=True)
+    access_show = access_subparsers.add_parser("show")
+    access_show.set_defaults(handler=command_access_show)
+    access_set = access_subparsers.add_parser("set")
+    access_set.add_argument("status", choices=["no-access"])
+    access_set.add_argument("--confirmed", action="store_true")
+    access_set.set_defaults(handler=command_access_no_access)
+    access_reset = access_subparsers.add_parser("reset")
+    access_reset.set_defaults(handler=command_access_reset)
+
+    forget = subparsers.add_parser("forget-credentials")
+    forget.set_defaults(handler=command_forget_credentials)
 
     capabilities = subparsers.add_parser("get-capabilities")
     capabilities.add_argument("--category", choices=["", *registry["categories"]], default="")

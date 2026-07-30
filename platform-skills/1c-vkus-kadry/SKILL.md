@@ -15,15 +15,25 @@ description: Safely search, inspect, list attachments for, and download one exac
 
 ## Подключение
 
-Переиспользовать provider connection `1c-edo`: ту же безопасную company config,
-тот же connection id, binding `x_odata` и локальный namespace личных Basic Auth
-credentials:
+Навык использует только собственное company connection: отдельные безопасные
+URL и лимиты, отдельный binding `x_odata` и отдельный connection id. Не
+подставлять настройки или Agent Secret из `1c-edo` либо `1c-vkus`.
 
-`<trelio-config-home>/integrations/1c-edo/<company>/<member>/<connection>/`
+Личные Basic Auth credentials хранятся только в:
 
-Не копировать credentials и не запрашивать логин, пароль или `X-OData` в чате.
-Если личный доступ не подключён, использовать `1c-edo` `access-status` /
-`connect` по его текущей инструкции.
+`<trelio-config-home>/integrations/1c-vkus-kadry/<company>/<member>/<connection>/`
+
+Не читать и не переносить файлы из других 1С namespace. Сначала вызвать
+`access-status show`. При `unknown` или `needs_reconnect` предложить
+собственный `connect` этого навыка и запускать его только по просьбе
+пользователя. По умолчанию `connect` открывает защищённую одноразовую страницу
+на `127.0.0.1` в браузере по умолчанию. `autocomplete=off` является только
+best-effort hint, поэтому страница прямо предупреждает: `Сохранять данные в
+браузере не нужно – подключение будет сохранено отдельно на этом устройстве.
+Если браузер предложит сохранить данные, выберите «Нет, спасибо».`
+`connect --terminal-prompts` допустим только как явный fallback в видимом TTY.
+Не запрашивать логин, пароль или `X-OData` в чате, MCP, аргументах, environment
+variables или workspace-файлах.
 
 Для сетевой команды:
 
@@ -69,6 +79,12 @@ Signed registry содержит 278 кадровых источников да�
 
 Использовать:
 
+- `connect [--terminal-prompts]`
+- `doctor`
+- `access-status show`
+- `access-status set no-access --confirmed`
+- `access-status reset`
+- `forget-credentials`
 - `get-capabilities [--category employment|health|identity|organization|payroll|people|qualifications|taxes|time] [--query TEXT] [--page 1..3] [--limit 1..50]`
 - `search-records --source-key SOURCE_KEY [--query TEXT] [--subject-id UUID] [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--page 1..3] [--limit 1..10] [--include-sensitive]`
 - `get-record --source-key SOURCE_KEY --id UUID [--include-sensitive] [--include-collections] [--line-limit 1..100]`
@@ -92,7 +108,7 @@ Signed registry содержит 278 кадровых источников да�
 Workspace; runtime не перезаписывает существующий путь, скачивает атомарно и
 возвращает SHA-256.
 
-Runtime `1.0.3` после exact metadata-проверки получает бинарное содержимое
+Runtime `1.0.4` после exact metadata-проверки получает бинарное содержимое
 через фиксированный company `filesBaseUrl`, используя только имя каталога из
 signed registry и exact UUID файла. Не заменять этот маршрут прямым чтением
 OData `ФайлХранилище`: для `ХранилищеЗначения` оно может вернуть

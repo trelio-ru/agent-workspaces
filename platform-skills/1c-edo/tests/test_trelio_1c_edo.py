@@ -103,7 +103,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         return identity, config, credentials
 
     def test_browser_connect_release_and_cli_contract(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.16")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.17")
 
         default_args = MODULE.build_parser().parse_args(["connect"])
         terminal_args = MODULE.build_parser().parse_args(
@@ -119,6 +119,8 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         self.assertIn("Trelio — 1С ЭДО", page)
         self.assertIn('<form id="prompt-form" autocomplete="off">', page)
         self.assertIn('type="${inputType}" autocomplete="off"', page)
+        self.assertIn("Сохранять данные в браузере не нужно", page)
+        self.assertIn("подключение будет сохранено отдельно на этом устройстве", page)
         self.assertIn("Данные остаются на этом компьютере", page)
         self.assertNotIn("http://", page)
         self.assertNotIn("https://", page)

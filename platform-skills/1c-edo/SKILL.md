@@ -38,10 +38,13 @@ Run `connect` only at the user's request. By default it opens a protected
 one-time page in the operating system's default browser on `127.0.0.1`; the
 runtime requires the exact tokenized path, loopback `Host`, same-origin
 `Origin`, bounded form body and actual page load. The login and password fields
-disable browser autocomplete, and the listener closes after success, failure,
+set `autocomplete=off` only as a best-effort hint. The password step explains
+that no browser copy is needed because the runtime saves the verified
+connection separately on this device, and tells the user to decline any
+password-manager prompt. The listener closes after success, failure,
 cancellation or timeout. An explicit `connect --terminal-prompts` fallback is
-allowed only in a visible local TTY. There is no automatic fallback to a
-system dialog or terminal.
+allowed only in a visible local TTY. There is no automatic fallback to a system
+dialog or terminal.
 
 The user enters the personal 1C login and password only in that local browser
 page or explicit terminal fallback; never request either value in chat, MCP, a
