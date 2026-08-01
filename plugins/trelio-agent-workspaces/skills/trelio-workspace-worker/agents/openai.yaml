@@ -1,4 +1,4 @@
 interface:
   display_name: "Trelio Workspace Worker"
-  short_description: "Ищет задачу и сохраняет результат в Trelio"
-  default_prompt: "Используй $trelio-workspace-worker, чтобы массовым обычным поиском найти и проверить нужную задачу Trelio, выполнить её и безопасно сохранить результат."
+  short_description: "Выполняет связанную работу в Trelio"
+  default_prompt: "Используй $trelio-workspace-worker для работы с Trelio и безопасного сохранения результата."

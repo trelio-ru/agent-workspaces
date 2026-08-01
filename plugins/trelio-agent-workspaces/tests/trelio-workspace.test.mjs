@@ -1704,7 +1704,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.12");
+  assert.equal(BRIDGE_VERSION, "1.6.13");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1788,6 +1788,16 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
     path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
     "utf8",
   ));
+  const workerAgentMetadata = await readFile(
+    path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-workspace-worker",
+      "agents",
+      "openai.yaml",
+    ),
+    "utf8",
+  );
   const onboardingSkill = await readFile(
     path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
     "utf8",
@@ -1806,6 +1816,8 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /full restart only if the new task/u);
   assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
+  assert.match(workerAgentMetadata, /для работы с Trelio и безопасного сохранения результата/u);
+  assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
 });
 
 test("workspace skill recovers stale OAuth grants without discarding existing scopes", async () => {
