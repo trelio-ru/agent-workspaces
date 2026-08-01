@@ -29,6 +29,7 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const MEMBER_ID = "22222222-2222-4222-8222-222222222222";
 const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
 const CLIENT_ID = "123456789-test.apps.googleusercontent.com";
+const CLIENT_SECRET = "test-desktop-client-secret";
 
 function runtimeEnvironment(configHome) {
   return {
@@ -39,6 +40,7 @@ function runtimeEnvironment(configHome) {
     TRELIO_SKILL_CONNECTION_ID: CONNECTION_ID,
     TRELIO_SKILL_CONNECTION_CONFIG_JSON: JSON.stringify({
       clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
       allowAutonomous: true,
     }),
   };
@@ -71,20 +73,33 @@ test("purpose metadata accepts free-form text with explicit character limits", (
   assert.throws(() => normalizePurposeDescription("Нельзя\u0000так"), /control characters/u);
 });
 
-test("resolved config accepts only the platform client id and autonomous ceiling", () => {
+test("runtime config accepts the protected platform OAuth client and autonomous ceiling", () => {
   assert.deepEqual(normalizeConnectionConfig({
     clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
     allowAutonomous: false,
   }), {
     clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
     allowAutonomous: false,
   });
   assert.throws(
-    () => normalizeConnectionConfig({ clientId: CLIENT_ID, clientSecret: "must-not-exist" }),
+    () => normalizeConnectionConfig({ clientId: CLIENT_ID }),
     CalendarRuntimeError,
   );
   assert.throws(
-    () => normalizeConnectionConfig({ clientId: "not-a-google-client" }),
+    () => normalizeConnectionConfig({
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      refreshToken: "must-not-exist",
+    }),
+    CalendarRuntimeError,
+  );
+  assert.throws(
+    () => normalizeConnectionConfig({
+      clientId: "not-a-google-client",
+      clientSecret: CLIENT_SECRET,
+    }),
     /installed-app client/u,
   );
 });
@@ -228,7 +243,7 @@ test("OAuth callback requires loopback, exact Host, path and state", () => {
   );
 });
 
-test("Desktop OAuth uses PKCE and account selection without a client secret", () => {
+test("Desktop OAuth keeps the required client secret out of the authorization URL", () => {
   const source = fs.readFileSync(
     path.resolve("platform-skills/google-calendar/scripts/trelio-google-calendar.mjs"),
     "utf8",
@@ -236,8 +251,14 @@ test("Desktop OAuth uses PKCE and account selection without a client secret", ()
   assert.match(source, /prompt: "select_account consent"/u);
   assert.match(source, /code_challenge_method: "S256"/u);
   assert.match(source, /code_verifier: verifier/u);
-  assert.doesNotMatch(source, /client_secret/u);
-  assert.doesNotMatch(source, /TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET/u);
+  assert.match(source, /client_secret: context\.config\.clientSecret/u);
+  const authorizationStart = source.indexOf("authorizationUrl.search");
+  const authorizationEnd = source.indexOf("const timer", authorizationStart);
+  assert.ok(authorizationStart > 0 && authorizationEnd > authorizationStart);
+  assert.doesNotMatch(
+    source.slice(authorizationStart, authorizationEnd),
+    /clientSecret|client_secret/u,
+  );
 });
 
 test("Google errors normalize both Calendar API and OAuth token payloads", () => {

@@ -6,8 +6,9 @@
  * Security boundaries are deliberately enforced here instead of relying on
  * the Markdown instruction alone:
  *
- * - the public OAuth client id belongs to Trelio and arrives in the resolved
- *   safe connection config; Desktop OAuth does not pretend to keep a secret;
+ * - the OAuth client belongs to Trelio; its public id is visible in the safe
+ *   catalog config, while the secret required by Google's Desktop token
+ *   endpoint is added only to the no-store runtime resolve and never printed;
  * - every connected Google account has an isolated refresh token and policy
  *   outside Git and Agent Workspaces in the stable Trelio namespace;
  * - OAuth uses a loopback callback, exact state, PKCE and an exact Host check;
@@ -156,7 +157,7 @@ export function normalizeConnectionConfig(rawConfig) {
     );
   }
   const unexpectedKeys = Object.keys(rawConfig).filter(
-    (key) => !["clientId", "allowAutonomous"].includes(key),
+    (key) => !["clientId", "clientSecret", "allowAutonomous"].includes(key),
   );
   if (unexpectedKeys.length > 0) {
     throw new CalendarRuntimeError(
@@ -171,8 +172,14 @@ export function normalizeConnectionConfig(rawConfig) {
       "Google OAuth client ID must be an installed-app client ending in .apps.googleusercontent.com.",
     );
   }
+  const clientSecret = requireString(
+    rawConfig.clientSecret,
+    "Google OAuth client secret",
+    512,
+  );
   return {
     clientId,
+    clientSecret,
     allowAutonomous: rawConfig.allowAutonomous !== false,
   };
 }
@@ -701,6 +708,7 @@ async function accessToken(context, environment = process.env) {
 
   const refreshed = await tokenRequest({
     client_id: context.config.clientId,
+    client_secret: context.config.clientSecret,
     refresh_token: token.refreshToken,
     grant_type: "refresh_token",
   });
@@ -898,6 +906,7 @@ async function connect(context, args, environment = process.env) {
     const code = await callbackPromise;
     const token = await tokenRequest({
       client_id: context.config.clientId,
+      client_secret: context.config.clientSecret,
       code,
       code_verifier: verifier,
       grant_type: "authorization_code",
