@@ -6,11 +6,13 @@
  * Security boundaries are deliberately enforced here instead of relying on
  * the Markdown instruction alone:
  *
- * - the company OAuth client secret is accepted only through a one-use Agent
- *   Secret environment checkout and is never persisted by this process;
- * - each member's refresh token lives outside Git and Agent Workspaces in the
- *   stable Trelio integration namespace;
+ * - the public OAuth client id belongs to Trelio and arrives in the resolved
+ *   safe connection config; Desktop OAuth does not pretend to keep a secret;
+ * - every connected Google account has an isolated refresh token and policy
+ *   outside Git and Agent Workspaces in the stable Trelio namespace;
  * - OAuth uses a loopback callback, exact state, PKCE and an exact Host check;
+ * - local purpose mappings bind names such as work/personal to an exact
+ *   account and calendar instead of guessing by a mutable display title;
  * - writes use a preview/apply contract bound to a plan hash and current ETag;
  * - ambiguous writes are never blindly retried.
  */
@@ -24,7 +26,6 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON";
-const CLIENT_SECRET_ENV = "TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET";
 const API_ORIGIN = "https://www.googleapis.com";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -35,6 +36,8 @@ const OAUTH_SCOPES = Object.freeze([
 const POLICY_MODES = new Set(["confirm", "autonomous", "read-only"]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CLIENT_ID_PATTERN = /^[0-9]+-[a-z0-9._-]+\.apps\.googleusercontent\.com$/iu;
+const ACCOUNT_ALIAS_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
+const PURPOSE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/u;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const RFC3339_WITH_ZONE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/u;
 const GOOGLE_EVENT_ID_PATTERN = /^[0-9a-v]{5,1024}$/u;
@@ -182,11 +185,6 @@ export function loadRuntimeContext(environment = process.env) {
       "A company administrator must configure the Google Calendar connection in Trelio.",
     );
   }
-  const clientSecret = requireString(
-    environment[CLIENT_SECRET_ENV],
-    "Google OAuth client secret Agent Secret checkout",
-    2_048,
-  );
   return {
     identity: {
       companyId: validateUuid(environment.TRELIO_SKILL_COMPANY_ID, "company ID"),
@@ -194,7 +192,6 @@ export function loadRuntimeContext(environment = process.env) {
       connectionId: validateUuid(environment.TRELIO_SKILL_CONNECTION_ID, "connection ID"),
     },
     config: normalizeConnectionConfig(parseJsonObject(rawConfig, "Google Calendar company connection")),
-    clientSecret,
   };
 }
 
@@ -222,6 +219,50 @@ export function connectionRoot(context, environment = process.env) {
     context.identity.memberId,
     context.identity.connectionId,
   );
+}
+
+export function normalizeAccountAlias(value, label = "account") {
+  const normalized = requireString(value, label, 64).toLowerCase();
+  if (!ACCOUNT_ALIAS_PATTERN.test(normalized)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} must use 1-64 lowercase Latin letters, digits, dots, underscores or hyphens.`,
+    );
+  }
+  return normalized;
+}
+
+function normalizePurpose(value) {
+  const normalized = requireString(value, "purpose", 64).toLowerCase();
+  if (!PURPOSE_PATTERN.test(normalized)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      "purpose must use 1-64 lowercase Latin letters, digits, underscores or hyphens.",
+    );
+  }
+  return normalized;
+}
+
+function accountsRoot(context, environment = process.env) {
+  return path.join(connectionRoot(context, environment), "accounts");
+}
+
+export function accountRoot(context, accountAlias, environment = process.env) {
+  return path.join(accountsRoot(context, environment), normalizeAccountAlias(accountAlias));
+}
+
+export function selectRuntimeAccount(context, accountAlias) {
+  return { ...context, accountAlias: normalizeAccountAlias(accountAlias) };
+}
+
+function selectedAccountAlias(context) {
+  if (!context?.accountAlias) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_ACCOUNT_REQUIRED",
+      "Select a connected Google account with --account.",
+    );
+  }
+  return normalizeAccountAlias(context.accountAlias);
 }
 
 function ensurePrivateDirectory(directoryPath) {
@@ -270,11 +311,99 @@ function readPrivateJson(filePath, label) {
 }
 
 function tokenPath(context, environment = process.env) {
-  return path.join(connectionRoot(context, environment), "state", "oauth-token.json");
+  return path.join(accountRoot(context, selectedAccountAlias(context), environment), "state", "oauth-token.json");
 }
 
 function policyPath(context, environment = process.env) {
-  return path.join(connectionRoot(context, environment), "config", "policy.json");
+  return path.join(accountRoot(context, selectedAccountAlias(context), environment), "config", "policy.json");
+}
+
+function accountMetadataPath(context, environment = process.env) {
+  return path.join(accountRoot(context, selectedAccountAlias(context), environment), "account.json");
+}
+
+function calendarPurposesPath(context, environment = process.env) {
+  return path.join(connectionRoot(context, environment), "config", "calendar-purposes.json");
+}
+
+function listLocalAccountAliases(context, environment = process.env) {
+  const directoryPath = accountsRoot(context, environment);
+  if (!fs.existsSync(directoryPath)) return [];
+  return fs.readdirSync(directoryPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && ACCOUNT_ALIAS_PATTERN.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function resolveAccountAlias(context, args, environment = process.env) {
+  if (args.account !== undefined) return normalizeAccountAlias(args.account);
+  const aliases = listLocalAccountAliases(context, environment);
+  if (aliases.length === 0) return "default";
+  if (aliases.length === 1) return aliases[0];
+  throw new CalendarRuntimeError(
+    "GOOGLE_CALENDAR_ACCOUNT_REQUIRED",
+    "Several Google accounts are connected. Select one with --account.",
+    { accounts: aliases },
+  );
+}
+
+function loadCalendarPurposes(context, environment = process.env) {
+  const filePath = calendarPurposesPath(context, environment);
+  if (!fs.existsSync(filePath)) return {};
+  const payload = readPrivateJson(filePath, "Google Calendar purpose mappings");
+  if (!isPlainObject(payload.purposes)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_LOCAL_STATE_INVALID",
+      "Google Calendar purpose mappings must contain a purposes object.",
+    );
+  }
+  const purposes = {};
+  for (const [purpose, mapping] of Object.entries(payload.purposes)) {
+    if (!PURPOSE_PATTERN.test(purpose) || !isPlainObject(mapping)) {
+      throw new CalendarRuntimeError(
+        "GOOGLE_CALENDAR_LOCAL_STATE_INVALID",
+        "Google Calendar purpose mappings contain an invalid entry.",
+      );
+    }
+    purposes[purpose] = {
+      account: normalizeAccountAlias(mapping.account, `account for purpose ${purpose}`),
+      calendarId: requireString(mapping.calendarId, `calendar for purpose ${purpose}`, 1_024),
+      summary: typeof mapping.summary === "string" ? mapping.summary.slice(0, 1_024) : null,
+      accessRole: typeof mapping.accessRole === "string" ? mapping.accessRole.slice(0, 64) : null,
+      updatedAt: typeof mapping.updatedAt === "string" ? mapping.updatedAt : null,
+    };
+  }
+  return purposes;
+}
+
+function resolvePurposeArgs(context, args, environment = process.env) {
+  if (args.purpose === undefined) return args;
+  const purpose = normalizePurpose(args.purpose);
+  const mapping = loadCalendarPurposes(context, environment)[purpose];
+  if (!mapping) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_PURPOSE_NOT_FOUND",
+      `Calendar purpose ${purpose} is not configured.`,
+    );
+  }
+  if (args.account !== undefined && normalizeAccountAlias(args.account) !== mapping.account) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      "--purpose conflicts with the supplied --account.",
+    );
+  }
+  if (args.calendar !== undefined && String(args.calendar) !== mapping.calendarId) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      "--purpose conflicts with the supplied --calendar.",
+    );
+  }
+  return {
+    ...args,
+    account: mapping.account,
+    calendar: mapping.calendarId,
+    resolvedPurpose: purpose,
+  };
 }
 
 export function loadPolicy(context, environment = process.env) {
@@ -467,11 +596,17 @@ async function tokenRequest(parameters) {
   return payload;
 }
 
-function normalizeStoredToken(payload, expectedClientId) {
+function normalizeStoredToken(payload, expectedClientId, expectedAccountAlias) {
   if (payload.clientId !== expectedClientId) {
     throw new CalendarRuntimeError(
       "GOOGLE_CALENDAR_CONNECTION_CHANGED",
-      "The company Google OAuth client changed. Run connect again before using the stored token.",
+      "The Trelio Google OAuth client changed. Run connect again before using the stored token.",
+    );
+  }
+  if (payload.accountAlias !== expectedAccountAlias) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_LOCAL_STATE_INVALID",
+      "The stored Google OAuth token belongs to a different local account alias.",
     );
   }
   const refreshToken = requireString(payload.refreshToken, "Google OAuth refresh token", 8_192);
@@ -488,20 +623,22 @@ function normalizeStoredToken(payload, expectedClientId) {
 
 async function accessToken(context, environment = process.env) {
   const filePath = tokenPath(context, environment);
+  const accountAlias = selectedAccountAlias(context);
   const token = normalizeStoredToken(
     readPrivateJson(filePath, "Google Calendar OAuth token"),
     context.config.clientId,
+    accountAlias,
   );
   if (token.accessToken && token.expiresAt > Date.now() + 60_000) return token.accessToken;
 
   const refreshed = await tokenRequest({
     client_id: context.config.clientId,
-    client_secret: context.clientSecret,
     refresh_token: token.refreshToken,
     grant_type: "refresh_token",
   });
   const nextToken = {
     clientId: context.config.clientId,
+    accountAlias,
     refreshToken: token.refreshToken,
     accessToken: refreshed.access_token,
     expiresAt: Date.now() + Number(refreshed.expires_in || 3_600) * 1_000,
@@ -663,8 +800,10 @@ async function connect(context, args, environment = process.env) {
     response_type: "code",
     scope: OAUTH_SCOPES.join(" "),
     access_type: "offline",
-    prompt: "consent",
-    include_granted_scopes: "true",
+    // `select_account` makes adding a second profile deterministic even when
+    // the browser already has an active Google session. `consent` is needed
+    // for a refresh token in the installed-app offline flow.
+    prompt: "select_account consent",
     state,
     code_challenge: challenge,
     code_challenge_method: "S256",
@@ -691,7 +830,6 @@ async function connect(context, args, environment = process.env) {
     const code = await callbackPromise;
     const token = await tokenRequest({
       client_id: context.config.clientId,
-      client_secret: context.clientSecret,
       code,
       code_verifier: verifier,
       grant_type: "authorization_code",
@@ -705,6 +843,7 @@ async function connect(context, args, environment = process.env) {
     }
     writePrivateJson(tokenPath(context, environment), {
       clientId: context.config.clientId,
+      accountAlias: selectedAccountAlias(context),
       refreshToken: token.refresh_token,
       accessToken: token.access_token,
       expiresAt: Date.now() + Number(token.expires_in || 3_600) * 1_000,
@@ -712,11 +851,20 @@ async function connect(context, args, environment = process.env) {
       tokenType: typeof token.token_type === "string" ? token.token_type : "Bearer",
     });
     const calendars = await listCalendars(context, { max: 10 });
+    // Do not assume CalendarList ordering or that the primary entry appears in
+    // the first bounded page. Google explicitly supports the `primary` keyword.
+    const primaryCalendar = await getCalendar(context, "primary");
+    writePrivateJson(accountMetadataPath(context, environment), {
+      accountAlias: selectedAccountAlias(context),
+      primaryCalendar,
+      connectedAt: new Date().toISOString(),
+    });
     return {
       command: "connect",
       status: "connected",
+      account: selectedAccountAlias(context),
       calendarCount: calendars.items.length,
-      primaryCalendar: calendars.items.find((item) => item.primary === true) || null,
+      primaryCalendar,
     };
   } finally {
     clearTimeout(timer);
@@ -736,6 +884,119 @@ function normalizeCalendar(item) {
     primary: item.primary === true,
     selected: item.selected === true,
   };
+}
+
+async function getCalendar(context, calendarId) {
+  const normalizedCalendarId = requireString(calendarId, "calendar ID", 1_024);
+  const { payload } = await calendarApi(
+    context,
+    `/calendar/v3/users/me/calendarList/${encoded(normalizedCalendarId)}`,
+    {},
+    { safeToRetry: true, stage: "get_calendar" },
+  );
+  return normalizeCalendar(payload || {});
+}
+
+function assertCalendarWritable(calendar) {
+  if (!new Set(["writer", "owner"]).has(calendar.accessRole)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_CALENDAR_READ_ONLY",
+      "The selected calendar is not writable for this Google account.",
+      { calendarId: calendar.id, accessRole: calendar.accessRole },
+    );
+  }
+}
+
+function listAccounts(context, environment = process.env) {
+  const accounts = listLocalAccountAliases(context, environment).map((accountAlias) => {
+    const selectedContext = selectRuntimeAccount(context, accountAlias);
+    const metadataFile = accountMetadataPath(selectedContext, environment);
+    const tokenFile = tokenPath(selectedContext, environment);
+    let metadata = null;
+    if (fs.existsSync(metadataFile)) {
+      metadata = readPrivateJson(metadataFile, `Google Calendar account metadata for ${accountAlias}`);
+    }
+    return {
+      alias: accountAlias,
+      connected: fs.existsSync(tokenFile),
+      primaryCalendar: isPlainObject(metadata?.primaryCalendar)
+        ? normalizeCalendar(metadata.primaryCalendar)
+        : null,
+      connectedAt: typeof metadata?.connectedAt === "string" ? metadata.connectedAt : null,
+      policy: loadPolicy(selectedContext, environment),
+    };
+  });
+  return {
+    command: "accounts",
+    accounts,
+    purposes: loadCalendarPurposes(context, environment),
+  };
+}
+
+async function calendarPurpose(context, args, environment = process.env) {
+  const purposeCommand = args._[1] || "list";
+  const currentPurposes = loadCalendarPurposes(context, environment);
+  if (purposeCommand === "list") {
+    return { command: "calendar-purpose", purposes: currentPurposes };
+  }
+
+  const purpose = normalizePurpose(args.purpose);
+  if (purposeCommand === "set") {
+    if (args.confirm !== true) {
+      throw new CalendarRuntimeError(
+        "GOOGLE_CALENDAR_CONFIRMATION_REQUIRED",
+        "Saving a calendar purpose requires --confirm after the exact account and calendar are explicit.",
+      );
+    }
+    const accountAlias = resolveAccountAlias(context, args, environment);
+    const selectedContext = selectRuntimeAccount(context, accountAlias);
+    const calendar = await getCalendar(
+      selectedContext,
+      requireString(args.calendar, "calendar ID", 1_024),
+    );
+    const nextPurposes = {
+      ...currentPurposes,
+      [purpose]: {
+        account: accountAlias,
+        calendarId: calendar.id,
+        summary: calendar.summary,
+        accessRole: calendar.accessRole,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    writePrivateJson(calendarPurposesPath(context, environment), { purposes: nextPurposes });
+    return {
+      command: "calendar-purpose",
+      mode: "set",
+      purpose,
+      mapping: nextPurposes[purpose],
+    };
+  }
+
+  if (purposeCommand === "remove") {
+    if (args.confirm !== true) {
+      throw new CalendarRuntimeError(
+        "GOOGLE_CALENDAR_CONFIRMATION_REQUIRED",
+        "Removing a calendar purpose requires --confirm.",
+      );
+    }
+    if (!currentPurposes[purpose]) {
+      throw new CalendarRuntimeError(
+        "GOOGLE_CALENDAR_PURPOSE_NOT_FOUND",
+        `Calendar purpose ${purpose} is not configured.`,
+      );
+    }
+    const removed = currentPurposes[purpose];
+    const nextPurposes = { ...currentPurposes };
+    delete nextPurposes[purpose];
+    writePrivateJson(calendarPurposesPath(context, environment), { purposes: nextPurposes });
+    return { command: "calendar-purpose", mode: "removed", purpose, mapping: removed };
+  }
+
+  throw new CalendarRuntimeError(
+    "GOOGLE_CALENDAR_INPUT_INVALID",
+    "calendar-purpose command must be list, set or remove.",
+  );
 }
 
 export function normalizeEvent(event) {
@@ -778,6 +1039,7 @@ async function listCalendars(context, args) {
   });
   return {
     command: "calendars",
+    account: selectedAccountAlias(context),
     items: Array.isArray(payload?.items) ? payload.items.slice(0, maxResults).map(normalizeCalendar) : [],
     nextPageToken: payload?.nextPageToken || null,
   };
@@ -785,6 +1047,13 @@ async function listCalendars(context, args) {
 
 function calendarIdFromArgs(args) {
   return requireString(args.calendar || "primary", "calendar ID", 1_024);
+}
+
+function selectionOutput(context, args) {
+  return {
+    account: selectedAccountAlias(context),
+    purpose: args.resolvedPurpose || null,
+  };
 }
 
 function eventIdFromArgs(args) {
@@ -835,6 +1104,7 @@ async function listEvents(context, args) {
   );
   return {
     command: "events",
+    ...selectionOutput(context, args),
     calendarId,
     timeMin,
     timeMax,
@@ -1126,15 +1396,25 @@ function valuesMatch(actual, expected) {
 
 async function createEvent(context, args) {
   const calendarId = calendarIdFromArgs(args);
+  const calendar = await getCalendar(context, calendarId);
+  assertCalendarWritable(calendar);
   const resource = buildCreateResource(args);
   const requestId = requestIdFromArgs(args, args.apply === true);
-  const writePlan = { action: "create", calendarId, requestId, resource };
+  const writePlan = {
+    action: "create",
+    account: selectedAccountAlias(context),
+    purpose: args.resolvedPurpose || null,
+    calendarId,
+    requestId,
+    resource,
+  };
   const expectedPlanHash = planHash(writePlan);
   if (args.apply !== true) {
     return {
       command: "create-event",
       mode: "preview",
       ...writePlan,
+      calendar,
       expectedPlanHash,
       warnings: resource.attendees?.length ? ["Google will send invitations to the listed attendees."] : [],
     };
@@ -1152,12 +1432,24 @@ async function createEvent(context, args) {
         search: { sendUpdates: resource.attendees?.length ? "all" : "none" },
       },
     );
-    return { command: "create-event", mode: "applied", policy: policy.writeMode, event: normalizeEvent(payload || {}) };
+    return {
+      command: "create-event",
+      mode: "applied",
+      ...selectionOutput(context, args),
+      policy: policy.writeMode,
+      event: normalizeEvent(payload || {}),
+    };
   } catch (error) {
     if (!(error instanceof NetworkTransportError)) throw error;
     const recovered = await getEvent(context, { calendar: calendarId, eventId: requestId }, true).catch(() => null);
     if (recovered && valuesMatch(recovered, resource)) {
-      return { command: "create-event", mode: "recovered-after-ambiguous-response", policy: policy.writeMode, event: recovered };
+      return {
+        command: "create-event",
+        mode: "recovered-after-ambiguous-response",
+        ...selectionOutput(context, args),
+        policy: policy.writeMode,
+        event: recovered,
+      };
     }
     throw new CalendarRuntimeError(
       "GOOGLE_CALENDAR_MUTATION_AMBIGUOUS",
@@ -1169,15 +1461,34 @@ async function createEvent(context, args) {
 
 async function updateEvent(context, args) {
   const calendarId = calendarIdFromArgs(args);
+  const calendar = await getCalendar(context, calendarId);
+  assertCalendarWritable(calendar);
   const eventId = eventIdFromArgs(args);
   const current = await getEvent(context, { calendar: calendarId, eventId });
   assertSeriesTargetConfirmed(current, args);
   const patch = buildUpdatePatch(args);
   assertInvitationUpdatesConfirmed(current, args, patch);
-  const writePlan = { action: "update", calendarId, eventId, expectedEtag: current.etag, patch };
+  const writePlan = {
+    action: "update",
+    account: selectedAccountAlias(context),
+    purpose: args.resolvedPurpose || null,
+    calendarId,
+    eventId,
+    expectedEtag: current.etag,
+    patch,
+  };
   const expectedPlanHash = planHash(writePlan);
   if (args.apply !== true) {
-    return { command: "update-event", mode: "preview", current, patch, expectedEtag: current.etag, expectedPlanHash };
+    return {
+      command: "update-event",
+      mode: "preview",
+      ...selectionOutput(context, args),
+      calendar,
+      current,
+      patch,
+      expectedEtag: current.etag,
+      expectedPlanHash,
+    };
   }
   if (args.expectedEtag !== current.etag) {
     throw new CalendarRuntimeError(
@@ -1197,12 +1508,24 @@ async function updateEvent(context, args) {
         search: { sendUpdates: requiresInvitationUpdates(current, patch) ? "all" : "none" },
       },
     );
-    return { command: "update-event", mode: "applied", policy: policy.writeMode, event: normalizeEvent(payload || {}) };
+    return {
+      command: "update-event",
+      mode: "applied",
+      ...selectionOutput(context, args),
+      policy: policy.writeMode,
+      event: normalizeEvent(payload || {}),
+    };
   } catch (error) {
     if (!(error instanceof NetworkTransportError)) throw error;
     const recovered = await getEvent(context, { calendar: calendarId, eventId }, true).catch(() => null);
     if (recovered && valuesMatch(recovered, patch)) {
-      return { command: "update-event", mode: "recovered-after-ambiguous-response", policy: policy.writeMode, event: recovered };
+      return {
+        command: "update-event",
+        mode: "recovered-after-ambiguous-response",
+        ...selectionOutput(context, args),
+        policy: policy.writeMode,
+        event: recovered,
+      };
     }
     throw new CalendarRuntimeError(
       "GOOGLE_CALENDAR_MUTATION_AMBIGUOUS",
@@ -1214,14 +1537,31 @@ async function updateEvent(context, args) {
 
 async function deleteEvent(context, args) {
   const calendarId = calendarIdFromArgs(args);
+  const calendar = await getCalendar(context, calendarId);
+  assertCalendarWritable(calendar);
   const eventId = eventIdFromArgs(args);
   const current = await getEvent(context, { calendar: calendarId, eventId });
   assertSeriesTargetConfirmed(current, args);
   assertInvitationUpdatesConfirmed(current, args);
-  const writePlan = { action: "delete", calendarId, eventId, expectedEtag: current.etag };
+  const writePlan = {
+    action: "delete",
+    account: selectedAccountAlias(context),
+    purpose: args.resolvedPurpose || null,
+    calendarId,
+    eventId,
+    expectedEtag: current.etag,
+  };
   const expectedPlanHash = planHash(writePlan);
   if (args.apply !== true) {
-    return { command: "delete-event", mode: "preview", current, expectedEtag: current.etag, expectedPlanHash };
+    return {
+      command: "delete-event",
+      mode: "preview",
+      ...selectionOutput(context, args),
+      calendar,
+      current,
+      expectedEtag: current.etag,
+      expectedPlanHash,
+    };
   }
   if (args.expectedEtag !== current.etag) {
     throw new CalendarRuntimeError(
@@ -1245,7 +1585,13 @@ async function deleteEvent(context, args) {
     if (!(error instanceof NetworkTransportError)) throw error;
     const recovered = await getEvent(context, { calendar: calendarId, eventId }, true).catch(() => undefined);
     if (recovered === null) {
-      return { command: "delete-event", mode: "recovered-after-ambiguous-response", policy: policy.writeMode, eventId };
+      return {
+        command: "delete-event",
+        mode: "recovered-after-ambiguous-response",
+        ...selectionOutput(context, args),
+        policy: policy.writeMode,
+        eventId,
+      };
     }
     throw new CalendarRuntimeError(
       "GOOGLE_CALENDAR_MUTATION_AMBIGUOUS",
@@ -1261,30 +1607,40 @@ async function deleteEvent(context, args) {
       { eventId },
     );
   }
-  return { command: "delete-event", mode: "applied", policy: policy.writeMode, eventId };
+  return {
+    command: "delete-event",
+    mode: "applied",
+    ...selectionOutput(context, args),
+    policy: policy.writeMode,
+    eventId,
+  };
 }
 
 async function doctor(context, environment = process.env) {
   const filePath = tokenPath(context, environment);
+  const accountAlias = selectedAccountAlias(context);
   if (!fs.existsSync(filePath)) {
     return {
       command: "doctor",
       status: "needs_connect",
-      companyConnection: { configured: true, clientIdConfigured: true },
+      account: accountAlias,
+      platformConnection: { configured: true, clientIdConfigured: true },
       localToken: { exists: false },
       policy: loadPolicy(context, environment),
     };
   }
   assertPrivateFile(filePath);
   const calendars = await listCalendars(context, { max: 10 });
+  const primaryCalendar = await getCalendar(context, "primary");
   return {
     command: "doctor",
     status: "connected",
-    companyConnection: { configured: true, clientIdConfigured: true },
+    account: accountAlias,
+    platformConnection: { configured: true, clientIdConfigured: true },
     localToken: { exists: true, fileMode: process.platform === "win32" ? null : (fs.statSync(filePath).mode & 0o777).toString(8) },
     policy: loadPolicy(context, environment),
     calendarCount: calendars.items.length,
-    primaryCalendar: calendars.items.find((item) => item.primary === true) || null,
+    primaryCalendar,
   };
 }
 
@@ -1297,9 +1653,17 @@ function forgetCredentials(context, args, environment = process.env) {
   }
   const filePath = tokenPath(context, environment);
   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  const metadataFile = accountMetadataPath(context, environment);
+  if (fs.existsSync(metadataFile)) fs.unlinkSync(metadataFile);
+  const accountAlias = selectedAccountAlias(context);
+  const affectedPurposes = Object.entries(loadCalendarPurposes(context, environment))
+    .filter(([, mapping]) => mapping.account === accountAlias)
+    .map(([purpose]) => purpose);
   return {
     command: "forget-credentials",
     status: "removed",
+    account: accountAlias,
+    affectedPurposes,
     note: "The local token was removed. Revoke the Google grant separately if required.",
   };
 }
@@ -1308,16 +1672,18 @@ function help() {
   return {
     command: "help",
     commands: {
-      connect: "Open Google OAuth in the browser and save the member token locally.",
-      doctor: "Check company configuration, local token, policy and live Calendar API access.",
-      calendars: "List accessible calendars: [--max 100].",
-      events: "List/search a bounded range: --calendar primary [--days 14 | --time-min RFC3339 --time-max RFC3339] [--query TEXT] [--max 50].",
-      "get-event": "Read one event: --calendar ID --event-id ID.",
+      accounts: "List local Google account aliases, primary calendars, policies and purpose mappings.",
+      connect: "Connect or reconnect one Google account: [--account work].",
+      doctor: "Check one selected account, local token, policy and live Calendar API access: [--account work].",
+      calendars: "List accessible primary, secondary and shared calendars: [--account work] [--max 100].",
+      "calendar-purpose": "calendar-purpose list | set --purpose work --account work --calendar ID --confirm | remove --purpose work --confirm.",
+      events: "List/search a bounded range: [--account work --calendar ID | --purpose work] [--days 14 | --time-min RFC3339 --time-max RFC3339] [--query TEXT] [--max 50].",
+      "get-event": "Read one event: [--account work --calendar ID | --purpose work] --event-id ID.",
       "create-event": "Preview, then apply with --apply --request-id ID --expected-plan-hash HASH and policy confirmation.",
       "update-event": "Preview, then apply with --apply --expected-etag ETAG --expected-plan-hash HASH and policy confirmation.",
       "delete-event": "Preview, then apply with --apply --expected-etag ETAG --expected-plan-hash HASH and policy confirmation.",
-      policy: "policy show | policy set --mode confirm|autonomous|read-only.",
-      "forget-credentials": "Remove only the local member token with --confirm.",
+      policy: "policy show [--account work] | policy set --account work --mode confirm|autonomous|read-only.",
+      "forget-credentials": "Remove one local account token with --account ALIAS --confirm.",
     },
   };
 }
@@ -1328,34 +1694,108 @@ export async function run(argv, environment = process.env) {
   if (["help", "--help", "-h"].includes(command)) return help();
   const context = loadRuntimeContext(environment);
   switch (command) {
-    case "connect":
-      return connect(context, args, environment);
-    case "doctor":
-      return doctor(context, environment);
-    case "calendars":
-      return listCalendars(context, args);
-    case "events":
-      return listEvents(context, args);
-    case "get-event":
-      return { command: "get-event", calendarId: calendarIdFromArgs(args), event: await getEvent(context, args) };
-    case "create-event":
-      return createEvent(context, args);
-    case "update-event":
-      return updateEvent(context, args);
-    case "delete-event":
-      return deleteEvent(context, args);
+    case "accounts":
+      return listAccounts(context, environment);
+    case "calendar-purpose":
+      return calendarPurpose(context, args, environment);
+    case "connect": {
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, args, environment),
+      );
+      return connect(selectedContext, args, environment);
+    }
+    case "doctor": {
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, args, environment),
+      );
+      return doctor(selectedContext, environment);
+    }
+    case "calendars": {
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, args, environment),
+      );
+      return listCalendars(selectedContext, args);
+    }
+    case "events": {
+      const resolvedArgs = resolvePurposeArgs(context, args, environment);
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, resolvedArgs, environment),
+      );
+      return listEvents(selectedContext, resolvedArgs);
+    }
+    case "get-event": {
+      const resolvedArgs = resolvePurposeArgs(context, args, environment);
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, resolvedArgs, environment),
+      );
+      return {
+        command: "get-event",
+        account: selectedAccountAlias(selectedContext),
+        purpose: resolvedArgs.resolvedPurpose || null,
+        calendarId: calendarIdFromArgs(resolvedArgs),
+        event: await getEvent(selectedContext, resolvedArgs),
+      };
+    }
+    case "create-event": {
+      const resolvedArgs = resolvePurposeArgs(context, args, environment);
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, resolvedArgs, environment),
+      );
+      return createEvent(selectedContext, resolvedArgs);
+    }
+    case "update-event": {
+      const resolvedArgs = resolvePurposeArgs(context, args, environment);
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, resolvedArgs, environment),
+      );
+      return updateEvent(selectedContext, resolvedArgs);
+    }
+    case "delete-event": {
+      const resolvedArgs = resolvePurposeArgs(context, args, environment);
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, resolvedArgs, environment),
+      );
+      return deleteEvent(selectedContext, resolvedArgs);
+    }
     case "policy": {
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, args, environment),
+      );
       const policyCommand = args._[1] || "show";
       if (policyCommand === "show") {
-        return { command: "policy", policy: loadPolicy(context, environment), allowAutonomous: context.config.allowAutonomous };
+        return {
+          command: "policy",
+          account: selectedAccountAlias(selectedContext),
+          policy: loadPolicy(selectedContext, environment),
+          allowAutonomous: context.config.allowAutonomous,
+        };
       }
       if (policyCommand === "set") {
-        return { command: "policy", policy: setPolicy(context, args.mode, environment), allowAutonomous: context.config.allowAutonomous };
+        return {
+          command: "policy",
+          account: selectedAccountAlias(selectedContext),
+          policy: setPolicy(selectedContext, args.mode, environment),
+          allowAutonomous: context.config.allowAutonomous,
+        };
       }
       throw new CalendarRuntimeError("GOOGLE_CALENDAR_INPUT_INVALID", "policy command must be show or set.");
     }
-    case "forget-credentials":
-      return forgetCredentials(context, args, environment);
+    case "forget-credentials": {
+      const selectedContext = selectRuntimeAccount(
+        context,
+        resolveAccountAlias(context, args, environment),
+      );
+      return forgetCredentials(selectedContext, args, environment);
+    }
     default:
       throw new CalendarRuntimeError("GOOGLE_CALENDAR_INPUT_INVALID", `Unknown command: ${command}.`);
   }

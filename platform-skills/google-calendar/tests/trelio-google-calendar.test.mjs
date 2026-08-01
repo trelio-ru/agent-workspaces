@@ -9,13 +9,16 @@ import {
   CalendarRuntimeError,
   buildCreateResource,
   buildUpdatePatch,
+  accountRoot,
   connectionRoot,
   loadPolicy,
   loadRuntimeContext,
+  normalizeAccountAlias,
   normalizeConnectionConfig,
   parseArgs,
   requiresInvitationUpdates,
   run,
+  selectRuntimeAccount,
   validateOAuthCallbackRequest,
 } from "../scripts/trelio-google-calendar.mjs";
 
@@ -23,7 +26,6 @@ const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const MEMBER_ID = "22222222-2222-4222-8222-222222222222";
 const CONNECTION_ID = "33333333-3333-4333-8333-333333333333";
 const CLIENT_ID = "123456789-test.apps.googleusercontent.com";
-const CLIENT_SECRET = "company-secret-that-must-not-leak";
 
 function runtimeEnvironment(configHome) {
   return {
@@ -36,7 +38,6 @@ function runtimeEnvironment(configHome) {
       clientId: CLIENT_ID,
       allowAutonomous: true,
     }),
-    TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET: CLIENT_SECRET,
   };
 }
 
@@ -55,7 +56,7 @@ test("argument parser keeps mutation flags separate from values", () => {
   });
 });
 
-test("company config accepts only a public client id and autonomous ceiling", () => {
+test("resolved config accepts only the platform client id and autonomous ceiling", () => {
   assert.deepEqual(normalizeConnectionConfig({
     clientId: CLIENT_ID,
     allowAutonomous: false,
@@ -64,7 +65,7 @@ test("company config accepts only a public client id and autonomous ceiling", ()
     allowAutonomous: false,
   });
   assert.throws(
-    () => normalizeConnectionConfig({ clientId: CLIENT_ID, clientSecret: CLIENT_SECRET }),
+    () => normalizeConnectionConfig({ clientId: CLIENT_ID, clientSecret: "must-not-exist" }),
     CalendarRuntimeError,
   );
   assert.throws(
@@ -78,7 +79,6 @@ test("runtime identity produces a stable per-member namespace", () => {
   try {
     const environment = runtimeEnvironment(temporaryDirectory);
     const context = loadRuntimeContext(environment);
-    assert.equal(context.clientSecret, CLIENT_SECRET);
     assert.equal(
       connectionRoot(context, environment),
       path.join(
@@ -90,7 +90,23 @@ test("runtime identity produces a stable per-member namespace", () => {
         CONNECTION_ID,
       ),
     );
-    assert.deepEqual(loadPolicy(context, environment), { writeMode: "confirm" });
+    const accountContext = selectRuntimeAccount(context, "work");
+    assert.equal(
+      accountRoot(context, "work", environment),
+      path.join(
+        temporaryDirectory,
+        "integrations",
+        "google-calendar",
+        COMPANY_ID,
+        MEMBER_ID,
+        CONNECTION_ID,
+        "accounts",
+        "work",
+      ),
+    );
+    assert.deepEqual(loadPolicy(accountContext, environment), { writeMode: "confirm" });
+    assert.equal(normalizeAccountAlias("WORK"), "work");
+    assert.throws(() => normalizeAccountAlias("../work"), /lowercase Latin/u);
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
@@ -197,7 +213,19 @@ test("OAuth callback requires loopback, exact Host, path and state", () => {
   );
 });
 
-test("help works without credentials and doctor never prints the company secret", async () => {
+test("Desktop OAuth uses PKCE and account selection without a client secret", () => {
+  const source = fs.readFileSync(
+    path.resolve("platform-skills/google-calendar/scripts/trelio-google-calendar.mjs"),
+    "utf8",
+  );
+  assert.match(source, /prompt: "select_account consent"/u);
+  assert.match(source, /code_challenge_method: "S256"/u);
+  assert.match(source, /code_verifier: verifier/u);
+  assert.doesNotMatch(source, /client_secret/u);
+  assert.doesNotMatch(source, /TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET/u);
+});
+
+test("help works without a token and doctor reports the selected local account", async () => {
   assert.equal((await run(["help"], {})).command, "help");
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-google-calendar-cli-"));
   try {
@@ -211,8 +239,56 @@ test("help works without credentials and doctor never prints the company secret"
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /"status": "needs_connect"/u);
-    assert.doesNotMatch(result.stdout, new RegExp(CLIENT_SECRET, "u"));
-    assert.doesNotMatch(result.stderr, new RegExp(CLIENT_SECRET, "u"));
+    assert.match(result.stdout, /"account": "default"/u);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("accounts lists isolated aliases and local purpose mappings without OAuth network access", async () => {
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-google-calendar-accounts-"));
+  try {
+    const environment = runtimeEnvironment(temporaryDirectory);
+    const context = loadRuntimeContext(environment);
+    const workRoot = accountRoot(context, "work", environment);
+    const personalRoot = accountRoot(context, "personal", environment);
+    fs.mkdirSync(path.join(workRoot, "state"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(personalRoot, "state"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(workRoot, "state", "oauth-token.json"), "{}\n", { mode: 0o600 });
+    fs.writeFileSync(path.join(personalRoot, "state", "oauth-token.json"), "{}\n", { mode: 0o600 });
+    const purposesDirectory = path.join(connectionRoot(context, environment), "config");
+    fs.mkdirSync(purposesDirectory, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(purposesDirectory, "calendar-purposes.json"), JSON.stringify({
+      purposes: {
+        work: {
+          account: "work",
+          calendarId: "work@example.com",
+          summary: "Рабочий",
+          accessRole: "owner",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        },
+        personal: {
+          account: "personal",
+          calendarId: "personal@example.com",
+          summary: "Личный",
+          accessRole: "owner",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+        },
+      },
+    }), { mode: 0o600 });
+
+    const result = await run(["accounts"], environment);
+    assert.deepEqual(result.accounts.map((account) => account.alias), ["personal", "work"]);
+    assert.equal(result.purposes.work.calendarId, "work@example.com");
+    assert.equal(result.purposes.personal.account, "personal");
+    await assert.rejects(
+      () => run(["doctor"], environment),
+      (error) => error instanceof CalendarRuntimeError && error.code === "GOOGLE_CALENDAR_ACCOUNT_REQUIRED",
+    );
+    await assert.rejects(
+      () => run(["events", "--purpose", "work", "--account", "personal"], environment),
+      /conflicts with the supplied --account/u,
+    );
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }

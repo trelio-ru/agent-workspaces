@@ -12,57 +12,92 @@ a copied script.
 
 ## Establish access
 
-1. Require `skill.connection.configured`. The company connection must contain a
-   Google installed-app OAuth client ID and an active Agent Secret binding
-   `oauth_client_secret`. If either is missing, direct a company administrator
-   to `Настройки компании → Агенты → Google Calendar → Подключить`. Never ask
-   anyone to paste the client secret into chat.
-2. Deliver the binding through `prepare_agent_secret_checkout` for the active
-   Agent Run, delivery `env`, environment name
-   `TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET`, and exact executable
-   `trelio-workspace`.
-3. Take the returned `bridge.argvPrefix`, append `runtimeExecution.command`
-   without its first `trelio-workspace` token, then append arguments after the
-   runtime command's terminal `--`. The final process must contain one bridge
-   executable only:
-
-   `trelio-workspace secret exec --grant ... -- skill run ... -- doctor`
-
-4. Use the same one-use secret wrapper for every runtime command. Do not print,
-   inspect or persist the injected environment.
-5. Run `doctor`. Follow its normalized state:
+1. Require `skill.connection.configured`. Trelio supplies one platform-owned
+   public Desktop OAuth client ID; a company administrator only enables the
+   connection and sets the maximum autonomous-write policy. There is no
+   company Google client secret or Agent Secret checkout. If the connection is
+   unavailable, direct an administrator to
+   `Настройки компании → Агенты → Google Calendar → Подключить`.
+2. Use `runtimeExecution.command` exactly and append arguments after its
+   terminal `--`. Do not extract the public client ID or copy the runtime.
+3. Run `accounts` to inspect only the local account aliases. If the intended
+   account is absent, offer `connect --account ALIAS`. Use a short stable alias
+   such as `work` or `personal`; never infer that two aliases are the same
+   Google identity.
+4. Run `doctor --account ALIAS`. Follow its normalized state:
    - `connected`: continue;
-   - `needs_connect`: offer `connect` and wait for the user to complete Google
-     OAuth in the browser.
+   - `needs_connect`: offer `connect --account ALIAS` and wait for the user to
+     complete Google OAuth in the browser.
 
 `connect` opens Google's own consent page in the system browser and receives a
 PKCE-protected callback on exact `127.0.0.1`. The user personally selects the
-Google account and approves the requested Calendar scopes. Never request a
-Google password, TOTP, passkey, SMS code, authorization code, OAuth URL or
-refresh token in chat. If Google requires account recovery, CAPTCHA or another
-protected account step, leave it to the user in the provider page.
+Google account and approves the requested Calendar scopes. Account selection is
+shown on every connect so another alias can use another signed-in Google
+account. Never request a Google password, TOTP, passkey, SMS code,
+authorization code, OAuth URL or refresh token in chat. If Google requires
+account recovery, CAPTCHA or another protected account step, leave it to the
+user in the provider page.
 
-The refresh token is stored only under the current member's stable local path:
+After connect, show the returned alias and primary calendar so the user can
+catch a wrong browser account selection. Reconnect that same alias if it is
+wrong; do not silently rename it or copy a token between aliases.
 
-`<trelio-config-home>/integrations/google-calendar/<company-id>/<member-id>/<connection-id>/`
+Each refresh token is stored only under the current member's stable local path:
+
+`<trelio-config-home>/integrations/google-calendar/<company-id>/<member-id>/<connection-id>/accounts/<alias>/`
 
 Do not read or edit that path directly. Use `doctor`, `connect`, `policy` and
 `forget-credentials`. Removing the local token does not revoke the Google grant;
 revocation remains a separate user action in the Google account.
+
+## Select accounts and calendar purposes
+
+Always identify the account before reading or changing a calendar when several
+accounts are connected. Omit `--account` only when `accounts` shows exactly one
+local account.
+
+`calendars --account ALIAS` returns every calendar in that Google user's
+CalendarList, including primary, secondary and already-added shared calendars.
+Respect each returned `accessRole`: `freeBusyReader` and `reader` are read-only;
+only `writer` and `owner` can change events.
+
+On the user's direct request, bind a stable purpose to one exact account and
+calendar ID:
+
+```text
+... -- calendar-purpose set \
+  --purpose work --account work \
+  --calendar team-calendar-id --confirm
+... -- calendar-purpose set \
+  --purpose personal --account personal \
+  --calendar primary --confirm
+```
+
+Use lowercase Latin purpose names such as `work`, `personal`, `family` or
+`birthdays`. Show the exact account, calendar summary, calendar ID and access
+role before setting or changing a purpose. Do not choose by a mutable calendar
+title alone. List mappings with `calendar-purpose list`; remove one only on a
+direct request with `calendar-purpose remove --purpose NAME --confirm`.
+
+After a mapping exists, prefer `--purpose NAME` to repeating account/calendar
+selection. The runtime resolves both together and rejects conflicting
+`--account` or `--calendar` values. A purpose is local routing configuration,
+not authority to write: read-only calendar roles and the per-account write
+policy still apply.
 
 ## Read narrowly
 
 List calendars before using a non-primary or ambiguously named calendar:
 
 ```text
-... -- calendars --max 100
+... -- calendars --account work --max 100
 ```
 
 List or search only a bounded relevant period:
 
 ```text
-... -- events --calendar primary --days 14 --max 50
-... -- events --calendar primary \
+... -- events --purpose work --days 14 --max 50
+... -- events --account personal --calendar primary \
   --time-min 2026-08-01T00:00:00+03:00 \
   --time-max 2026-09-01T00:00:00+03:00 \
   --query "совещание" --max 50
@@ -71,7 +106,7 @@ List or search only a bounded relevant period:
 Read one selected event before updating or deleting it:
 
 ```text
-... -- get-event --calendar primary --event-id EVENT_ID
+... -- get-event --purpose work --event-id EVENT_ID
 ```
 
 Do not bulk-export calendars or reveal unrelated neighboring events. Calendar
@@ -81,7 +116,8 @@ service.
 
 ## Apply the local write policy
 
-Run `policy show` before a write:
+Run `policy show --account ALIAS` before a write. Policy is separate for every
+connected Google account:
 
 - `confirm` is the default. Show the exact runtime preview and run the apply
   command with `--confirm` only after the user approves that version.
@@ -93,7 +129,7 @@ Run `policy show` before a write:
 Change policy only on the user's direct request:
 
 ```text
-... -- policy set --mode confirm|autonomous|read-only
+... -- policy set --account ALIAS --mode confirm|autonomous|read-only
 ```
 
 Every create, update and delete is a two-step preview/apply operation. Copy the
@@ -111,7 +147,7 @@ Preview:
 
 ```text
 ... -- create-event \
-  --calendar primary \
+  --purpose work \
   --summary "Звонок" \
   --start 2026-08-04T11:00:00+03:00 \
   --end 2026-08-04T11:30:00+03:00 \
@@ -142,7 +178,7 @@ repository's local birthday JSON into Trelio:
 
 ```text
 ... -- create-event \
-  --calendar primary \
+  --purpose birthdays \
   --summary "День рождения …" \
   --all-day --start 2026-08-04 --end 2026-08-05 \
   --recurrence "RRULE:FREQ=YEARLY" \
@@ -163,7 +199,7 @@ Preview:
 
 ```text
 ... -- update-event \
-  --calendar primary --event-id EVENT_ID \
+  --purpose work --event-id EVENT_ID \
   --start 2026-08-04T12:00:00+03:00 \
   --end 2026-08-04T12:30:00+03:00
 ```
@@ -187,13 +223,13 @@ Preview first and show the user the exact title, date, calendar and whether the
 target is one occurrence or a series master:
 
 ```text
-... -- delete-event --calendar primary --event-id EVENT_ID
+... -- delete-event --purpose work --event-id EVENT_ID
 ```
 
 Apply with:
 
 ```text
-... -- delete-event --calendar primary --event-id EVENT_ID \
+... -- delete-event --purpose work --event-id EVENT_ID \
   --apply --expected-etag ETAG --expected-plan-hash PLAN_HASH [--confirm]
 ```
 
@@ -210,5 +246,6 @@ bounded backoff. It never blindly retries Calendar mutations. If it returns
 event or request ID first. If an ETag or plan hash changed, run a new preview.
 
 Report safe `error.code`, `details.httpStatus`, `details.providerCode` and
-`details.stage` when present. Never bypass an OAuth, policy, company-connection,
-scope, ETag, recurrence, invitation, local-storage or signed-runtime gate.
+`details.stage` when present. Never bypass an OAuth, account, calendar-purpose,
+access-role, policy, company-connection, scope, ETag, recurrence, invitation,
+local-storage or signed-runtime gate.

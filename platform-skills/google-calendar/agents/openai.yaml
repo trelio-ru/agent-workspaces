@@ -1,4 +1,4 @@
 interface:
   display_name: "Google Calendar"
-  short_description: "Работа с событиями Google Calendar"
-  default_prompt: "Use $google-calendar to inspect or safely update my Google Calendar."
+  short_description: "Несколько аккаунтов и календари по целям"
+  default_prompt: "Use $google-calendar to connect Google accounts, route work and personal calendars, and safely manage events."
