@@ -13,9 +13,11 @@ a copied script.
 ## Establish access
 
 1. Require `skill.connection.configured`. Trelio supplies one platform-owned
-   public Desktop OAuth client ID; a company administrator only enables the
-   connection and sets the maximum autonomous-write policy. There is no
-   company Google client secret or Agent Secret checkout. If the connection is
+   Desktop OAuth client. Its public ID appears in safe connection metadata;
+   the client secret required by Google's token endpoint is added only to the
+   no-store signed runtime resolve and must never be printed, copied to argv,
+   stored locally or requested from a company administrator. There is no
+   company Google credential or Agent Secret checkout. If the connection is
    unavailable, direct an administrator to
    `Настройки компании → Агенты → Google Calendar → Подключить`.
 2. Use `runtimeExecution.command` exactly and append arguments after its
