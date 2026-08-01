@@ -14,14 +14,19 @@
 Always-on `initialize.instructions`, runtime `AGENTS.md`,
 `trelio-skill-catalog` и worker skill должны сохранять одно semantic ядро:
 
+0. Generic-запрос на подключение или использование внешней интеграции, включая
+   Google Calendar, сначала разрешает Trelio company context и проверяет
+   каталог. До этого нельзя устанавливать, авторизовывать или вызывать
+   пересекающийся native/plugin connector. При нескольких компаниях нужно
+   спросить exact company, а не сканировать чужие каталоги.
 1. В resolved company/project context перед corporate data/connected
    service/external system вызвать `list_agent_skills`.
 2. Выбрать назначенный skill по purpose, не по hardcoded ID.
 3. Непосредственно перед действием вызвать `get_agent_skill`.
 4. Использовать exact `runtimeExecution` либо declared `remoteMcpExecution`.
 5. Не обходить browser/Computer Use/direct HTTP/другим MCP/local script.
-6. Fallback только no relevant skill / required connection not configured /
-   operation unsupported, с точной причиной.
+6. Fallback только explicit non-Trelio choice / no relevant skill / required
+   connection not configured / operation unsupported, с точной причиной.
 7. Unavailable catalog – control-plane failure, не отсутствие интеграции.
 8. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 

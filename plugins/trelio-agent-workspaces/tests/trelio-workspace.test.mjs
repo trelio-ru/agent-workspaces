@@ -2382,6 +2382,9 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
   assert.match(workerSkill, /Do not start another\s+OAuth flow/);
   assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
+  assert.match(catalogSkill, /including Google Calendar/u);
+  assert.match(catalogSkill, /Do not call `request_plugin_install`/u);
+  assert.match(catalogSkill, /native\/recommended Google Calendar plugin/u);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
   assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);

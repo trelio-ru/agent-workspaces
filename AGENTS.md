@@ -61,6 +61,11 @@
   `list_agent_skills` → выбор по назначению → `get_agent_skill`. Найденный
   навык нельзя обходить browser/HTTP/другим MCP/script. Native Trelio
   MCP/workspace operations остаются штатным workflow.
+- Generic-запрос на подключение внешней интеграции, включая Google Calendar,
+  сначала разрешает Trelio company context и проверяет `list_agent_skills`.
+  До этой проверки нельзя устанавливать, авторизовывать или вызывать
+  пересекающийся native/plugin connector; при нескольких компаниях нужно
+  спросить exact company, а не сканировать все каталоги.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
 - Google Calendar получает публичный Desktop OAuth client ID платформы в safe
