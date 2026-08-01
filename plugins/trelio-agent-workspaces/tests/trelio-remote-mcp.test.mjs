@@ -1248,6 +1248,9 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
 
   assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(instructions, /call `list_agent_skills` for that exact company and project/u);
+  assert.match(instructions, /including Google Calendar/u);
+  assert.match(instructions, /Do not call `request_plugin_install`/u);
+  assert.match(instructions, /Trelio Google Calendar skill versus the native\/recommended Google Calendar plugin/u);
   assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
