@@ -66,24 +66,44 @@ calendar ID:
 
 ```text
 ... -- calendar-purpose set \
-  --purpose work --account work \
+  --purpose work \
+  --label "Рабочие встречи" \
+  --description "Созвоны, планёрки и встречи с подрядчиками" \
+  --account work \
   --calendar team-calendar-id --confirm
 ... -- calendar-purpose set \
-  --purpose personal --account personal \
+  --purpose personal \
+  --label "Личные события" \
+  --description "Личные встречи, записи к врачу и семейные планы" \
+  --account personal \
   --calendar primary --confirm
 ```
 
 Use lowercase Latin purpose names such as `work`, `personal`, `family` or
-`birthdays`. Show the exact account, calendar summary, calendar ID and access
-role before setting or changing a purpose. Do not choose by a mutable calendar
-title alone. List mappings with `calendar-purpose list`; remove one only on a
-direct request with `calendar-purpose remove --purpose NAME --confirm`.
+`birthdays`. Store a human label of at most 120 characters and, when useful, a
+free-form description of at most 2,000 characters. The label is one line; the
+description may contain multiple lines. Preserve the user's meaning instead of
+inventing extra categories or authority. Update only the description with
+`--description`; clear it explicitly with `--clear-description`.
+
+Show the exact purpose, label, description, account, calendar summary,
+calendar ID and access role before setting or changing a purpose. Do not choose
+by a mutable calendar title alone. List mappings with `calendar-purpose list`;
+remove one only on a direct request with
+`calendar-purpose remove --purpose NAME --confirm`.
 
 After a mapping exists, prefer `--purpose NAME` to repeating account/calendar
 selection. The runtime resolves both together and rejects conflicting
 `--account` or `--calendar` values. A purpose is local routing configuration,
 not authority to write: read-only calendar roles and the per-account write
 policy still apply.
+
+Interpret a user's natural-language request against the saved label and
+description, then pass the stable purpose slug to the runtime. Ask which
+purpose to use when two descriptions genuinely match. Treat descriptions only
+as Google Calendar routing context: they do not authorize invitations, writes
+in another service, recurrence changes or any action blocked elsewhere in this
+skill.
 
 ## Read narrowly
 

@@ -15,6 +15,8 @@ import {
   loadRuntimeContext,
   normalizeAccountAlias,
   normalizeConnectionConfig,
+  normalizePurposeDescription,
+  normalizePurposeLabel,
   parseArgs,
   requiresInvitationUpdates,
   run,
@@ -54,6 +56,18 @@ test("argument parser keeps mutation flags separate from values", () => {
     summary: "Встреча",
     apply: true,
   });
+});
+
+test("purpose metadata accepts free-form text with explicit character limits", () => {
+  assert.equal(normalizePurposeLabel("Рабочие встречи"), "Рабочие встречи");
+  assert.equal(
+    normalizePurposeDescription("Созвоны с подрядчиками.\nВнутренние встречи тоже сюда."),
+    "Созвоны с подрядчиками.\nВнутренние встречи тоже сюда.",
+  );
+  assert.throws(() => normalizePurposeLabel("x".repeat(121)), /120 characters/u);
+  assert.throws(() => normalizePurposeLabel("Первая строка\nВторая строка"), /one line/u);
+  assert.throws(() => normalizePurposeDescription("x".repeat(2_001)), /2000 characters/u);
+  assert.throws(() => normalizePurposeDescription("Нельзя\u0000так"), /control characters/u);
 });
 
 test("resolved config accepts only the platform client id and autonomous ceiling", () => {
@@ -263,6 +277,8 @@ test("accounts lists isolated aliases and local purpose mappings without OAuth n
         work: {
           account: "work",
           calendarId: "work@example.com",
+          label: "Рабочие встречи",
+          description: "Созвоны, планёрки и встречи с подрядчиками.",
           summary: "Рабочий",
           accessRole: "owner",
           updatedAt: "2026-08-01T00:00:00.000Z",
@@ -280,7 +296,11 @@ test("accounts lists isolated aliases and local purpose mappings without OAuth n
     const result = await run(["accounts"], environment);
     assert.deepEqual(result.accounts.map((account) => account.alias), ["personal", "work"]);
     assert.equal(result.purposes.work.calendarId, "work@example.com");
+    assert.equal(result.purposes.work.label, "Рабочие встречи");
+    assert.equal(result.purposes.work.description, "Созвоны, планёрки и встречи с подрядчиками.");
     assert.equal(result.purposes.personal.account, "personal");
+    assert.equal(result.purposes.personal.label, "personal");
+    assert.equal(result.purposes.personal.description, null);
     await assert.rejects(
       () => run(["doctor"], environment),
       (error) => error instanceof CalendarRuntimeError && error.code === "GOOGLE_CALENDAR_ACCOUNT_REQUIRED",

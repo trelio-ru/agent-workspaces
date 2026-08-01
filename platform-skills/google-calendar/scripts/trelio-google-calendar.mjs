@@ -243,6 +243,49 @@ function normalizePurpose(value) {
   return normalized;
 }
 
+function normalizePurposeHumanText(value, label, maximumCharacters, options = {}) {
+  if (typeof value !== "string") {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} must be text.`,
+    );
+  }
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} must not be empty.`,
+    );
+  }
+  if ([...normalized].length > maximumCharacters) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} must not exceed ${maximumCharacters} characters.`,
+    );
+  }
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} contains unsupported control characters.`,
+    );
+  }
+  if (options.singleLine === true && /[\r\n]/u.test(normalized)) {
+    throw new CalendarRuntimeError(
+      "GOOGLE_CALENDAR_INPUT_INVALID",
+      `${label} must fit on one line.`,
+    );
+  }
+  return normalized;
+}
+
+export function normalizePurposeLabel(value) {
+  return normalizePurposeHumanText(value, "purpose label", 120, { singleLine: true });
+}
+
+export function normalizePurposeDescription(value) {
+  return normalizePurposeHumanText(value, "purpose description", 2_000);
+}
+
 function accountsRoot(context, environment = process.env) {
   return path.join(connectionRoot(context, environment), "accounts");
 }
@@ -368,6 +411,14 @@ function loadCalendarPurposes(context, environment = process.env) {
     purposes[purpose] = {
       account: normalizeAccountAlias(mapping.account, `account for purpose ${purpose}`),
       calendarId: requireString(mapping.calendarId, `calendar for purpose ${purpose}`, 1_024),
+      // Old local mappings predate human-facing metadata. Keep them readable
+      // and use the stable purpose slug as a harmless display fallback.
+      label: mapping.label === undefined || mapping.label === null
+        ? purpose
+        : normalizePurposeLabel(mapping.label),
+      description: mapping.description === undefined || mapping.description === null
+        ? null
+        : normalizePurposeDescription(mapping.description),
       summary: typeof mapping.summary === "string" ? mapping.summary.slice(0, 1_024) : null,
       accessRole: typeof mapping.accessRole === "string" ? mapping.accessRole.slice(0, 64) : null,
       updatedAt: typeof mapping.updatedAt === "string" ? mapping.updatedAt : null,
@@ -954,11 +1005,28 @@ async function calendarPurpose(context, args, environment = process.env) {
       selectedContext,
       requireString(args.calendar, "calendar ID", 1_024),
     );
+    if (args.description !== undefined && args.clearDescription === true) {
+      throw new CalendarRuntimeError(
+        "GOOGLE_CALENDAR_INPUT_INVALID",
+        "Use either --description or --clear-description, not both.",
+      );
+    }
+    const previousMapping = currentPurposes[purpose] || null;
+    const label = args.label === undefined
+      ? previousMapping?.label || purpose
+      : normalizePurposeLabel(args.label);
+    const description = args.clearDescription === true
+      ? null
+      : args.description === undefined
+        ? previousMapping?.description || null
+        : normalizePurposeDescription(args.description);
     const nextPurposes = {
       ...currentPurposes,
       [purpose]: {
         account: accountAlias,
         calendarId: calendar.id,
+        label,
+        description,
         summary: calendar.summary,
         accessRole: calendar.accessRole,
         updatedAt: new Date().toISOString(),
@@ -1676,7 +1744,7 @@ function help() {
       connect: "Connect or reconnect one Google account: [--account work].",
       doctor: "Check one selected account, local token, policy and live Calendar API access: [--account work].",
       calendars: "List accessible primary, secondary and shared calendars: [--account work] [--max 100].",
-      "calendar-purpose": "calendar-purpose list | set --purpose work --account work --calendar ID --confirm | remove --purpose work --confirm.",
+      "calendar-purpose": "calendar-purpose list | set --purpose work --label TEXT [--description TEXT | --clear-description] --account work --calendar ID --confirm | remove --purpose work --confirm.",
       events: "List/search a bounded range: [--account work --calendar ID | --purpose work] [--days 14 | --time-min RFC3339 --time-max RFC3339] [--query TEXT] [--max 50].",
       "get-event": "Read one event: [--account work --calendar ID | --purpose work] --event-id ID.",
       "create-event": "Preview, then apply with --apply --request-id ID --expected-plan-hash HASH and policy confirmation.",
