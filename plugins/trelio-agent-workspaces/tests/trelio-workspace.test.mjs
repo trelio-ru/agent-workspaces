@@ -63,6 +63,26 @@ const relatedWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const companyHead = "a".repeat(40);
 const relatedHead = "b".repeat(40);
 
+/**
+ * Read a skill together with its one-level Markdown references.
+ *
+ * Worker procedures intentionally use progressive disclosure, so regression
+ * tests must validate the complete semantic bundle rather than forcing every
+ * invariant back into the always-loaded SKILL.md.
+ */
+const readSkillBundle = async (skillName) => {
+  const skillDirectory = path.join(pluginDirectory, "skills", skillName);
+  const main = await readFile(path.join(skillDirectory, "SKILL.md"), "utf8");
+  const referencesDirectory = path.join(skillDirectory, "references");
+  const referenceNames = await readdir(referencesDirectory).catch(() => []);
+  const references = await Promise.all(referenceNames
+    .filter((name) => name.endsWith(".md"))
+    .sort()
+    .map((name) => readFile(path.join(referencesDirectory, name), "utf8")));
+
+  return [main, ...references].join("\n\n");
+};
+
 const runGit = (workingDirectory, args, options = {}) => execFileAsync(
   "git",
   ["-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=", ...args],
@@ -901,24 +921,24 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /перед обращением к корпоративным данным, подключённому сервису или внешней системе обязательно вызови `list_agent_skills`/u,
+      /Перед корпоративными данными или внешней системой вызови `list_agent_skills`/u,
     );
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Не обходи найденный навык через браузер, Computer Use, прямой HTTP, альтернативный MCP или локальный скрипт/u,
+      /Не обходи навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом/u,
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Fallback допустим только когда подходящего навыка действительно нет/u,
+      /Fallback допустим только когда релевантного навыка нет/u,
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Штатные операции Trelio MCP и Agent Workspace через MCP tools и bundled `trelio-workspace` bridge являются основным workspace workflow, а не fallback из каталога Agent Skills/u,
+      /Trelio MCP и bundled bridge остаются штатным workflow/u,
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /не ищи и не объявляй отсутствие отдельного catalog skill для поиска задач, управления workspace или Run, чтения workspace context, checkpoint, submit или restore/u,
+      /не ищи для этих операций отдельный catalog skill/u,
     );
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
@@ -948,12 +968,12 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Handoff и submit от manual comment не зависят/u,
+      /не блокируй handoff\/submit из-за manual comment/u,
     );
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /filePaths/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /не прикладывай все workspace-файлы/u,
+      /не все workspace-файлы/u,
     );
     assert.equal(
       await getGitStatus(path.join(rootDirectory, "workspace")),
@@ -1684,7 +1704,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.11");
+  assert.equal(BRIDGE_VERSION, "1.6.12");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1694,6 +1714,73 @@ test("bridge release version stays synchronized across executable and manifests"
     cwd: ".",
     tool_timeout_sec: 660,
   });
+});
+
+test("compact protected runtime keeps the complete agent safety contract", () => {
+  // The runtime text is intentionally short, so pin semantic identifiers and
+  // boundaries instead of the former long prose. This catches accidental rule
+  // loss without making harmless editorial changes fail the regression.
+  for (const identifier of [
+    "plan_my_agent_profile_update",
+    "plan_agent_instructions_update",
+    "list_agent_skills",
+    "get_agent_skill",
+    "AGENT_SKILL_RELEASE_CHANGED",
+    "get_task_comment_proposal_context",
+    "render_task_comment_proposal",
+    "publish_task_comment_proposal",
+    "create_comment",
+    "get_task",
+    "create_task_control",
+    "update_task_control",
+    "clear_task_control",
+    "work_completed",
+    "review_passed",
+    "direct_completion",
+    "no_status_change",
+  ]) {
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, new RegExp(identifier, "u"));
+  }
+
+  for (const invariant of [
+    /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
+    /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`PROJECT_CONTEXT\.md`.*`WORKLOG\.md`/u,
+    /не меняй attestation, hook или `\.trelio-run\.json`/u,
+    /Fallback допустим только когда релевантного навыка нет/u,
+    /Недоступность каталога — сбой control plane/u,
+    /не блокируй handoff\/submit из-за manual comment/u,
+    /дата не уведомляет/u,
+    /не расширяй personal в shared без полномочия/u,
+    /передавай в `filePaths` только важные итоговые/u,
+    /Перед блокирующим вопросом успешно сохрани переносимый checkpoint `blocker`/u,
+    /Trelio примет его при актуальном base head/u,
+  ]) {
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, invariant);
+  }
+});
+
+test("workspace worker routes every high-risk scenario to a mandatory reference", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const mainSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const references = [
+    "setup-and-recovery.md",
+    "instruction-management.md",
+    "meetings.md",
+    "scope-and-context.md",
+    "dossier-transfer.md",
+    "task-controls.md",
+    "agent-run.md",
+    "task-run.md",
+    "ocr-and-vision.md",
+  ];
+
+  assert.match(mainSkill, /Read every matching reference below\s+completely before its first related tool call/u);
+  assert.match(mainSkill, /If the scenario changes during\s+the task, pause and read the newly relevant reference/u);
+  for (const referenceName of references) {
+    assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
+    const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");
+    assert.match(reference, /Read this file completely/u);
+  }
 });
 
 test("plugin exposes safe project onboarding before ordinary task work", async () => {
@@ -1722,16 +1809,13 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
 });
 
 test("workspace skill recovers stale OAuth grants without discarding existing scopes", async () => {
-  const workspaceSkill = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
   assert.match(workspaceSkill, /mcp\/www_authenticate/u);
   assert.match(workspaceSkill, /`codex mcp login trelio`/u);
-  assert.match(workspaceSkill, /Do not log out first/u);
-  assert.match(workspaceSkill, /narrow the command to only the newly missing scope/u);
-  assert.match(workspaceSkill, /user must still review and approve/u);
+  assert.match(workspaceSkill, /Do not log\s+out first/u);
+  assert.match(workspaceSkill, /request only the newly missing scope/u);
+  assert.match(workspaceSkill, /user must review and approve/u);
   assert.match(workspaceSkill, /retry the exact low-risk read once/u);
 });
 
@@ -1763,19 +1847,16 @@ test("project access skill preserves owner-only plan/apply and moderator confirm
 });
 
 test("workspace skill transfers dossiers only with two-sided management authority", async () => {
-  const workspaceSkill = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
   assert.match(workspaceSkill, /plan_dossier_transfer/u);
   assert.match(workspaceSkill, /apply_dossier_transfer/u);
-  assert.match(workspaceSkill, /management rights on both sides/u);
-  assert.match(workspaceSkill, /linked task never satisfies either check/u);
+  assert.match(workspaceSkill, /manage both sides/u);
+  assert.match(workspaceSkill, /Read inherited from a linked task never satisfies this check/u);
   assert.match(workspaceSkill, /confirmCompanyWideAccess: true/u);
   assert.match(workspaceSkill, /DOSSIER_TRANSFER_OUTDATED/u);
-  assert.match(workspaceSkill, /Do not cancel another Run/u);
-  assert.match(workspaceSkill, /dossier UUID, accepted Git\s+history, revisions, and every task link must remain unchanged/u);
+  assert.match(workspaceSkill, /Do not\s+cancel another Run/u);
+  assert.match(workspaceSkill, /Dossier UUID, accepted Git history, revisions,\s+and task links must remain unchanged/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {
@@ -1821,10 +1902,7 @@ test("task handoff requires an explicit outcome and keeps unresolved work out of
 });
 
 test("workspace skill keeps comment proposals non-blocking and handoff comment-free", async () => {
-  const skillMarkdown = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 
   assert.match(skillMarkdown, /Do not publish automatically/u);
@@ -1832,13 +1910,13 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(skillMarkdown, /render_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
   assert.match(skillMarkdown, /lastPublished\.coverageThroughAt/u);
-  assert.match(skillMarkdown, /Never call `create_comment` for this proposal/u);
-  assert.match(skillMarkdown, /do not pause the requested work/u);
-  assert.match(skillMarkdown, /After a successful task-scoped acceptance/u);
+  assert.match(skillMarkdown, /Never use `create_comment` for this proposal/u);
+  assert.match(skillMarkdown, /or pause work because the proposal remains\s+unpublished/u);
+  assert.match(skillMarkdown, /After acceptance/u);
   assert.match(skillMarkdown, /Include exact `filePaths`/u);
-  assert.match(skillMarkdown, /Do not attach every workspace file/u);
-  assert.match(skillMarkdown, /ordinary task attachments are created only when the operator publishes/u);
-  assert.match(skillMarkdown, /Submission requires the meaningful handoff but never a manual task comment/u);
+  assert.match(skillMarkdown, /Do not\s+attach all workspace files/u);
+  assert.match(skillMarkdown, /Ordinary task attachments\s+are created only when the operator publishes/u);
+  assert.match(skillMarkdown, /A meaningful handoff is required;\s+a manual task comment is not/u);
   assert.match(skillMarkdown, /work_completed/u);
   assert.match(skillMarkdown, /review_passed/u);
   assert.match(skillMarkdown, /direct_completion/u);
@@ -1849,10 +1927,7 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
 });
 
 test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {
-  const skillMarkdown = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
 
   for (const toolName of [
     "create_meeting",
@@ -1865,22 +1940,19 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
     assert.match(skillMarkdown, new RegExp(toolName, "u"));
   }
 
-  assert.match(skillMarkdown, /not a fifth Agent\s+Workspace scope/u);
-  assert.match(skillMarkdown, /do not put the full transcript/u);
-  assert.match(skillMarkdown, /mentioned or unresolved\s+person/u);
+  assert.match(skillMarkdown, /not an Agent\s+Workspace scope/u);
+  assert.match(skillMarkdown, /Do not copy\s+the full transcript/u);
+  assert.match(skillMarkdown, /merely\s+mentioned or unresolved/u);
   assert.match(skillMarkdown, /expectedAccessRevision/u);
   assert.match(skillMarkdown, /one free-form Markdown document/u);
-  assert.match(skillMarkdown, /one task,\s+or many targets/u);
-  assert.match(skillMarkdown, /Show the complete target-grouped list/u);
-  assert.match(skillMarkdown, /never grants task\s+participants access to the meeting/u);
-  assert.match(skillMarkdown, /never silently rewrite already distributed workspaces/u);
+  assert.match(skillMarkdown, /one or many tasks, dossiers, projects, or the company/u);
+  assert.match(skillMarkdown, /Show the complete target-grouped plan/u);
+  assert.match(skillMarkdown, /never grants task\s+participants meeting access/u);
+  assert.match(skillMarkdown, /never silently rewrite already\s+distributed workspaces/u);
 });
 
 test("workspace skill and protected runtime preserve task control privacy and notification semantics", async () => {
-  const skillMarkdown = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 
   for (const toolName of ["create_task_control", "update_task_control", "clear_task_control"]) {
@@ -1888,12 +1960,12 @@ test("workspace skill and protected runtime preserve task control privacy and no
     assert.match(bridgeSource, new RegExp(toolName, "u"));
   }
 
-  assert.match(skillMarkdown, /Reaching or passing `controlDate` never sends a notification/u);
-  assert.match(skillMarkdown, /Never widen a personal control to shared/u);
-  assert.match(skillMarkdown, /Clearing a shared control additionally notifies/u);
-  assert.match(skillMarkdown, /Do not clear a control merely because the Run completed/u);
-  assert.match(bridgeSource, /Наступление даты не уведомляет/u);
-  assert.match(bridgeSource, /personal-контроли не попадают в общую ленту/u);
+  assert.match(skillMarkdown, /Reaching `controlDate` never sends a notification/u);
+  assert.match(skillMarkdown, /Never\s+widen personal to shared/u);
+  assert.match(skillMarkdown, /Clearing a shared control also notifies/u);
+  assert.match(skillMarkdown, /Do not clear a control because the Run completed or task status changed/u);
+  assert.match(bridgeSource, /дата не уведомляет/u);
+  assert.match(bridgeSource, /personal остаются приватными/u);
 });
 
 test("skills resolve the logical bridge launcher before runtime execution", async () => {
@@ -1901,21 +1973,21 @@ test("skills resolve the logical bridge launcher before runtime execution", asyn
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
     "utf8",
   );
-  const workspaceSkill = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 
   for (const instructions of [catalogSkill, workspaceSkill, bridgeSource]) {
-    assert.match(instructions, /logical launcher|логическим launcher/u);
+    assert.match(instructions, /logical launcher|логическ(?:ий|им) launcher/u);
     assert.match(instructions, /Node\.js 22\+/u);
-    assert.match(instructions, /not a fallback|не fallback/u);
-    assert.match(instructions, /do not announce|не сообщай/iu);
+    assert.match(instructions, /scan plugin caches|сканируй cache/u);
   }
-  assert.match(catalogSkill, /never scan plugin caches/u);
-  assert.match(workspaceSkill, /never scan plugin caches/u);
-  assert.match(workspaceSkill, /pre-resolved approved launcher/u);
+  assert.match(catalogSkill, /fail merely to discover it/u);
+  assert.match(workspaceSkill, /merely to discover failure/u);
+  assert.match(bridgeSource, /пробный failure/u);
+  assert.match(catalogSkill, /not a fallback/u);
+  assert.match(catalogSkill, /Do not announce/u);
+  assert.match(workspaceSkill, /announce a normally missing PATH entry/u);
+  assert.match(bridgeSource, /не сообщай о штатно отсутствующем PATH/u);
 });
 
 test("1C EDO secret checkout instructions avoid a nested bridge executable", async () => {
@@ -2264,37 +2336,39 @@ test("macOS bridge softly migrates an existing device-session out of Keychain", 
 });
 
 test("workspace worker discovers the live skill catalog before substantive work", async () => {
-  const workerSkill = await readFile(
-    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
-    "utf8",
-  );
+  const workerSkill = await readSkillBundle("trelio-workspace-worker");
   const catalogSkill = await readFile(
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
     "utf8",
   );
 
-  assert.match(workerSkill, /call `list_agent_skills` once for the exact resolved context/);
-  assert.match(workerSkill, /Do not load every skill instruction speculatively/);
-  assert.match(workerSkill, /Immediately before using a relevant Trelio-provided skill, call `get_agent_skill`/);
-  assert.match(workerSkill, /When the response includes `runtimeExecution`, execute only its exact `command`/);
-  assert.match(workerSkill, /When it includes `remoteMcpExecution`/);
-  assert.match(workerSkill, /Never bypass a matching assigned skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/);
-  assert.match(workerSkill, /Fallback is allowed only when the exact catalog has no relevant skill/);
-  assert.match(workerSkill, /Native Trelio MCP control-plane and Agent Workspace operations/);
-  assert.match(workerSkill, /do not search for or announce a missing catalog skill merely to discover tasks/);
-  assert.match(workerSkill, /State a fallback reason only when choosing another implementation/);
+  assert.match(workerSkill, /call `list_agent_skills` once\s+for the exact context/);
+  assert.match(workerSkill, /do not\s+load every instruction/u);
+  assert.match(workerSkill, /Immediately before using a relevant skill, call\s+`get_agent_skill`/);
+  assert.match(workerSkill, /Use only exact\s+`runtimeExecution\.command`/);
+  assert.match(workerSkill, /declared `remoteMcpExecution`\s+identity\/release/);
+  assert.match(workerSkill, /Never bypass a matching skill through browser, Computer Use, direct HTTP,\s+another MCP, or a script/);
+  assert.match(workerSkill, /Fallback is allowed only when no relevant skill\s+exists/);
+  assert.match(workerSkill, /Native Trelio\s+MCP\/workspace operations remain the primary workflow/);
+  assert.match(workerSkill, /do not require a\s+separate catalog skill/);
+  assert.match(workerSkill, /state that reason/);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
   assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
-  assert.match(workerSkill, /when you independently identify a durable rule/);
-  assert.match(workerSkill, /Call `get_agent_instructions` to read the current scoped and inherited rules/);
+  assert.match(workerSkill, /durable rule identified by\s+the agent/);
+  assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
-  assert.match(workerSkill, /Call `publish_agent_instructions` only after the user explicitly confirms/);
-  assert.match(workerSkill, /never place instructions in `PROJECT_CONTEXT\.md`/);
+  assert.match(workerSkill, /Call `publish_my_agent_profile` or\s+`publish_agent_instructions` only after explicit confirmation/);
+  assert.match(workerSkill, /never place instructions in\s+`PROJECT_CONTEXT\.md`/);
   assert.match(workerSkill, /applies only to future Runs/);
+  assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
+  assert.match(workerSkill, /read each matching\s+reference completely/u);
+  assert.match(workerSkill, /must preserve the `task-run\.md` limit/u);
+  assert.match(workerSkill, /perform the catalog gate in step 2 before the first `get_task`/u);
+  assert.match(workerSkill, /minimum\s+native read-only Trelio discovery needed to resolve it/u);
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
-  assert.match(workerSkill, /Pairing is expected only once per local device/);
-  assert.match(workerSkill, /never receives `mcp:agent-instructions:manage`/);
-  assert.match(workerSkill, /Do not start a second OAuth flow/);
+  assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
+  assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
+  assert.match(workerSkill, /Do not start another\s+OAuth flow/);
   assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);

@@ -1251,11 +1251,11 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
-  assert.match(instructions, /State that exact reason before using a fallback/u);
-  assert.match(instructions, /Native Trelio MCP control-plane and Agent Workspace operations/u);
-  assert.match(instructions, /do not search for or announce a missing catalog skill merely to discover tasks, manage a workspace or Run, read workspace context, checkpoint, submit, or restore/u);
-  assert.match(instructions, /fallback-reason requirement applies only when choosing another implementation for an operation that a relevant catalog skill could handle/u);
-  assert.match(instructions, /does not weaken any existing secret-delivery rule, personal-session boundary, approval policy, or confirmation requirement/u);
+  assert.match(instructions, /state that exact reason/u);
+  assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
+  assert.match(instructions, /do not seek a missing catalog skill merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
+  assert.match(instructions, /fallback-reason rule applies only when replacing an implementation covered by a relevant skill/u);
+  assert.match(instructions, /does not weaken secret, personal-session, approval, or confirmation boundaries/u);
 });
 
 test("platform routing sends 1c-edo through runtimeExecution", async () => {
@@ -1279,7 +1279,7 @@ test("platform routing sends 1c-edo through runtimeExecution", async () => {
   });
 
   assert.deepEqual(route, { type: "runtimeExecution", skillId: "1c-edo" });
-  assert.match(instructions, /contains `runtimeExecution`, run only its exact command/u);
+  assert.match(instructions, /Use only an exact `runtimeExecution` command/u);
   assert.match(oneCEdoSkill, /Use only the signed `runtimeExecution\.command`/u);
 });
 
@@ -1303,7 +1303,7 @@ test("platform routing sends the Dodo knowledge base through remoteMcpExecution"
     type: "remoteMcpExecution",
     skillId: "dodo-knowledge-base",
   });
-  assert.match(instructions, /contains `remoteMcpExecution`, use only the declared local `trelio-remote-skills` host tools/u);
+  assert.match(instructions, /declared `trelio-remote-skills` tools with returned identity\/release/u);
 });
 
 test("platform routing discovers Telegram even without a separate Telegram tool", async () => {
@@ -1373,9 +1373,9 @@ test("platform routing allows a named fallback only when no relevant skill exist
     reason: "no_relevant_skill",
   });
   assert.match(instructions, /Fallback is allowed only when the exact catalog has no relevant skill/u);
-  assert.match(instructions, /the relevant skill or required connection is not configured/u);
-  assert.match(instructions, /the current skill does not support the requested operation/u);
-  assert.match(instructions, /primary workspace workflow, not a fallback from the Agent Skill catalog/u);
+  assert.match(instructions, /its required connection is not configured/u);
+  assert.match(instructions, /the operation is unsupported/u);
+  assert.match(instructions, /primary workspace workflow/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
@@ -1420,10 +1420,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.6.11");
+  assert.equal(frames[0].result.serverInfo.version, "1.6.12");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
-  assert.match(frames[0].result.instructions, /do not announce/u);
-  assert.match(frames[0].result.instructions, /not a fallback/u);
+  assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
+  assert.match(frames[0].result.instructions, /primary workspace workflow/u);
   assert.equal(frames[1].result.tools.length, 4);
 });
