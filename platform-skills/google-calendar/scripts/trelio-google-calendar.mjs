@@ -568,11 +568,24 @@ async function readBoundedBody(response) {
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-function safeGoogleError(payload) {
+export function safeGoogleError(payload) {
   const nestedError = isPlainObject(payload?.error) ? payload.error : null;
-  const code = typeof nestedError?.status === "string" ? nestedError.status.slice(0, 80) : null;
-  const message = typeof nestedError?.message === "string"
-    ? nestedError.message.replace(/[\r\n\t]+/gu, " ").slice(0, 240)
+  // Calendar API errors use `error.status` / `error.message`, while Google's
+  // OAuth token endpoint returns the equally standard top-level
+  // `error` / `error_description` pair. Normalize both without ever exposing
+  // an authorization code, access token or refresh token in runtime output.
+  const code = typeof nestedError?.status === "string"
+    ? nestedError.status.slice(0, 80)
+    : typeof payload?.error === "string"
+      ? payload.error.slice(0, 80)
+      : null;
+  const rawMessage = typeof nestedError?.message === "string"
+    ? nestedError.message
+    : typeof payload?.error_description === "string"
+      ? payload.error_description
+      : null;
+  const message = rawMessage
+    ? rawMessage.replace(/[\r\n\t]+/gu, " ").slice(0, 240)
     : null;
   return { providerCode: code, providerMessage: message };
 }
@@ -609,7 +622,11 @@ async function fetchJson(url, options = {}, safety = {}) {
         throw new CalendarRuntimeError(
           "GOOGLE_CALENDAR_HTTP_ERROR",
           `Google Calendar request failed with HTTP ${response.status}.`,
-          { httpStatus: response.status, ...safeGoogleError(payload) },
+          {
+            httpStatus: response.status,
+            stage: safety.stage || "request",
+            ...safeGoogleError(payload),
+          },
         );
       }
       return { response, payload };
