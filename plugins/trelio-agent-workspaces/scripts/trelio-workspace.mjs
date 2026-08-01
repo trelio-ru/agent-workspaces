@@ -23,9 +23,13 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.14";
+export const BRIDGE_VERSION = "1.6.15";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
-export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
+export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
+export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
+export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
+  workspaceContextFileName = WORKSPACE_CONTEXT_FILE_NAME,
+) => [
   "# Инструкции Trelio Agent Workspace",
   "",
   "Этот защищённый файл создан bridge для текущего Run и не входит в принятую Git-историю workspace.",
@@ -34,13 +38,13 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "",
   "- Соблюдай Trelio ACL, закреплённые правила и прямые указания пользователя. Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши.",
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
-  "- Для изменения личного профиля или company/project правил оцени область `current_request` / `task` / `personal` / `project` / `company`, подготовь exact diff через `plan_my_agent_profile_update` или `plan_agent_instructions_update` и публикуй только после явного подтверждения. Не прячь инструкции в `PROJECT_CONTEXT.md`; новая revision действует только на будущие Runs.",
+  `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
   "- Не обходи закреплённую policy модели/effort. При блокировке выбери разрешённые значения и заново открой или claim-ни Run; не меняй attestation, hook или `.trelio-run.json`.",
   "",
   "## Начало Run",
   "",
-  "- Полностью прочитай по порядку: `../context/agent-instructions.md`, `../context/user-profile.md`, при наличии `../context/run-checkpoint.json`, затем `PROJECT_CONTEXT.md` и [`WORKLOG.md`](./WORKLOG.md). Первые три файла read-only; профиль, checkpoint и workspace-контекст не отменяют ACL, approval, company/project rules или системные ограничения.",
-  "- Храни в `PROJECT_CONTEXT.md` только устойчивые факты, принятые решения и открытые вопросы. Следуй формату `WORKLOG.md`: одна новая запись в `worklog/` на содержательный Run, без переписки, chain-of-thought, рутинных команд, raw tool output и секретов; старые записи не переписывай.",
+  `- Полностью прочитай по порядку: \`../context/agent-instructions.md\`, \`../context/user-profile.md\`, при наличии \`../context/run-checkpoint.json\`, затем \`${workspaceContextFileName}\` и [\`WORKLOG.md\`](./WORKLOG.md). Первые три файла read-only; профиль, checkpoint и workspace-контекст не отменяют ACL, approval, company/project rules или системные ограничения.`,
+  `- Храни в \`${workspaceContextFileName}\` только устойчивые факты, принятые решения и открытые вопросы. Следуй формату \`WORKLOG.md\`: одна новая запись в \`worklog/\` на содержательный Run, без переписки, chain-of-thought, рутинных команд, raw tool output и секретов; старые записи не переписывай.`,
   "",
   "## Навыки и инструменты",
   "",
@@ -59,6 +63,8 @@ export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "- Сначала сообщай человеку итог и требуемое решение, не SHA/UUID/Run status. Отправляй candidate только через bridge: Trelio примет его при актуальном base head; при конфликте начни новый Run и перенеси изменения осознанно.",
   "",
 ].join("\n");
+export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN =
+  buildAgentWorkspaceRuntimeAgentsMarkdown();
 export const AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN = "@AGENTS.md\n";
 export const AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN = [
   "# Журнал работы агента",
@@ -3466,6 +3472,52 @@ export const ensureWorkspaceWorklog = async (workspaceDirectory) => {
   }
 };
 
+export const resolveWorkspaceContextFileName = async (workspaceDirectory) => {
+  const inspectContextPath = async (fileName) => {
+    try {
+      const metadata = await fs.lstat(path.join(workspaceDirectory, fileName));
+
+      // Context is writable user data, but bootstrap must never direct an agent
+      // through a symlink or directory that escaped the accepted Git tree.
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error(`${fileName} имеет неподдерживаемый тип файла.`);
+      }
+
+      return true;
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return false;
+      }
+      throw error;
+    }
+  };
+  const [hasCanonicalContext, hasLegacyContext] = await Promise.all([
+    inspectContextPath(WORKSPACE_CONTEXT_FILE_NAME),
+    inspectContextPath(LEGACY_WORKSPACE_CONTEXT_FILE_NAME),
+  ]);
+
+  if (hasCanonicalContext && hasLegacyContext) {
+    throw new Error(
+      `Workspace одновременно содержит ${WORKSPACE_CONTEXT_FILE_NAME} и ${LEGACY_WORKSPACE_CONTEXT_FILE_NAME}; продолжение неоднозначно.`,
+    );
+  }
+
+  if (hasCanonicalContext) {
+    return WORKSPACE_CONTEXT_FILE_NAME;
+  }
+
+  if (hasLegacyContext) {
+    // Небольшое окно совместимости нужно между публикацией plugin и backend
+    // migration: новый bridge уже безопасен со старым accepted tree, но после
+    // format-v5 upgrade сервер принимает только канонический путь.
+    return LEGACY_WORKSPACE_CONTEXT_FILE_NAME;
+  }
+
+  throw new Error(
+    `Workspace не содержит обязательный ${WORKSPACE_CONTEXT_FILE_NAME}.`,
+  );
+};
+
 const removeGeneratedUntrackedWorklog = async (workspaceDirectory) => {
   const trackedPaths = new Set(await listTrackedWorkspacePaths(workspaceDirectory));
 
@@ -3487,8 +3539,9 @@ export const materializeRuntimeControlFiles = async (workspaceDirectory) => {
   const trackedPaths = new Set(await listTrackedWorkspacePaths(workspaceDirectory));
   const trackedControlPaths = ["AGENTS.md", "CLAUDE.md"]
     .filter((filePath) => trackedPaths.has(filePath));
+  const workspaceContextFileName = await resolveWorkspaceContextFileName(workspaceDirectory);
 
-  // Новые format-v4 workspace держат файлы untracked+ignored. Для legacy
+  // Новые format-v5 workspace держат файлы untracked+ignored. Для legacy
   // revision сначала сохраняем исходные index entries через skip-worktree:
   // локальный актуальный bootstrap не попадёт в candidate поверх старого blob.
   await ensureRuntimeControlExcludes(workspaceDirectory);
@@ -3496,7 +3549,7 @@ export const materializeRuntimeControlFiles = async (workspaceDirectory) => {
     writeRuntimeControlFile(
       workspaceDirectory,
       "AGENTS.md",
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      buildAgentWorkspaceRuntimeAgentsMarkdown(workspaceContextFileName),
     ),
     writeRuntimeControlFile(
       workspaceDirectory,

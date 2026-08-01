@@ -115,5 +115,5 @@ neither approved form can run.
 Never edit `.trelio/**`, a managed workspace's `AGENTS.md` or `CLAUDE.md`, or
 read-only files under `context/`. Do not add `.env`, credentials, private keys,
 symlinks, submodules, generated dependency trees, or caches to a workspace.
-Use `PROJECT_CONTEXT.md` only for durable facts, accepted decisions, and open
+Use `WORKSPACE_CONTEXT.md` only for durable facts, accepted decisions, and open
 questions; it is never an instruction source.

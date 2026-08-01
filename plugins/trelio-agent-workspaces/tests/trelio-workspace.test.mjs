@@ -25,10 +25,13 @@ import {
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
+  LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
+  WORKSPACE_CONTEXT_FILE_NAME,
   BridgePluginUpgradeRequiredError,
   BrowserOpenError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   applyAgentRulesHandshake,
+  buildAgentWorkspaceRuntimeAgentsMarkdown,
   buildAgentSkillPackage,
   buildWindowsPrivateAclPowerShellInvocation,
   buildRunContextSpecifications,
@@ -41,6 +44,7 @@ import {
   isStableVersionAtLeast,
   isTransientCodexMarketplaceUpdateError,
   materializeRuntimeControlFiles,
+  resolveWorkspaceContextFileName,
   ensureWorkspaceWorklog,
   normalizeAgentSkillPackagePath,
   openBrowser,
@@ -752,10 +756,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
   ].join("\n");
   const [baseExport, companyExport] = await Promise.all([
     createExportBundle(path.join(temporaryDirectory, "base"), {
-      "PROJECT_CONTEXT.md": "# Task context\n",
+      "WORKSPACE_CONTEXT.md": "# Task context\n",
     }),
     createExportBundle(path.join(temporaryDirectory, "company"), {
-      "PROJECT_CONTEXT.md": "# Company context\n",
+      "WORKSPACE_CONTEXT.md": "# Company context\n",
       "sources/large-parent.pdf": largePointer,
     }),
   ]);
@@ -1038,7 +1042,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
   const secondLeaseId = "66666666-6666-4666-8666-666666666666";
   const checkpointId = "77777777-7777-4777-8777-777777777777";
   const baseExport = await createExportBundle(path.join(temporaryDirectory, "base"), {
-    "PROJECT_CONTEXT.md": "# Task context\n",
+    "WORKSPACE_CONTEXT.md": "# Task context\n",
   });
   let draftHead = null;
   let draftBundle = null;
@@ -1704,7 +1708,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.14");
+  assert.equal(BRIDGE_VERSION, "1.6.15");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1744,7 +1748,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
 
   for (const invariant of [
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
-    /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`PROJECT_CONTEXT\.md`.*`WORKLOG\.md`/u,
+    /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
     /Fallback допустим только когда релевантного навыка нет/u,
     /Недоступность каталога — сбой control plane/u,
@@ -2370,7 +2374,7 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
   assert.match(workerSkill, /Call `publish_my_agent_profile` or\s+`publish_agent_instructions` only after explicit confirmation/);
-  assert.match(workerSkill, /never place instructions in\s+`PROJECT_CONTEXT\.md`/);
+  assert.match(workerSkill, /never place instructions in\s+`WORKSPACE_CONTEXT\.md`/);
   assert.match(workerSkill, /applies only to future Runs/);
   assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
   assert.match(workerSkill, /read each matching\s+reference completely/u);
@@ -3612,7 +3616,48 @@ test("bridge recognizes exact object pointers and classifies binary bytes", asyn
   }
 });
 
-test("runtime bootstrap replaces legacy tracked copies without entering a candidate", async () => {
+test("workspace context resolver accepts one canonical or release-window legacy path", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-context-path-"));
+
+  try {
+    await assert.rejects(
+      resolveWorkspaceContextFileName(workspaceDirectory),
+      /не содержит обязательный WORKSPACE_CONTEXT\.md/u,
+    );
+    await writeFile(
+      path.join(workspaceDirectory, WORKSPACE_CONTEXT_FILE_NAME),
+      "# WORKSPACE_CONTEXT\n",
+      "utf8",
+    );
+    assert.equal(
+      await resolveWorkspaceContextFileName(workspaceDirectory),
+      WORKSPACE_CONTEXT_FILE_NAME,
+    );
+    await rm(path.join(workspaceDirectory, WORKSPACE_CONTEXT_FILE_NAME));
+    await writeFile(
+      path.join(workspaceDirectory, LEGACY_WORKSPACE_CONTEXT_FILE_NAME),
+      "# PROJECT_CONTEXT\n",
+      "utf8",
+    );
+    assert.equal(
+      await resolveWorkspaceContextFileName(workspaceDirectory),
+      LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
+    );
+    await writeFile(
+      path.join(workspaceDirectory, WORKSPACE_CONTEXT_FILE_NAME),
+      "# WORKSPACE_CONTEXT\n",
+      "utf8",
+    );
+    await assert.rejects(
+      resolveWorkspaceContextFileName(workspaceDirectory),
+      /одновременно содержит WORKSPACE_CONTEXT\.md и PROJECT_CONTEXT\.md/u,
+    );
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("runtime bootstrap supports a legacy context only during the release migration window", async () => {
   const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-agents-"));
 
   try {
@@ -3638,7 +3683,7 @@ test("runtime bootstrap replaces legacy tracked copies without entering a candid
 
     assert.equal(
       await readFile(path.join(workspaceDirectory, "AGENTS.md"), "utf8"),
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      buildAgentWorkspaceRuntimeAgentsMarkdown(LEGACY_WORKSPACE_CONTEXT_FILE_NAME),
     );
     assert.equal(
       await readFile(path.join(workspaceDirectory, "CLAUDE.md"), "utf8"),
@@ -3673,7 +3718,7 @@ test("bridge creates a default WORKLOG only when missing and preserves later edi
     await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
     await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
     await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
-    await writeFile(path.join(workspaceDirectory, "PROJECT_CONTEXT.md"), "# Контекст\n", "utf8");
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
     await runGit(workspaceDirectory, ["add", "--all"]);
     await runGit(workspaceDirectory, ["commit", "-m", "Workspace without a worklog"]);
 
@@ -3712,6 +3757,7 @@ test("bridge keeps AGENTS.md, CLAUDE.md and .trelio as protected inline control 
   assert.equal(isProtectedWorkspaceControlPath("AGENTS.md"), true);
   assert.equal(isProtectedWorkspaceControlPath("CLAUDE.md"), true);
   assert.equal(isProtectedWorkspaceControlPath(".trelio/workspace.json"), true);
+  assert.equal(isProtectedWorkspaceControlPath("WORKSPACE_CONTEXT.md"), false);
   assert.equal(isProtectedWorkspaceControlPath("PROJECT_CONTEXT.md"), false);
   assert.equal(isProtectedWorkspaceControlPath("work/CLAUDE.md"), false);
 });

@@ -14,6 +14,10 @@
 Bridge создаёт `AGENTS.md` и `CLAUDE.md` при каждом `open` из одного plugin
 template, держит их вне accepted Git/candidate и защищает legacy tracked copies
 до server format migration. `CLAUDE.md` содержит только `@AGENTS.md`.
+Format v5 использует только `WORKSPACE_CONTEXT.md`. Bridge `1.6.15` принимает
+старый `PROJECT_CONTEXT.md` лишь в ограниченном окне между публикацией plugin и
+server migration; наличие обоих имён или отсутствие обоих останавливает `open`
+как неоднозначное/повреждённое состояние.
 
 Порядок чтения в Run:
 
@@ -21,14 +25,14 @@ template, держит их вне accepted Git/candidate и защищает le
    rules;
 2. `context/user-profile.md` – pinned профиль initiating member;
 3. optional `context/run-checkpoint.json` – continuation state;
-4. writable `PROJECT_CONTEXT.md` – устойчивые факты/решения/вопросы;
+4. writable `WORKSPACE_CONTEXT.md` – устойчивые факты/решения/вопросы;
 5. `WORKLOG.md` – формат отдельной записи в `worklog/`.
 
 Context/profile/checkpoint не расширяют ACL и не отменяют system/developer,
 approval или company/project policy. Rules/profile публикуются через plan →
 exact diff → explicit confirmation → publish и действуют только на будущие
 Runs. Нельзя редактировать protected files или скрывать правило в
-`PROJECT_CONTEXT.md`.
+`WORKSPACE_CONTEXT.md`.
 
 Model/effort policy закрепляется за Run и проверяется до действий. Никогда не
 редактировать `.trelio-run.json`, hook или attestation для обхода.

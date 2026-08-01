@@ -6,7 +6,7 @@ the agent.
 
 1. Never edit `.trelio/**`, managed `AGENTS.md`, managed `CLAUDE.md`, or
    `context/agent-instructions.md`, and never place instructions in
-   `PROJECT_CONTEXT.md`.
+   `WORKSPACE_CONTEXT.md`.
 2. Resolve the exact company and optional project/task context. Call
    `get_agent_instructions` to read current scoped and inherited rules plus the
    authenticated user's personal profile.
@@ -27,7 +27,7 @@ the agent.
    tool prepares a personal diff only for `personal`.
 6. For `current_request`, follow the instruction without persistence. For
    `task`, keep it as an ordinary explicit task requirement. Never hide either
-   in `PROJECT_CONTEXT.md`. If `project` or `company` is correct, explain the
+   in `WORKSPACE_CONTEXT.md`. If `project` or `company` is correct, explain the
    broader recommendation and ask before switching flows. Never widen a
    personal request silently.
 7. For a confirmed `project` or `company` scope, prepare the complete

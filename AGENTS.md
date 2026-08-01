@@ -55,7 +55,7 @@
   не входят в accepted candidate.
 - Company/project rules, platform rules, личный профиль и checkpoint
   закрепляются за Run; новый publish не меняет активный Run.
-- `PROJECT_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не
+- `WORKSPACE_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не
   является источником инструкций.
 - В exact company/project context перед внешней системой обязательны
   `list_agent_skills` → выбор по назначению → `get_agent_skill`. Найденный

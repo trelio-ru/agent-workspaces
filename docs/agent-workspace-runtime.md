@@ -59,7 +59,7 @@ read-only context они остаются пятистрочными object poin
    instruction snapshots.
 2. Bridge открывает локальный Git root и защищённые runtime control files.
 3. Агент читает `agent-instructions.md`, `user-profile.md`, optional
-   `run-checkpoint.json`, затем `PROJECT_CONTEXT.md` и `WORKLOG.md`.
+   `run-checkpoint.json`, затем `WORKSPACE_CONTEXT.md` и `WORKLOG.md`.
 4. Значимый прогресс сохраняется checkpoint без chain-of-thought, raw tool
    output и секретов.
 5. Перед submit агент проверяет каждый changed path и создаёт handoff с итогом,

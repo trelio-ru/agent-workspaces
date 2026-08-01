@@ -120,5 +120,5 @@ company-scoped revision текущего пользователя. Он влия
 Перед изменением агент различает `current_request`, `task`, `personal`,
 `project` и `company`, показывает exact diff и scope и публикует только после
 явного подтверждения. `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и
-`context/agent-instructions.md` защищены; `PROJECT_CONTEXT.md` нельзя
+`context/agent-instructions.md` защищены; `WORKSPACE_CONTEXT.md` нельзя
 использовать как скрытый источник инструкций.
