@@ -98,5 +98,9 @@
 - Обычные изменения backend-managed instruction/runtime конкретного внутреннего
   навыка не требуют plugin release, пока не меняется bundled plugin host или
   bootstrap skill.
-- После публикации нового plugin сначала проверь официальный marketplace и
-  только затем поднимай live latest/minimum policy Trelio.
+- После публикации нового plugin сначала проверь официальный marketplace, а
+  затем в рамках того же release-flow сразу подними live `latestVersion` и
+  `minimumVersion` Trelio до новой версии. Обычный релиз не считается
+  завершённым, пока read-back backend policy не подтвердил оба exact значения.
+  В итоговом сообщении явно укажи подтверждённый `minimumVersion`; отдельный
+  прежний minimum допустим только при прямом решении о staged rollout.

@@ -43,7 +43,13 @@ Security tests должны проверять semantic invariant/tool/error cod
    push exact tag.
 3. Создать GitHub Release с title `vX.Y.Z`.
 4. Проверить published marketplace exact version/code.
-5. Только после этого отдельным backend CAS поднять live latest/minimum policy.
+5. Сразу после проверки marketplace отдельным backend CAS установить live
+   `latestVersion=X.Y.Z` и `minimumVersion=X.Y.Z`. Обычный plugin release не
+   завершён, пока backend minimum остаётся на предыдущей версии. Отдельный
+   прежний minimum разрешён только по прямому решению о staged rollout.
+6. Прочитать live policy обратно и проверить оба exact значения. В итоговом
+   сообщении о релизе явно указать подтверждённый backend `minimumVersion`, а
+   не только факт запуска CAS-команды.
 
 При network ambiguity сначала read-back remote ref/release; side-effect нельзя
 слепо повторять.
