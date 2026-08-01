@@ -20,6 +20,7 @@ import {
   parseArgs,
   requiresInvitationUpdates,
   run,
+  safeGoogleError,
   selectRuntimeAccount,
   validateOAuthCallbackRequest,
 } from "../scripts/trelio-google-calendar.mjs";
@@ -237,6 +238,25 @@ test("Desktop OAuth uses PKCE and account selection without a client secret", ()
   assert.match(source, /code_verifier: verifier/u);
   assert.doesNotMatch(source, /client_secret/u);
   assert.doesNotMatch(source, /TRELIO_GOOGLE_CALENDAR_CLIENT_SECRET/u);
+});
+
+test("Google errors normalize both Calendar API and OAuth token payloads", () => {
+  assert.deepEqual(safeGoogleError({
+    error: {
+      status: "PERMISSION_DENIED",
+      message: "Calendar access was denied.",
+    },
+  }), {
+    providerCode: "PERMISSION_DENIED",
+    providerMessage: "Calendar access was denied.",
+  });
+  assert.deepEqual(safeGoogleError({
+    error: "invalid_grant",
+    error_description: "Bad authorization code.\nTry again.",
+  }), {
+    providerCode: "invalid_grant",
+    providerMessage: "Bad authorization code. Try again.",
+  });
 });
 
 test("help works without a token and doctor reports the selected local account", async () => {
