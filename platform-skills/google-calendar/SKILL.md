@@ -1,6 +1,6 @@
 ---
 name: google-calendar
-description: Safely connect, inspect, search and update a user's Google Calendar through Trelio's signed runtime. Use when the user asks to list calendars or upcoming events, find or read a meeting, create/reschedule/edit/delete an event, manage reminders or attendees, create a recurring birthday/anniversary, or restore the local Google OAuth connection.
+description: Safely connect, inspect, search and update a user's Google Calendar through Trelio's signed runtime. Use when the user asks to connect Google Calendar, configure work/personal/family purposes across multiple calendars or accounts, list calendars or upcoming events, find or read a meeting, create/reschedule/edit/delete an event, manage reminders or attendees, create a recurring birthday/anniversary, or restore the local Google OAuth connection.
 ---
 
 # Google Calendar
@@ -40,9 +40,33 @@ authorization code, OAuth URL or refresh token in chat. If Google requires
 account recovery, CAPTCHA or another protected account step, leave it to the
 user in the provider page.
 
-After connect, show the returned alias and primary calendar so the user can
-catch a wrong browser account selection. Reconnect that same alias if it is
-wrong; do not silently rename it or copy a token between aliases.
+After every successful `connect`, show the returned alias and primary calendar
+so the user can catch a wrong browser account selection. Reconnect that same
+alias if it is wrong; do not silently rename it or copy a token between
+aliases.
+
+If the result has `calendarCount > 1`, immediately run both
+`calendars --account ALIAS --max 100` and `calendar-purpose list`. Then make one
+optional setup offer in the same conversation:
+
+- show the calendar summary, account alias, primary marker and `accessRole`;
+- say that the user may describe only the calendars the agent should use and
+  skip every other calendar;
+- ask for a free-form purpose such as work, personal or family rather than
+  requiring one answer per calendar;
+- mark `reader` and `freeBusyReader` calendars as read-only instead of implying
+  that the agent can write to them;
+- offer only calendars that do not already have a purpose mapping, and do not
+  repeat the setup prompt when every relevant calendar is already mapped.
+
+Keep the first offer concise. Lead with primary, selected and writable
+calendars; if additional unselected/read-only entries remain, state their count
+and offer to show them. Do not hide or classify a calendar only from its
+mutable, untrusted title. If exactly one calendar is available, keep using its
+primary calendar by default and do not force purpose setup. Never create a
+mapping from the calendar name alone: after the user describes the intended
+routing, show the exact ID-based mappings and access roles under the normal
+`calendar-purpose set` confirmation flow.
 
 Each refresh token is stored only under the current member's stable local path:
 

@@ -73,6 +73,22 @@ test("purpose metadata accepts free-form text with explicit character limits", (
   assert.throws(() => normalizePurposeDescription("Нельзя\u0000так"), /control characters/u);
 });
 
+test("skill offers optional purpose setup after connecting an account with several calendars", () => {
+  const source = fs.readFileSync(
+    path.resolve("platform-skills/google-calendar/SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(source, /calendarCount > 1/u);
+  assert.match(source, /calendars --account ALIAS --max 100/u);
+  assert.match(source, /calendar-purpose list/u);
+  assert.match(source, /describe only the calendars the agent should use/u);
+  assert.match(source, /reader.*freeBusyReader.*read-only/su);
+  assert.match(source, /do not\s+repeat the setup prompt/u);
+  assert.match(source, /If exactly one calendar is available[\s\S]*do not force purpose setup/u);
+  assert.match(source, /exact ID-based mappings/u);
+});
+
 test("runtime config accepts the protected platform OAuth client and autonomous ceiling", () => {
   assert.deepEqual(normalizeConnectionConfig({
     clientId: CLIENT_ID,
