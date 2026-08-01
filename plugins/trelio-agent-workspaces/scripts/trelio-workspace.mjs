@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.13";
+export const BRIDGE_VERSION = "1.6.14";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN = [
   "# Инструкции Trelio Agent Workspace",
