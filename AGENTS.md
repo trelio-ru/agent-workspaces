@@ -63,6 +63,12 @@
   MCP/workspace operations остаются штатным workflow.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
+- Google Calendar получает из resolved safe config только единый публичный
+  Desktop OAuth client ID платформы. Каждый alias хранит refresh token и write
+  policy локально в отдельном member/company/connection namespace; purpose
+  связывает exact alias + calendar ID, label до 120 символов и свободное
+  description до 2 000 символов. Description – только routing context, а
+  mutation разрешена лишь для live `writer`/`owner` через preview/hash/ETag.
 - Candidate принимается только при актуальном base head. Restore создаёт новую
   accepted revision, не переписывая историю.
 - Blocker задаётся человеку только после успешного portable checkpoint.
