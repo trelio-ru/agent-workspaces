@@ -32,11 +32,18 @@ submit, or final reporting.
    `runtimeExecution.command`, appending only arguments allowed by the current
    skill after its terminal `--`, or the declared `remoteMcpExecution`
    identity/release.
-   Never bypass a matching skill through browser, Computer Use, direct HTTP,
-   another MCP, or a script. Fallback is allowed only when no relevant skill
-   exists, its required connection is not configured, or the operation is not
-   supported; state that reason. Control-plane unavailability is not absence of
-   an integration. On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once.
+   Never bypass a matching usable skill through browser, Computer Use, direct
+   HTTP, another MCP, or a script. Fallback is allowed only when no relevant
+   skill exists, its required company or personal connection is not configured
+   or is currently unusable (including an explicit runtime `no_access` or
+   `needs_reconnect`), or the operation is not supported; state that reason.
+   Confirmed absence or unusability is not a reason to refuse requested work:
+   use an otherwise allowed independent external source or implementation when
+   it is necessary to complete the request. Never use fallback to reach the
+   same protected system through another route, weaken access controls, or
+   substitute for missing rights. Control-plane unavailability and transient
+   network failure do not by themselves establish `no_access`. On
+   `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once.
    Missing assignment does not ban a compatible personal skill. Native Trelio
    MCP/workspace operations remain the primary workflow, not catalog fallback.
 3. Search readable workspace files only when prior context can materially help.

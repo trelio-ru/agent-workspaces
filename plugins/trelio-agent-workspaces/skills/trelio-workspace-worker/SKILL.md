@@ -73,9 +73,12 @@ Before accessing corporate data, a connected service, or an external system in
 an exact company/project context, use the current `trelio-skill-catalog` flow:
 call `list_agent_skills`, choose by purpose, then call `get_agent_skill`
 immediately before acting. Use an assigned skill's exact `runtimeExecution` or
-`remoteMcpExecution`; do not bypass it. Native Trelio MCP and Agent Workspace
-control-plane operations remain the primary workflow and do not require a
-separate catalog skill.
+`remoteMcpExecution`; do not bypass it while it is usable. A confirmed missing
+or unusable skill, including an explicit runtime `no_access` or
+`needs_reconnect`, permits an independent fallback when needed to complete the
+request, but never another route into the same protected system or weaker ACL.
+Native Trelio MCP and Agent Workspace control-plane operations remain the
+primary workflow and do not require a separate catalog skill.
 
 Use `list_agent_secrets` only for safe metadata. If access is missing, call
 `request_agent_secret_access`; never ask the user to paste a password, token,

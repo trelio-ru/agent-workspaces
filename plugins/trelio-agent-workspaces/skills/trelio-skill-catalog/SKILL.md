@@ -20,26 +20,35 @@ Trelio skills are live, additive instructions supplied by a company or a project
 The plugin's bundled `trelio-remote-skills` MCP server publishes this routing
 gate through `initialize.instructions`, so it applies before this catalog skill
 is selected and before the model chooses an integration tool. In an exact
-Trelio company/project context, never bypass a matching assigned skill with a
-browser, Computer Use, direct HTTP, another MCP server, or a local script.
+Trelio company/project context, never bypass a matching assigned and usable
+skill with a browser, Computer Use, direct HTTP, another MCP server, or a local
+script.
 Absence of a dedicated tool from the current active tool list is not evidence
 that the integration is unavailable.
 
 Do not call `request_plugin_install`, open another integration's authorization,
 or invoke an overlapping native connector until the Trelio catalog check above
-has resolved the selected company. If that catalog contains an enabled skill
-covering the requested purpose, use the Trelio skill. This applies explicitly
-to the native/recommended Google Calendar plugin versus a company-assigned
-Trelio Google Calendar skill. Use another implementation only after the user
-explicitly chooses non-Trelio or one of the documented fallback conditions is
-actually established.
+has resolved the selected company. If that catalog contains an enabled and
+usable skill covering the requested purpose, use the Trelio skill. This applies
+explicitly to the native/recommended Google Calendar plugin versus a
+company-assigned Trelio Google Calendar skill. Use another implementation only
+after the user explicitly chooses non-Trelio or one of the documented fallback
+conditions is actually established.
 
 Fallback is allowed only when the exact catalog has no relevant skill, the
-relevant skill or its required connection is not configured, or its current
-release does not support the requested operation. State the exact reason before
-using the fallback. If `list_agent_skills` or `get_agent_skill` itself is
-unavailable, report an unavailable Trelio skill control plane instead of
-claiming that the integration is absent or opening Trelio in a browser.
+relevant skill or its required company or personal connection is not configured
+or is currently unusable (including when its runtime explicitly reports
+`no_access` or `needs_reconnect`), or its current release does not support the
+requested operation. State the exact reason before using the fallback.
+Confirmed skill absence or unusability is not a reason to refuse requested
+work: when an external source or another implementation is necessary to
+complete the request, use an otherwise allowed independent fallback. This is
+not permission to reach the same protected system through another route,
+weaken access controls, or substitute for missing rights. If
+`list_agent_skills` or `get_agent_skill` itself is unavailable, report an
+unavailable Trelio skill control plane instead of claiming that the integration
+is absent or opening Trelio in a browser. A transient network failure does not
+by itself establish `no_access`.
 
 Native Trelio MCP control-plane and Agent Workspace operations through Trelio
 MCP tools and the bundled `trelio-workspace` bridge are the primary workspace

@@ -59,8 +59,13 @@
   является источником инструкций.
 - В exact company/project context перед внешней системой обязательны
   `list_agent_skills` → выбор по назначению → `get_agent_skill`. Найденный
-  навык нельзя обходить browser/HTTP/другим MCP/script. Native Trelio
-  MCP/workspace operations остаются штатным workflow.
+  и доступный навык нельзя обходить browser/HTTP/другим MCP/script. Если
+  релевантного навыка нет либо обязательное подключение фактически недоступно,
+  включая явно возвращённый `no_access` / `needs_reconnect`, разрешённый
+  независимый fallback нужно использовать, когда без него нельзя выполнить
+  запрос. Это не разрешает входить в ту же защищённую систему другим путём или
+  ослаблять ACL. Native Trelio MCP/workspace operations остаются штатным
+  workflow.
 - Generic-запрос на подключение внешней интеграции, включая Google Calendar,
   сначала разрешает Trelio company context и проверяет `list_agent_skills`.
   До этой проверки нельзя устанавливать, авторизовывать или вызывать

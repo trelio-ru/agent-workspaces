@@ -24,11 +24,19 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
 2. Выбрать назначенный skill по purpose, не по hardcoded ID.
 3. Непосредственно перед действием вызвать `get_agent_skill`.
 4. Использовать exact `runtimeExecution` либо declared `remoteMcpExecution`.
-5. Не обходить browser/Computer Use/direct HTTP/другим MCP/local script.
+5. Не обходить доступный skill через browser/Computer Use/direct HTTP/другой
+   MCP/local script.
 6. Fallback только explicit non-Trelio choice / no relevant skill / required
-   connection not configured / operation unsupported, с точной причиной.
-7. Unavailable catalog – control-plane failure, не отсутствие интеграции.
-8. Native Trelio MCP/workspace operations – primary workflow, не fallback.
+   company или personal connection not configured or unusable (включая явно
+   возвращённый runtime status `no_access` / `needs_reconnect`) / operation
+   unsupported, с точной причиной.
+7. Подтверждённое отсутствие или недоступность skill не является причиной
+   отказаться от требуемой работы: если для результата нужен внешний источник
+   или другая реализация, использовать разрешённый независимый fallback.
+8. Fallback не открывает ту же защищённую систему другим путём, не ослабляет
+   ACL и не подменяет отсутствующие права. Unavailable catalog и transient
+   network failure сами по себе не доказывают `no_access`.
+9. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 
 Leading `trelio-workspace` – logical launcher текущего plugin. Проверить PATH
 без пробного запуска; если отсутствует, заменить только первый token на Node.js

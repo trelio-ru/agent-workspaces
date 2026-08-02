@@ -97,6 +97,9 @@ const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
   if (relevantSkill.configured === false) {
     return { type: "fallback", reason: "not_configured" };
   }
+  if (["no_access", "needs_reconnect"].includes(relevantSkill.accessStatus)) {
+    return { type: "fallback", reason: relevantSkill.accessStatus };
+  }
   if (
     Array.isArray(relevantSkill.supportedOperations)
     && !relevantSkill.supportedOperations.includes(purpose)
@@ -1253,8 +1256,12 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /Trelio Google Calendar skill versus the native\/recommended Google Calendar plugin/u);
   assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
-  assert.match(instructions, /Never bypass a matching skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
+  assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
   assert.match(instructions, /state that exact reason/u);
+  assert.match(instructions, /explicitly reports `no_access` or `needs_reconnect`/u);
+  assert.match(instructions, /not a reason to refuse requested work/u);
+  assert.match(instructions, /same protected system through another route/u);
+  assert.match(instructions, /transient network failure does not by itself establish `no_access`/u);
   assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
   assert.match(instructions, /do not seek a missing catalog skill merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
   assert.match(instructions, /fallback-reason rule applies only when replacing an implementation covered by a relevant skill/u);
@@ -1364,7 +1371,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
   );
 });
 
-test("platform routing allows a named fallback only when no relevant skill exists", async () => {
+test("platform routing allows a named fallback when no relevant skill exists", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
   const route = resolveCatalogFixtureRoute({
     purpose: "read_unsupported_service",
@@ -1376,9 +1383,31 @@ test("platform routing allows a named fallback only when no relevant skill exist
     reason: "no_relevant_skill",
   });
   assert.match(instructions, /Fallback is allowed only when the exact catalog has no relevant skill/u);
-  assert.match(instructions, /its required connection is not configured/u);
+  assert.match(instructions, /required company or personal connection is not configured/u);
   assert.match(instructions, /the operation is unsupported/u);
   assert.match(instructions, /primary workspace workflow/u);
+});
+
+test("platform routing allows an independent fallback for explicit no_access", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const route = resolveCatalogFixtureRoute({
+    purpose: "legal_source_search",
+    catalog: [{
+      id: "private-legal-search",
+      purposes: ["legal_source_search"],
+      supportedOperations: ["legal_source_search"],
+      configured: true,
+      accessStatus: "no_access",
+      runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
+    }],
+  });
+
+  assert.deepEqual(route, {
+    type: "fallback",
+    reason: "no_access",
+  });
+  assert.match(instructions, /use an otherwise allowed independent external source or implementation/u);
+  assert.match(instructions, /must never reach the same protected system through another route/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {

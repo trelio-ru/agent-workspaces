@@ -930,12 +930,15 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Не обходи навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом/u,
+      /Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом/u,
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Fallback допустим только когда релевантного навыка нет/u,
+      /Fallback допустим, когда релевантного навыка нет/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`no_access` \/ `needs_reconnect`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /а не отказывайся из-за отсутствия или недоступности навыка/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /ту же защищённую систему другим путём/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Trelio MCP и bundled bridge остаются штатным workflow/u,
@@ -1750,8 +1753,11 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
-    /Fallback допустим только когда релевантного навыка нет/u,
-    /Недоступность каталога — сбой control plane/u,
+    /Fallback допустим, когда релевантного навыка нет/u,
+    /`no_access` \/ `needs_reconnect`/u,
+    /а не отказывайся из-за отсутствия или недоступности навыка/u,
+    /ту же защищённую систему другим путём/u,
+    /Недоступность каталога и transient network failure сами по себе не равны `no_access`/u,
     /не блокируй handoff\/submit из-за manual comment/u,
     /дата не уведомляет/u,
     /не расширяй personal в shared без полномочия/u,
@@ -2363,13 +2369,16 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Immediately before using a relevant skill, call\s+`get_agent_skill`/);
   assert.match(workerSkill, /Use only exact\s+`runtimeExecution\.command`/);
   assert.match(workerSkill, /declared `remoteMcpExecution`\s+identity\/release/);
-  assert.match(workerSkill, /Never bypass a matching skill through browser, Computer Use, direct HTTP,\s+another MCP, or a script/);
-  assert.match(workerSkill, /Fallback is allowed only when no relevant skill\s+exists/);
+  assert.match(workerSkill, /Never bypass a matching usable skill through browser, Computer Use, direct\s+HTTP, another MCP, or a script/);
+  assert.match(workerSkill, /Fallback is allowed only when no relevant\s+skill exists/);
+  assert.match(workerSkill, /explicit runtime `no_access` or\s+`needs_reconnect`/);
+  assert.match(workerSkill, /not a reason to refuse requested work/);
+  assert.match(workerSkill, /same protected system through another route/);
   assert.match(workerSkill, /Native Trelio\s+MCP\/workspace operations remain the primary workflow/);
   assert.match(workerSkill, /do not require a\s+separate catalog skill/);
   assert.match(workerSkill, /state that reason/);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
-  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
+  assert.match(workerSkill, /On\s+`AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
   assert.match(workerSkill, /durable rule identified by\s+the agent/);
   assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
