@@ -19,6 +19,17 @@ OAuth автоматически. `Plugins` – только fallback, если 
 tools не доказывает readiness; безопасный read `get_my_context`/`get_task` –
 доказательство. Browser не подменяет MCP.
 
+Node.js 22+ остаётся локальной предпосылкой bundled bridge и
+`trelio-remote-skills`, но не удалённого Trelio OAuth. При отсутствующих tools
+onboarding один раз разделяет эти состояния через `codex mcp list --json` и
+безопасное разрешение `node`, не запуская заведомо отсутствующую команду.
+Отсутствующий или старый Node не устанавливается молча: агент показывает
+причину, предлагает exact `winget install --id OpenJS.NodeJS.LTS -e` в native
+Windows либо `brew install node` на macOS с уже установленным Homebrew и ждёт
+явного подтверждения. После изменения системного `PATH` нужен полный restart
+Codex и новая задача. Отсутствие глобального `trelio-workspace` штатно: агент
+использует bundled script текущей версии плагина.
+
 Managed workspace admin может назначить plugin ролям, но OAuth проходит каждый
 user и workspace policy не обходится.
 
@@ -75,12 +86,14 @@ Workspace. Он:
 2. читает `get_agent_instructions` до substantive setup;
 3. безопасно создаёт/обновляет только marked Trelio block в project-root
    `AGENTS.md`/override, не заменяя unrelated instructions;
-4. выполняет `trelio-workspace login` без disposable Run;
-5. читает live `list_agent_skills` exact scope;
-6. предлагает настроить только выбранные skills one by one;
-7. показывает unconfigured company connection как
+4. отдельно диагностирует Trelio OAuth и Node.js 22+, а отсутствующий runtime
+   только предлагает установить после явного подтверждения;
+5. выполняет `trelio-workspace login` без disposable Run;
+6. читает live `list_agent_skills` exact scope;
+7. предлагает настроить только выбранные skills one by one;
+8. показывает unconfigured company connection как
    `требуется настройка администратором компании`;
-8. никогда не пишет skills/connection state/credentials/IDs/local paths в
+9. никогда не пишет skills/connection state/credentials/IDs/local paths в
    project AGENTS.
 
 Personal credentials вводятся только через protected runtime flow. Company

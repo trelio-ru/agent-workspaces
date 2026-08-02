@@ -73,6 +73,11 @@
   спросить exact company, а не сканировать все каталоги.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
+- Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
+  диагностирует её отдельно от Trelio OAuth, при отсутствии только предлагает
+  platform-native установку и ждёт явного подтверждения. Глобальный
+  `trelio-workspace` в `PATH` не требуется: используется bundled script exact
+  загруженной версии плагина.
 - Google Calendar получает публичный Desktop OAuth client ID платформы в safe
   catalog config, а обязательный для Google token exchange client secret –
   только в no-store runtime resolve exact подписанного package. Secret нельзя

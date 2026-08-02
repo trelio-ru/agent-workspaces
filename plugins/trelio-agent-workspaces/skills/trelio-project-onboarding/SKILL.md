@@ -12,11 +12,26 @@ read the current skill catalog and connection state from Trelio.
 ## Check prerequisites
 
 1. Require callable Trelio MCP tools, not only this skill text. If tools are
-   missing, ask the user to open `Plugins -> Trelio Agent Workspaces`, complete
-   Trelio OAuth, and start a new task. Require a full Codex restart only if that
-   new task still lacks the tools or reports the old plugin version. If the
-   marketplace itself is missing, use
-   `codex plugin marketplace add trelio-ru/agent-workspaces`; its
+   missing, diagnose the two independent prerequisites once before asking the
+   user to try another task:
+   - Inspect `codex mcp list --json` to distinguish an unavailable or
+     unauthenticated `trelio` HTTP server from the local
+     `trelio-remote-skills` server. The plugin version alone does not prove
+     that either server is ready.
+   - Resolve Node.js without intentionally executing a missing command: use
+     `Get-Command node -ErrorAction SilentlyContinue` in native Windows
+     PowerShell or `command -v node` on POSIX. If Node.js is absent or older
+     than 22, follow the installation-offer flow under **Connect the local
+     component**. A local Node.js problem does not prove that Trelio OAuth is
+     invalid.
+   - If the `trelio` server needs authentication, ask the user to open
+     `Plugins -> Trelio Agent Workspaces` and complete Trelio OAuth, or use
+     `codex mcp login trelio` when the native card did not appear. Then start a
+     new task so it can load the refreshed MCP tools.
+   Require a full Codex restart only when installing or updating Node.js may
+   have changed the app's inherited `PATH`, or when a new task still lacks the
+   tools or reports the old plugin version. If the marketplace itself is
+   missing, use `codex plugin marketplace add trelio-ru/agent-workspaces`; its
    `INSTALLED_BY_DEFAULT` policy makes a separate plugin-add command
    unnecessary.
 2. Resolve the current local project root from the active workspace. Prefer
@@ -79,10 +94,33 @@ state and may change after this file is created.
 
 ## Connect the local component
 
+The bundled local component requires Node.js 22 or newer. Resolve `node`
+without a deliberate failing probe and read its version only when the command
+exists. If it is absent or too old, explain that this blocks the local bridge
+and local skill server, then offer installation instead of merely reporting a
+missing `PATH` entry:
+
+- On native Windows, offer
+  `winget install --id OpenJS.NodeJS.LTS -e`.
+- On macOS, offer `brew install node` only when Homebrew is already available;
+  otherwise direct the user to the official Node.js LTS installer.
+- On other systems, use the platform's normal package manager or the official
+  Node.js LTS installer, but require a resulting version of at least 22.
+
+Installing or upgrading system software is a separate side effect. Ask one
+concise explicit confirmation before running the package manager command and
+let the client apply its normal command approval. Never install Node.js
+silently. Afterward, verify the exact `node --version`. If the current Codex
+process still cannot resolve the new command, ask the user to fully quit and
+reopen Codex, then start a new task; do not loop through more tasks in the same
+stale process.
+
 Run `trelio-workspace login` through the logical launcher of this installed
 plugin. Resolve it without executing a failing probe: use the PATH command when
 present, otherwise replace only the first token with Node.js 22+ and this
-skill's bundled `../../scripts/trelio-workspace.mjs`.
+skill's bundled `../../scripts/trelio-workspace.mjs`. Do not install
+`trelio-workspace` globally or treat its normally absent `PATH` entry as an
+error.
 
 If login reports a one-time pairing request, immediately call
 `approve_agent_workspace_bridge_pairing` with its exact `pairingId` and
