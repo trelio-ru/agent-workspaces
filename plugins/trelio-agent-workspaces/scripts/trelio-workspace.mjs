@@ -23,8 +23,12 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.19";
+export const BRIDGE_VERSION = "1.6.20";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
+const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
+  path.dirname(BRIDGE_ENTRYPOINT_PATH),
+  "..",
+);
 export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
 export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
 export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
@@ -167,6 +171,10 @@ const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
+const CODEX_PLUGIN_RETENTION_DIRECTORY = path.join(
+  CONFIG_DIRECTORY,
+  "codex-plugin-retention",
+);
 const CODEX_MARKETPLACE_NAME = "trelio-plugins";
 const CODEX_PLUGIN_ID = "trelio-agent-workspaces@trelio-plugins";
 const CODEX_OFFICIAL_MARKETPLACE_SOURCE =
@@ -195,6 +203,11 @@ const PLUGIN_BACKGROUND_UPDATE_FAILURE_RETRY_MS = 30 * 60 * 1000;
 const PLUGIN_BACKGROUND_UPDATE_LOCK_STALE_MS = 15 * 60 * 1000;
 const PLUGIN_UPDATE_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 const PLUGIN_UPDATE_NETWORK_RETRY_DELAYS_MS = Object.freeze([1_000, 3_000]);
+// Marketplace packages are intentionally small. These bounds let retention
+// validate the complete immutable plugin tree without allowing a malformed
+// local directory to turn a routine update into an unbounded copy/hash job.
+const CODEX_RETAINED_PLUGIN_MAX_FILE_COUNT = 512;
+const CODEX_RETAINED_PLUGIN_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
 const CACHE_ROOT_DIRECTORY = process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Trelio", "workspace-bridge", "cache")
@@ -1115,6 +1128,423 @@ export const isStableVersionAtLeast = (rawVersion, rawMinimumVersion) => {
   return true;
 };
 
+const assertCodexPluginVersionPath = (pluginDirectory, version) => {
+  const absoluteDirectory = path.resolve(pluginDirectory);
+  const pluginRoot = path.dirname(absoluteDirectory);
+  const marketplaceRoot = path.dirname(pluginRoot);
+
+  // Codex owns this versioned cache layout. Retention may recreate only an
+  // exact path previously loaded for the official Trelio plugin; accepting an
+  // arbitrary destination from local metadata would turn recovery into a
+  // general filesystem write primitive.
+  if (
+    !parseStableVersion(version)
+    || path.basename(absoluteDirectory) !== version
+    || path.basename(pluginRoot) !== "trelio-agent-workspaces"
+    || path.basename(marketplaceRoot) !== CODEX_MARKETPLACE_NAME
+  ) {
+    throw new Error(
+      "Codex вернул неподдерживаемый versioned path Trelio plugin.",
+    );
+  }
+
+  return absoluteDirectory;
+};
+
+const inspectImmutableCodexPluginTree = async (
+  pluginDirectory,
+  expectedVersion,
+  { requireCodexVersionPath = true } = {},
+) => {
+  const absoluteDirectory = requireCodexVersionPath
+    ? assertCodexPluginVersionPath(pluginDirectory, expectedVersion)
+    : path.resolve(pluginDirectory);
+  const rootMetadata = await fs.lstat(absoluteDirectory);
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    throw new Error("Каталог Trelio plugin для retention имеет небезопасный тип.");
+  }
+
+  const treeHash = crypto.createHash("sha256");
+  let fileCount = 0;
+  let totalBytes = 0;
+
+  const inspectDirectory = async (directory, relativeDirectory = "") => {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
+
+    for (const entry of entries) {
+      const absolutePath = path.join(directory, entry.name);
+      const relativePath = path.posix.join(
+        relativeDirectory,
+        entry.name,
+      );
+      const metadata = await fs.lstat(absolutePath);
+
+      // A marketplace package is immutable regular files/directories only.
+      // Refusing links and special files prevents the backup from escaping its
+      // source root or changing meaning between validation and restoration.
+      if (metadata.isSymbolicLink()) {
+        throw new Error(`Retention запрещает symlink в plugin: ${relativePath}`);
+      }
+      if (metadata.isDirectory()) {
+        await inspectDirectory(absolutePath, relativePath);
+        continue;
+      }
+      if (!metadata.isFile()) {
+        throw new Error(
+          `Retention запрещает специальный файл в plugin: ${relativePath}`,
+        );
+      }
+
+      fileCount += 1;
+      totalBytes += metadata.size;
+      if (
+        fileCount > CODEX_RETAINED_PLUGIN_MAX_FILE_COUNT
+        || totalBytes > CODEX_RETAINED_PLUGIN_MAX_BYTES
+      ) {
+        throw new Error("Trelio plugin превышает безопасный размер retention.");
+      }
+
+      const bytes = await fs.readFile(absolutePath);
+      treeHash.update(`${Buffer.byteLength(relativePath, "utf8")}:`);
+      treeHash.update(relativePath, "utf8");
+      treeHash.update(`:${bytes.byteLength}:`);
+      treeHash.update(bytes);
+    }
+  };
+
+  await inspectDirectory(absoluteDirectory);
+  const manifestPath = path.join(
+    absoluteDirectory,
+    ".codex-plugin",
+    "plugin.json",
+  );
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  if (
+    manifest?.name !== "trelio-agent-workspaces"
+    || manifest?.version !== expectedVersion
+  ) {
+    throw new Error("Retention получил несовместимый manifest Trelio plugin.");
+  }
+  return {
+    installedPath: absoluteDirectory,
+    version: expectedVersion,
+    treeSha256: treeHash.digest("hex"),
+    fileCount,
+    totalBytes,
+  };
+};
+
+const buildCodexPluginRetentionEntryId = ({
+  installedPath,
+  version,
+  treeSha256,
+}) => crypto.createHash("sha256").update(JSON.stringify({
+  installedPath,
+  version,
+  treeSha256,
+})).digest("hex");
+
+const readRetainedCodexPluginEntries = async (retentionDirectory) => {
+  await ensurePrivateDirectory(retentionDirectory);
+  const directoryEntries = await fs.readdir(retentionDirectory, {
+    withFileTypes: true,
+  });
+  const retainedEntries = [];
+
+  for (const directoryEntry of directoryEntries) {
+    if (
+      !/^[0-9a-f]{64}$/u.test(directoryEntry.name)
+      || !directoryEntry.isDirectory()
+      || directoryEntry.isSymbolicLink()
+    ) {
+      throw new Error(
+        `Небезопасная запись в каталоге plugin retention: ${directoryEntry.name}`,
+      );
+    }
+
+    const entryDirectory = path.join(retentionDirectory, directoryEntry.name);
+    await assertPrivatePathKind(entryDirectory, "directory");
+    const metadata = await readPrivateJsonFile(path.join(
+      entryDirectory,
+      "metadata.json",
+    ));
+    const installedPath = typeof metadata?.installedPath === "string"
+      ? assertCodexPluginVersionPath(metadata.installedPath, metadata.version)
+      : null;
+
+    if (
+      metadata?.schemaVersion !== 1
+      || metadata?.pluginId !== CODEX_PLUGIN_ID
+      || metadata?.marketplaceName !== CODEX_MARKETPLACE_NAME
+      || !installedPath
+      || !/^[0-9a-f]{64}$/u.test(String(metadata?.treeSha256 || ""))
+      || buildCodexPluginRetentionEntryId({
+        installedPath,
+        version: metadata.version,
+        treeSha256: metadata.treeSha256,
+      }) !== directoryEntry.name
+    ) {
+      throw new Error("Некорректная metadata сохранённой версии Trelio plugin.");
+    }
+
+    retainedEntries.push({
+      entryDirectory,
+      pluginDirectory: path.join(entryDirectory, "plugin"),
+      installedPath,
+      version: metadata.version,
+      treeSha256: metadata.treeSha256,
+    });
+  }
+
+  return retainedEntries.sort((left, right) => (
+    left.installedPath.localeCompare(right.installedPath, "en")
+  ));
+};
+
+const assertRetainedCodexPluginEntry = async (entry) => {
+  const inspection = await inspectImmutableCodexPluginTree(
+    entry.pluginDirectory,
+    entry.version,
+    { requireCodexVersionPath: false },
+  );
+  if (inspection.treeSha256 !== entry.treeSha256) {
+    throw new Error(
+      `Сохранённая версия Trelio plugin ${entry.version} повреждена.`,
+    );
+  }
+  return inspection;
+};
+
+const restoreOneRetainedCodexPlugin = async (entry) => {
+  await assertRetainedCodexPluginEntry(entry);
+
+  try {
+    const existing = await inspectImmutableCodexPluginTree(
+      entry.installedPath,
+      entry.version,
+    );
+    if (existing.treeSha256 !== entry.treeSha256) {
+      throw new Error(
+        `Codex cache уже содержит другие bytes версии ${entry.version}.`,
+      );
+    }
+    return false;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const targetParent = path.dirname(entry.installedPath);
+  try {
+    await fs.lstat(targetParent);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+
+    const marketplaceDirectory = path.dirname(targetParent);
+    const marketplaceMetadata = await fs.lstat(marketplaceDirectory);
+    if (
+      !marketplaceMetadata.isDirectory()
+      || marketplaceMetadata.isSymbolicLink()
+      || path.basename(marketplaceDirectory) !== CODEX_MARKETPLACE_NAME
+    ) {
+      throw new Error("Каталог Codex marketplace для retention небезопасен.");
+    }
+    await fs.mkdir(targetParent, { mode: 0o700 }).catch((mkdirError) => {
+      if (mkdirError.code !== "EEXIST") throw mkdirError;
+    });
+  }
+  const parentMetadata = await fs.lstat(targetParent);
+  if (!parentMetadata.isDirectory() || parentMetadata.isSymbolicLink()) {
+    throw new Error("Родительский каталог Codex plugin cache небезопасен.");
+  }
+
+  const temporaryPath = path.join(
+    targetParent,
+    `.${entry.version}.trelio-retain-${process.pid}-${crypto.randomBytes(8).toString("hex")}`,
+  );
+  try {
+    await fs.cp(entry.pluginDirectory, temporaryPath, {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+      force: false,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+    const copied = await inspectImmutableCodexPluginTree(
+      temporaryPath,
+      entry.version,
+      { requireCodexVersionPath: false },
+    );
+    if (copied.treeSha256 !== entry.treeSha256) {
+      throw new Error(
+        `Копия Trelio plugin ${entry.version} изменилась при восстановлении.`,
+      );
+    }
+
+    try {
+      await fs.rename(temporaryPath, entry.installedPath);
+    } catch (error) {
+      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+      const concurrent = await inspectImmutableCodexPluginTree(
+        entry.installedPath,
+        entry.version,
+      );
+      if (concurrent.treeSha256 !== entry.treeSha256) throw error;
+    }
+  } finally {
+    await fs.rm(temporaryPath, { recursive: true, force: true });
+  }
+
+  return true;
+};
+
+export const restoreRetainedCodexPluginInstallations = async ({
+  retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
+} = {}) => {
+  const entries = await readRetainedCodexPluginEntries(retentionDirectory);
+  for (const entry of entries) {
+    await restoreOneRetainedCodexPlugin(entry);
+  }
+  return entries.length;
+};
+
+export const retainLoadedCodexPluginInstallation = async ({
+  loadedPluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+  loadedPluginVersion = BRIDGE_VERSION,
+  retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
+} = {}) => {
+  const source = await inspectImmutableCodexPluginTree(
+    loadedPluginDirectory,
+    loadedPluginVersion,
+  );
+  // Restore earlier exact releases only after proving that this process itself
+  // was loaded from the expected Codex cache layout. The same bridge module is
+  // also imported from a source checkout and by Claude, where touching Codex
+  // retention would be outside the active client lifecycle.
+  await restoreRetainedCodexPluginInstallations({ retentionDirectory });
+  const entryId = buildCodexPluginRetentionEntryId({
+    installedPath: source.installedPath,
+    version: source.version,
+    treeSha256: source.treeSha256,
+  });
+  const entryDirectory = path.join(retentionDirectory, entryId);
+  const pluginDirectory = path.join(entryDirectory, "plugin");
+
+  try {
+    const existingMetadata = await fs.lstat(entryDirectory);
+    if (!existingMetadata.isDirectory() || existingMetadata.isSymbolicLink()) {
+      throw new Error("Небезопасный каталог сохранённой версии Trelio plugin.");
+    }
+    const [existingEntry] = (await readRetainedCodexPluginEntries(
+      retentionDirectory,
+    )).filter((entry) => entry.entryDirectory === entryDirectory);
+    if (!existingEntry) {
+      throw new Error("Retention entry не соответствует своему content id.");
+    }
+    await assertRetainedCodexPluginEntry(existingEntry);
+    return existingEntry;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const temporaryDirectory = path.join(
+    path.dirname(retentionDirectory),
+    `.codex-plugin-retention-${entryId}.${process.pid}.${crypto.randomBytes(8).toString("hex")}.tmp`,
+  );
+  try {
+    await fs.mkdir(temporaryDirectory, { mode: 0o700 });
+    if (process.platform !== "win32") {
+      await fs.chmod(temporaryDirectory, 0o700);
+    }
+    await fs.cp(source.installedPath, path.join(temporaryDirectory, "plugin"), {
+      recursive: true,
+      dereference: false,
+      errorOnExist: true,
+      force: false,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+    if (process.platform !== "win32") {
+      await fs.chmod(path.join(temporaryDirectory, "plugin"), 0o700);
+    }
+    const copied = await inspectImmutableCodexPluginTree(
+      path.join(temporaryDirectory, "plugin"),
+      source.version,
+      { requireCodexVersionPath: false },
+    );
+    if (copied.treeSha256 !== source.treeSha256) {
+      throw new Error("Trelio plugin изменился при создании retention-копии.");
+    }
+    await writePrivateJsonFile(path.join(temporaryDirectory, "metadata.json"), {
+      schemaVersion: 1,
+      pluginId: CODEX_PLUGIN_ID,
+      marketplaceName: CODEX_MARKETPLACE_NAME,
+      installedPath: source.installedPath,
+      version: source.version,
+      treeSha256: source.treeSha256,
+      createdAt: new Date().toISOString(),
+    });
+
+    try {
+      await fs.rename(temporaryDirectory, entryDirectory);
+    } catch (error) {
+      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
+    }
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+
+  const entries = await readRetainedCodexPluginEntries(retentionDirectory);
+  const retained = entries.find((entry) => entry.entryDirectory === entryDirectory);
+  if (!retained) {
+    throw new Error("Codex plugin retention не сохранил проверенную версию.");
+  }
+  await assertRetainedCodexPluginEntry(retained);
+  return retained;
+};
+
+const runCodexPluginMutationWithRetention = async (
+  operation,
+  {
+    preserveLoadedPlugin = true,
+    loadedPluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+    loadedPluginVersion = BRIDGE_VERSION,
+    retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
+  } = {},
+) => {
+  if (!preserveLoadedPlugin) return operation();
+
+  await retainLoadedCodexPluginInstallation({
+    loadedPluginDirectory,
+    loadedPluginVersion,
+    retentionDirectory,
+  });
+
+  let operationResult;
+  let operationError = null;
+  try {
+    operationResult = await operation();
+  } catch (error) {
+    operationError = error;
+  }
+
+  try {
+    // Codex may prune versioned cache folders on both marketplace upgrade and
+    // an otherwise harmless `plugin add`. Restoration therefore belongs in a
+    // finally-equivalent path for every mutating CLI call, including failures.
+    await restoreRetainedCodexPluginInstallations({ retentionDirectory });
+  } catch (retentionError) {
+    throw new Error(
+      "Codex обновил plugin cache, но Trelio не смог восстановить пути активных задач.",
+      { cause: retentionError },
+    );
+  }
+
+  if (operationError) throw operationError;
+  return operationResult;
+};
+
 export const isTransientCodexMarketplaceUpdateError = (error) => {
   if (
     error?.killed === true
@@ -1183,13 +1613,25 @@ export const resolveInstalledCodexPluginBridge = async ({
   environment = process.env,
   filesystem = fs,
   verifyMarketplace = true,
+  preserveLoadedPlugin = true,
+  loadedPluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+  loadedPluginVersion = BRIDGE_VERSION,
+  retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
 } = {}) => {
   if (verifyMarketplace) {
     await assertOfficialCodexMarketplace({ execFileCommand, environment });
   }
-  const installation = await runCodexJsonCommand(
-    CODEX_PLUGIN_INSTALL_ARGUMENTS,
-    { execFileCommand, environment },
+  const installation = await runCodexPluginMutationWithRetention(
+    () => runCodexJsonCommand(
+      CODEX_PLUGIN_INSTALL_ARGUMENTS,
+      { execFileCommand, environment },
+    ),
+    {
+      preserveLoadedPlugin,
+      loadedPluginDirectory,
+      loadedPluginVersion,
+      retentionDirectory,
+    },
   );
   const installedPath = typeof installation?.installedPath === "string"
     ? path.resolve(installation.installedPath)
@@ -1248,6 +1690,10 @@ export const updateCodexPluginMarketplace = async ({
   environment = process.env,
   filesystem = fs,
   waitForRetry = wait,
+  preserveLoadedPlugin = true,
+  loadedPluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+  loadedPluginVersion = BRIDGE_VERSION,
+  retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
 } = {}) => {
   let lastError = null;
 
@@ -1259,9 +1705,17 @@ export const updateCodexPluginMarketplace = async ({
     attempt += 1
   ) {
     try {
-      const result = await runCodexJsonCommand(
-        CODEX_MARKETPLACE_UPDATE_ARGUMENTS,
-        { execFileCommand, environment },
+      const result = await runCodexPluginMutationWithRetention(
+        () => runCodexJsonCommand(
+          CODEX_MARKETPLACE_UPDATE_ARGUMENTS,
+          { execFileCommand, environment },
+        ),
+        {
+          preserveLoadedPlugin,
+          loadedPluginDirectory,
+          loadedPluginVersion,
+          retentionDirectory,
+        },
       );
       const errors = Array.isArray(result?.errors) ? result.errors : [];
 
@@ -1279,6 +1733,10 @@ export const updateCodexPluginMarketplace = async ({
         environment,
         filesystem,
         verifyMarketplace: false,
+        preserveLoadedPlugin,
+        loadedPluginDirectory,
+        loadedPluginVersion,
+        retentionDirectory,
       });
       if (!installation) {
         throw new Error(
@@ -1371,6 +1829,12 @@ export const startQuietCodexPluginUpdate = async ({
   if (!isCodexPluginAutoUpdateEnvironment(environment)) {
     return false;
   }
+
+  // Snapshot the currently loaded immutable package even when the network
+  // refresh interval has not elapsed. A later manual Codex update can then be
+  // repaired by the next bridge invocation instead of leaving older tasks
+  // with dead absolute SKILL.md paths.
+  await retainLoadedCodexPluginInstallation();
 
   const state = await readPluginUpdateState();
   const nextAttemptAt = Date.parse(String(state?.nextAttemptAt || ""));
@@ -6318,6 +6782,10 @@ export const recoverBridgePluginUpgrade = async (
     filesystem = fs,
     spawnProcess = spawn,
     waitForRetry = wait,
+    preserveLoadedPlugin = true,
+    loadedPluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+    loadedPluginVersion = BRIDGE_VERSION,
+    retentionDirectory = CODEX_PLUGIN_RETENTION_DIRECTORY,
   } = {},
 ) => {
   if (!(error instanceof BridgePluginUpgradeRequiredError)) {
@@ -6371,6 +6839,10 @@ export const recoverBridgePluginUpgrade = async (
       execFileCommand,
       environment,
       filesystem,
+      preserveLoadedPlugin,
+      loadedPluginDirectory,
+      loadedPluginVersion,
+      retentionDirectory,
     });
     if (!installation) {
       installation = await updateCodexPluginMarketplace({
@@ -6379,6 +6851,10 @@ export const recoverBridgePluginUpgrade = async (
         environment,
         filesystem,
         waitForRetry,
+        preserveLoadedPlugin,
+        loadedPluginDirectory,
+        loadedPluginVersion,
+        retentionDirectory,
       });
     }
   } catch (updateError) {

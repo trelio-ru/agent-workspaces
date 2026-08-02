@@ -116,6 +116,12 @@
   обязаны иметь одну версию; synchronization защищён тестом.
 - Stable version и Git tag выпускаются вместе. Не меняй версию и не создавай
   tag без явной команды на релиз.
+- Codex фиксирует абсолютные versioned-пути bundled skills в контексте задачи.
+  Перед любым self-update bridge обязан сохранить exact bytes текущей
+  загруженной версии в private retention, а после каждой mutating-команды
+  `marketplace upgrade` / `plugin add`, включая ошибочную, восстановить все
+  известные immutable пути. Нельзя подставлять новую версию под старый путь,
+  использовать symlink `current` или выбирать другую cache-версию.
 - Обычные изменения backend-managed instruction/runtime конкретного внутреннего
   навыка не требуют plugin release, пока не меняется bundled plugin host или
   bootstrap skill.

@@ -53,6 +53,8 @@ import {
   parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
   recoverBridgePluginUpgrade,
+  restoreRetainedCodexPluginInstallations,
+  retainLoadedCodexPluginInstallation,
   request,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
@@ -356,6 +358,7 @@ test("Codex plugin updater retries transient network failures and validates exac
 
     const installation = await updateCodexPluginMarketplace({
       minimumVersion: "1.5.12",
+      preserveLoadedPlugin: false,
       environment: {
         CODEX_THREAD_ID: "11111111-1111-4111-8111-111111111111",
       },
@@ -447,11 +450,218 @@ test("Codex plugin updater retries transient network failures and validates exac
   }
 });
 
+test("Codex plugin updater retains exact versioned skill paths across repeated cache pruning", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(
+    os.tmpdir(),
+    "trelio-plugin-retention-",
+  ));
+  const pluginCacheDirectory = path.join(
+    temporaryDirectory,
+    "plugins",
+    "cache",
+    "trelio-plugins",
+    "trelio-agent-workspaces",
+  );
+  const retentionDirectory = path.join(
+    temporaryDirectory,
+    "private",
+    "codex-plugin-retention",
+  );
+
+  const createPluginVersion = async (version) => {
+    const installedPath = path.join(pluginCacheDirectory, version);
+    await Promise.all([
+      mkdir(path.join(installedPath, ".codex-plugin"), { recursive: true }),
+      mkdir(path.join(installedPath, "scripts"), { recursive: true }),
+      mkdir(path.join(
+        installedPath,
+        "skills",
+        "trelio-skill-catalog",
+      ), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(installedPath, ".codex-plugin", "plugin.json"),
+        JSON.stringify({ name: "trelio-agent-workspaces", version }),
+      ),
+      writeFile(
+        path.join(installedPath, "scripts", "trelio-workspace.mjs"),
+        `export const BRIDGE_VERSION = ${JSON.stringify(version)};\n`,
+      ),
+      writeFile(
+        path.join(
+          installedPath,
+          "skills",
+          "trelio-skill-catalog",
+          "SKILL.md",
+        ),
+        `exact skill ${version}\n`,
+      ),
+    ]);
+    return installedPath;
+  };
+
+  const pruneAndInstall = async (version) => {
+    const names = await readdir(pluginCacheDirectory).catch(() => []);
+    await Promise.all(names.map((name) => rm(
+      path.join(pluginCacheDirectory, name),
+      { recursive: true, force: true },
+    )));
+    return createPluginVersion(version);
+  };
+
+  const updateFrom = async (loadedVersion, installedVersion) => {
+    const loadedPluginDirectory = path.join(
+      pluginCacheDirectory,
+      loadedVersion,
+    );
+    const installedPath = path.join(pluginCacheDirectory, installedVersion);
+    let marketplaceAttempt = 0;
+    return updateCodexPluginMarketplace({
+      minimumVersion: installedVersion,
+      loadedPluginDirectory,
+      loadedPluginVersion: loadedVersion,
+      retentionDirectory,
+      waitForRetry: async () => {},
+      execFileCommand: async (_command, args) => {
+        if (args[1] === "marketplace" && args[2] === "list") {
+          return {
+            stdout: JSON.stringify({
+              marketplaces: [{
+                name: "trelio-plugins",
+                marketplaceSource: {
+                  sourceType: "git",
+                  source: "https://github.com/trelio-ru/agent-workspaces.git",
+                },
+              }],
+            }),
+            stderr: "",
+          };
+        }
+        if (args[1] === "marketplace" && args[2] === "upgrade") {
+          marketplaceAttempt += 1;
+          if (loadedVersion === "1.6.19" && marketplaceAttempt === 1) {
+            await pruneAndInstall(installedVersion);
+            const error = new Error("marketplace connection reset after cleanup");
+            error.code = "ECONNRESET";
+            throw error;
+          }
+          if (loadedVersion === "1.6.19" && marketplaceAttempt === 2) {
+            assert.equal(
+              await readFile(path.join(
+                loadedPluginDirectory,
+                "skills",
+                "trelio-skill-catalog",
+                "SKILL.md",
+              ), "utf8"),
+              "exact skill 1.6.19\n",
+              "failed mutation must restore the old skill before retry",
+            );
+          }
+          await pruneAndInstall(installedVersion);
+          return {
+            stdout: JSON.stringify({
+              selectedMarketplaces: ["trelio-plugins"],
+              upgradedRoots: [pluginCacheDirectory],
+              errors: [],
+            }),
+            stderr: "",
+          };
+        }
+
+        assert.deepEqual(args, [
+          "plugin",
+          "add",
+          "trelio-agent-workspaces@trelio-plugins",
+          "--json",
+        ]);
+        // Codex currently performs the same old-version cleanup for `add`,
+        // even when the requested plugin is already installed.
+        await pruneAndInstall(installedVersion);
+        return {
+          stdout: JSON.stringify({
+            pluginId: "trelio-agent-workspaces@trelio-plugins",
+            name: "trelio-agent-workspaces",
+            marketplaceName: "trelio-plugins",
+            version: installedVersion,
+            installedPath,
+          }),
+          stderr: "",
+        };
+      },
+    });
+  };
+
+  try {
+    const version119Path = await createPluginVersion("1.6.19");
+    const firstUpdate = await updateFrom("1.6.19", "1.6.20");
+    assert.equal(firstUpdate.version, "1.6.20");
+    assert.equal(
+      await readFile(path.join(
+        version119Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.19\n",
+    );
+
+    const version120Path = path.join(pluginCacheDirectory, "1.6.20");
+    const secondUpdate = await updateFrom("1.6.20", "1.6.21");
+    assert.equal(secondUpdate.version, "1.6.21");
+    assert.equal(
+      await readFile(path.join(
+        version119Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.19\n",
+    );
+    assert.equal(
+      await readFile(path.join(
+        version120Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.20\n",
+    );
+
+    const version121Path = path.join(pluginCacheDirectory, "1.6.21");
+    await retainLoadedCodexPluginInstallation({
+      loadedPluginDirectory: version121Path,
+      loadedPluginVersion: "1.6.21",
+      retentionDirectory,
+    });
+    await Promise.all([
+      rm(version119Path, { recursive: true, force: true }),
+      rm(version120Path, { recursive: true, force: true }),
+    ]);
+    assert.equal(
+      await restoreRetainedCodexPluginInstallations({ retentionDirectory }),
+      3,
+    );
+    assert.equal(
+      await readFile(path.join(
+        version119Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.19\n",
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("Codex plugin updater refuses a marketplace name redirected to another source", async () => {
   let invocationCount = 0;
 
   await assert.rejects(
     updateCodexPluginMarketplace({
+      preserveLoadedPlugin: false,
       execFileCommand: async () => {
         invocationCount += 1;
         return {
@@ -478,6 +688,7 @@ test("Codex plugin updater does not report success when the required release is 
   await assert.rejects(
     updateCodexPluginMarketplace({
       minimumVersion: "1.5.12",
+      preserveLoadedPlugin: false,
       execFileCommand: async (_command, args) => {
         if (args[1] === "marketplace" && args[2] === "list") {
           return {
@@ -551,6 +762,7 @@ test("upgrade-required re-dispatches the exact installed bridge in the same Code
       {
         rawArguments: ["open", "--workspace", companyWorkspaceId],
         environment,
+        preserveLoadedPlugin: false,
         execFileCommand: async (command, args, options) => {
           assert.equal(command, "codex");
           if (args[1] === "marketplace") {
@@ -1716,7 +1928,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.19");
+  assert.equal(BRIDGE_VERSION, "1.6.20");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

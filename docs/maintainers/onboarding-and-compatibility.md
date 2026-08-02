@@ -59,8 +59,19 @@ Codex self-update:
 3. не более трёх retry для transient network errors;
 4. exact installed path через Codex CLI JSON;
 5. manifest/version/entrypoint без symlink;
-6. safe re-dispatch new bridge в той же задаче, если backend разрешает;
-7. иначе новая задача, затем full restart как последний fallback.
+6. private content-checked retention exact загруженной версии до мутации и
+   восстановление всех известных versioned paths после каждого
+   `marketplace upgrade` / `plugin add`, включая неуспешную команду;
+7. safe re-dispatch new bridge в той же задаче, если backend разрешает;
+8. иначе новая задача, затем full restart как последний fallback.
+
+Codex записывает абсолютный путь `SKILL.md` в контекст уже открытой задачи и
+может удалить старую cache-папку даже при повторном `plugin add`. Поэтому
+retention сохраняет только проверенные exact bytes под прежним exact path; он
+не создаёт versionless alias, не подставляет новую версию под старое имя и не
+используется для выбора runtime версии. Bundled local MCP делает такой snapshot
+уже при `initialize`, поэтому защита не зависит от того, успел ли пользователь
+до ручного обновления запустить workspace-команду.
 
 Claude использует свой plugin manager/reload; Codex updater к нему не
 применяется.

@@ -27,6 +27,7 @@ import {
   normalizeOrigin,
   openBrowser,
   readPrivateJsonFile,
+  retainLoadedCodexPluginInstallation,
   request,
   requireToken,
   writePrivateJsonFile,
@@ -1973,6 +1974,11 @@ export const runStdioHost = async ({
   callTool = handleToolCall,
   handleMessage = handleLocalMcpMessage,
 } = {}) => {
+  // Codex may refresh a marketplace before the user invokes the workspace
+  // bridge. Snapshotting at local host startup covers that normal path too;
+  // source checkouts and Claude fail the strict Codex cache-path check and
+  // intentionally continue without changing their own plugin lifecycle.
+  await retainLoadedCodexPluginInstallation().catch(() => undefined);
   const input = readline.createInterface({
     input: inputStream,
     crlfDelay: Infinity,
