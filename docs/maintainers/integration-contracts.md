@@ -6,6 +6,7 @@
 - Signed packages
 - Remote MCP
 - Credentials и browser-first input
+- Browser-only ConsultantPlus
 - Email, Telegram и MAX
 - 1С runtimes
 
@@ -97,6 +98,29 @@ credential.
 Agent Secret server-side Vault: metadata отдельно, value только one-use exact
 Run/executable grant через stdin/env/private temp. Нельзя использовать
 shell/logger/env/printenv/cat для раскрытия.
+
+## Browser-only ConsultantPlus
+
+`consultant-plus` не создаёт company connection и не получает credential.
+Signed runtime хранит только личные состояния `unknown`, `connected`,
+`no_access`, `needs_reconnect` и browser preference в namespace
+skill/company/member/fixed-browser. Начиная с host `1.6.17`, runtime resolve
+передаёт member identity независимо от company connection; `connectionId` и
+connection config в таком запуске остаются `null`/не выставляются.
+
+При `unknown` агент один раз спрашивает, нужен ли навык и есть ли доступ. Login,
+CAPTCHA и иные protected account steps выполняет только пользователь в
+поддерживаемом browser surface. Codex desktop использует отдельный in-app
+Browser или существующий Chrome profile; локальный Claude Code – официальный
+Claude in Chrome/Edge. Недоступность local browser из cloud surface является
+эпизодическим `unavailable_on_surface` и не перезаписывает личное состояние.
+
+Для анализа агент читает bounded DOM. При необходимости сохранить exact source
+он без отдельного подтверждения экспортирует узкий fragment: DOCX по умолчанию,
+PDF для layout-sensitive forms, Unicode text как fallback. Bulk scrape и обход
+paywall запрещены. `no_access`, `needs_reconnect` или unsupported surface/
+operation разрешают только независимый legal-source fallback с точной причиной;
+он не может повторно входить в тот же protected ConsultantPlus другим путём.
 
 ## Email, Telegram и MAX
 

@@ -33,6 +33,7 @@ import {
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
   buildAgentSkillPackage,
+  buildAgentSkillRuntimeEnvironment,
   buildWindowsPrivateAclPowerShellInvocation,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
@@ -47,6 +48,7 @@ import {
   resolveWorkspaceContextFileName,
   ensureWorkspaceWorklog,
   normalizeAgentSkillPackagePath,
+  normalizeResolvedSkillRuntimeArtifact,
   openBrowser,
   parseAndValidateAgentSkillPackage,
   parseWorkspaceObjectPointer,
@@ -1711,7 +1713,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.16");
+  assert.equal(BRIDGE_VERSION, "1.6.17");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2470,6 +2472,73 @@ test("skill pack rejects machine-specific Python bytecode cache", async () => {
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
+});
+
+test("connection-free skill runtime receives member identity without synthetic connection authority", () => {
+  const companyId = "99999999-9999-4999-8999-999999999999";
+  const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const releaseId = "77777777-7777-4777-8777-777777777777";
+  const artifactId = "88888888-8888-4888-8888-888888888888";
+  const skillId = "consultant-plus";
+  const payload = {
+    releaseId,
+    localIdentity: {
+      companyId,
+      projectId: null,
+      memberId,
+      skillId,
+      connectionId: null,
+    },
+    companyConnection: null,
+    artifact: {
+      id: artifactId,
+      skillId,
+      runtimeVersion: "1.0.0",
+      packageFormat: "trelio-agent-skill-package/v1",
+      packageSha256: "a".repeat(64),
+      packageSizeBytes: 128,
+      packageSignature: "signed-package",
+      signingKeyId: "test",
+      signingPublicKeySpki: "public-key",
+      minimumHostVersion: BRIDGE_VERSION,
+      manifest: {},
+    },
+    packageUrl: `/api/agent-skills/runtime/package?artifactId=${artifactId}`,
+  };
+
+  const resolution = normalizeResolvedSkillRuntimeArtifact(payload);
+  const environment = buildAgentSkillRuntimeEnvironment({
+    artifact: resolution.artifact,
+    runtimeDirectory: "/verified/runtime",
+    executionContext: {
+      companyId,
+      projectId: null,
+      releaseId,
+      localIdentity: resolution.localIdentity,
+      companyConnection: resolution.companyConnection,
+    },
+    inheritedEnvironment: {
+      SAFE_PARENT_VALUE: "kept",
+      TRELIO_SKILL_PROJECT_ID: "stale-project",
+      TRELIO_SKILL_CONNECTION_ID: "stale-connection",
+      TRELIO_SKILL_CONNECTION_CONFIG_JSON: "stale-config",
+    },
+  });
+
+  assert.equal(environment.SAFE_PARENT_VALUE, "kept");
+  assert.equal(environment.TRELIO_SKILL_COMPANY_ID, companyId);
+  assert.equal(environment.TRELIO_SKILL_MEMBER_ID, memberId);
+  assert.equal(environment.TRELIO_SKILL_CONNECTION_ID, undefined);
+  assert.equal(environment.TRELIO_SKILL_CONNECTION_CONFIG_JSON, undefined);
+  assert.equal(environment.TRELIO_SKILL_PROJECT_ID, undefined);
+
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact({
+      ...payload,
+      localIdentity: { ...payload.localIdentity, connectionId: artifactId },
+    }),
+    /некорректную runtime resolution/u,
+  );
 });
 
 test("skill host resolves on every run, verifies signed package, caches it and repairs tampering", {

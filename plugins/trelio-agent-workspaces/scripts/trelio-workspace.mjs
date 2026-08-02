@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.16";
+export const BRIDGE_VERSION = "1.6.17";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
 export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
@@ -2655,11 +2655,13 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
   return { runtimeDirectory: verifiedDirectory, cacheHit: false };
 };
 
-const normalizeResolvedSkillRuntimeArtifact = (payload) => {
+export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   const artifact = payload?.artifact;
-  // `null` is the canonical "skill has no company connection" value. The
-  // nullish fallback keeps a short compatibility window with backend releases
-  // that predate connection injection and omitted both fields.
+  // `localIdentity` is independent from a company connection starting with
+  // host v1.6.17. A browser-only runtime still needs the stable member scope
+  // for private local preferences even though it receives no connection ID or
+  // company config. The nullish fallback keeps compatibility with older
+  // connection-free runtime responses that omitted identity altogether.
   const localIdentity = payload?.localIdentity ?? null;
   const companyConnection = payload?.companyConnection ?? null;
   const connectionConfigJson = companyConnection === null
@@ -2688,7 +2690,10 @@ const normalizeResolvedSkillRuntimeArtifact = (payload) => {
         !UUID_PATTERN.test(String(localIdentity?.companyId || ""))
         || !UUID_PATTERN.test(String(localIdentity?.memberId || ""))
         || !SKILL_ID_PATTERN.test(String(localIdentity?.skillId || ""))
-        || !UUID_PATTERN.test(String(localIdentity?.connectionId || ""))
+        || (
+          localIdentity?.connectionId !== null
+          && !UUID_PATTERN.test(String(localIdentity?.connectionId || ""))
+        )
         || (
           localIdentity?.projectId !== null
           && !UUID_PATTERN.test(String(localIdentity?.projectId || ""))
@@ -2716,13 +2721,22 @@ const normalizeResolvedSkillRuntimeArtifact = (payload) => {
         ))
       )
     )
-    || (localIdentity === null) !== (companyConnection === null)
+    || (companyConnection !== null && localIdentity === null)
     || (
-      localIdentity !== null
+      companyConnection === null
+      && localIdentity !== null
+      && localIdentity.connectionId !== null
+    )
+    || (
+      companyConnection !== null
       && (
         localIdentity.skillId !== artifact?.skillId
         || localIdentity.connectionId !== companyConnection?.id
       )
+    )
+    || (
+      localIdentity !== null
+      && localIdentity.skillId !== artifact?.skillId
     )
   ) {
     throw new Error("Trelio вернул некорректную runtime resolution.");
@@ -2762,6 +2776,57 @@ const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   };
 };
 
+export const buildAgentSkillRuntimeEnvironment = ({
+  artifact,
+  runtimeDirectory,
+  executionContext,
+  inheritedEnvironment = process.env,
+}) => {
+  // Эти переменные являются доверенной границей package host. Удаляем
+  // одноимённые значения из родительского окружения, чтобы старый shell или
+  // вызывающая программа не могли подменить company identity/config. Затем
+  // добавляем только данные свежего live resolve для exact release.
+  const {
+    TRELIO_SKILL_ID: _staleSkillId,
+    TRELIO_SKILL_RUNTIME_VERSION: _staleRuntimeVersion,
+    TRELIO_SKILL_RUNTIME_ROOT: _staleRuntimeRoot,
+    TRELIO_SKILL_RELEASE_ID: _staleReleaseId,
+    TRELIO_SKILL_COMPANY_ID: _staleCompanyId,
+    TRELIO_SKILL_PROJECT_ID: _staleProjectId,
+    TRELIO_SKILL_MEMBER_ID: _staleMemberId,
+    TRELIO_SKILL_CONNECTION_ID: _staleConnectionId,
+    TRELIO_SKILL_CONNECTION_CONFIG_JSON: _staleConnectionConfig,
+    ...cleanEnvironment
+  } = inheritedEnvironment;
+  const connectionConfigJson = executionContext.companyConnection
+    ? JSON.stringify(executionContext.companyConnection.config)
+    : null;
+
+  return {
+    ...cleanEnvironment,
+    TRELIO_SKILL_ID: artifact.skillId,
+    TRELIO_SKILL_RUNTIME_VERSION: artifact.runtimeVersion,
+    TRELIO_SKILL_RUNTIME_ROOT: runtimeDirectory,
+    TRELIO_SKILL_RELEASE_ID: executionContext.releaseId,
+    TRELIO_SKILL_COMPANY_ID: executionContext.companyId,
+    ...(executionContext.projectId
+      ? { TRELIO_SKILL_PROJECT_ID: executionContext.projectId }
+      : {}),
+    ...(executionContext.localIdentity
+      ? { TRELIO_SKILL_MEMBER_ID: executionContext.localIdentity.memberId }
+      : {}),
+    // Connection-owned values stay all-or-nothing. A browser-only skill
+    // receives member identity but must not see stringified `null` config or a
+    // synthetic connection ID that could be mistaken for authority.
+    ...(executionContext.companyConnection
+      ? {
+          TRELIO_SKILL_CONNECTION_ID: executionContext.localIdentity.connectionId,
+          TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
+        }
+      : {}),
+  };
+};
+
 const runMaterializedAgentSkill = async ({
   artifact,
   runtimeDirectory,
@@ -2786,46 +2851,14 @@ const runMaterializedAgentSkill = async ({
       : [entrypointPath, ...runtimeArguments];
   }
 
-  // Эти переменные являются доверенной границей package host. Удаляем
-  // одноимённые значения из родительского окружения, чтобы старый shell или
-  // вызывающая программа не могли подменить company identity/config. Затем
-  // добавляем только данные свежего live resolve для exact release.
-  const {
-    TRELIO_SKILL_ID: _staleSkillId,
-    TRELIO_SKILL_RUNTIME_VERSION: _staleRuntimeVersion,
-    TRELIO_SKILL_RUNTIME_ROOT: _staleRuntimeRoot,
-    TRELIO_SKILL_RELEASE_ID: _staleReleaseId,
-    TRELIO_SKILL_COMPANY_ID: _staleCompanyId,
-    TRELIO_SKILL_PROJECT_ID: _staleProjectId,
-    TRELIO_SKILL_MEMBER_ID: _staleMemberId,
-    TRELIO_SKILL_CONNECTION_ID: _staleConnectionId,
-    TRELIO_SKILL_CONNECTION_CONFIG_JSON: _staleConnectionConfig,
-    ...inheritedEnvironment
-  } = process.env;
-  const connectionConfigJson = executionContext.companyConnection
-    ? JSON.stringify(executionContext.companyConnection.config)
-    : null;
   const exitCode = await new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd: runtimeDirectory,
-      env: {
-        ...inheritedEnvironment,
-        TRELIO_SKILL_ID: artifact.skillId,
-        TRELIO_SKILL_RUNTIME_VERSION: artifact.runtimeVersion,
-        TRELIO_SKILL_RUNTIME_ROOT: runtimeDirectory,
-        TRELIO_SKILL_RELEASE_ID: executionContext.releaseId,
-        TRELIO_SKILL_COMPANY_ID: executionContext.companyId,
-        ...(executionContext.projectId
-          ? { TRELIO_SKILL_PROJECT_ID: executionContext.projectId }
-          : {}),
-        ...(executionContext.localIdentity
-          ? {
-              TRELIO_SKILL_MEMBER_ID: executionContext.localIdentity.memberId,
-              TRELIO_SKILL_CONNECTION_ID: executionContext.localIdentity.connectionId,
-              TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
-            }
-          : {}),
-      },
+      env: buildAgentSkillRuntimeEnvironment({
+        artifact,
+        runtimeDirectory,
+        executionContext,
+      }),
       shell: false,
       stdio: "inherit",
     });

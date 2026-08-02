@@ -1,0 +1,4 @@
+interface:
+  display_name: "КонсультантПлюс"
+  short_description: "Поиск и сохранение правовых источников"
+  default_prompt: "Use $consultant-plus to research a legal question in ConsultantPlus and preserve the exact source when needed."
