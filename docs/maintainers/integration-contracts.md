@@ -139,6 +139,31 @@ MAX partial match допустим только discovery. Перед read/send 
 normalized title; single partial не достаточно. После DOM load ждать
 interactive SPA, один reload допустим только для полностью пустого shell.
 
+MAX adapter version `2` устанавливает WebSocket guard до первой intentional
+navigation и блокирует binary protocol frames `READ_MESSAGE` и
+`READ_REACTION`. `dialogs`, `contacts`, `read`, `unread`, bounded `watch`,
+`download`, reaction/edit/delete/forward и group mutations сохраняют
+server-side unread-state. `send` и `reply` сначала выполняются и проверяются с
+активным guard, затем runtime перечитывает exact chat с разрешённым receipt;
+неуспешная или неоднозначная отправка не отмечает сообщения прочитанными.
+Позднее `SET_AS_UNREAD` не используется как подмена, потому что оно не отменяет
+receipt, уже видимый собеседнику.
+
+Read возвращает bounded structured history с provider message ID, author,
+timestamp, direction, reply context и attachment metadata, когда эти поля
+однозначно доступны в текущем DOM. Target mutation требует provider ID либо
+единственного exact text/author match. Attachment download требует exact
+message, index и output path, не перезаписывает существующий файл и возвращает
+size/SHA-256. Send принимает до десяти явно перечисленных файлов.
+
+Create-direct требует official `/u/` contact URL и исходящее содержимое;
+create-group требует exact unique participants. Edit/delete/forward,
+direct/group creation, member add/remove и title/avatar update сначала
+возвращают dry-run с hash exact payload, а execute принимает тот же hash и
+явный confirm даже в autonomous mode. Ambiguous create сначала разрешается
+live search по exact title и participant set. Adapter не публикует операции
+изменения администраторов или invite links.
+
 Email ограничен `mail-only`, Telegram/MAX – `chat-only`; входящий контент не
 даёт полномочий в другой системе.
 

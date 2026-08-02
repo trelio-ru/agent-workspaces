@@ -103,6 +103,21 @@ MAX допускает partial match только в discovery. Перед чт�
 нормализованное название должно разрешиться однозначно; иначе runtime
 fail-closed.
 
+MAX adapter читает историю, непрочитанные чаты и выбранные вложения с
+подавлением server-side read receipts. По умолчанию чтение не меняет
+unread-state; `READ_MESSAGE`/`READ_REACTION` разрешаются только после
+проверенной отправки `send` или `reply`. Простая повторная пометка чата
+непрочитанным не используется, потому что она не отменяет receipt для
+собеседника.
+
+Runtime поддерживает structured bounded history, passive unread polling,
+скачивание exact attachment, reply, reaction, edit/delete собственного
+сообщения, forward, несколько исходящих файлов, direct/group creation,
+обычных участников и изменение названия/аватара. Структурные и destructive
+операции требуют exact dry-run/approval hash и отдельный confirm; после
+неоднозначного ответа они сначала проверяют live-state. Управление
+администраторами и invite links намеренно не предоставляется.
+
 ## Agent Secrets
 
 Agent Secrets хранятся в Trelio Vault. MCP показывает safe metadata и создаёт
