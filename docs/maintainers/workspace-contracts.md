@@ -66,10 +66,17 @@ Submit делает heartbeat, собирает только inspected delta и 
 Manual comment отделён от audit accepted Run. Для смысловой task-дельты агент:
 
 1. читает `get_task_comment_proposal_context`;
-2. строит одну свежую сводку после last published coverage;
-3. заменяет current draft через `render_task_comment_proposal`;
-4. не публикует автоматически и не блокирует Run;
-5. в text-only client вызывает `publish_task_comment_proposal` только после
+2. получает bounded snapshot фактически опубликованных комментариев Trelio и
+   передаёт его exact hash при render;
+3. сравнивает net-result только с public snapshot: current draft всегда
+   unpublished и не может быть предметом публичного «исправления»;
+4. заменяет current draft через `render_task_comment_proposal`, только когда
+   после исключения отменённой внутренней работы остаётся смысловая дельта;
+5. по явному решению «комментарий не нужен» вызывает
+   `dismiss_task_comment_proposal`: task comment/attachment не создаётся, а
+   отдельная reviewed boundary не даёт rejected draft всплыть снова;
+6. не публикует автоматически и не блокирует Run;
+7. в text-only client вызывает `publish_task_comment_proposal` только после
    явной команды.
 
 `create_comment` не используется для proposal. После accepted `filePaths`

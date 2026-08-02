@@ -975,6 +975,9 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /render_task_comment_proposal/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /publicCommentsSnapshot/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /dismiss_task_comment_proposal/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /private\/unpublished/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /не блокируй handoff\/submit из-за manual comment/u,
@@ -1713,7 +1716,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.17");
+  assert.equal(BRIDGE_VERSION, "1.6.18");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1737,6 +1740,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     "AGENT_SKILL_RELEASE_CHANGED",
     "get_task_comment_proposal_context",
     "render_task_comment_proposal",
+    "dismiss_task_comment_proposal",
     "publish_task_comment_proposal",
     "create_comment",
     "get_task",
@@ -1932,8 +1936,12 @@ test("workspace skill keeps comment proposals non-blocking and handoff comment-f
   assert.match(skillMarkdown, /Do not publish automatically/u);
   assert.match(skillMarkdown, /get_task_comment_proposal_context/u);
   assert.match(skillMarkdown, /render_task_comment_proposal/u);
+  assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
-  assert.match(skillMarkdown, /lastPublished\.coverageThroughAt/u);
+  assert.match(skillMarkdown, /publicCommentsSnapshot/u);
+  assert.match(skillMarkdown, /visibility=unpublished/u);
+  assert.match(skillMarkdown, /snapshotSha256/u);
+  assert.match(skillMarkdown, /no public semantic delta/u);
   assert.match(skillMarkdown, /Never use `create_comment` for this proposal/u);
   assert.match(skillMarkdown, /or pause work because the proposal remains\s+unpublished/u);
   assert.match(skillMarkdown, /After acceptance/u);

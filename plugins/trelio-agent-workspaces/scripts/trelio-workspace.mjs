@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.17";
+export const BRIDGE_VERSION = "1.6.18";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
 export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
@@ -57,7 +57,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   "- Сохраняй источники в `sources/`, рабочие материалы в `work/`, долговечные результаты в `artifacts/`; следуй `WORKLOG.md` для журнала.",
   "- Перед блокирующим вопросом успешно сохрани переносимый checkpoint `blocker` с exact `--question` и `--next-action`, затем спрашивай человека.",
-  "- Для смысловых task-изменений получи `get_task_comment_proposal_context` и замени draft через `render_task_comment_proposal`. Не публикуй автоматически, не используй `create_comment` и не блокируй handoff/submit из-за manual comment; без MCP Apps вызывай `publish_task_comment_proposal` только по явной команде. После accepted передавай в `filePaths` только важные итоговые и полезные для продолжения файлы — не все workspace-файлы; attachments создаются только при публикации человеком.",
+  "- Для смысловых task-изменений получи `get_task_comment_proposal_context`, перечитай `publicCommentsSnapshot` и передай его exact hash в `render_task_comment_proposal`. Сравнивай итог только с фактически опубликованными комментариями: `currentDraft` всегда private/unpublished, поэтому не исправляй и не опровергай его как публичный текст. Если пользователь явно сказал, что предложение не нужно, вызови `dismiss_task_comment_proposal`; при нулевой net public delta не создавай корректирующий draft. Не публикуй автоматически, не используй `create_comment` и не блокируй handoff/submit из-за manual comment; без MCP Apps вызывай `publish_task_comment_proposal` или `dismiss_task_comment_proposal` только по явной команде. После accepted передавай в `filePaths` только важные итоговые и полезные для продолжения файлы — не все workspace-файлы; attachments создаются только при публикации человеком.",
   "- `get_task` показывает shared и только твои personal controls. Это date-only проверки, не дедлайны: дата не уведомляет. Используй `create_task_control` / `update_task_control` / `clear_task_control` только при конкретной необходимости; не расширяй personal в shared без полномочия и не снимай контроль только из-за завершения Run или смены статуса. Shared changes видны в task audit, personal остаются приватными.",
   "- Перед submit создай checkpoint `handoff` с результатом, подтверждениями, материалами, вопросами и одним следующим шагом. Для task scope передай semantic `--task-outcome`, не выбирая по названию/code статуса: обычно `work_completed`; `review_passed` только для успешной проверки kind `review`; `direct_completion` только по явному разрешению/правилу или self-created task; при вопросах/частичном результате `no_status_change`.",
   "- Сначала сообщай человеку итог и требуемое решение, не SHA/UUID/Run status. Отправляй candidate только через bridge: Trelio примет его при актуальном base head; при конфликте начни новый Run и перенеси изменения осознанно.",
