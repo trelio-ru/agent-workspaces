@@ -15,14 +15,7 @@ const memberId = "22222222-2222-4222-8222-222222222222";
 
 const readInstructionBundle = async () => {
   const skillDirectory = path.resolve(testDirectory, "..");
-  const files = [
-    "SKILL.md",
-    "references/browser-surfaces.md",
-    "references/research-and-export.md",
-  ];
-  return (await Promise.all(files.map((relativePath) => (
-    readFile(path.join(skillDirectory, relativePath), "utf8")
-  )))).join("\n\n");
+  return readFile(path.join(skillDirectory, "SKILL.md"), "utf8");
 };
 
 const runRuntime = async (configHome, args, extraEnvironment = {}) => {
