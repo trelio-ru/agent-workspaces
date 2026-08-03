@@ -54,6 +54,40 @@ Security tests должны проверять semantic invariant/tool/error cod
 При network ambiguity сначала read-back remote ref/release; side-effect нельзя
 слепо повторять.
 
+## Публикация internal runtime через Codex in-app Browser
+
+Новый signed runtime публикуется в `/internal-admin/skills/` через встроенный
+Browser Codex с уже авторизованной сессией администратора. Рабочая
+последовательность:
+
+1. Собрать `.skillpkg`, проверить его SHA-256 и держать по точному абсолютному
+   локальному пути. В форме exact навыка заполнить новую версию, полную
+   инструкцию, minimum host и краткое описание изменений; для нового пакета
+   снять `Если новый файл не выбран, оставить текущий runtime`.
+2. После свежего DOM snapshot разрешить exact `input[type="file"]` внутри
+   article навыка. Сначала создать ожидание
+   `tab.playwright.waitForEvent("filechooser")`, затем нажать input и передать
+   chooser-у абсолютный путь через `setFiles(...)`.
+3. Проверять выбор файла по непустому `input.value`: встроенный Browser
+   возвращает значение вида
+   `C:\\fakepath\\<точное-имя-пакета>.skillpkg`. Read-only DOM scope может
+   вернуть `input.files` как `null` или пустой список даже после успешного
+   выбора, поэтому `files.length`, `Array.from(files)` и `File.size` здесь не
+   являются надёжной проверкой. Если `input.value` пуст или basename не
+   совпадает, публикацию не запускать.
+4. Перед submit ещё раз проверить version, instruction marker, minimum host,
+   выключенный reuse, summary и basename пакета. После клика дождаться heading
+   новой версии и сообщения `Версия навыка ... опубликована`.
+5. Через `list_agent_skills` перечитать live skill и проверить skill/runtime
+   version, новый release ID, package SHA-256, size, minimum host и manifest.
+   Затем непосредственно перед smoke-командой вызвать `get_agent_skill` и
+   запустить только возвращённый exact signed runtime. Для runtime с Agent
+   Secret использовать новый одноразовый checkout текущего активного Run.
+
+Обычная настройка Chrome extension `Allow access to file URLs` не относится к
+этому flow: публикация выполняется в отдельном профиле Codex in-app Browser, а
+локальный файл передаётся поддерживаемым file chooser API.
+
 ## Release notes
 
 Notes на русском языке и только в таком порядке:
