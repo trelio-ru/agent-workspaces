@@ -66,11 +66,12 @@
   запрос. Это не разрешает входить в ту же защищённую систему другим путём или
   ослаблять ACL. Native Trelio MCP/workspace operations остаются штатным
   workflow.
-- Generic-запрос на подключение внешней интеграции, включая Google Calendar,
-  сначала разрешает Trelio company context и проверяет `list_agent_skills`.
-  До этой проверки нельзя устанавливать, авторизовывать или вызывать
-  пересекающийся native/plugin connector; при нескольких компаниях нужно
-  спросить exact company, а не сканировать все каталоги.
+- Generic-запрос на подключение внешней интеграции сначала разрешает Trelio
+  company context и проверяет `list_agent_skills`. До этой проверки нельзя
+  устанавливать, авторизовывать или вызывать пересекающийся native/plugin
+  connector; при нескольких компаниях нужно спросить exact company, а не
+  сканировать все каталоги. Если подходящего навыка нет, пользовательский навык
+  или коннектор разрешён обычным fallback-контрактом.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
 - Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
@@ -78,18 +79,6 @@
   platform-native установку и ждёт явного подтверждения. Глобальный
   `trelio-workspace` в `PATH` не требуется: используется bundled script exact
   загруженной версии плагина.
-- Google Calendar получает публичный Desktop OAuth client ID платформы в safe
-  catalog config, а обязательный для Google token exchange client secret –
-  только в no-store runtime resolve exact подписанного package. Secret нельзя
-  печатать, сохранять локально или передавать через MCP/argv/workspace/log.
-  Каждый alias хранит refresh token и write policy локально в отдельном
-  member/company/connection namespace; purpose
-  связывает exact alias + calendar ID, label до 120 символов и свободное
-  description до 2 000 символов. Description – только routing context, а
-  mutation разрешена лишь для live `writer`/`owner` через preview/hash/ETag.
-  После нового подключения с несколькими календарями агент сразу предлагает
-  необязательную настройку purpose только для нужных пользователю календарей,
-  не дублирует уже сохранённые mappings и явно помечает read-only доступ.
 - MAX browser adapter по умолчанию блокирует server-side `READ_MESSAGE` и
   `READ_REACTION` при discovery, чтении, unread polling, download и любых
   действиях, которые не являются ответом. Read receipt разрешается только

@@ -15,11 +15,12 @@
 Always-on `initialize.instructions`, runtime `AGENTS.md`,
 `trelio-skill-catalog` и worker skill должны сохранять одно semantic ядро:
 
-0. Generic-запрос на подключение или использование внешней интеграции, включая
-   Google Calendar, сначала разрешает Trelio company context и проверяет
-   каталог. До этого нельзя устанавливать, авторизовывать или вызывать
-   пересекающийся native/plugin connector. При нескольких компаниях нужно
-   спросить exact company, а не сканировать чужие каталоги.
+0. Generic-запрос на подключение или использование внешней интеграции сначала
+   разрешает Trelio company context и проверяет каталог. До этого нельзя
+   устанавливать, авторизовывать или вызывать пересекающийся native/plugin
+   connector. При нескольких компаниях нужно спросить exact company, а не
+   сканировать чужие каталоги. При отсутствии подходящего навыка применяется
+   обычный personal-connector fallback.
 1. В resolved company/project context перед corporate data/connected
    service/external system вызвать `list_agent_skills`.
 2. Выбрать назначенный skill по purpose, не по hardcoded ID.

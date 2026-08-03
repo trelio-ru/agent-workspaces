@@ -40,7 +40,6 @@ jobs:
           plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
-          platform-skills/google-calendar/tests/trelio-google-calendar.test.mjs
 
   windows-acl:
     name: Windows private ACL
