@@ -131,8 +131,15 @@ Email – TLS IMAP/SMTP. Gmail app password link официальный, visual 
 Telegram login – browser-first code или in-memory QR; phone/code/2FA/session/
 api_hash не попадают в MCP/argv/workspace/log. 2FA hint bounded и HTML-escaped.
 Read/search возвращают bounded link entities и one-level reply context без raw
-peer/access hash. Перед исходящим сообщением читать последние 5–10
-содержательных реплик exact dialog и reply target; сохранять tone/ты-вы,
+peer/access hash. `export` и совместимый alias `daily-export` читают точный
+полуоткрытый период `since <= message.date < until`: naive границы получают
+явную IANA timezone (`Europe/Moscow` по умолчанию), а `until` передаётся
+Telethon как server-side history cursor. Массовое чтение требует exact
+повторяемых `--chat` либо bounded `--all-dialogs`, фильтра broad chat type,
+per-chat/scan/global-message/JSON-byte limits и явных incomplete reasons для
+каждого достигнутого ограничения. Вложения остаются только метаданными;
+структурированные ссылки opt-in. Перед исходящим сообщением читать последние
+5–10 содержательных реплик exact dialog и reply target; сохранять tone/ты-вы,
 explicit instruction имеет приоритет.
 
 MAX partial match допустим только discovery. Перед read/send нужен один exact

@@ -28,6 +28,44 @@ class TrelioTelegramTests(unittest.TestCase):
             connection_id="33333333-3333-3333-3333-333333333333",
         )
 
+    def export_args(self, **overrides):
+        """Build a complete export namespace while keeping each test focused."""
+
+        values = {
+            "chat": ["work_chat"],
+            "all_dialogs": False,
+            "since": "2026-07-27",
+            "until": "2026-08-03",
+            "timezone": "Europe/Moscow",
+            "chat_type": "any",
+            "dialog_limit": 500,
+            "per_chat_limit": 2_000,
+            "scan_limit": 10_000,
+            "total_message_limit": 10_000,
+            "max_output_bytes": 1_048_576,
+            "chronological": False,
+            "include_links": False,
+            "json": True,
+        }
+        values.update(overrides)
+        return SimpleNamespace(**values)
+
+    def telegram_message(self, message_id, date, text="Сообщение"):
+        """Return the allowlisted message shape used by export regressions."""
+
+        return SimpleNamespace(
+            id=message_id,
+            date=date,
+            out=False,
+            sender=None,
+            message=text,
+            entities=[],
+            media=None,
+            file=None,
+            reply_to_msg_id=None,
+            reply_to=None,
+        )
+
     def test_default_policy_requires_confirmation(self):
         with mock.patch.object(MODULE, "policy_path", return_value=pathlib.Path("/missing/policy.json")):
             self.assertEqual(MODULE.load_policy(self.identity()), {"sendMode": "confirm"})
@@ -685,6 +723,261 @@ class TrelioTelegramTests(unittest.TestCase):
         self.assertIsNone(reply["chat"])
         self.assertNotIn("peer", json.dumps(reply))
         self.assertNotIn("RPC", json.dumps(reply))
+
+    def test_export_parser_supports_alias_and_requires_one_selection_mode(self):
+        base = [
+            "--company-id",
+            self.identity().company_id,
+            "--member-id",
+            self.identity().member_id,
+            "--connection-id",
+            self.identity().connection_id,
+            "--api-id",
+            "12345",
+        ]
+        for command in ("export", "daily-export"):
+            args = MODULE.build_parser().parse_args(
+                base
+                + [
+                    command,
+                    "--chat",
+                    "finance",
+                    "--chat",
+                    "legal",
+                    "--since",
+                    "2026-07-27",
+                    "--until",
+                    "2026-08-03",
+                    "--chronological",
+                    "--json",
+                ]
+            )
+            self.assertEqual(args.command, command)
+            self.assertEqual(args.chat, ["finance", "legal"])
+            self.assertTrue(args.chronological)
+
+        with self.assertRaises(SystemExit):
+            MODULE.build_parser().parse_args(
+                base
+                + [
+                    "export",
+                    "--since",
+                    "2026-07-27",
+                    "--until",
+                    "2026-08-03",
+                ]
+            )
+
+    def test_export_period_uses_moscow_for_naive_boundaries(self):
+        zone, since, until = MODULE.export_period(self.export_args())
+
+        self.assertEqual(str(zone), "Europe/Moscow")
+        self.assertEqual(since.isoformat(), "2026-07-26T21:00:00+00:00")
+        self.assertEqual(until.isoformat(), "2026-08-02T21:00:00+00:00")
+        with self.assertRaisesRegex(MODULE.TelegramRuntimeError, "earlier"):
+            MODULE.export_period(
+                self.export_args(since="2026-08-03", until="2026-08-03")
+            )
+
+    def test_export_is_half_open_uses_until_cursor_and_can_be_chronological(self):
+        class Channel:
+            id = 42
+            title = "Финансы"
+            username = "finance"
+            megagroup = True
+            broadcast = False
+
+        entity = Channel()
+        messages = [
+            self.telegram_message(4, datetime(2026, 8, 2, 21, 0, tzinfo=timezone.utc)),
+            self.telegram_message(3, datetime(2026, 8, 2, 12, 0, tzinfo=timezone.utc), "Позже"),
+            self.telegram_message(
+                2,
+                datetime(2026, 7, 26, 21, 0, tzinfo=timezone.utc),
+                "На границе",
+            ),
+            self.telegram_message(1, datetime(2026, 7, 26, 20, 59, tzinfo=timezone.utc)),
+        ]
+
+        class FakeClient:
+            def __init__(self):
+                self.disconnect = mock.AsyncMock()
+                self.iter_messages_kwargs = None
+
+            async def get_entity(self, reference):
+                self.reference = reference
+                return entity
+
+            def iter_messages(self, selected, **kwargs):
+                self.iter_messages_kwargs = kwargs
+
+                async def iterate():
+                    for message in messages:
+                        yield message
+
+                return iterate()
+
+        client = FakeClient()
+        args = self.export_args(chronological=True)
+        with mock.patch.object(MODULE, "build_client", return_value=client), mock.patch.object(
+            MODULE,
+            "ensure_authorized",
+            new=mock.AsyncMock(),
+        ):
+            result = asyncio.run(MODULE.command_export_async(args, self.identity()))
+
+        self.assertEqual(
+            client.iter_messages_kwargs["offset_date"].isoformat(),
+            "2026-08-02T21:00:00+00:00",
+        )
+        self.assertIsNone(client.iter_messages_kwargs["limit"])
+        self.assertEqual([item["id"] for item in result["chats"][0]["messages"]], [2, 3])
+        self.assertEqual(result["message_count"], 2)
+        self.assertEqual(result["scanned_count"], 4)
+        self.assertTrue(result["chats"][0]["stopped_older_than_since"])
+        self.assertFalse(result["chats"][0]["incomplete"])
+        self.assertEqual(
+            result["period"]["semantics"],
+            "since <= message.date < until",
+        )
+        client.disconnect.assert_awaited_once()
+
+    def test_export_reports_per_chat_and_scan_limits_as_incomplete(self):
+        class Chat:
+            id = 77
+            title = "Юристы"
+            username = None
+
+        entity = Chat()
+        messages = [
+            self.telegram_message(
+                message_id,
+                datetime(2026, 7, 30, 12, message_id, tzinfo=timezone.utc),
+            )
+            for message_id in (3, 2, 1)
+        ]
+
+        class FakeClient:
+            disconnect = mock.AsyncMock()
+
+            async def get_entity(self, _reference):
+                return entity
+
+            def iter_messages(self, _selected, **_kwargs):
+                async def iterate():
+                    for message in messages:
+                        yield message
+
+                return iterate()
+
+        for limit_name, expected_reason in (
+            ("per_chat_limit", "per_chat_limit"),
+            ("scan_limit", "scan_limit"),
+        ):
+            client = FakeClient()
+            overrides = {limit_name: 2}
+            with mock.patch.object(MODULE, "build_client", return_value=client), mock.patch.object(
+                MODULE,
+                "ensure_authorized",
+                new=mock.AsyncMock(),
+            ):
+                result = asyncio.run(
+                    MODULE.command_export_async(
+                        self.export_args(**overrides),
+                        self.identity(),
+                    )
+                )
+
+            chat = result["chats"][0]
+            self.assertTrue(chat["incomplete"])
+            self.assertIn(expected_reason, chat["incomplete_reasons"])
+            self.assertEqual(chat["message_count"], 2)
+            self.assertEqual(len(result["incomplete_chats"]), 1)
+
+    def test_export_has_global_message_and_output_byte_caps(self):
+        class Channel:
+            def __init__(self, entity_id, title):
+                self.id = entity_id
+                self.title = title
+                self.username = None
+                self.megagroup = True
+                self.broadcast = False
+
+        first = Channel(1, "Первый")
+        second = Channel(2, "Второй")
+        large_messages = [
+            self.telegram_message(
+                message_id,
+                datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
+                "я" * MODULE.MAX_READ_TEXT_CHARS,
+            )
+            for message_id in range(1, 45)
+        ]
+
+        class FakeClient:
+            def __init__(self):
+                self.disconnect = mock.AsyncMock()
+
+            def iter_dialogs(self, **_kwargs):
+                async def iterate():
+                    yield SimpleNamespace(entity=first)
+                    yield SimpleNamespace(entity=second)
+
+                return iterate()
+
+            def iter_messages(self, entity, **_kwargs):
+                async def iterate():
+                    for message in large_messages if entity is first else []:
+                        yield message
+
+                return iterate()
+
+        client = FakeClient()
+        args = self.export_args(
+            chat=None,
+            all_dialogs=True,
+            total_message_limit=40,
+            max_output_bytes=1_048_576,
+        )
+        with mock.patch.object(MODULE, "build_client", return_value=client), mock.patch.object(
+            MODULE,
+            "ensure_authorized",
+            new=mock.AsyncMock(),
+        ):
+            result = asyncio.run(MODULE.command_export_async(args, self.identity()))
+
+        self.assertTrue(result["hit_output_byte_limit"])
+        self.assertTrue(result["hit_total_message_limit"])
+        self.assertIn("output_byte_limit_reached", result["warnings"])
+        self.assertIn("total_message_limit_reached", result["warnings"])
+        self.assertLess(result["message_count"], 40)
+        self.assertLessEqual(
+            MODULE.compact_json_bytes({"ok": True, **result}),
+            args.max_output_bytes,
+        )
+        self.assertNotIn("linkEntities", result["chats"][0]["messages"][0])
+        self.assertTrue(result["chats"][0]["incomplete"])
+
+    def test_export_strips_only_structured_links_when_not_requested(self):
+        payload = {
+            "text": "https://example.com",
+            "linkEntities": [{"url": "https://example.com"}],
+            "linkEntitiesTruncated": False,
+            "replyContext": {
+                "text": "источник",
+                "linkEntities": [{"url": "https://docs.example"}],
+                "linkEntitiesTruncated": False,
+                "quoteLinkEntities": [{"url": "https://docs.example"}],
+                "quoteLinkEntitiesTruncated": False,
+            },
+        }
+
+        stripped = MODULE.export_message_without_links(payload)
+
+        self.assertEqual(stripped["text"], "https://example.com")
+        self.assertEqual(stripped["replyContext"]["text"], "источник")
+        self.assertNotIn("linkEntities", stripped)
+        self.assertNotIn("quoteLinkEntities", stripped["replyContext"])
 
 
 if __name__ == "__main__":

@@ -28,8 +28,10 @@ import urllib.parse
 import venv
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 SKILL_ID = "telegram-mtproto"
@@ -49,6 +51,18 @@ MAX_LINK_ENTITIES = 32
 MAX_LINK_TEXT_CHARS = 512
 MAX_LINK_URL_CHARS = 2_048
 MAX_REPLY_RESOLUTION_CONCURRENCY = 8
+# Period exports can cover many dialogs, so they need an aggregate ceiling in
+# addition to the per-dialog history limits. The reserved metadata allowance
+# keeps the final JSON wrapper, chat summaries and truncation warnings inside
+# the advertised byte budget without retaining an unbounded message array.
+DEFAULT_EXPORT_TIMEZONE = "Europe/Moscow"
+DEFAULT_EXPORT_DIALOG_LIMIT = 500
+DEFAULT_EXPORT_PER_CHAT_LIMIT = 2_000
+DEFAULT_EXPORT_SCAN_LIMIT = 10_000
+DEFAULT_EXPORT_TOTAL_MESSAGE_LIMIT = 10_000
+DEFAULT_EXPORT_MAX_OUTPUT_BYTES = 8 * 1_024 * 1_024
+MAX_EXPORT_OUTPUT_BYTES = 16 * 1_024 * 1_024
+EXPORT_METADATA_RESERVE_BYTES = 1 * 1_024 * 1_024
 DEFAULT_QR_LOGIN_TIMEOUT_SECONDS = 300
 DEFAULT_QR_REFRESH_SECONDS = 25
 MAX_PROMPT_BODY_BYTES = 4_096
@@ -1464,6 +1478,365 @@ async def resolve_entity(client: Any, reference: str):
         raise TelegramRuntimeError(f"Cannot resolve Telegram chat {reference!r}.") from error
 
 
+def parse_export_boundary(value: str, zone: ZoneInfo, label: str) -> datetime:
+    """Parse one CLI boundary and normalize a naive value in the chosen zone."""
+
+    normalized = value.strip()
+    if normalized.endswith(("Z", "z")):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise TelegramRuntimeError(
+            f"{label} must be an ISO 8601 date or datetime."
+        ) from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=zone)
+    return parsed.astimezone(timezone.utc)
+
+
+def export_period(args: argparse.Namespace) -> tuple[ZoneInfo, datetime, datetime]:
+    """Resolve a strict half-open export interval with an explicit IANA zone."""
+
+    try:
+        zone = ZoneInfo(args.timezone)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise TelegramRuntimeError(
+            f"Unknown IANA timezone {args.timezone!r}."
+        ) from error
+    since = parse_export_boundary(args.since, zone, "--since")
+    until = parse_export_boundary(args.until, zone, "--until")
+    if since >= until:
+        raise TelegramRuntimeError("--since must be earlier than --until.")
+    return zone, since, until
+
+
+def telegram_entity_type(entity: Any) -> str:
+    """Classify only the broad chat kind needed by the export filter."""
+
+    if bool(getattr(entity, "bot", False)):
+        return "bot"
+    class_name = type(entity).__name__
+    if class_name == "User" or hasattr(entity, "first_name"):
+        return "user"
+    if class_name == "Chat" or bool(getattr(entity, "megagroup", False)):
+        return "group"
+    if class_name == "Channel" or bool(getattr(entity, "broadcast", False)):
+        return "channel"
+    # Telegram dialog entities are normally one of the classes above. An
+    # unknown future peer is excluded from typed exports instead of being
+    # guessed from its raw MTProto structure.
+    return "unknown"
+
+
+def export_message_without_links(message: dict[str, Any]) -> dict[str, Any]:
+    """Remove normalized link metadata while retaining safe message text."""
+
+    for key in ("linkEntities", "linkEntitiesTruncated"):
+        message.pop(key, None)
+    reply = message.get("replyContext")
+    if isinstance(reply, dict):
+        for key in (
+            "linkEntities",
+            "linkEntitiesTruncated",
+            "quoteLinkEntities",
+            "quoteLinkEntitiesTruncated",
+        ):
+            reply.pop(key, None)
+    return message
+
+
+def compact_json_bytes(value: Any) -> int:
+    """Measure the UTF-8 bytes used by the compact machine-readable output."""
+
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def mark_export_chat_incomplete(chat: dict[str, Any], reason: str) -> None:
+    """Add one stable incompleteness reason without duplicating warnings."""
+
+    reasons = chat["incomplete_reasons"]
+    if reason not in reasons:
+        reasons.append(reason)
+    chat["incomplete"] = True
+
+
+def rebuild_export_summary(result: dict[str, Any]) -> None:
+    """Recompute duplicated aggregate counters after any output truncation."""
+
+    chats = result["chats"]
+    message_count = sum(len(chat["messages"]) for chat in chats)
+    scanned_count = sum(chat["scanned_count"] for chat in chats)
+    incomplete = [
+        {"chat": chat["chat"], "reasons": list(chat["incomplete_reasons"])}
+        for chat in chats
+        if chat["incomplete"]
+    ]
+    result["message_count"] = message_count
+    result["scanned_count"] = scanned_count
+    result["hit_per_chat_limit"] = any(chat["hit_per_chat_limit"] for chat in chats)
+    result["hit_scan_limit"] = any(chat["hit_scan_limit"] for chat in chats)
+    result["incomplete_chats"] = incomplete
+    result["totals"].update({
+        "chats_selected": len(chats),
+        "chats_completed": len(chats) - len(incomplete),
+        "messages": message_count,
+        "scanned_messages": scanned_count,
+    })
+
+
+def enforce_export_output_limit(result: dict[str, Any], max_output_bytes: int) -> None:
+    """Keep even unusually large chat metadata inside the promised byte cap.
+
+    The streaming budget already reserves space for metadata, so this is a
+    final fail-safe. It trims only the newest retained suffix of later chat
+    result arrays and records that loss explicitly.
+    """
+
+    wrapped = {"ok": True, **result}
+    if compact_json_bytes(wrapped) <= max_output_bytes:
+        return
+
+    result["hit_output_byte_limit"] = True
+    warning = "output_byte_limit_reached"
+    if warning not in result["warnings"]:
+        result["warnings"].append(warning)
+
+    for chat in reversed(result["chats"]):
+        messages = chat["messages"]
+        while messages and compact_json_bytes({"ok": True, **result}) > max_output_bytes:
+            # Removing in moderate chunks avoids repeatedly serializing a
+            # multi-megabyte object while still preserving most of the page.
+            remove_count = max(1, min(len(messages), len(messages) // 8))
+            del messages[-remove_count:]
+            mark_export_chat_incomplete(chat, "output_byte_limit")
+            chat["message_count"] = len(messages)
+            rebuild_export_summary(result)
+        if compact_json_bytes({"ok": True, **result}) <= max_output_bytes:
+            return
+
+    raise TelegramRuntimeError(
+        "Export metadata exceeds --max-output-bytes; narrow the dialog selection."
+    )
+
+
+async def export_targets(
+    client: Any,
+    args: argparse.Namespace,
+) -> tuple[list[tuple[Any, str | None]], int, bool, list[str]]:
+    """Resolve exact chats or a bounded dialog page without raw peer dumps."""
+
+    targets: list[tuple[Any, str | None]] = []
+    warnings: list[str] = []
+    seen: set[tuple[str, int | str | None]] = set()
+    dialogs_scanned = 0
+    hit_dialog_limit = False
+
+    if args.chat:
+        for reference in args.chat:
+            entity = await resolve_entity(client, reference)
+            entity_type = telegram_entity_type(entity)
+            if args.chat_type != "any" and entity_type != args.chat_type:
+                warnings.append(f"chat_type_mismatch:{reference}")
+                continue
+            public = public_entity(entity)
+            identity = (entity_type, public["id"] or public["username"] or public["title"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            targets.append((entity, reference))
+        return targets, dialogs_scanned, hit_dialog_limit, warnings
+
+    async for dialog in client.iter_dialogs(limit=args.dialog_limit + 1):
+        dialogs_scanned += 1
+        if dialogs_scanned > args.dialog_limit:
+            hit_dialog_limit = True
+            dialogs_scanned = args.dialog_limit
+            break
+        entity = dialog.entity
+        entity_type = telegram_entity_type(entity)
+        if args.chat_type != "any" and entity_type != args.chat_type:
+            continue
+        public = public_entity(entity)
+        identity = (entity_type, public["id"] or public["username"] or public["title"])
+        if identity in seen:
+            continue
+        seen.add(identity)
+        targets.append((entity, None))
+
+    if hit_dialog_limit:
+        warnings.append("dialog_limit_reached")
+    return targets, dialogs_scanned, hit_dialog_limit, warnings
+
+
+async def command_export_async(args: argparse.Namespace, identity: Identity) -> dict[str, Any]:
+    """Export a bounded, explicit half-open period from selected Telegram chats."""
+
+    zone, since, until = export_period(args)
+    client = build_client(args, identity)
+    await ensure_authorized(client)
+    try:
+        targets, dialogs_scanned, hit_dialog_limit, warnings = await export_targets(
+            client,
+            args,
+        )
+        message_budget = max(
+            0,
+            args.max_output_bytes
+            - min(EXPORT_METADATA_RESERVE_BYTES, args.max_output_bytes // 2),
+        )
+        message_bytes = 0
+        retained_total = 0
+        hit_total_message_limit = False
+        hit_output_byte_limit = False
+        chats: list[dict[str, Any]] = []
+
+        for entity, reference in targets:
+            chat_result: dict[str, Any] = {
+                "chat": public_entity(entity),
+                "chat_type": telegram_entity_type(entity),
+                "reference": reference,
+                "message_count": 0,
+                "scanned_count": 0,
+                "hit_per_chat_limit": False,
+                "hit_scan_limit": False,
+                "stopped_older_than_since": False,
+                "history_exhausted": False,
+                "incomplete": False,
+                "incomplete_reasons": [],
+                "warnings": [],
+                "messages": [],
+            }
+            chats.append(chat_result)
+
+            if retained_total >= args.total_message_limit:
+                hit_total_message_limit = True
+                mark_export_chat_incomplete(chat_result, "total_message_limit")
+                continue
+            if message_bytes >= message_budget:
+                hit_output_byte_limit = True
+                mark_export_chat_incomplete(chat_result, "output_byte_limit")
+                continue
+
+            raw_messages: list[Any] = []
+            try:
+                async for message in client.iter_messages(
+                    entity,
+                    limit=None,
+                    offset_date=until,
+                ):
+                    if chat_result["scanned_count"] >= args.scan_limit:
+                        chat_result["hit_scan_limit"] = True
+                        mark_export_chat_incomplete(chat_result, "scan_limit")
+                        break
+                    chat_result["scanned_count"] += 1
+
+                    message_date = getattr(message, "date", None)
+                    if not isinstance(message_date, datetime):
+                        if "message_without_date" not in chat_result["warnings"]:
+                            chat_result["warnings"].append("message_without_date")
+                        mark_export_chat_incomplete(chat_result, "message_without_date")
+                        continue
+                    if message_date.tzinfo is None:
+                        message_date = message_date.replace(tzinfo=timezone.utc)
+                    message_date = message_date.astimezone(timezone.utc)
+                    if message_date >= until:
+                        continue
+                    if message_date < since:
+                        chat_result["stopped_older_than_since"] = True
+                        break
+                    if len(raw_messages) >= args.per_chat_limit:
+                        chat_result["hit_per_chat_limit"] = True
+                        mark_export_chat_incomplete(chat_result, "per_chat_limit")
+                        break
+                    if retained_total + len(raw_messages) >= args.total_message_limit:
+                        hit_total_message_limit = True
+                        mark_export_chat_incomplete(chat_result, "total_message_limit")
+                        break
+                    raw_messages.append(message)
+                else:
+                    chat_result["history_exhausted"] = True
+            except Exception:
+                # A single inaccessible or transiently failing dialog should
+                # not discard the other bounded results or expose raw RPC
+                # diagnostics in the export artifact.
+                chat_result["warnings"].append("chat_read_failed")
+                mark_export_chat_incomplete(chat_result, "chat_read_failed")
+
+            safe_messages = await public_messages(raw_messages, entity)
+            if not args.include_links:
+                safe_messages = [
+                    export_message_without_links(message) for message in safe_messages
+                ]
+            if args.chronological:
+                safe_messages.reverse()
+
+            for safe_message in safe_messages:
+                candidate_bytes = compact_json_bytes(safe_message) + 1
+                if message_bytes + candidate_bytes > message_budget:
+                    hit_output_byte_limit = True
+                    mark_export_chat_incomplete(chat_result, "output_byte_limit")
+                    break
+                chat_result["messages"].append(safe_message)
+                message_bytes += candidate_bytes
+                retained_total += 1
+            if len(chat_result["messages"]) < len(safe_messages):
+                hit_output_byte_limit = True
+                mark_export_chat_incomplete(chat_result, "output_byte_limit")
+            chat_result["message_count"] = len(chat_result["messages"])
+
+        result: dict[str, Any] = {
+            "period": {
+                "since": since.astimezone(zone).isoformat(),
+                "until": until.astimezone(zone).isoformat(),
+                "since_utc": since.isoformat(),
+                "until_utc": until.isoformat(),
+                "timezone": args.timezone,
+                "semantics": "since <= message.date < until",
+            },
+            "read_at": datetime.now(timezone.utc).isoformat(),
+            "parameters": {
+                "selection": "exact_chats" if args.chat else "all_dialogs",
+                "chat_type": args.chat_type,
+                "dialog_limit": args.dialog_limit,
+                "per_chat_limit": args.per_chat_limit,
+                "scan_limit": args.scan_limit,
+                "total_message_limit": args.total_message_limit,
+                "max_output_bytes": args.max_output_bytes,
+                "chronological": args.chronological,
+                "include_links": args.include_links,
+            },
+            "totals": {
+                "dialogs_scanned": dialogs_scanned,
+                "chats_selected": len(chats),
+                "chats_completed": 0,
+                "messages": 0,
+                "scanned_messages": 0,
+            },
+            "chats": chats,
+            "message_count": 0,
+            "scanned_count": 0,
+            "hit_dialog_limit": hit_dialog_limit,
+            "hit_per_chat_limit": False,
+            "hit_scan_limit": False,
+            "hit_total_message_limit": hit_total_message_limit,
+            "hit_output_byte_limit": hit_output_byte_limit,
+            "incomplete_chats": [],
+            "warnings": warnings,
+        }
+        if hit_total_message_limit:
+            result["warnings"].append("total_message_limit_reached")
+        if hit_output_byte_limit:
+            result["warnings"].append("output_byte_limit_reached")
+        rebuild_export_summary(result)
+        enforce_export_output_limit(result, args.max_output_bytes)
+        return result
+    finally:
+        await client.disconnect()
+
+
 async def command_dialogs_async(args: argparse.Namespace, identity: Identity) -> dict[str, Any]:
     client = build_client(args, identity)
     await ensure_authorized(client)
@@ -1610,6 +1983,8 @@ def run_async_command(args: argparse.Namespace) -> dict[str, Any]:
             return asyncio.run(command_read_async(args, identity))
         if args.command == "search":
             return asyncio.run(command_search_async(args, identity))
+        if args.command in {"export", "daily-export"}:
+            return asyncio.run(command_export_async(args, identity))
         if args.command == "download":
             return asyncio.run(command_download_async(args, identity))
         if args.command == "send":
@@ -1626,6 +2001,80 @@ def add_connection_arguments(parser: argparse.ArgumentParser) -> None:
         "--company-allows-autonomous",
         action=argparse.BooleanOptionalAction,
         default=True,
+    )
+
+
+def add_export_arguments(parser: argparse.ArgumentParser) -> None:
+    """Declare the shared bounded contract for export and daily-export."""
+
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
+        "--chat",
+        action="append",
+        help="Exact chat id or username; repeat to export several chats",
+    )
+    selection.add_argument(
+        "--all-dialogs",
+        action="store_true",
+        help="Export a bounded page of dialogs",
+    )
+    parser.add_argument("--since", required=True, help="Inclusive ISO 8601 boundary")
+    parser.add_argument("--until", required=True, help="Exclusive ISO 8601 boundary")
+    parser.add_argument("--timezone", default=DEFAULT_EXPORT_TIMEZONE)
+    parser.add_argument(
+        "--chat-type",
+        choices=("any", "group", "channel", "user", "bot"),
+        default="any",
+    )
+    parser.add_argument(
+        "--dialog-limit",
+        type=int,
+        choices=range(1, 1_001),
+        default=DEFAULT_EXPORT_DIALOG_LIMIT,
+        metavar="1..1000",
+    )
+    parser.add_argument(
+        "--per-chat-limit",
+        type=int,
+        choices=range(1, 5_001),
+        default=DEFAULT_EXPORT_PER_CHAT_LIMIT,
+        metavar="1..5000",
+    )
+    parser.add_argument(
+        "--scan-limit",
+        type=int,
+        choices=range(1, 50_001),
+        default=DEFAULT_EXPORT_SCAN_LIMIT,
+        metavar="1..50000",
+    )
+    parser.add_argument(
+        "--total-message-limit",
+        type=int,
+        choices=range(1, 50_001),
+        default=DEFAULT_EXPORT_TOTAL_MESSAGE_LIMIT,
+        metavar="1..50000",
+    )
+    parser.add_argument(
+        "--max-output-bytes",
+        type=int,
+        choices=range(1_048_576, MAX_EXPORT_OUTPUT_BYTES + 1),
+        default=DEFAULT_EXPORT_MAX_OUTPUT_BYTES,
+        metavar="1048576..16777216",
+    )
+    parser.add_argument(
+        "--chronological",
+        action="store_true",
+        help="Return oldest retained message first inside each chat",
+    )
+    parser.add_argument(
+        "--include-links",
+        action="store_true",
+        help="Include normalized URL entities in addition to message text",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Compatibility flag; runtime output is always JSON",
     )
 
 
@@ -1676,6 +2125,12 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--chat", required=True)
     search.add_argument("--query", required=True)
     search.add_argument("--limit", type=int, choices=range(1, 201), default=20, metavar="1..200")
+    export = commands.add_parser(
+        "export",
+        aliases=["daily-export"],
+        help="Export a bounded half-open period from exact chats or dialogs",
+    )
+    add_export_arguments(export)
     download = commands.add_parser("download", help="Download media from one selected message")
     download.add_argument("--chat", required=True)
     download.add_argument("--message-id", required=True, type=int)
@@ -1713,7 +2168,14 @@ def main() -> int:
         return 2
     finally:
         shutdown_browser_prompt_session()
-    print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
+    output = {"ok": True, **result}
+    if args.command in {"export", "daily-export"}:
+        # Period exports are potentially large machine-readable artifacts. A
+        # compact encoding makes --max-output-bytes deterministic and avoids
+        # spending most of that budget on indentation.
+        print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 
