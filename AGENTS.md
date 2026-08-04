@@ -79,6 +79,11 @@
   сразу скрывается либо внешний browser перестаёт выводиться на передний план;
   search/read/export продолжаются в фоне в той же tab/profile/session, а для
   демонстрации прогресса browser повторно не открывается.
+- Содержательный Agent Workspace analysis через ConsultantPlus обязан хранить
+  узкий original export каждого materially использованного источника вместе с
+  provenance; просмотренные, но не использованные документы не сохраняются, а
+  commentary маркируется отдельно и не выдаётся за primary legal source.
+  Source files не прикладываются к task comment автоматически.
 - Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
   диагностирует её отдельно от Trelio OAuth, при отсутствии только предлагает
   platform-native установку и ждёт явного подтверждения. Глобальный

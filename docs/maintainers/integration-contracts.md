@@ -133,6 +133,17 @@ paywall запрещены. `no_access`, `needs_reconnect` или unsupported su
 operation разрешают только независимый legal-source fallback с точной причиной;
 он не может повторно входить в тот же protected ConsultantPlus другим путём.
 
+Каждый substantive Agent Workspace result, основанный на ConsultantPlus,
+обязан содержать durable source files всех документов и exact fragments,
+которые materially поддерживают вывод, рекомендацию, дату, цитату или сравнение
+редакций. Сохраняется минимальный полный original provider export; exploratory
+results, просмотренные, но не использованные документы, лишние главы и bulk
+corpus не сохраняются. Material ConsultantPlus commentary сохраняется отдельно
+и маркируется как commentary, а не primary legal source. При невозможности
+exact export используется самый узкий доступный export либо Unicode fallback с
+явной фиксацией ограничения. Эти материалы остаются в authorized Workspace и
+не становятся task-comment attachments без обычного proposal/access flow.
+
 ## Email, Telegram и MAX
 
 Email – TLS IMAP/SMTP. Gmail app password link официальный, visual spaces из

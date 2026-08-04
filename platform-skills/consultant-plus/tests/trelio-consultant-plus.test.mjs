@@ -126,7 +126,7 @@ test("runtime rejects invalid identity, browser and symlinked private paths", as
   }
 });
 
-test("skill keeps onboarding, browser handoff, export and fallback decisions explicit", async () => {
+test("skill keeps onboarding, browser handoff, workspace evidence, export and fallback decisions explicit", async () => {
   const instructions = await readInstructionBundle();
 
   assert.match(instructions, /ask once whether the user wants this skill and has access/u);
@@ -139,6 +139,11 @@ test("skill keeps onboarding, browser handoff, export and fallback decisions exp
   assert.match(instructions, /Continue routine search, navigation, bounded DOM reading, export and download\s+verification in the background/su);
   assert.match(instructions, /Reopen it only when the user must act/u);
   assert.match(instructions, /without\s+asking for an extra confirmation/su);
+  assert.match(instructions, /supporting source files as required durable evidence.*substantive Agent Workspace result/su);
+  assert.match(instructions, /every exact ConsultantPlus source\s+that materially supports a conclusion/su);
+  assert.match(instructions, /Do not save exploratory search results, documents that\s+were opened but not relied upon/su);
+  assert.match(instructions, /label it as ConsultantPlus\s+commentary, not as a primary legal source/su);
+  assert.match(instructions, /Do not automatically attach every source to a user-facing\s+task comment/su);
   assert.match(instructions, /Prefer DOCX/u);
   assert.match(instructions, /Prefer PDF for forms/u);
   assert.match(instructions, /Unicode text/u);

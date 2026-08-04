@@ -179,6 +179,33 @@ one condition applies:
 The original provider export is evidence, not a draft. Keep it unchanged and
 make any annotated, converted or summarized version as a separate file.
 
+## Preserve the sources behind Agent Workspace analysis
+
+Treat the supporting source files as required durable evidence whenever
+ConsultantPlus is used for a substantive Agent Workspace result. Before handoff
+or submit, save in the writable workspace every exact ConsultantPlus source
+that materially supports a conclusion, recommendation, controlling date,
+quotation or edition comparison in the analysis. The analysis alone is
+incomplete when the supporting source could be preserved but was not.
+
+Save the narrowest complete original provider export that supports the point:
+the exact article, part, chapter, court decision fragment, form or other
+relied-upon provision. Do not save exploratory search results, documents that
+were opened but not relied upon, unrelated chapters, duplicate editions or a
+whole corpus merely because they were inspected.
+
+When ConsultantPlus commentary materially affects the analysis, preserve its
+exact relied-upon fragment separately and label it as ConsultantPlus
+commentary, not as a primary legal source or the text of a legal act. If the
+provider cannot export the exact used scope, preserve the narrowest available
+export or Unicode text and record the limitation instead of silently omitting
+the evidence.
+
+Keep these source files inside the authorized Agent Workspace together with
+their provenance. Do not automatically attach every source to a user-facing
+task comment or publish it outside that workspace; ordinary proposal,
+attachment and access rules still apply.
+
 ## Choose export scope and format
 
 Use the document's export/save control and choose the narrowest complete scope:
