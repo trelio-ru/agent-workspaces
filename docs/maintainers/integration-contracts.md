@@ -116,6 +116,16 @@ Browser или существующий Chrome profile; локальный Claud
 Claude in Chrome/Edge. Недоступность local browser из cloud surface является
 эпизодическим `unavailable_on_surface` и не перезаписывает личное состояние.
 
+Видимый browser surface является только временным handoff для входа,
+переавторизации, CAPTCHA, passkey/OTP, принятия условий и других обязательных
+действий пользователя. После проверки authenticated search/document page
+агент сразу скрывает или сворачивает Codex Browser side panel либо перестаёт
+выводить внешний browser на передний план, не закрывая exact tab/profile/session.
+Обычные search/navigation/bounded DOM/export/download verification продолжаются
+в фоне в той же сессии. Повторно показывать browser только для exact действия
+пользователя и снова убирать после его успешного завершения; показ прогресса
+сам по себе не является причиной держать или открывать browser.
+
 Для анализа агент читает bounded DOM. При необходимости сохранить exact source
 он без отдельного подтверждения экспортирует узкий fragment: DOCX по умолчанию,
 PDF для layout-sensitive forms, Unicode text как fallback. Bulk scrape и обход

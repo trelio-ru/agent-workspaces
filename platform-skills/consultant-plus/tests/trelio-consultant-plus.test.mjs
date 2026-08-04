@@ -134,6 +134,10 @@ test("skill keeps onboarding, browser handoff, export and fallback decisions exp
   assert.match(instructions, /`unavailable_on_surface`.*do not\s+overwrite/su);
   assert.match(instructions, /Codex in-app Browser/u);
   assert.match(instructions, /Claude in Chrome/u);
+  assert.match(instructions, /visible browser surface as a temporary handoff/u);
+  assert.match(instructions, /hide or collapse the\s+in-app Browser side panel without closing its tab or session/su);
+  assert.match(instructions, /Continue routine search, navigation, bounded DOM reading, export and download\s+verification in the background/su);
+  assert.match(instructions, /Reopen it only when the user must act/u);
   assert.match(instructions, /without\s+asking for an extra confirmation/su);
   assert.match(instructions, /Prefer DOCX/u);
   assert.match(instructions, /Prefer PDF for forms/u);

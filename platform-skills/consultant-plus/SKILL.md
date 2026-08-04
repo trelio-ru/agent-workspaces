@@ -48,6 +48,27 @@ Browser preference is personal to the current Trelio member and device. Never
 configure it as a company-wide credential or policy. Offer the available
 choices only when no preference exists.
 
+### Keep routine browser work out of view
+
+Treat the visible browser surface as a temporary handoff for protected steps
+that require the user, not as progress UI for the agent. Bring it into view for
+sign-in, reauthentication, CAPTCHA, passkeys, one-time codes, subscription or
+terms acceptance, and any other step that only the user may complete.
+
+As soon as an authenticated search or document page has been verified,
+immediately remove the browser surface from the foreground while keeping the
+exact tab, profile and session alive. In Codex desktop, hide or collapse the
+in-app Browser side panel without closing its tab or session. When controlling
+the user's Chrome, Edge or another supported browser, do not bring its window
+back to the foreground unless the user must act.
+
+Continue routine search, navigation, bounded DOM reading, export and download
+verification in the background through that same authenticated browser
+session. Do not leave or reopen a visible browser merely to show pages,
+progress, searches or downloads. Reopen it only when the user must act; state
+the exact required action, then remove it from view again immediately after the
+protected step succeeds.
+
 ### Codex desktop
 
 - `codex-browser` — the Codex in-app Browser. It has a separate browser
