@@ -51,6 +51,14 @@
 ## Стабильные runtime-инварианты
 
 - Trelio MCP – control plane; bundled bridge – локальный Git data plane.
+- Общий `.mcp.json` задаёт для Codex и Claude Code predefined public client
+  `trelio_agent_workspaces_v1`. Scopes клиенты получают из OAuth metadata
+  Trelio, поэтому не дублируй их в manifest: полный текущий набор выдаёт сервер,
+  а дальнейший insufficient-scope flow расширяет exact user/client grant.
+  Stable client не отменяет fresh Trelio login, consent или PKCE; backend
+  разрешает ephemeral port только на exact callback path соответствующего
+  клиента. Backend migration с seeded client должна попасть в production раньше
+  plugin release.
 - Runtime `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only context защищены и
   не входят в accepted candidate.
 - Company/project rules, platform rules, личный профиль и checkpoint

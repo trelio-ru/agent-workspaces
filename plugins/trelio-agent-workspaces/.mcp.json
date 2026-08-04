@@ -1,7 +1,10 @@
 {
   "mcpServers": {
     "trelio": {
-      "url": "https://trelio.ru/mcp"
+      "url": "https://trelio.ru/mcp",
+      "oauth": {
+        "clientId": "trelio_agent_workspaces_v1"
+      }
     },
     "trelio-remote-skills": {
       "command": "node",

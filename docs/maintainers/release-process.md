@@ -38,6 +38,12 @@ Security tests должны проверять semantic invariant/tool/error cod
 
 ## Release ordering
 
+Исключение для изменения predefined OAuth client contract: additive backend
+migration и совместимый backend deploy выполняются и проверяются до plugin
+release. Старые plugin/DCR clients должны продолжать работать. Только после
+read-back seeded client можно публиковать manifest, который ссылается на новый
+`clientId`; иначе install fail-closed завершится `invalid_client`.
+
 1. Закоммитить и push main.
 2. Создать annotated/lightweight tag в соответствии с существующим repo flow и
    push exact tag.

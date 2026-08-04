@@ -40,6 +40,17 @@ Missing scope должен возвращать стандартный `mcp/www_
 и без narrowing scope, чтобы сохранить existing grant. 401/403/ACL различать;
 ACL denial не маскировать как reauthorization.
 
+Общий `.mcp.json` использует для Codex и Claude Code predefined public client
+`trelio_agent_workspaces_v1`. Это одна client identity между задачами; OAuth
+credential больше не должен переходить на новый DCR client при каждом
+scope-upgrade. Текущий список Trelio scopes клиенты получают из server metadata,
+поэтому manifest его не дублирует. На backend stable client принимает переменный
+RFC 8252 loopback port только при exact host и callback path конкретного клиента,
+а grant scopes объединяются только для exact user/client. Fresh Trelio login,
+consent и PKCE не ослабляются. Legacy DCR clients остаются совместимыми. Backend
+migration/production deploy обязаны предшествовать plugin release, иначе explicit
+client id корректно завершится `invalid_client`.
+
 Bridge pairing не является вторым OAuth. Verifier остаётся локально; agent
 передаёт только pairing ID/device name в MCP approval и повторяет original
 command. Device-session private, reusable и separately revocable. Unsafe

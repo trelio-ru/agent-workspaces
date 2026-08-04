@@ -1932,6 +1932,13 @@ test("bridge release version stays synchronized across executable and manifests"
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
+  assert.equal(codexManifest.mcpServers, "./.mcp.json");
+  assert.deepEqual(mcpManifest.mcpServers.trelio, {
+    url: "https://trelio.ru/mcp",
+    oauth: {
+      clientId: "trelio_agent_workspaces_v1",
+    },
+  });
   assert.deepEqual(mcpManifest.mcpServers["trelio-remote-skills"], {
     command: "node",
     args: ["./scripts/trelio-remote-mcp.mjs"],
