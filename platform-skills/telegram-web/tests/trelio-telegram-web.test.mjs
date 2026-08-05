@@ -106,7 +106,7 @@ const environmentFor = (temporaryDirectory, overrides = {}) => ({
   TRELIO_CONFIG_HOME: path.join(temporaryDirectory, "config"),
   TRELIO_CACHE_HOME: path.join(temporaryDirectory, "cache"),
   TRELIO_SKILL_ID: "telegram-web",
-  TRELIO_SKILL_RUNTIME_VERSION: "1.0.1",
+  TRELIO_SKILL_RUNTIME_VERSION: "1.0.2",
   TRELIO_SKILL_COMPANY_ID: companyId,
   TRELIO_SKILL_MEMBER_ID: memberId,
   TRELIO_SKILL_CONNECTION_ID: connectionId,
@@ -367,6 +367,173 @@ test("public probe/readback exposes only the selected canonical account slot", a
     assert.throws(
       () => __testing.withPublicAccountSlot({ ok: true, accountSlot: 2 }, 3),
       (error) => error.code === "TELEGRAM_WEB_ACCOUNT_CHANGED",
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("restored canonical authenticated page becomes ready before probe can start a competing goto", async () => {
+  const visibleElement = {
+    getBoundingClientRect: () => ({ width: 180, height: 48 }),
+  };
+  let restoredNavigationInFlight = true;
+  let readinessChecks = 0;
+  let gotoCalls = 0;
+  let reloadCalls = 0;
+  const page = {
+    url: () => "https://web.telegram.org/k/",
+    waitForFunction: async () => {
+      readinessChecks += 1;
+      // Model the restored persistent tab reaching structural readiness. A
+      // competing goto before this point would reproduce the post-login race.
+      restoredNavigationInFlight = false;
+      return true;
+    },
+    goto: async () => {
+      gotoCalls += 1;
+      if (restoredNavigationInFlight) throw new Error("restored navigation was interrupted");
+    },
+    reload: async () => { reloadCalls += 1; },
+    evaluate: async (callback, argument) => callback(argument),
+  };
+
+  const surface = await withBrowserGlobals({
+    document: {
+      querySelectorAll: (selector) => selector === ".chatlist-chat[data-peer-id]"
+        ? [visibleElement]
+        : [],
+    },
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+  }, () => __testing.openTelegramHome(page, {
+    account: 1,
+    timeoutMs: 5_000,
+  }, { allowLoggedOut: true }));
+
+  assert.equal(surface.loggedIn, true);
+  assert.equal(readinessChecks, 1);
+  assert.equal(restoredNavigationInFlight, false);
+  assert.equal(gotoCalls, 0);
+  assert.equal(reloadCalls, 0);
+});
+
+test("unready restored canonical page receives one fallback goto without a second reload", async () => {
+  const visibleElement = {
+    getBoundingClientRect: () => ({ width: 180, height: 48 }),
+  };
+  let readinessChecks = 0;
+  let gotoCalls = 0;
+  let reloadCalls = 0;
+  const page = {
+    url: () => "https://web.telegram.org/k/",
+    waitForFunction: async () => {
+      readinessChecks += 1;
+      if (readinessChecks === 1) {
+        const timeout = new Error("restored page is not ready yet");
+        timeout.name = "TimeoutError";
+        throw timeout;
+      }
+      return true;
+    },
+    goto: async () => { gotoCalls += 1; },
+    reload: async () => { reloadCalls += 1; },
+    evaluate: async (callback, argument) => callback(argument),
+  };
+
+  const surface = await withBrowserGlobals({
+    document: {
+      querySelectorAll: (selector) => selector === ".chatlist-chat[data-peer-id]"
+        ? [visibleElement]
+        : [],
+    },
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+  }, () => __testing.openTelegramHome(page, {
+    account: 1,
+    timeoutMs: 5_000,
+  }, { allowLoggedOut: true }));
+
+  assert.equal(surface.loggedIn, true);
+  assert.equal(readinessChecks, 2);
+  assert.equal(gotoCalls, 1);
+  assert.equal(reloadCalls, 0);
+});
+
+test("authenticated probe exposes only a fixed failure stage for every native phase error", async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-probe-phases-")));
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const privateDigest = "f".repeat(64);
+    const consent = {
+      valid: false,
+      termsVersion: CONSENT_TERMS_VERSION,
+      acceptedAt: null,
+      expiresAt: null,
+      accountBound: false,
+      reason: "not_accepted",
+    };
+    const baseDependencies = {
+      findChromeExecutable: async () => "/fixed/test/chrome",
+      hasPinnedPlaywright: async () => true,
+      withTelegramBrowser: async (_identity, _options, callback) => callback({ page: {} }),
+      openTelegramHome: async () => ({
+        supported: true,
+        loggedIn: true,
+        login: false,
+        locked: false,
+      }),
+      readCurrentTelegramAccountDigest: async () => privateDigest,
+      renderConsentStatus: async () => consent,
+    };
+
+    const authenticated = await runCli(["probe", "--account", "1"], environment, baseDependencies);
+    assert.equal(authenticated.accessStatus, "consent_required");
+    assert.equal(authenticated.loggedIn, true);
+    assert.equal(JSON.stringify(authenticated).includes(privateDigest), false);
+
+    const phaseCases = [
+      ["browser_discovery", "findChromeExecutable"],
+      ["runtime_inspection", "hasPinnedPlaywright"],
+      ["browser_session", "withTelegramBrowser"],
+      ["telegram_home", "openTelegramHome"],
+      ["account_identity", "readCurrentTelegramAccountDigest"],
+      ["consent_state", "renderConsentStatus"],
+    ];
+    for (const [expectedStage, dependencyName] of phaseCases) {
+      const secretSentinel = `native-${expectedStage}-opaque-sentinel`;
+      const dependencies = {
+        ...baseDependencies,
+        [dependencyName]: async () => { throw new Error(secretSentinel); },
+      };
+      let captured = null;
+      try {
+        await runCli(["probe", "--account", "1"], environment, dependencies);
+      } catch (error) {
+        captured = error;
+      }
+      assert.equal(captured instanceof TelegramWebRuntimeError, true, expectedStage);
+      assert.equal(captured.code, "TELEGRAM_WEB_PROBE_FAILED", expectedStage);
+      assert.deepEqual(captured.details, { stage: expectedStage });
+      assert.equal(Object.prototype.hasOwnProperty.call(captured, "cause"), false);
+      const publicFailureShape = JSON.stringify({
+        code: captured.code,
+        message: captured.message,
+        details: captured.details,
+        stack: captured.stack,
+      });
+      assert.equal(publicFailureShape.includes(secretSentinel), false, expectedStage);
+      assert.equal(publicFailureShape.includes(privateDigest), false, expectedStage);
+    }
+
+    const known = new TelegramWebRuntimeError(
+      "TELEGRAM_WEB_LOGIN_REQUIRED",
+      "Known domain result remains exact.",
+    );
+    await assert.rejects(
+      () => runCli(["probe", "--account", "1"], environment, {
+        ...baseDependencies,
+        openTelegramHome: async () => { throw known; },
+      }),
+      (error) => error === known,
     );
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
@@ -3170,7 +3337,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
     await writeFile(managedFile, "secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(managedFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
 
-    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.1", "node_modules", "secret.txt");
+    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.2", "node_modules", "secret.txt");
     await mkdir(path.dirname(runtimeCacheFile), { recursive: true, mode: 0o700 });
     await writeFile(runtimeCacheFile, "cache-secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(runtimeCacheFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
@@ -3193,7 +3360,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
 
 test("outbound document snapshots require canonical private non-empty regular files", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.1 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.2 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-input-")));
@@ -3323,7 +3490,7 @@ test("document approval binds one source snapshot, caption, destination and all 
 
 test("one-document send still requires dry-run approval under autonomous text policy before browser launch", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.1 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.2 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-file-policy-")));
@@ -3596,7 +3763,7 @@ test("default host cache is allowed only from its exact materialized skill-runti
   const previousCwd = process.cwd();
   try {
     const cacheBase = path.join(temporaryDirectory, "cache");
-    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.1");
+    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.2");
     await mkdir(materialized, { recursive: true, mode: 0o700 });
     process.chdir(materialized);
     assert.equal(
@@ -3629,7 +3796,7 @@ test("runtime cache accepts an owned 0755 base but rejects unsafe descendants be
     const environment = environmentFor(temporaryDirectory);
     const identity = identityFor(environment);
     const cacheBase = environment.TRELIO_CACHE_HOME;
-    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.1");
+    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.2");
     await mkdir(cacheBase, { mode: 0o755 });
     await chmod(cacheBase, 0o755);
     await __testing.ensurePrivateTree(cacheBase, runtimeRoot, environment);

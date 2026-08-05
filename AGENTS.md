@@ -89,7 +89,7 @@
   transport fallback или автоматический повтор. Connections, sessions,
   consent и policy навыков независимы.
 - Канонический Telegram Web skill и signed runtime находятся в
-  `platform-skills/telegram-web/`. Runtime `1.0.1` использует отдельный Web K
+  `platform-skills/telegram-web/`. Runtime `1.0.2` использует отдельный Web K
   profile, visible owner login/consent и headless content-команды, а broad или
   недоказуемые операции возвращает как unsupported до решающего side effect.
   Login и logout owner handoff нельзя реализовывать одним долгим provider
@@ -98,6 +98,12 @@
   referenced lifecycle. Login завершается только после стабильного видимого
   authenticated surface, отсутствия видимого password/passcode handoff и
   canonical account identity proof; пароль/код runtime не читает и не вводит.
+  Восстановленная canonical home page сначала проходит bounded structural
+  readiness proof: готовая страница не получает конкурирующий `goto`, а
+  неготовая получает только один fallback navigation. Probe переводит native
+  browser/provider ошибки в `TELEGRAM_WEB_PROBE_FAILED` только с фиксированной
+  безопасной phase, не раскрывая raw error, URL, path, content или account
+  digest; deliberate runtime errors сохраняют исходный code.
   Awaited command/browser/consent/download deadline timers должны оставаться
   referenced до exact завершения или cleanup: `unref()` не может подменять
   гарантированный timeout преждевременным выходом Node process.
