@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   detectAgentRuntimeAttestation,
   evaluatePinnedRuntimePolicy,
+  resolveInitialChatTitleReminder,
 } from "../scripts/trelio-runtime-policy.mjs";
 
 const runtimePolicyScriptPath = fileURLToPath(
@@ -21,6 +22,7 @@ const runPolicyHook = (hookInput, environment) => new Promise((resolve, reject) 
       ...process.env,
       CLAUDE_CODE_ENTRYPOINT: "",
       CLAUDE_EFFORT: "",
+      CODEX_THREAD_ID: "",
       ...environment,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -80,6 +82,65 @@ const buildPolicySnapshot = ({
     },
     otherClientsAction,
   },
+});
+
+test("new Codex startup receives one non-blocking chat title reminder", async () => {
+  const threadId = "019f9fcd-899a-72b3-91f6-fdf3134381bb";
+  const hookInput = {
+    hook_event_name: "SessionStart",
+    source: "startup",
+  };
+
+  const reminder = resolveInitialChatTitleReminder({
+    hookInput,
+    environment: {
+      CODEX_THREAD_ID: threadId,
+    },
+  });
+  const hookResult = await runPolicyHook(hookInput, {
+    CODEX_THREAD_ID: threadId,
+  });
+
+  assert.match(reminder, /первый ход нового основного чата/u);
+  assert.match(reminder, /В следующих ходах автоматически к названию не возвращайся/u);
+  assert.equal(hookResult.exitCode, 0);
+  assert.equal(hookResult.stdout, `${reminder}\n`);
+  assert.equal(hookResult.stderr, "");
+});
+
+test("chat title reminder stays silent outside the first Codex startup", () => {
+  const codexEnvironment = {
+    CODEX_THREAD_ID: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
+  };
+
+  for (const source of ["resume", "clear", "compact"]) {
+    assert.equal(resolveInitialChatTitleReminder({
+      hookInput: {
+        hook_event_name: "SessionStart",
+        source,
+      },
+      environment: codexEnvironment,
+    }), null);
+  }
+
+  assert.equal(resolveInitialChatTitleReminder({
+    hookInput: {
+      hook_event_name: "PreToolUse",
+      source: "startup",
+    },
+    environment: codexEnvironment,
+  }), null);
+  assert.equal(resolveInitialChatTitleReminder({
+    hookInput: {
+      hook_event_name: "SessionStart",
+      source: "startup",
+      effort: { level: "high" },
+    },
+    environment: {
+      ...codexEnvironment,
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+    },
+  }), null);
 });
 
 test("Codex attestation reads the actual effort from the current turn context", async () => {

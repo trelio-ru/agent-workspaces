@@ -1,5 +1,5 @@
 {
-  "description": "Проверяет закреплённую company policy модели и reasoning effort для Trelio Agent Run.",
+  "description": "Напоминает один раз назвать новый Codex-чат и проверяет закреплённую company policy модели и reasoning effort для Trelio Agent Run.",
   "hooks": {
     "SessionStart": [
       {

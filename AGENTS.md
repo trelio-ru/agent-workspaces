@@ -136,6 +136,13 @@
   platform-native установку и ждёт явного подтверждения. Глобальный
   `trelio-workspace` в `PATH` не требуется: используется bundled script exact
   загруженной версии плагина.
+- Codex `SessionStart` с `source=startup` один раз добавляет в первый model call
+  короткое напоминание проверить название текущего основного чата после сбора
+  исходного контекста. Это non-blocking reminder, а не проверка результата:
+  он не запускает второй model call, app-server, сеть или отдельный процесс и
+  молчит на `resume`, `clear`, `compact`, в Claude Code и на последующих ходах.
+  Уже понятное или пользовательское название не меняется, отсутствие прямого
+  безопасного инструмента остаётся тихим no-op.
 - MAX browser adapter по умолчанию блокирует server-side `READ_MESSAGE` и
   `READ_REACTION` при discovery, чтении, unread polling, download и любых
   действиях, которые не являются ответом. Read receipt разрешается только

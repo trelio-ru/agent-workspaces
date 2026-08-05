@@ -36,6 +36,12 @@ const MODEL_SUPPORTED_EFFORTS = new Map([
 ]);
 const THREAD_ID_PATTERN = /^[0-9a-f-]{16,64}$/i;
 const MAX_TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
+const INITIAL_CHAT_TITLE_REMINDER = [
+  "Это первый ход нового основного чата.",
+  "После сбора исходного контекста один раз проверь, нужно ли задать текущему чату короткое информативное название через прямой безопасный инструмент именно текущего чата.",
+  "Если название уже понятное или задано пользователем либо прямого инструмента нет, молча продолжай.",
+  "В следующих ходах автоматически к названию не возвращайся.",
+].join(" ");
 
 const readStdinJson = async () => {
   const chunks = [];
@@ -229,6 +235,36 @@ export const detectAgentRuntimeAttestation = async ({
   };
 };
 
+/**
+ * Возвращает лёгкое одноразовое напоминание только в начале новой Codex-сессии.
+ * Оно намеренно не является Stop-проверкой: агент получает контекст в уже
+ * запланированном первом model call, поэтому переименование не создаёт второй
+ * проход, сетевой запрос или задержку в конце работы. Resume/clear/compact не
+ * считаются новым чатом и не должны снова поднимать вопрос о названии.
+ */
+export const resolveInitialChatTitleReminder = ({
+  hookInput = {},
+  environment = process.env,
+} = {}) => {
+  const isCodexSession = Boolean(environment.CODEX_THREAD_ID);
+  const isClaudeCodeSession = Boolean(
+    environment.CLAUDE_CODE_ENTRYPOINT
+    || environment.CLAUDE_EFFORT
+    || hookInput?.effort,
+  );
+
+  if (
+    hookInput.hook_event_name !== "SessionStart"
+    || hookInput.source !== "startup"
+    || !isCodexSession
+    || isClaudeCodeSession
+  ) {
+    return null;
+  }
+
+  return INITIAL_CHAT_TITLE_REMINDER;
+};
+
 const findRunMetadataPath = async (cwd) => {
   let current = path.resolve(cwd || process.cwd());
 
@@ -376,6 +412,13 @@ const runHook = async () => {
 
   if (hookInput.hook_event_name === "SessionStart") {
     await persistClaudeSessionEnvironment(hookInput);
+    const chatTitleReminder = resolveInitialChatTitleReminder({ hookInput });
+
+    if (chatTitleReminder) {
+      // SessionStart передаёт plain stdout модели как дополнительный контекст.
+      // Одной строки достаточно; структурированный hook result здесь не нужен.
+      process.stdout.write(`${chatTitleReminder}\n`);
+    }
     return;
   }
 
