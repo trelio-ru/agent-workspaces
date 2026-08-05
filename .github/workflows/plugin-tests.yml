@@ -77,7 +77,7 @@ jobs:
       - name: Run Windows ACL regressions
         run: >-
           node --test
-          --test-name-pattern="Windows ACL command|Windows bridge applies"
+          --test-name-pattern="Windows ACL command|Windows bridge applies|Windows Node resolver"
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 
       # GitHub's Windows runner account is an administrator. Re-run the real

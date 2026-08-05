@@ -10,9 +10,14 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
 
 1. Do not open Trelio in a browser as a substitute and do not continue task
    work without the Agent Workspace control plane.
-2. Tell the user that the workflow instructions loaded but the Trelio MCP
-   connection did not. Ask them to open
-   `Plugins -> Trelio Agent Workspaces` and complete Trelio OAuth.
+2. Inspect `codex mcp list --json` and distinguish the remote `trelio` server
+   from the local `trelio-remote-skills` stdio server. If remote `trelio` needs
+   authentication and the ON_INSTALL OAuth window is not already open, run
+   `codex mcp login trelio` immediately and wait for the command. That single
+   browser flow includes Trelio login when needed and then consent. Never ask
+   the user to log in on the site first, report «я вошёл» in chat, or let
+   Computer Use enter credentials. If the OAuth window is already open, do not
+   start a duplicate flow; let the user finish it.
 3. If the `Trelio` marketplace or plugin is missing, give the exact command
    `codex plugin marketplace add trelio-ru/agent-workspaces`. It tracks the
    official default branch; refresh an existing snapshot with
@@ -21,10 +26,19 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
 4. If a managed ChatGPT/Codex workspace marks the plugin or connection
    unavailable, explain that a workspace admin must enable it for the user's
    role. Do not suggest resetting Trelio credentials before resolving policy.
-5. After installation or OAuth, start a new task so Codex rebuilds its callable
-   MCP tool list, then retry the original low-risk Trelio read once. Require a
-   full restart only if the new task still lacks tools or reports the old
-   plugin version.
+5. After installation or OAuth, refresh `codex mcp list --json` and retry the
+   original low-risk Trelio read once in the current task. Continue there when
+   the tool is callable. Start a new task only when this live retry proves the
+   current task has not loaded the connection; require a full restart only if
+   the new task still lacks tools or reports the old plugin version.
+
+Failure of only `trelio-remote-skills` is not failed Trelio OAuth. Base remote
+Trelio and bridge work may continue. Diagnose Node through the project
+onboarding skill's bundled Windows resolver and use an already installed
+Node.js 22+ executable by absolute path for the bridge. Discuss restarting the
+local stdio server only when an exact selected skill needs
+`remoteMcpExecution`; never reinstall Node or repeat restart advice after a
+verified compatible absolute executable has been found.
 
 Do not claim readiness because skill text is visible. Confirm it with a
 successful low-risk MCP read such as `get_my_context` or `get_task`.
@@ -38,7 +52,8 @@ not missing setup or a Trelio ACL denial.
    `mcp/www_authenticate`. The user must review and approve the new permissions
    in the browser.
 2. After the browser flow, retry the exact low-risk read once in the current
-   task. Do not replace it with browser access or another integration.
+   task. Continue there when it succeeds; do not pre-emptively ask for a new
+   task or replace the read with browser access or another integration.
 3. If Codex does not surface the card, run `codex mcp login trelio`. Do not log
    out first, request only the newly missing scope, print the authorization
    URL, or inspect/copy stored credentials. The scope-less command requests the

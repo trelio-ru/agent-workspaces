@@ -14,21 +14,29 @@ Marketplace добавляется без `--ref`; `INSTALLED_BY_DEFAULT` иск
 `codex plugin add`. `authentication=ON_INSTALL` просит Codex открыть browser
 OAuth автоматически. `Plugins` – только fallback, если страница не появилась.
 
-После install/OAuth нужна новая задача для refresh MCP tools. Полный restart
-требуется только если новая задача сохраняет старую версию/нет tools. Skill без
-tools не доказывает readiness; безопасный read `get_my_context`/`get_task` –
-доказательство. Browser не подменяет MCP.
+После install/OAuth onboarding сначала обновляет status и повторяет безопасный
+read `get_my_context`/`get_task` в текущей задаче. Если tools уже callable,
+работа продолжается там же. Новая задача нужна только после доказанного live
+failure текущей; полный restart – только если и новая задача сохраняет старую
+версию или не видит tools. Skill без tools не доказывает readiness, но и
+статичный список заранее не предполагается. Browser не подменяет MCP.
 
 Node.js 22+ остаётся локальной предпосылкой bundled bridge и
 `trelio-remote-skills`, но не удалённого Trelio OAuth. При отсутствующих tools
 onboarding один раз разделяет эти состояния через `codex mcp list --json` и
 безопасное разрешение `node`, не запуская заведомо отсутствующую команду.
+Windows resolver проверяет process PATH, durable machine/user PATH и штатный
+`Program Files/nodejs/node.exe`; найденный Node 22+ сразу используется по
+абсолютному пути для bridge, даже если процесс Codex ещё не унаследовал PATH.
+Из-за одного local stdio server нельзя блокировать OAuth или базовый onboarding.
 Отсутствующий или старый Node не устанавливается молча: агент показывает
 причину, предлагает exact `winget install --id OpenJS.NodeJS.LTS -e` в native
 Windows либо `brew install node` на macOS с уже установленным Homebrew и ждёт
-явного подтверждения. После изменения системного `PATH` нужен полный restart
-Codex и новая задача. Отсутствие глобального `trelio-workspace` штатно: агент
-использует bundled script текущей версии плагина.
+явного подтверждения. Restart нужен только когда выбранный
+`remoteMcpExecution` действительно требует перезапуска не поднявшегося local
+stdio server; после уже выполненного restart одинаковый совет не повторяется.
+Отсутствие глобального `trelio-workspace` штатно: агент использует bundled
+script текущей версии плагина.
 
 Managed workspace admin может назначить plugin ролям, но OAuth проходит каждый
 user и workspace policy не обходится.
@@ -39,6 +47,12 @@ Missing scope должен возвращать стандартный `mcp/www_
 предпочтительна. Codex fallback `codex mcp login trelio` запускается без logout
 и без narrowing scope, чтобы сохранить existing grant. 401/403/ACL различать;
 ACL denial не маскировать как reauthorization.
+
+Initial OAuth также является одним непрерывным browser flow. Если ON_INSTALL
+card не открылась, onboarding сам запускает `codex mcp login trelio`; authorize
+route при необходимости проводит login и возвращает пользователя к consent.
+Нельзя сначала открывать обычный Trelio login, просить написать «я вошёл», а
+затем начинать отдельный OAuth или использовать Computer Use для credentials.
 
 Общий `.mcp.json` использует для Codex и Claude Code predefined public client
 `trelio_agent_workspaces_v1`. Это одна client identity между задачами; OAuth

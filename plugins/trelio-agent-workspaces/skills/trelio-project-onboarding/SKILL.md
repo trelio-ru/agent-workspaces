@@ -12,25 +12,35 @@ read the current skill catalog and connection state from Trelio.
 ## Check prerequisites
 
 1. Require callable Trelio MCP tools, not only this skill text. If tools are
-   missing, diagnose the two independent prerequisites once before asking the
-   user to try another task:
+   missing, diagnose the two independent prerequisites once in the current
+   task before considering another task:
    - Inspect `codex mcp list --json` to distinguish an unavailable or
      unauthenticated `trelio` HTTP server from the local
      `trelio-remote-skills` server. The plugin version alone does not prove
      that either server is ready.
-   - Resolve Node.js without intentionally executing a missing command: use
-     `Get-Command node -ErrorAction SilentlyContinue` in native Windows
-     PowerShell or `command -v node` on POSIX. If Node.js is absent or older
-     than 22, follow the installation-offer flow under **Connect the local
-     component**. A local Node.js problem does not prove that Trelio OAuth is
-     invalid.
-   - If the `trelio` server needs authentication, ask the user to open
-     `Plugins -> Trelio Agent Workspaces` and complete Trelio OAuth, or use
-     `codex mcp login trelio` when the native card did not appear. Then start a
-     new task so it can load the refreshed MCP tools.
-   Require a full Codex restart only when installing or updating Node.js may
-   have changed the app's inherited `PATH`, or when a new task still lacks the
-   tools or reports the old plugin version. If the marketplace itself is
+   - Resolve Node.js without intentionally executing a missing command. On
+     native Windows, run this loaded plugin's bundled
+     `../../scripts/resolve-node.ps1`; it checks the current process, durable
+     machine/user PATH values and official Program Files location without
+     editing anything. On POSIX use `command -v node`. If Node.js is absent or
+     older than 22, follow the installation-offer flow under **Connect the
+     local component**. A local Node.js problem does not prove that Trelio
+     OAuth is invalid.
+   - If the remote `trelio` server needs authentication and the ON_INSTALL
+     OAuth window is already open, let the user finish that one window. If it
+     is not open, immediately run `codex mcp login trelio` and wait for it.
+     The authorization URL itself redirects an unauthenticated user through
+     Trelio login and back to consent. Never open the Trelio site as a
+     preparatory login, use Computer Use to enter credentials, or ask the user
+     to report that login finished before starting OAuth. The user personally
+     completes login and consent in the single browser flow.
+   - After OAuth, refresh `codex mcp list --json` and retry one low-risk Trelio
+     read in this same task. Continue onboarding here as soon as the tools are
+     callable. Ask for a new task only when that live retry proves the current
+     task still has no refreshed tools; do not assume a static tool list.
+   Require a full Codex restart only when a live current-task retry and then a
+   new task still lack the tools or report the old plugin version. If the
+   marketplace itself is
    missing, use `codex plugin marketplace add trelio-ru/agent-workspaces`; its
    `INSTALLED_BY_DEFAULT` policy makes a separate plugin-add command
    unnecessary.
@@ -95,10 +105,19 @@ state and may change after this file is created.
 ## Connect the local component
 
 The bundled local component requires Node.js 22 or newer. Resolve `node`
-without a deliberate failing probe and read its version only when the command
-exists. If it is absent or too old, explain that this blocks the local bridge
-and local skill server, then offer installation instead of merely reporting a
-missing `PATH` entry:
+without a deliberate failing probe and read its version only when an exact
+executable exists. On native Windows use the bundled
+`../../scripts/resolve-node.ps1` diagnostic. If it returns `ready` with
+`processPathReady=false`, Node is already installed: use its absolute
+`nodePath` for the bundled bridge in this task. Do not reinstall Node, repeat
+restart advice, or block remote Trelio OAuth merely because the current Codex
+process has a stale PATH. The plugin's `trelio-remote-skills` stdio server may
+still need one later app restart, but mention that only when a skill selected
+by the user actually returns `remoteMcpExecution` and the server is unavailable.
+
+If the resolver returns `not_found` or a version older than 22, explain that
+this blocks the local bridge and local skill server, then offer installation
+instead of merely reporting a missing `PATH` entry:
 
 - On native Windows, offer
   `winget install --id OpenJS.NodeJS.LTS -e`.
@@ -110,10 +129,13 @@ missing `PATH` entry:
 Installing or upgrading system software is a separate side effect. Ask one
 concise explicit confirmation before running the package manager command and
 let the client apply its normal command approval. Never install Node.js
-silently. Afterward, verify the exact `node --version`. If the current Codex
-process still cannot resolve the new command, ask the user to fully quit and
-reopen Codex, then start a new task; do not loop through more tasks in the same
-stale process.
+silently. Afterward, rerun the resolver and verify the exact version. Use the
+absolute executable immediately for the bundled bridge. Ask for one full app
+restart only if a selected `remoteMcpExecution` skill needs the Codex-managed
+local MCP server and that server still cannot start. If the user says they
+already restarted, do not repeat the same advice: compare the process PATH with
+the durable machine/user PATH and report one exact environment repair or a
+bounded unsupported-client blocker.
 
 Run `trelio-workspace login` through the logical launcher of this installed
 plugin. Resolve it without executing a failing probe: use the PATH command when

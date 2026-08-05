@@ -2084,7 +2084,16 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
-  assert.match(onboardingSkill, /Get-Command node -ErrorAction SilentlyContinue/u);
+  assert.match(onboardingSkill, /resolve-node\.ps1/u);
+  assert.match(onboardingSkill, /durable\s+machine\/user PATH values/u);
+  assert.match(onboardingSkill, /immediately run `codex mcp login trelio`/u);
+  assert.match(onboardingSkill, /Never open the Trelio site as a\s+preparatory login/u);
+  assert.match(onboardingSkill, /ask the user\s+to report that login finished/u);
+  assert.match(onboardingSkill, /retry one low-risk Trelio\s+read in this same task/u);
+  assert.match(onboardingSkill, /Ask for a new task only when that live retry proves/u);
+  assert.match(onboardingSkill, /processPathReady=false/u);
+  assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
+  assert.match(onboardingSkill, /do not repeat the same advice/u);
   assert.match(onboardingSkill, /winget install --id OpenJS\.NodeJS\.LTS -e/u);
   assert.match(onboardingSkill, /brew install node/u);
   assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
@@ -2107,6 +2116,52 @@ test("workspace skill recovers stale OAuth grants without discarding existing sc
   assert.match(workspaceSkill, /request only the newly missing scope/u);
   assert.match(workspaceSkill, /user must review and approve/u);
   assert.match(workspaceSkill, /retry the exact low-risk read once/u);
+});
+
+test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+
+  assert.match(workspaceSkill, /run\s+`codex mcp login trelio` immediately/u);
+  assert.match(workspaceSkill, /single\s+browser flow includes Trelio login/u);
+  assert.match(workspaceSkill, /report «я вошёл» in chat/u);
+  assert.match(workspaceSkill, /retry the\s+original low-risk Trelio read once in the current task/u);
+  assert.match(workspaceSkill, /Start a new task only when this live retry proves/u);
+  assert.match(workspaceSkill, /Failure of only `trelio-remote-skills` is not failed Trelio OAuth/u);
+});
+
+test("Windows Node resolver uses durable PATH when the Codex process PATH is stale", {
+  skip: process.platform !== "win32",
+}, async () => {
+  const resolverPath = path.join(pluginDirectory, "scripts", "resolve-node.ps1");
+  const missingProcessPath = path.join(os.tmpdir(), "trelio-node-not-in-process-path");
+  const { stdout } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      resolverPath,
+      "-ProcessPath",
+      missingProcessPath,
+      "-UserPath",
+      "",
+      "-MachinePath",
+      path.dirname(process.execPath),
+      "-SkipDefaultInstallRoots",
+    ],
+    { encoding: "utf8" },
+  );
+  const result = JSON.parse(stdout.trim());
+
+  assert.equal(result.status, "ready");
+  assert.equal(result.processPathReady, false);
+  assert.equal(result.restartMayBeRequiredForLocalMcp, true);
+  assert.equal(result.source, "machine-path");
+  assert.equal(path.resolve(result.nodePath).toLowerCase(), process.execPath.toLowerCase());
+  assert.match(result.version, /^v(?:2[2-9]|[3-9][0-9])\./u);
 });
 
 test("project access skill preserves owner-only plan/apply and moderator confirmation", async () => {

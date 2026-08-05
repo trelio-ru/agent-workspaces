@@ -144,10 +144,19 @@
   очищает file delivery; grant не может менять `TRELIO_SKILL_*`, config/cache
   roots или другой host-owned context.
 - Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
-  диагностирует её отдельно от Trelio OAuth, при отсутствии только предлагает
-  platform-native установку и ждёт явного подтверждения. Глобальный
-  `trelio-workspace` в `PATH` не требуется: используется bundled script exact
-  загруженной версии плагина.
+  диагностирует её отдельно от Trelio OAuth. Windows resolver обязан проверять
+  process PATH, durable machine/user PATH и штатный Program Files; найденный
+  Node 22+ используется для bridge по абсолютному пути и не становится
+  причиной повторной установки или цикла restart. Local stdio server не
+  блокирует базовый OAuth/onboarding и требует restart только when selected
+  `remoteMcpExecution` действительно без него недоступен. При реальном
+  отсутствии Node агент только предлагает platform-native установку и ждёт
+  явного подтверждения. Initial OAuth является одним browser flow: onboarding
+  не открывает предварительный site login, не просит написать «я вошёл» и не
+  запускает Computer Use для credentials. После OAuth агент сначала live
+  проверяет tools и продолжает текущую задачу; новую просит только после
+  доказанного failure. Глобальный `trelio-workspace` в `PATH` не требуется:
+  используется bundled script exact загруженной версии плагина.
 - Codex `SessionStart` с `source=startup` один раз добавляет в первый model call
   короткое напоминание проверить название текущего основного чата после сбора
   исходного контекста. Это non-blocking reminder, а не проверка результата:
