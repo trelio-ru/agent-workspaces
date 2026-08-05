@@ -126,10 +126,14 @@ Workspace. Он:
    только предлагает установить после явного подтверждения;
 5. выполняет `trelio-workspace login` без disposable Run;
 6. читает live `list_agent_skills` exact scope;
-7. предлагает настроить только выбранные skills one by one;
-8. показывает unconfigured company connection как
+7. в company-wide scope сразу предлагает и company assignments, и возвращённые
+   переносимые project assignments с `enabledThroughProjectMembership=true` /
+   `sources: ["project_membership"]`; только отсутствующие в этом ответе strict
+   project-only skills ждут конкретного проекта или задачи;
+8. предлагает настроить только выбранные skills one by one;
+9. показывает unconfigured company connection как
    `требуется настройка администратором компании`;
-9. никогда не пишет skills/connection state/credentials/IDs/local paths в
+10. никогда не пишет skills/connection state/credentials/IDs/local paths в
    project AGENTS.
 
 Personal credentials вводятся только через protected runtime flow. Company

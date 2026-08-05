@@ -2099,6 +2099,15 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
   assert.match(onboardingSkill, /Do not install\s+`trelio-workspace` globally/u);
   assert.match(onboardingSkill, /требуется настройка администратором компании/u);
+  assert.match(onboardingSkill, /enabledThroughProjectMembership=true/u);
+  assert.match(onboardingSkill, /sources` containing\s+`project_membership`/u);
+  assert.match(onboardingSkill, /treat it as available in the current company scope\s+and offer it now/u);
+  assert.match(onboardingSkill, /Do not misclassify it as strict project-only merely\s+because `enabledAtCompany=false`/u);
+  assert.match(onboardingSkill, /only strict project-only skills missing from the\s+company-wide response will be offered just in time/u);
+  assert.doesNotMatch(
+    onboardingSkill,
+    /project-only skills will be offered just in time when a concrete Trelio/u,
+  );
   assert.match(onboardingSkill, /Do not open a company workspace/u);
   assert.match(onboardingSkill, /full restart only if the new task/u);
   assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);

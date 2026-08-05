@@ -155,7 +155,15 @@ cancel a disposable result merely to test the connection.
 1. Call `list_agent_skills` once for the exact effective scope. Use only
    `companySlug` for a company-wide Codex project; include `projectSlug` for a
    deliberately project-bound setup. Do not scan every visible project to
-   collect project-only skills.
+   collect strict project-only skills. The company-wide response already
+   includes every portable project assignment granted through the current
+   member's participation in a selected project. Such an item normally has
+   `enabledThroughProjectMembership=true` and `sources` containing
+   `project_membership`; treat it as available in the current company scope
+   and offer it now. Do not misclassify it as strict project-only merely
+   because `enabledAtCompany=false`. A strict project-only skill is absent
+   from this company-wide response and is discovered just in time only after
+   a concrete project or task supplies the narrower scope.
 2. Use catalog metadata only to prepare a concise checklist. Do not call
    `get_agent_skill` for every item and do not claim that a personal local
    session is ready before its own doctor succeeds.
@@ -175,8 +183,10 @@ cancel a disposable result merely to test the connection.
      otherwise use a new task, and require a full restart only if the new task
      still sees the old version.
 4. Briefly ask which available skills the user wants to configure. Do not
-   connect everything automatically. In a company-wide setup, explain that
-   project-only skills will be offered just in time when a concrete Trelio
+   connect everything automatically. In a company-wide setup, include
+   portable `project_membership` skills returned by the catalog in this first
+   checklist. Explain that only strict project-only skills missing from the
+   company-wide response will be offered just in time when a concrete Trelio
    project or task is selected.
 5. Immediately before configuring each selected skill, call
    `get_agent_skill` with the same exact scope and follow its current

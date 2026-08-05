@@ -80,6 +80,14 @@
   connector; при нескольких компаниях нужно спросить exact company, а не
   сканировать все каталоги. Если подходящего навыка нет, пользовательский навык
   или коннектор разрешён обычным fallback-контрактом.
+- Company-wide onboarding вызывает `list_agent_skills` только с exact
+  `companySlug` и не сканирует проекты. Этот ответ уже включает переносимые
+  project assignments текущего участника с
+  `enabledThroughProjectMembership=true` / source `project_membership`; их
+  нужно предлагать сразу вместе с company assignments. До конкретного проекта
+  откладываются только strict project-only skills, отсутствующие в
+  company-wide ответе. Нельзя считать возвращённый переносимый навык
+  project-only только из-за `enabledAtCompany=false`.
 - Telegram catalog routing использует formal `integrationRouting`: один
   назначенный `telegram-mtproto` / `telegram-web` используется самостоятельно,
   а при двух MTProto primary `100` предшествует Web secondary `200`. Secondary
