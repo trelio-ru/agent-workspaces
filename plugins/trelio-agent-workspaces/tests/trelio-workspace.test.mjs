@@ -1962,11 +1962,32 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.26");
+  assert.equal(BRIDGE_VERSION, "1.6.27");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
   assert.equal(codexManifest.mcpServers, "./.mcp.json");
+  assert.deepEqual(
+    {
+      brandColor: codexManifest.interface.brandColor,
+      composerIcon: codexManifest.interface.composerIcon,
+      logo: codexManifest.interface.logo,
+      logoDark: codexManifest.interface.logoDark,
+    },
+    {
+      brandColor: "#1F8FFF",
+      composerIcon: "./assets/trelio-composer-icon.svg",
+      logo: "./assets/trelio-logo.svg",
+      logoDark: "./assets/trelio-logo-dark.svg",
+    },
+  );
+  for (const assetPath of [
+    codexManifest.interface.composerIcon,
+    codexManifest.interface.logo,
+    codexManifest.interface.logoDark,
+  ]) {
+    assert.equal((await stat(path.join(pluginDirectory, assetPath))).isFile(), true);
+  }
   assert.deepEqual(mcpManifest.mcpServers.trelio, {
     url: "https://trelio.ru/mcp",
     oauth: {

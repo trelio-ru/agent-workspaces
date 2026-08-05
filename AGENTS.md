@@ -221,6 +221,10 @@
 
 - Bridge constant, Codex manifest, Claude manifest и Claude marketplace entry
   обязаны иметь одну версию; synchronization защищён тестом.
+- Codex manifest показывает канонический трёхполосный знак Trelio из
+  `plugins/trelio-agent-workspaces/assets/`: компактная SVG-иконка наследует
+  цвет интерфейса, а `logo` / `logoDark` сохраняют контраст в обеих темах.
+  Пути ассетов и фирменный `brandColor` закреплены version regression.
 - Stable version и Git tag выпускаются вместе. Не меняй версию и не создавай
   tag без явной команды на релиз.
 - Codex фиксирует абсолютные versioned-пути bundled skills в контексте задачи.

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <!-- Белая версия сохраняет ту же геометрию и контраст на тёмном фоне. -->
+  <rect x="112" y="80" width="32" height="352" rx="16" fill="#FFFFFF" />
+  <rect x="240" y="80" width="32" height="352" rx="16" fill="#FFFFFF" />
+  <rect x="368" y="80" width="32" height="352" rx="16" fill="#FFFFFF" />
+</svg>

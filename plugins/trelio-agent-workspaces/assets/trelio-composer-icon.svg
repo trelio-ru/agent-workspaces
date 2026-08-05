@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 512 512" fill="none">
+  <!-- Компактный знак наследует цвет интерфейса Codex, поэтому остаётся
+       читаемым и в светлой, и в тёмной теме без отдельной composer-иконки. -->
+  <rect x="112" y="80" width="32" height="352" rx="16" fill="currentColor" />
+  <rect x="240" y="80" width="32" height="352" rx="16" fill="currentColor" />
+  <rect x="368" y="80" width="32" height="352" rx="16" fill="currentColor" />
+</svg>
