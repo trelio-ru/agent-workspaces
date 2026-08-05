@@ -89,18 +89,24 @@
   transport fallback или автоматический повтор. Connections, sessions,
   consent и policy навыков независимы.
 - Канонический Telegram Web skill и signed runtime находятся в
-  `platform-skills/telegram-web/`. Runtime `1.0.2` использует отдельный Web K
+  `platform-skills/telegram-web/`. Runtime `1.0.3` использует отдельный Web K
   profile, visible owner login/consent и headless content-команды, а broad или
   недоказуемые операции возвращает как unsupported до решающего side effect.
   Login и logout owner handoff нельзя реализовывать одним долгим provider
   `waitForFunction`: короткие структурные polls остаются под 30-секундным
   renderer-stall fence, а полный видимый handoff – под exact `holdMs` и общий
   referenced lifecycle. Login завершается только после стабильного видимого
-  authenticated surface, отсутствия видимого password/passcode handoff и
-  canonical account identity proof; пароль/код runtime не читает и не вводит.
-  Восстановленная canonical home page сначала проходит bounded structural
-  readiness proof: готовая страница не получает конкурирующий `goto`, а
-  неготовая получает только один fallback navigation. Probe переводит native
+  authenticated surface, отсутствия exact visible `#auth-pages` и
+  password/passcode handoff и canonical account identity proof; пароль/код
+  runtime не читает и не вводит. До публичного login success headed Chrome
+  должен graceful-завершиться, а тот же профиль под непрерывно удерживаемым
+  profile lock – открыться новым headless process и доказать тот же private
+  account digest; logged-out/locked/mismatch/forced teardown не разрешают
+  success, auto-retry или transport fallback. Восстановленная canonical home
+  page сначала проходит bounded structural readiness proof: обычная готовая
+  content page не получает конкурирующий `goto`, но pre-content login/probe
+  обязан сделать один fresh canonical reload, чтобы не доверять restored DOM.
+  Probe bounded-poll-ит auth + identity до устойчивого результата и переводит native
   browser/provider ошибки в `TELEGRAM_WEB_PROBE_FAILED` только с фиксированной
   безопасной phase, не раскрывая raw error, URL, path, content или account
   digest; deliberate runtime errors сохраняют исходный code.

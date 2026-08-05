@@ -106,7 +106,7 @@ const environmentFor = (temporaryDirectory, overrides = {}) => ({
   TRELIO_CONFIG_HOME: path.join(temporaryDirectory, "config"),
   TRELIO_CACHE_HOME: path.join(temporaryDirectory, "cache"),
   TRELIO_SKILL_ID: "telegram-web",
-  TRELIO_SKILL_RUNTIME_VERSION: "1.0.2",
+  TRELIO_SKILL_RUNTIME_VERSION: "1.0.3",
   TRELIO_SKILL_COMPANY_ID: companyId,
   TRELIO_SKILL_MEMBER_ID: memberId,
   TRELIO_SKILL_CONNECTION_ID: connectionId,
@@ -417,6 +417,63 @@ test("restored canonical authenticated page becomes ready before probe can start
   assert.equal(reloadCalls, 0);
 });
 
+test("pre-content auth commands replace a ready restored DOM with one fresh canonical reload", async () => {
+  const visibleElement = {
+    getBoundingClientRect: () => ({ width: 180, height: 48 }),
+  };
+  let freshNavigationCompleted = false;
+  let readinessChecks = 0;
+  let hiddenAuthReadinessObserved = false;
+  let gotoCalls = 0;
+  let reloadCalls = 0;
+  const page = {
+    url: () => "https://web.telegram.org/k/",
+    waitForFunction: async (callback, selectors) => {
+      readinessChecks += 1;
+      if (!freshNavigationCompleted) {
+        assert.equal(await callback(selectors), true);
+        return;
+      }
+      assert.equal(await callback(selectors), false);
+      hiddenAuthReadinessObserved = true;
+      authOpacity = "1";
+      assert.equal(await callback(selectors), true);
+    },
+    goto: async () => { gotoCalls += 1; },
+    reload: async () => {
+      reloadCalls += 1;
+      freshNavigationCompleted = true;
+    },
+    evaluate: async (callback, argument) => callback(argument),
+  };
+  let authOpacity = "0";
+
+  const surface = await withBrowserGlobals({
+    document: {
+      querySelectorAll: (selector) => {
+        if (!freshNavigationCompleted && selector === ".chatlist-chat[data-peer-id]") return [visibleElement];
+        if (freshNavigationCompleted && selector === "#auth-pages") return [visibleElement];
+        return [];
+      },
+    },
+    getComputedStyle: (element) => ({
+      display: "block",
+      visibility: "visible",
+      opacity: freshNavigationCompleted && element === visibleElement ? authOpacity : "1",
+    }),
+  }, () => __testing.openTelegramHome(page, {
+    account: 1,
+    timeoutMs: 5_000,
+  }, { allowLoggedOut: true, requireFreshNavigation: true }));
+
+  assert.equal(surface.loggedIn, false);
+  assert.equal(surface.login, true);
+  assert.equal(readinessChecks, 2);
+  assert.equal(hiddenAuthReadinessObserved, true);
+  assert.equal(gotoCalls, 0);
+  assert.equal(reloadCalls, 1);
+});
+
 test("unready restored canonical page receives one fallback goto without a second reload", async () => {
   const visibleElement = {
     getBoundingClientRect: () => ({ width: 180, height: 48 }),
@@ -475,12 +532,16 @@ test("authenticated probe exposes only a fixed failure stage for every native ph
       findChromeExecutable: async () => "/fixed/test/chrome",
       hasPinnedPlaywright: async () => true,
       withTelegramBrowser: async (_identity, _options, callback) => callback({ page: {} }),
-      openTelegramHome: async () => ({
-        supported: true,
-        loggedIn: true,
-        login: false,
-        locked: false,
-      }),
+      openTelegramHome: async (_page, _options, contract) => {
+        assert.equal(contract.requireFreshNavigation, true);
+        return {
+          supported: true,
+          loggedIn: true,
+          login: false,
+          locked: false,
+        };
+      },
+      waitForAuthenticatedTelegramAccount: async () => privateDigest,
       readCurrentTelegramAccountDigest: async () => privateDigest,
       renderConsentStatus: async () => consent,
     };
@@ -495,7 +556,7 @@ test("authenticated probe exposes only a fixed failure stage for every native ph
       ["runtime_inspection", "hasPinnedPlaywright"],
       ["browser_session", "withTelegramBrowser"],
       ["telegram_home", "openTelegramHome"],
-      ["account_identity", "readCurrentTelegramAccountDigest"],
+      ["account_identity", "waitForAuthenticatedTelegramAccount"],
       ["consent_state", "renderConsentStatus"],
     ];
     for (const [expectedStage, dependencyName] of phaseCases) {
@@ -535,6 +596,99 @@ test("authenticated probe exposes only a fixed failure stage for every native ph
       }),
       (error) => error === known,
     );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("probe settles a transient login shell but returns needs_reconnect for stable login", async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-probe-settle-")));
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const privateDigest = "d".repeat(64);
+    let surface = {
+      supported: true,
+      loggedIn: false,
+      login: true,
+      locked: false,
+      hasChatList: false,
+      hasComposer: false,
+    };
+    let settleCalls = 0;
+    let directDigestReads = 0;
+    const baseDependencies = {
+      findChromeExecutable: async () => "/fixed/test/chrome",
+      hasPinnedPlaywright: async () => true,
+      withTelegramBrowser: async (_identity, options, callback) => {
+        assert.equal(options.headed, false);
+        return callback({ page: { phase: "probe" } });
+      },
+      openTelegramHome: async (_page, _options, contract) => {
+        assert.equal(contract.allowLoggedOut, true);
+        assert.equal(contract.requireFreshNavigation, true);
+        return surface;
+      },
+      classifyTelegramSurface: async () => surface,
+      readCurrentTelegramAccountDigest: async () => {
+        directDigestReads += 1;
+        return privateDigest;
+      },
+      renderConsentStatus: async () => ({
+        valid: false,
+        termsVersion: CONSENT_TERMS_VERSION,
+        acceptedAt: null,
+        expiresAt: null,
+        accountBound: false,
+        reason: "not_accepted",
+      }),
+    };
+
+    const transient = await runCli(["probe", "--account", "1", "--timeout-ms", "30000"], environment, {
+      ...baseDependencies,
+      waitForAuthenticatedTelegramAccount: async (_page, account, settleMs, proofDependencies) => {
+        settleCalls += 1;
+        assert.equal(account, 1);
+        assert.equal(settleMs, 15_000);
+        assert.equal(proofDependencies.classifyTelegramSurface, baseDependencies.classifyTelegramSurface);
+        assert.equal(proofDependencies.readCurrentTelegramAccountDigest, baseDependencies.readCurrentTelegramAccountDigest);
+        surface = {
+          ...surface,
+          loggedIn: true,
+          login: false,
+          hasChatList: true,
+          hasComposer: true,
+        };
+        return privateDigest;
+      },
+    });
+    assert.equal(transient.accessStatus, "consent_required");
+    assert.equal(transient.loggedIn, true);
+    assert.equal(settleCalls, 1);
+    assert.equal(JSON.stringify(transient).includes(privateDigest), false);
+
+    surface = {
+      supported: true,
+      loggedIn: false,
+      login: true,
+      locked: false,
+      hasChatList: false,
+      hasComposer: false,
+    };
+    const stableLogin = await runCli(["probe", "--account", "1", "--timeout-ms", "30000"], environment, {
+      ...baseDependencies,
+      waitForAuthenticatedTelegramAccount: async () => {
+        settleCalls += 1;
+        throw new TelegramWebRuntimeError(
+          "TELEGRAM_WEB_LOGIN_TIMEOUT",
+          "Injected bounded probe settle timeout.",
+        );
+      },
+    });
+    assert.equal(stableLogin.accessStatus, "needs_reconnect");
+    assert.equal(stableLogin.loggedIn, false);
+    assert.equal(stableLogin.locked, false);
+    assert.equal(settleCalls, 2);
+    assert.equal(directDigestReads, 0);
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -684,6 +838,104 @@ test("pre-consent surface classification is structural and never reads broad bod
   assert.equal((await classify("locked")).locked, true);
 });
 
+test("exact auth-pages surface wins over stale authenticated DOM without reading credentials or content", async () => {
+  let forbiddenReads = 0;
+  const visibleElement = {
+    getBoundingClientRect: () => ({ width: 180, height: 48 }),
+  };
+  const guardedElement = new Proxy(visibleElement, {
+    get(target, property, receiver) {
+      if (["value", "textContent", "innerText", "innerHTML", "outerHTML"].includes(property)) {
+        forbiddenReads += 1;
+        throw new Error("authentication and chat content must remain unread");
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const body = {};
+  Object.defineProperty(body, "innerText", {
+    get() {
+      forbiddenReads += 1;
+      throw new Error("body content must remain unread");
+    },
+  });
+
+  const result = await withBrowserGlobals({
+    document: {
+      body,
+      querySelectorAll: (selector) => {
+        if (selector === "#auth-pages") return [guardedElement];
+        if (selector === ".chatlist-chat[data-peer-id]") return [guardedElement];
+        if (selector === '.input-message-input[contenteditable="true"]') return [guardedElement];
+        if (selector === ".bubbles-inner") return [guardedElement];
+        return [];
+      },
+    },
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  }, () => classifyTelegramSurface({
+    evaluate: async (callback, argument) => callback(argument),
+  }));
+
+  assert.equal(result.supported, true);
+  assert.equal(result.loggedIn, false);
+  assert.equal(result.login, true);
+  assert.equal(result.locked, false);
+  assert.equal(result.hasChatList, true);
+  assert.equal(result.hasComposer, true);
+  assert.equal(forbiddenReads, 0);
+});
+
+test("authenticated-looking nodes under hidden, transparent, inert, or aria-hidden ancestors are not visible", async () => {
+  for (const ancestorState of ["display-none", "opacity-zero", "inert", "aria-hidden"]) {
+    const ancestor = {
+      parentElement: null,
+      hidden: false,
+      inert: ancestorState === "inert",
+      ariaHidden: ancestorState === "aria-hidden" ? "true" : null,
+      hasAttribute: (name) => name === "inert" && ancestorState === "inert",
+      getAttribute: (name) => name === "aria-hidden" && ancestorState === "aria-hidden" ? "true" : null,
+    };
+    const staleChat = {
+      parentElement: ancestor,
+      getBoundingClientRect: () => ({ width: 180, height: 48 }),
+      hasAttribute: () => false,
+      getAttribute: () => null,
+      closest: (selector) => {
+        if (ancestorState === "inert" && selector.includes("[inert]")) return ancestor;
+        if (ancestorState === "aria-hidden" && selector.includes("aria-hidden")) return ancestor;
+        return null;
+      },
+    };
+    const authPages = {
+      parentElement: null,
+      getBoundingClientRect: () => ({ width: 320, height: 640 }),
+      hasAttribute: () => false,
+      getAttribute: () => null,
+      closest: () => null,
+    };
+    const result = await withBrowserGlobals({
+      document: {
+        querySelectorAll: (selector) => {
+          if (selector === "#auth-pages") return [authPages];
+          if (selector === ".chatlist-chat[data-peer-id]") return [staleChat];
+          return [];
+        },
+      },
+      getComputedStyle: (element) => ({
+        display: element === ancestor && ancestorState === "display-none" ? "none" : "block",
+        visibility: "visible",
+        opacity: element === ancestor && ancestorState === "opacity-zero" ? "0" : "1",
+      }),
+    }, () => classifyTelegramSurface({
+      evaluate: async (callback, argument) => callback(argument),
+    }));
+
+    assert.equal(result.loggedIn, false, ancestorState);
+    assert.equal(result.login, true, ancestorState);
+    assert.equal(result.hasChatList, false, ancestorState);
+  }
+});
+
 test("login owner handoff survives virtual 30 seconds, keeps 2FA protected, and never reads or types its password", async () => {
   let virtualNow = 0;
   let forbiddenCredentialAccesses = 0;
@@ -804,71 +1056,269 @@ test("login hold expires at its own deadline beyond 30 seconds and releases the 
   }
 });
 
-test("login call-site rearms the referenced lifecycle after setup and never restores one long provider wait", async () => {
-  const options = {
-    command: "login",
-    account: 1,
-    holdMs: 160,
-    timeoutMs: 90,
-    headed: false,
+const createTwoPhaseLoginHarness = ({
+  firstDigest = "f".repeat(64),
+  reopenedDigest = firstDigest,
+  reopenedSurface = {
+    supported: true,
+    loggedIn: true,
+    login: false,
+    locked: false,
+    hasChatList: true,
+    hasComposer: true,
+  },
+  teardownFailurePhase = null,
+} = {}) => {
+  const events = [];
+  const stats = {
+    digestReads: 0,
+    directDigestReads: 0,
+    headlessSettles: 0,
+    invalidations: 0,
+    saves: 0,
+    sessions: 0,
   };
-  let teardownVerified = false;
-  let abortTeardowns = 0;
-  let broughtToFront = false;
-  let waitForFunctionReads = 0;
-  const rawPage = {
-    bringToFront: async () => { broughtToFront = true; },
-  };
-  Object.defineProperty(rawPage, "waitForFunction", {
-    get() {
-      waitForFunctionReads += 1;
-      throw new Error("login must use bounded structural polls");
+  const teardownError = new TelegramWebRuntimeError(
+    "TELEGRAM_WEB_PROFILE_TEARDOWN_UNVERIFIED",
+    "Injected persistent profile teardown failure.",
+  );
+  const pages = [
+    {
+      phase: "headed",
+      bringToFront: async () => { events.push("headed:front"); },
     },
-  });
+    { phase: "headless" },
+  ];
 
-  const result = await __testing.runLoginCommand({}, options, {}, {
-    bootstrapBrowserRuntime: async () => undefined,
-    openTelegramHome: async () => {
-      // Consume most of the setup deadline before the browser is ready. The
-      // full owner handoff must start after this phase, not at process start.
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      return { supported: true, loggedIn: false, login: true, locked: false };
+  return {
+    events,
+    stats,
+    firstDigest,
+    dependencies: {
+      bootstrapBrowserRuntime: async () => { events.push("bootstrap"); },
+      acquireProfileLock: async (_identity, callback) => {
+        events.push("lock:acquired");
+        try {
+          return await callback();
+        } finally {
+          events.push("lock:released");
+        }
+      },
+      withTelegramBrowserSession: async (_identity, effectiveOptions, callback) => {
+        const page = pages[stats.sessions];
+        assert.ok(page, "login persistence proof must use exactly two browser sessions");
+        const phase = page.phase;
+        stats.sessions += 1;
+        assert.equal(effectiveOptions.account, 1);
+        assert.equal(effectiveOptions.headed, phase === "headed");
+        assert.equal(effectiveOptions.requireGracefulTeardown, true);
+        events.push(`${phase}:session:start`);
+        let result;
+        let callbackError;
+        try {
+          result = await callback({ page });
+        } catch (error) {
+          callbackError = error;
+        } finally {
+          // The injected seam models verified browser teardown. Recording it
+          // before returning/throwing lets every test prove that the one
+          // profile lock spans both launches and all failure cleanup.
+          events.push(`${phase}:session:teardown`);
+        }
+        if (callbackError) throw callbackError;
+        if (teardownFailurePhase === phase) throw teardownError;
+        return result;
+      },
+      openTelegramHome: async (page, effectiveOptions, contract) => {
+        assert.equal(effectiveOptions.account, 1);
+        assert.equal(contract.allowLoggedOut, true);
+        assert.equal(contract.requireFreshNavigation, true);
+        events.push(`${page.phase}:home`);
+        return page.phase === "headed"
+          ? { supported: true, loggedIn: false, login: true, locked: false }
+          : reopenedSurface;
+      },
+      classifyTelegramSurface: async (page) => {
+        events.push(`${page.phase}:classify`);
+        return reopenedSurface;
+      },
+      waitForAuthenticatedTelegramAccount: async (page, account, holdMs, proofDependencies = {}) => {
+        assert.equal(account, 1);
+        if (page.phase === "headed") {
+          assert.equal(holdMs, 160);
+          events.push("headed:authenticated");
+          return firstDigest;
+        }
+        assert.equal(page.phase, "headless");
+        stats.headlessSettles += 1;
+        assert.equal(typeof proofDependencies.classifyTelegramSurface, "function");
+        assert.equal(typeof proofDependencies.readCurrentTelegramAccountDigest, "function");
+        if (!reopenedSurface.loggedIn) {
+          throw new TelegramWebRuntimeError(
+            "TELEGRAM_WEB_LOGIN_TIMEOUT",
+            "Injected stable reopened authentication timeout.",
+          );
+        }
+        stats.digestReads += 1;
+        events.push("headless:stable-authenticated");
+        return reopenedDigest;
+      },
+      readCurrentTelegramAccountDigest: async () => {
+        stats.directDigestReads += 1;
+        throw new Error("login persistence must reuse the bounded stable authentication proof");
+      },
+      invalidatePendingApproval: async () => {
+        stats.invalidations += 1;
+        events.push("approval:invalidated");
+      },
+      savePreferredAccount: async (_identity, account) => {
+        assert.equal(account, 1);
+        stats.saves += 1;
+        events.push("account:saved");
+      },
     },
-    waitForAuthenticatedTelegramAccount: async (page, account, holdMs) => {
-      assert.equal(account, 1);
-      assert.equal(holdMs, 160);
-      assert.equal(page.bringToFront instanceof Function, true);
-      // Setup + this wait exceeds the original 90 ms deadline. A stale outer
-      // race timer would abort here even though the fresh handoff is healthy.
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      return "f".repeat(64);
-    },
-    invalidatePendingApproval: async () => undefined,
-    savePreferredAccount: async () => undefined,
-    withTelegramBrowser: async (_identity, effectiveOptions, callback) => {
-      const lifecycle = __testing.createCommandLifecycle(effectiveOptions);
-      effectiveOptions.commandLifecycle = lifecycle;
-      lifecycle.setAbortHandler(() => {
-        abortTeardowns += 1;
-        teardownVerified = true;
-      });
-      const page = __testing.boundedPageProxy(rawPage, lifecycle, effectiveOptions);
-      try {
-        return await lifecycle.race(callback({ page }), "running login call-site regression");
-      } finally {
-        lifecycle.stop();
-        delete effectiveOptions.commandLifecycle;
-        teardownVerified = true;
-      }
-    },
-  });
+  };
+};
+
+const twoPhaseLoginOptions = Object.freeze({
+  command: "login",
+  account: 1,
+  holdMs: 160,
+  timeoutMs: 90,
+  headed: false,
+});
+
+test("login reports success only after same-digest fresh headless persistence proof under one lock", async () => {
+  const harness = createTwoPhaseLoginHarness();
+  const result = await __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  );
 
   assert.equal(result.command, "login");
   assert.equal(result.loggedIn, true);
-  assert.equal(broughtToFront, true);
-  assert.equal(teardownVerified, true);
-  assert.equal(abortTeardowns, 0);
-  assert.equal(waitForFunctionReads, 0);
+  assert.equal(result.accountSlot, 1);
+  assert.equal(harness.stats.sessions, 2);
+  assert.equal(harness.stats.headlessSettles, 1);
+  assert.equal(harness.stats.digestReads, 1);
+  assert.equal(harness.stats.directDigestReads, 0);
+  assert.equal(harness.stats.invalidations, 1);
+  assert.equal(harness.stats.saves, 1);
+  assert.equal(JSON.stringify(result).includes(harness.firstDigest), false);
+  assert.ok(harness.events.indexOf("lock:acquired") < harness.events.indexOf("headed:session:start"));
+  assert.ok(harness.events.indexOf("headed:session:teardown") < harness.events.indexOf("headless:session:start"));
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("approval:invalidated"));
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("account:saved"));
+  assert.ok(harness.events.indexOf("account:saved") < harness.events.indexOf("lock:released"));
+});
+
+test("login fails without identity read or local state mutation when fresh session reopens ordinary auth", async () => {
+  const harness = createTwoPhaseLoginHarness({
+    reopenedSurface: {
+      supported: true,
+      loggedIn: false,
+      login: true,
+      locked: false,
+      hasChatList: false,
+      hasComposer: false,
+    },
+  });
+  await expectCode(() => __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  ), "TELEGRAM_WEB_LOGIN_NOT_PERSISTED");
+
+  assert.equal(harness.stats.sessions, 2);
+  assert.equal(harness.stats.headlessSettles, 1);
+  assert.equal(harness.stats.digestReads, 0);
+  assert.equal(harness.stats.directDigestReads, 0);
+  assert.equal(harness.stats.invalidations, 0);
+  assert.equal(harness.stats.saves, 0);
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("lock:released"));
+});
+
+test("login returns a distinct fail-closed error when fresh persistence session is locked", async () => {
+  const harness = createTwoPhaseLoginHarness({
+    reopenedSurface: {
+      supported: true,
+      loggedIn: false,
+      login: false,
+      locked: true,
+      hasChatList: false,
+      hasComposer: false,
+    },
+  });
+  await expectCode(() => __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  ), "TELEGRAM_WEB_LOGIN_PERSISTENCE_LOCKED");
+
+  assert.equal(harness.stats.digestReads, 0);
+  assert.equal(harness.stats.directDigestReads, 0);
+  assert.equal(harness.stats.headlessSettles, 0);
+  assert.equal(harness.stats.invalidations, 0);
+  assert.equal(harness.stats.saves, 0);
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("lock:released"));
+});
+
+test("login rejects a different account identity after fresh persistence launch", async () => {
+  const harness = createTwoPhaseLoginHarness({ reopenedDigest: "e".repeat(64) });
+  await expectCode(() => __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  ), "TELEGRAM_WEB_ACCOUNT_CHANGED");
+
+  assert.equal(harness.stats.digestReads, 1);
+  assert.equal(harness.stats.directDigestReads, 0);
+  assert.equal(harness.stats.headlessSettles, 1);
+  assert.equal(harness.stats.invalidations, 0);
+  assert.equal(harness.stats.saves, 0);
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("lock:released"));
+});
+
+test("login propagates headed teardown uncertainty before reopening and releases the profile lock last", async () => {
+  const harness = createTwoPhaseLoginHarness({ teardownFailurePhase: "headed" });
+  await expectCode(() => __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  ), "TELEGRAM_WEB_PROFILE_TEARDOWN_UNVERIFIED");
+
+  assert.equal(harness.stats.sessions, 1);
+  assert.equal(harness.stats.digestReads, 0);
+  assert.equal(harness.stats.directDigestReads, 0);
+  assert.equal(harness.stats.headlessSettles, 0);
+  assert.equal(harness.stats.invalidations, 0);
+  assert.equal(harness.stats.saves, 0);
+  assert.ok(harness.events.indexOf("headed:authenticated") < harness.events.indexOf("headed:session:teardown"));
+  assert.ok(harness.events.indexOf("headed:session:teardown") < harness.events.indexOf("lock:released"));
+  assert.equal(harness.events.includes("headless:session:start"), false);
+});
+
+test("login rejects headless persistence teardown uncertainty before publishing success", async () => {
+  const harness = createTwoPhaseLoginHarness({ teardownFailurePhase: "headless" });
+  await expectCode(() => __testing.runLoginCommand(
+    {},
+    { ...twoPhaseLoginOptions },
+    {},
+    harness.dependencies,
+  ), "TELEGRAM_WEB_PROFILE_TEARDOWN_UNVERIFIED");
+
+  assert.equal(harness.stats.sessions, 2);
+  assert.equal(harness.stats.digestReads, 1);
+  assert.equal(harness.stats.invalidations, 0);
+  assert.equal(harness.stats.saves, 0);
+  assert.ok(harness.events.indexOf("headless:stable-authenticated") < harness.events.indexOf("headless:session:teardown"));
+  assert.ok(harness.events.indexOf("headless:session:teardown") < harness.events.indexOf("lock:released"));
 });
 
 test("logout and inspect owner handoffs replace the setup deadline without weakening outcome classification", async () => {
@@ -3337,7 +3787,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
     await writeFile(managedFile, "secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(managedFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
 
-    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.2", "node_modules", "secret.txt");
+    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.3", "node_modules", "secret.txt");
     await mkdir(path.dirname(runtimeCacheFile), { recursive: true, mode: 0o700 });
     await writeFile(runtimeCacheFile, "cache-secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(runtimeCacheFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
@@ -3360,7 +3810,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
 
 test("outbound document snapshots require canonical private non-empty regular files", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.2 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.3 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-input-")));
@@ -3490,7 +3940,7 @@ test("document approval binds one source snapshot, caption, destination and all 
 
 test("one-document send still requires dry-run approval under autonomous text policy before browser launch", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.2 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.3 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-file-policy-")));
@@ -3763,7 +4213,7 @@ test("default host cache is allowed only from its exact materialized skill-runti
   const previousCwd = process.cwd();
   try {
     const cacheBase = path.join(temporaryDirectory, "cache");
-    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.2");
+    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.3");
     await mkdir(materialized, { recursive: true, mode: 0o700 });
     process.chdir(materialized);
     assert.equal(
@@ -3796,7 +4246,7 @@ test("runtime cache accepts an owned 0755 base but rejects unsafe descendants be
     const environment = environmentFor(temporaryDirectory);
     const identity = identityFor(environment);
     const cacheBase = environment.TRELIO_CACHE_HOME;
-    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.2");
+    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.3");
     await mkdir(cacheBase, { mode: 0o755 });
     await chmod(cacheBase, 0o755);
     await __testing.ensurePrivateTree(cacheBase, runtimeRoot, environment);
@@ -4712,6 +5162,31 @@ test("persistent teardown without an exact captured process preserves the profil
   );
 });
 
+test("login persistence teardown rejects a forced close even after exact process exit is proved", async () => {
+  let connected = true;
+  const terminationModes = [];
+  const context = {
+    browser: () => ({ isConnected: () => connected }),
+    close: async () => { throw new Error("injected graceful close failure"); },
+  };
+  await expectCode(() => __testing.closePersistentContextVerified(context, {
+    // exitCode proves this synthetic process is already down after the injected
+    // termination. detached=false keeps the group probe on the same proof.
+    browserProcess: {
+      pid: 2_000_000_000,
+      detached: false,
+      exitCode: 0,
+      signalCode: null,
+    },
+    terminateBrowserProcess: async (_browserProcess, force) => {
+      terminationModes.push(force ? "KILL" : "TERM");
+      connected = false;
+    },
+    requireGracefulTeardown: true,
+  }), "TELEGRAM_WEB_LOGIN_PERSISTENCE_UNVERIFIED");
+  assert.deepEqual(terminationModes, ["TERM"]);
+});
+
 test("captured detached browser group is TERM/KILL fenced after a hung provider evaluation", async (context) => {
   if (process.platform === "win32") {
     context.skip("POSIX process-group regression; Windows uses trusted taskkill /T /F");
@@ -4955,7 +5430,13 @@ test("source contains exact security contracts for headless watch, logout, Windo
   assert.match(source, /MAX_REPLY_CONTEXT_CHARS = 2_000/u);
   assert.match(source, /MAX_ATTACHMENT_METADATA_PER_MESSAGE = 1/u);
   assert.doesNotMatch(source, /document\.body\??\.innerText/u);
-  assert.match(source, /const protectedCredentialSurface = passwordInput/u);
+  assert.match(source, /const TELEGRAM_AUTH_ROOT_SELECTOR = '#auth-pages'/u);
+  assert.match(source, /const protectedCredentialSurface = authRootVisible \|\| passwordInput/u);
+  assert.match(source, /requireFreshNavigation: true/u);
+  assert.match(source, /withTelegramBrowserSession/u);
+  assert.match(source, /requireGracefulTeardown: true/u);
+  assert.match(source, /TELEGRAM_WEB_LOGIN_NOT_PERSISTED/u);
+  assert.match(source, /TELEGRAM_WEB_LOGIN_PERSISTENCE_LOCKED/u);
   assert.match(source, /LOGIN_AUTH_STABILITY_MS = 1_000/u);
   assert.match(source, /loginOptions\.commandLifecycle\?\.beginOwnerHandoff/u);
   assert.match(source, /inspectOptions\.commandLifecycle\?\.beginOwnerHandoff/u);

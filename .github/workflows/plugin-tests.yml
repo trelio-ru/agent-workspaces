@@ -58,7 +58,7 @@ jobs:
         with:
           node-version: 22
 
-      # Runtime 1.0.2 rejects Windows before creating profile/state. Exercise
+      # Runtime 1.0.3 rejects Windows before creating profile/state. Exercise
       # that real fail-closed gate plus pure parsing/environment/source
       # contracts here; do not inject the macOS lane and then weaken the real
       # Windows DACL verifier merely to run unreachable profile scenarios.
