@@ -106,7 +106,7 @@ const environmentFor = (temporaryDirectory, overrides = {}) => ({
   TRELIO_CONFIG_HOME: path.join(temporaryDirectory, "config"),
   TRELIO_CACHE_HOME: path.join(temporaryDirectory, "cache"),
   TRELIO_SKILL_ID: "telegram-web",
-  TRELIO_SKILL_RUNTIME_VERSION: "1.0.0",
+  TRELIO_SKILL_RUNTIME_VERSION: "1.0.1",
   TRELIO_SKILL_COMPANY_ID: companyId,
   TRELIO_SKILL_MEMBER_ID: memberId,
   TRELIO_SKILL_CONNECTION_ID: connectionId,
@@ -475,6 +475,9 @@ test("headed inspect is consent-independent, slot-visible, read-only, and never 
 test("pre-consent surface classification is structural and never reads broad body text", async () => {
   const classify = async (surface) => {
     let bodyTextReads = 0;
+    const visibleElement = {
+      getBoundingClientRect: () => ({ width: 100, height: 40 }),
+    };
     const body = {};
     Object.defineProperty(body, "innerText", {
       get() {
@@ -484,15 +487,18 @@ test("pre-consent surface classification is structural and never reads broad bod
     });
     const document = {
       body,
-      querySelector: (selector) => {
-        if (surface === "logged_in" && selector === ".chatlist-chat[data-peer-id]") return {};
-        if (surface === "login" && selector.includes("canvas,")) return {};
-        if (surface === "locked" && selector.includes('input[type="password"]')) return {};
-        if (surface === "locked" && selector === ".btn-primary.btn-color-primary") return {};
-        return null;
+      querySelectorAll: (selector) => {
+        if (surface === "logged_in" && selector === ".chatlist-chat[data-peer-id]") return [visibleElement];
+        if (surface === "login" && selector.includes("canvas,")) return [visibleElement];
+        if (surface === "locked" && selector.includes('input[type="password"]')) return [visibleElement];
+        if (surface === "locked" && selector === ".btn-primary.btn-color-primary") return [visibleElement];
+        return [];
       },
     };
-    const result = await withBrowserGlobals({ document }, () => classifyTelegramSurface({
+    const result = await withBrowserGlobals({
+      document,
+      getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    }, () => classifyTelegramSurface({
       evaluate: async (callback, argument) => callback(argument),
     }));
     assert.equal(bodyTextReads, 0);
@@ -511,21 +517,279 @@ test("pre-consent surface classification is structural and never reads broad bod
   assert.equal((await classify("locked")).locked, true);
 });
 
-test("logout proof rejects composer/auth overlap and requires zero provider accounts with no active identity", async () => {
-  const structuralPage = (composerPresent) => ({
-    waitForFunction: async (callback, argument) => callback(argument),
-  });
-  const runStructural = (composerPresent) => withBrowserGlobals({
-    document: {
-      querySelector: (selector) => {
-        if (selector.includes("canvas")) return {};
-        if (composerPresent && selector.includes("input-message-input")) return {};
-        return null;
-      },
+test("login owner handoff survives virtual 30 seconds, keeps 2FA protected, and never reads or types its password", async () => {
+  let virtualNow = 0;
+  let forbiddenCredentialAccesses = 0;
+  let digestReads = 0;
+  let firstFinalDigestReadAt = null;
+  let observedProtectedSurfaceAfterThirtySeconds = false;
+  const secretSentinel = "never-expose-this-2fa-password";
+  const visible = {
+    getBoundingClientRect: () => ({ width: 120, height: 40 }),
+  };
+  const hidden = {
+    getBoundingClientRect: () => ({ width: 0, height: 0 }),
+  };
+  const password = new Proxy(visible, {
+    get(target, property, receiver) {
+      if (["value", "textContent", "innerText", "innerHTML", "outerHTML", "getAttribute"].includes(property)) {
+        forbiddenCredentialAccesses += 1;
+        throw new Error(secretSentinel);
+      }
+      return Reflect.get(target, property, receiver);
     },
-  }, () => __testing.waitForVerifiedLoggedOutSurface(structuralPage(composerPresent), 1_000));
+  });
+  const document = {
+    querySelectorAll: (selector) => {
+      const transientAuthenticatedShell = virtualNow >= 10_000 && virtualNow < 10_500;
+      const twoFactorVisible = virtualNow >= 30_000 && virtualNow < 45_000;
+      const authenticated = transientAuthenticatedShell || virtualNow >= 45_000;
+      if (selector === ".chatlist-chat[data-peer-id]") return authenticated ? [visible] : [];
+      if (selector === '.input-message-input[contenteditable="true"]') {
+        // Web K may keep a stale chat composer mounted behind the 2FA card.
+        // Make it visible here as the stronger regression: password wins even
+        // over a background authenticated-looking surface.
+        return twoFactorVisible ? [visible] : [hidden];
+      }
+      if (selector === ".bubbles-inner") return [];
+      if (selector.includes('input[type="password"]')) return twoFactorVisible ? [password] : [];
+      if (selector === ".btn-primary.btn-color-primary") return twoFactorVisible ? [visible] : [];
+      if (selector.includes("canvas,")) {
+        return virtualNow < 30_000 && !transientAuthenticatedShell ? [visible] : [];
+      }
+      return [];
+    },
+  };
+  const page = new Proxy({
+    evaluate: async (callback, argument) => callback(argument),
+    waitForTimeout: async (delayMs) => {
+      virtualNow += delayMs;
+      if (virtualNow > 30_000 && virtualNow < 45_000) {
+        observedProtectedSurfaceAfterThirtySeconds = true;
+      }
+    },
+  }, {
+    get(target, property, receiver) {
+      if (["fill", "type", "inputValue", "press", "keyboard"].includes(property)) {
+        forbiddenCredentialAccesses += 1;
+        throw new Error(secretSentinel);
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
+
+  const digest = await withBrowserGlobals({
+    document,
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    location: { href: "https://web.telegram.org/k/" },
+    rootScope: { myId: 123 },
+    AccountController: { get: async () => ({ userId: 123 }) },
+    appStorage: { get: async () => ({ id: 123 }) },
+    crypto: globalThis.crypto,
+    TextEncoder: globalThis.TextEncoder,
+  }, async () => __testing.waitForAuthenticatedTelegramAccount(page, 1, 60_000, {
+    now: () => virtualNow,
+    readCurrentTelegramAccountDigest: async (...args) => {
+      digestReads += 1;
+      if (virtualNow >= 45_000 && firstFinalDigestReadAt === null) firstFinalDigestReadAt = virtualNow;
+      return readCurrentTelegramAccountDigest(...args);
+    },
+  }));
+
+  assert.match(digest, /^[0-9a-f]{64}$/u);
+  assert.equal(observedProtectedSurfaceAfterThirtySeconds, true);
+  assert.equal(firstFinalDigestReadAt, 45_000);
+  assert.equal(virtualNow, 46_000);
+  assert.equal(digestReads >= 6, true);
+  assert.equal(forbiddenCredentialAccesses, 0);
+  assert.equal(JSON.stringify({ digest }).includes(secretSentinel), false);
+});
+
+test("login hold expires at its own deadline beyond 30 seconds and releases the profile lock", async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-login-hold-")));
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const identity = identityFor(environment);
+    const locations = runtimeLocations(identity, environment);
+    let virtualNow = 0;
+    const page = {};
+    await expectCode(() => __testing.acquireProfileLock(identity, async () => (
+      __testing.waitForAuthenticatedTelegramAccount(page, 1, 60_000, {
+        now: () => virtualNow,
+        classifyTelegramSurface: async () => ({
+          supported: true,
+          loggedIn: false,
+          login: false,
+          locked: true,
+          hasChatList: false,
+          hasComposer: false,
+        }),
+        waitForPoll: async (delayMs) => { virtualNow += delayMs; },
+      })
+    ), environment), "TELEGRAM_WEB_LOGIN_TIMEOUT");
+    assert.equal(virtualNow, 60_000);
+    assert.equal(await lstat(locations.lockFile).catch(() => null), null);
+    let reacquired = false;
+    await __testing.acquireProfileLock(identity, async () => { reacquired = true; }, environment);
+    assert.equal(reacquired, true);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("login call-site rearms the referenced lifecycle after setup and never restores one long provider wait", async () => {
+  const options = {
+    command: "login",
+    account: 1,
+    holdMs: 160,
+    timeoutMs: 90,
+    headed: false,
+  };
+  let teardownVerified = false;
+  let abortTeardowns = 0;
+  let broughtToFront = false;
+  let waitForFunctionReads = 0;
+  const rawPage = {
+    bringToFront: async () => { broughtToFront = true; },
+  };
+  Object.defineProperty(rawPage, "waitForFunction", {
+    get() {
+      waitForFunctionReads += 1;
+      throw new Error("login must use bounded structural polls");
+    },
+  });
+
+  const result = await __testing.runLoginCommand({}, options, {}, {
+    bootstrapBrowserRuntime: async () => undefined,
+    openTelegramHome: async () => {
+      // Consume most of the setup deadline before the browser is ready. The
+      // full owner handoff must start after this phase, not at process start.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { supported: true, loggedIn: false, login: true, locked: false };
+    },
+    waitForAuthenticatedTelegramAccount: async (page, account, holdMs) => {
+      assert.equal(account, 1);
+      assert.equal(holdMs, 160);
+      assert.equal(page.bringToFront instanceof Function, true);
+      // Setup + this wait exceeds the original 90 ms deadline. A stale outer
+      // race timer would abort here even though the fresh handoff is healthy.
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      return "f".repeat(64);
+    },
+    invalidatePendingApproval: async () => undefined,
+    savePreferredAccount: async () => undefined,
+    withTelegramBrowser: async (_identity, effectiveOptions, callback) => {
+      const lifecycle = __testing.createCommandLifecycle(effectiveOptions);
+      effectiveOptions.commandLifecycle = lifecycle;
+      lifecycle.setAbortHandler(() => {
+        abortTeardowns += 1;
+        teardownVerified = true;
+      });
+      const page = __testing.boundedPageProxy(rawPage, lifecycle, effectiveOptions);
+      try {
+        return await lifecycle.race(callback({ page }), "running login call-site regression");
+      } finally {
+        lifecycle.stop();
+        delete effectiveOptions.commandLifecycle;
+        teardownVerified = true;
+      }
+    },
+  });
+
+  assert.equal(result.command, "login");
+  assert.equal(result.loggedIn, true);
+  assert.equal(broughtToFront, true);
+  assert.equal(teardownVerified, true);
+  assert.equal(abortTeardowns, 0);
+  assert.equal(waitForFunctionReads, 0);
+});
+
+test("logout and inspect owner handoffs replace the setup deadline without weakening outcome classification", async () => {
+  const exercise = async (command, decisive) => {
+    const lifecycle = __testing.createCommandLifecycle({
+      command,
+      holdMs: 240,
+      timeoutMs: 120,
+    });
+    try {
+      // Start the same unbounded outer race used by withTelegramBrowser before
+      // the handoff is armed. It must follow the rearmed global deadline rather
+      // than retaining a stale local setup timer.
+      const outer = lifecycle.race(
+        new Promise((resolve) => setTimeout(() => resolve(command), 170)),
+        `${command} outer command`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      if (decisive) lifecycle.markDecisive(`${command} decisive handoff`);
+      lifecycle.beginOwnerHandoff(240, `${command} owner handoff deadline`);
+      assert.equal(await outer, command);
+      lifecycle.assertActive(`${command} completed inside fresh handoff`);
+      assert.equal(lifecycle.decisiveAttempted, decisive);
+    } finally {
+      lifecycle.stop();
+    }
+  };
+
+  await Promise.all([
+    exercise("logout", true),
+    exercise("inspect", false),
+  ]);
+});
+
+test("logout proof rejects composer/auth overlap and requires zero provider accounts with no active identity", async () => {
+  const runStructural = (composerPresent) => {
+    let virtualNow = 0;
+    const visible = { getBoundingClientRect: () => ({ width: 100, height: 40 }) };
+    const page = { evaluate: async (callback, argument) => callback(argument) };
+    return withBrowserGlobals({
+      getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+      document: {
+        querySelectorAll: (selector) => {
+          if (selector.includes("canvas,")) return [visible];
+          if (composerPresent && selector === '.input-message-input[contenteditable="true"]') return [visible];
+          return [];
+        },
+      },
+    }, () => __testing.waitForVerifiedLoggedOutSurface(page, 1_000, {
+      now: () => virtualNow,
+      waitForPoll: async (delayMs) => { virtualNow += delayMs; },
+      readConfiguredAccountCount: async () => ({
+        known: true,
+        count: 0,
+        activeIdentityPresent: false,
+      }),
+    }));
+  };
   await assert.rejects(() => runStructural(true), /LOGOUT_SURFACE_NOT_VERIFIED/u);
   assert.equal(await runStructural(false), true);
+
+  let longHandoffNow = 0;
+  assert.equal(await __testing.waitForVerifiedLoggedOutSurface({}, 60_000, {
+    now: () => longHandoffNow,
+    classifyTelegramSurface: async () => longHandoffNow < 45_000
+      ? { loggedIn: true, locked: false, login: false }
+      : { loggedIn: false, locked: false, login: true },
+    readConfiguredAccountCount: async () => ({
+      known: true,
+      count: 0,
+      activeIdentityPresent: false,
+    }),
+    waitForPoll: async (delayMs) => { longHandoffNow += delayMs; },
+  }), true);
+  assert.equal(longHandoffNow, 45_000);
+
+  // The visible QR/login shell may lead AccountController cleanup by a few
+  // frames. Completion requires both proofs in the same poll loop.
+  let providerCleanupNow = 0;
+  assert.equal(await __testing.waitForVerifiedLoggedOutSurface({}, 2_000, {
+    now: () => providerCleanupNow,
+    classifyTelegramSurface: async () => ({ loggedIn: false, locked: false, login: true }),
+    readConfiguredAccountCount: async () => providerCleanupNow < 750
+      ? { known: true, count: 1, activeIdentityPresent: true }
+      : { known: true, count: 0, activeIdentityPresent: false },
+    waitForPoll: async (delayMs) => { providerCleanupNow += delayMs; },
+  }), true);
+  assert.equal(providerCleanupNow, 750);
 
   const providerPage = { evaluate: async (callback) => callback() };
   const providerState = (records, activeIdentity = undefined) => withBrowserGlobals({
@@ -2906,7 +3170,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
     await writeFile(managedFile, "secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(managedFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
 
-    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.0", "node_modules", "secret.txt");
+    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.1", "node_modules", "secret.txt");
     await mkdir(path.dirname(runtimeCacheFile), { recursive: true, mode: 0o700 });
     await writeFile(runtimeCacheFile, "cache-secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(runtimeCacheFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
@@ -2929,7 +3193,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
 
 test("outbound document snapshots require canonical private non-empty regular files", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.0 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.1 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-input-")));
@@ -3059,7 +3323,7 @@ test("document approval binds one source snapshot, caption, destination and all 
 
 test("one-document send still requires dry-run approval under autonomous text policy before browser launch", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.0 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.1 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-file-policy-")));
@@ -3332,7 +3596,7 @@ test("default host cache is allowed only from its exact materialized skill-runti
   const previousCwd = process.cwd();
   try {
     const cacheBase = path.join(temporaryDirectory, "cache");
-    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.0");
+    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.1");
     await mkdir(materialized, { recursive: true, mode: 0o700 });
     process.chdir(materialized);
     assert.equal(
@@ -3365,7 +3629,7 @@ test("runtime cache accepts an owned 0755 base but rejects unsafe descendants be
     const environment = environmentFor(temporaryDirectory);
     const identity = identityFor(environment);
     const cacheBase = environment.TRELIO_CACHE_HOME;
-    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.0");
+    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.1");
     await mkdir(cacheBase, { mode: 0o755 });
     await chmod(cacheBase, 0o755);
     await __testing.ensurePrivateTree(cacheBase, runtimeRoot, environment);
@@ -4524,7 +4788,12 @@ test("source contains exact security contracts for headless watch, logout, Windo
   assert.match(source, /MAX_REPLY_CONTEXT_CHARS = 2_000/u);
   assert.match(source, /MAX_ATTACHMENT_METADATA_PER_MESSAGE = 1/u);
   assert.doesNotMatch(source, /document\.body\??\.innerText/u);
-  assert.match(source, /TELEGRAM_AUTHENTICATED_SURFACE_SELECTOR/u);
+  assert.match(source, /const protectedCredentialSurface = passwordInput/u);
+  assert.match(source, /LOGIN_AUTH_STABILITY_MS = 1_000/u);
+  assert.match(source, /loginOptions\.commandLifecycle\?\.beginOwnerHandoff/u);
+  assert.match(source, /inspectOptions\.commandLifecycle\?\.beginOwnerHandoff/u);
+  assert.match(source, /logoutOptions\.commandLifecycle\?\.beginOwnerHandoff/u);
+  assert.match(source, /providerState\?\.known === true[\s\S]*providerState\.count === 0[\s\S]*providerState\.activeIdentityPresent === false/u);
   assert.match(source, /requireVerifiedLoggedOutProviderState/u);
   assert.match(source, /DISPLAY_LABEL_UNSAFE_PATTERN_SOURCE/u);
   assert.doesNotMatch(source, /rm\(outputPath/u);

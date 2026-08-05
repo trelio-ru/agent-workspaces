@@ -119,17 +119,15 @@ const MAX_WATCH_INTERVAL_MS = 300_000;
 const MIN_WATCH_INTERVAL_MS = 1_000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const UI_READY_TIMEOUT_MS = 15_000;
+// A completed owner login must remain canonical for a short bounded interval.
+// This prevents a one-frame chat-shell/manager mount immediately before Web K
+// renders two-step verification from being mistaken for final authentication.
+const LOGIN_AUTH_STABILITY_MS = 1_000;
 const TELEGRAM_CHAT_LIST_SELECTOR = '.chatlist-chat[data-peer-id]';
 const TELEGRAM_COMPOSER_SELECTOR = '.input-message-input[contenteditable="true"]';
 const TELEGRAM_BUBBLES_SELECTOR = '.bubbles-inner';
-const TELEGRAM_AUTHENTICATED_SURFACE_SELECTOR = [
-  TELEGRAM_CHAT_LIST_SELECTOR,
-  TELEGRAM_BUBBLES_SELECTOR,
-  TELEGRAM_COMPOSER_SELECTOR,
-].join(", ");
 const TELEGRAM_LOGIN_SURFACE_SELECTOR = 'canvas, [class*="auth" i], [class*="qr" i], input[type="tel"], input[autocomplete="tel"]';
 const TELEGRAM_PASSWORD_SELECTOR = 'input[type="password"], input[autocomplete="current-password"]';
-const TELEGRAM_PRIMARY_BUTTON_SELECTOR = '.btn-primary.btn-color-primary';
 const CONSENT_BODY_LIMIT = 8 * 1024;
 const CONSENT_TIMEOUT_MS = 10 * 60_000;
 // The revoke path waits at most ten seconds for the consent-state lock.  A
@@ -591,7 +589,7 @@ read/search return bounded author/date/text, at most 32 safe link entities, and
 at most one 2000-character reply context. Opaque PeerId is routing metadata,
 never an inputPeer/access_hash capability; Saved Messages redacts it.
 
-Unsupported in the 1.0.0 pilot (returns TELEGRAM_WEB_UNSUPPORTED_OPERATION):
+Unsupported in the 1.0.1 pilot (returns TELEGRAM_WEB_UNSUPPORTED_OPERATION):
   react, forward, reply/create-direct files, media conversion/albums,
   audio/OGG/GIF/TGS document remapping, create-group, members,
   member-add, member-remove, chat-update, bot commands, dice-media,
@@ -2382,7 +2380,7 @@ export const findChromeExecutable = async (environment = process.env) => {
   // Establish the same inherited-OS environment boundary used by ACL tools.
   // This is a canonical path/type check, not a cryptographic Authenticode
   // signature claim. Per-user LocalAppData browser installs are intentionally
-  // excluded from 1.0.0 because that root overlaps user-controlled state.
+  // excluded from 1.0.1 because that root overlaps user-controlled state.
   const commandProcessor = await resolveTrustedWindowsSystemExecutable(environment, "cmd.exe");
   const validatedSystemRoot = path.dirname(path.dirname(commandProcessor));
   const validatedDriveRoot = path.parse(validatedSystemRoot).root;
@@ -3175,19 +3173,19 @@ const installBrowserRuntimeUnlocked = async (identity, environment = process.env
   await ensurePrivateTree(cacheHome, parent, environment);
   const packageDocument = {
     name: "trelio-telegram-web-runtime",
-    version: "1.0.0",
+    version: "1.0.1",
     private: true,
     dependencies: { "playwright-core": PLAYWRIGHT_VERSION },
   };
   const lockDocument = {
     name: "trelio-telegram-web-runtime",
-    version: "1.0.0",
+    version: "1.0.1",
     lockfileVersion: 3,
     requires: true,
     packages: {
       "": {
         name: "trelio-telegram-web-runtime",
-        version: "1.0.0",
+        version: "1.0.1",
         dependencies: { "playwright-core": PLAYWRIGHT_VERSION },
       },
       "node_modules/playwright-core": {
@@ -3523,24 +3521,38 @@ export const classifyTelegramSurface = async (page) => page.evaluate(({
   bubblesSelector,
   loginSelector,
   passwordSelector,
-  primaryButtonSelector,
 }) => {
   // Authentication/probe/consent/inspect all call this classifier before a
   // content grant may exist. Use structural selectors only: a broad body text
   // read could collect the currently visible chat even when an authenticated
   // Web K build drifted away from one of the expected logged-in selectors.
-  const hasChatList = Boolean(document.querySelector(chatListSelector));
-  const hasComposer = Boolean(document.querySelector(composerSelector));
-  const loggedIn = hasChatList
-    || hasComposer
-    || Boolean(document.querySelector(bubblesSelector));
-  const passwordInput = Boolean(document.querySelector(passwordSelector));
-  const locked = !loggedIn
-    && passwordInput
-    && Boolean(document.querySelector(primaryButtonSelector));
+  // Web K can retain hidden/stale chat nodes while moving from the QR surface
+  // to two-step verification. Mere DOM presence must therefore never prove a
+  // completed login. Geometry/style are the only properties inspected here;
+  // in particular, the runtime never reads password value/text/HTML.
+  const visible = (element) => {
+    if (!element || typeof element.getBoundingClientRect !== "function") return false;
+    const rectangle = element.getBoundingClientRect();
+    const style = globalThis.getComputedStyle(element);
+    return rectangle.width > 1
+      && rectangle.height > 1
+      && style.display !== "none"
+      && style.visibility !== "hidden";
+  };
+  const hasVisible = (selector) => Array.from(document.querySelectorAll(selector)).some(visible);
+  const hasChatList = hasVisible(chatListSelector);
+  const hasComposer = hasVisible(composerSelector);
+  const passwordInput = hasVisible(passwordSelector);
+  const protectedCredentialSurface = passwordInput;
+  // A visible password/passcode handoff wins over every stale chat node. This
+  // covers both Telegram two-step verification and a local Web K passcode
+  // without trying to distinguish them by reading sensitive page content.
+  const loggedIn = !protectedCredentialSurface
+    && (hasChatList || hasComposer || hasVisible(bubblesSelector));
+  const locked = !loggedIn && protectedCredentialSurface;
   const login = !loggedIn
     && !locked
-    && Boolean(document.querySelector(loginSelector));
+    && hasVisible(loginSelector);
   return {
     loggedIn,
     login,
@@ -3555,26 +3567,106 @@ export const classifyTelegramSurface = async (page) => page.evaluate(({
   bubblesSelector: TELEGRAM_BUBBLES_SELECTOR,
   loginSelector: TELEGRAM_LOGIN_SURFACE_SELECTOR,
   passwordSelector: TELEGRAM_PASSWORD_SELECTOR,
-  primaryButtonSelector: TELEGRAM_PRIMARY_BUTTON_SELECTOR,
 });
 
-const waitForVerifiedLoggedOutSurface = async (page, timeoutMs) => {
-  const handle = await page.waitForFunction(({
-    authenticatedSelector,
-    loginSelector,
-  }) => {
-    const loggedIn = Boolean(document.querySelector(authenticatedSelector));
-    const login = Boolean(document.querySelector(loginSelector));
-    return !loggedIn && login;
-  }, {
-    authenticatedSelector: TELEGRAM_AUTHENTICATED_SURFACE_SELECTOR,
-    loginSelector: TELEGRAM_LOGIN_SURFACE_SELECTOR,
-  }, { timeout: timeoutMs });
-  const verified = typeof handle?.jsonValue === "function"
-    ? await handle.jsonValue()
-    : handle;
-  if (verified !== true) throw new Error("TELEGRAM_WEB_LOGOUT_SURFACE_NOT_VERIFIED");
-  return true;
+/**
+ * Wait through the complete account-owner login handoff without one long
+ * provider evaluation. A long `page.waitForFunction()` would be truncated by
+ * the generic 30-second provider-stall fence, which previously closed Chrome
+ * just as QR login reached Telegram two-step verification. Short structural
+ * polls remain inside the referenced absolute command lifecycle, while this
+ * owner-handoff deadline alone controls how long the visible window stays up.
+ *
+ * Success requires both a visible authenticated surface and the canonical
+ * account identity proof. A visible password/passcode field never qualifies,
+ * even if Web K has already mounted hidden chat nodes or populated managers.
+ * No credential value, text, HTML, keystroke, or form API is accessed.
+ */
+export const waitForAuthenticatedTelegramAccount = async (
+  page,
+  expectedAccount,
+  holdMs,
+  dependencies = {},
+) => {
+  const classify = dependencies.classifyTelegramSurface || classifyTelegramSurface;
+  const readAccountDigest = dependencies.readCurrentTelegramAccountDigest || readCurrentTelegramAccountDigest;
+  const now = dependencies.now || Date.now;
+  const waitForPoll = dependencies.waitForPoll
+    || ((delayMs) => page.waitForTimeout(delayMs));
+  const deadlineAt = now() + holdMs;
+  let candidateDigest = null;
+  let candidateSince = null;
+
+  while (true) {
+    const surface = await classify(page);
+    if (surface?.loggedIn === true && surface?.locked !== true) {
+      try {
+        const digest = await readAccountDigest(page, expectedAccount);
+        const observedAt = now();
+        if (digest !== candidateDigest) {
+          candidateDigest = digest;
+          candidateSince = observedAt;
+        } else if (candidateSince !== null
+          && observedAt - candidateSince >= LOGIN_AUTH_STABILITY_MS) return digest;
+      } catch (error) {
+        // Web K may mount its visible chat shell a moment before rootScope and
+        // AccountController agree. Treat only that exact not-ready identity
+        // state as transitional; every other runtime/security error escapes.
+        if (!(error instanceof TelegramWebRuntimeError)
+          || error.code !== "TELEGRAM_WEB_ACCOUNT_ID_INVALID") throw error;
+        candidateDigest = null;
+        candidateSince = null;
+      }
+    } else {
+      candidateDigest = null;
+      candidateSince = null;
+    }
+
+    const remainingMs = deadlineAt - now();
+    if (remainingMs <= 0) {
+      fail(
+        "TELEGRAM_WEB_LOGIN_TIMEOUT",
+        "Telegram Web login was not completed in the visible dedicated browser before the bounded hold expired.",
+      );
+    }
+    const candidateRemainingMs = candidateSince === null
+      ? 250
+      : Math.max(1, LOGIN_AUTH_STABILITY_MS - (now() - candidateSince));
+    await waitForPoll(Math.min(250, remainingMs, candidateRemainingMs));
+  }
+};
+
+const waitForVerifiedLoggedOutSurface = async (page, timeoutMs, dependencies = {}) => {
+  const classify = dependencies.classifyTelegramSurface || classifyTelegramSurface;
+  const readProviderState = dependencies.readConfiguredAccountCount || readConfiguredAccountCount;
+  const now = dependencies.now || Date.now;
+  const waitForPoll = dependencies.waitForPoll
+    || ((delayMs) => page.waitForTimeout(delayMs));
+  const deadlineAt = now() + timeoutMs;
+
+  // Logout is the second long account-owner handoff. Keep it off a single
+  // waitForFunction for the same reason as login: the generic renderer-stall
+  // fence intentionally remains 30 seconds, while the person may need the full
+  // configured hold to find and complete Telegram's visible logout action.
+  while (true) {
+    const surface = await classify(page);
+    if (surface?.loggedIn === false
+      && surface?.locked === false
+      && surface?.login === true) {
+      // Web K can render the QR/login shell one frame before it finishes
+      // clearing AccountController and rootScope. Treat that overlap as a
+      // normal transition, not as a completed logout or an immediate
+      // ambiguity. A provider evaluation timeout/error still escapes this
+      // helper through the bounded page proxy and therefore remains fail-closed.
+      const providerState = await readProviderState(page);
+      if (providerState?.known === true
+        && providerState.count === 0
+        && providerState.activeIdentityPresent === false) return true;
+    }
+    const remainingMs = deadlineAt - now();
+    if (remainingMs <= 0) throw new Error("TELEGRAM_WEB_LOGOUT_SURFACE_NOT_VERIFIED");
+    await waitForPoll(Math.min(250, remainingMs));
+  }
 };
 
 export const isAllowedTelegramTopLevelUrl = (value, expectedAccount = null) => {
@@ -3962,13 +4054,17 @@ const commandLifecycleTimeoutError = (decisiveAttempted, label) => decisiveAttem
   );
 
 const createCommandLifecycle = (options) => {
-  const ownerHandoffMs = ["login", "logout", "inspect"].includes(options.command)
-    ? Number(options.holdMs || 0) + 30_000
-    : options.command === "consent" && options.subcommand === "accept"
-      ? CONSENT_TIMEOUT_MS + 30_000
-      : 0;
-  const durationMs = Math.max(options.timeoutMs || DEFAULT_TIMEOUT_MS, ownerHandoffMs);
-  const deadlineAt = Date.now() + durationMs;
+  const ownerHandoffCommand = ["login", "logout", "inspect"].includes(options.command);
+  // Browser setup is its own bounded phase. The owner-visible handoff is
+  // armed only after the single guarded page has loaded and the runtime is
+  // actually ready for the person. Otherwise slow setup consumes part of
+  // holdMs and can reproduce the QR -> 2FA window-closing bug.
+  const initialDurationMs = options.command === "consent" && options.subcommand === "accept"
+    ? Math.max(options.timeoutMs || DEFAULT_TIMEOUT_MS, CONSENT_TIMEOUT_MS + 30_000)
+    : options.timeoutMs || DEFAULT_TIMEOUT_MS;
+  let deadlineAt = 0;
+  let globalTimer = null;
+  let ownerHandoffStarted = false;
   let aborted = false;
   let abortError = null;
   let decisiveAttempted = false;
@@ -3986,10 +4082,15 @@ const createCommandLifecycle = (options) => {
     }
     return error;
   };
-  const globalTimer = setTimeout(() => abort(commandLifecycleTimeoutError(
-    decisiveAttempted,
-    "command deadline",
-  )), durationMs);
+  const armDeadline = (durationMs, label) => {
+    clearTimeout(globalTimer);
+    deadlineAt = Date.now() + durationMs;
+    globalTimer = setTimeout(() => abort(commandLifecycleTimeoutError(
+      decisiveAttempted,
+      label,
+    )), durationMs);
+  };
+  armDeadline(initialDurationMs, "command deadline");
   // A command that is awaiting a stalled provider promise may have no other
   // referenced event-loop handle.  The absolute lifecycle timer therefore
   // stays referenced until stop(), so the process cannot disappear without
@@ -4000,8 +4101,16 @@ const createCommandLifecycle = (options) => {
   };
   const race = async (promise, label, maximumMs = null) => {
     assertActive(label);
+    // The single referenced global timer owns the mutable phase deadline.
+    // An unbounded outer command race must not capture the old setup deadline:
+    // beginOwnerHandoff() deliberately rearms it after the visible page is
+    // ready. Provider operations pass maximumMs and keep their independent
+    // fixed 30-second (or narrower) stall fence.
+    if (maximumMs === null) {
+      return Promise.race([Promise.resolve(promise), abortSignal]);
+    }
     const remaining = Math.max(1, deadlineAt - Date.now());
-    const boundedMs = maximumMs === null ? remaining : Math.max(1, Math.min(remaining, maximumMs));
+    const boundedMs = Math.max(1, Math.min(remaining, maximumMs));
     let timer;
     const localTimeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
@@ -4019,6 +4128,22 @@ const createCommandLifecycle = (options) => {
   return {
     abort,
     assertActive,
+    beginOwnerHandoff: (holdMs, label = "owner handoff deadline") => {
+      assertActive(label);
+      if (!ownerHandoffCommand || ownerHandoffStarted) {
+        fail("TELEGRAM_WEB_UNSAFE_STATE", "Telegram Web owner handoff lifecycle was armed in an invalid command phase.");
+      }
+      const normalizedHoldMs = Number(holdMs);
+      if (!Number.isSafeInteger(normalizedHoldMs)
+        || normalizedHoldMs < 1
+        || normalizedHoldMs > Number.MAX_SAFE_INTEGER - 30_000) {
+        fail("TELEGRAM_WEB_INVALID_ARGUMENT", "Telegram Web owner handoff requires one positive safe hold duration.");
+      }
+      ownerHandoffStarted = true;
+      // The extra budget belongs only to post-handoff verification and exact
+      // browser teardown. The helper itself still expires at exact holdMs.
+      armDeadline(normalizedHoldMs + 30_000, label);
+    },
     markDecisive: (label = "decisive action") => {
       assertActive(label);
       decisiveAttempted = true;
@@ -6887,7 +7012,7 @@ const captureExactDocumentPopup = async (page, expectedPeerId, snapshot, timeout
   if (captured?.reason === "semantic_media") {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web reclassified the selected file into audio, OGG, GIF, or TGS sticker semantics instead of the approved generic document lane. Those uploads are unsupported in 1.0.0; no send click was made.",
+      "Telegram Web reclassified the selected file into audio, OGG, GIF, or TGS sticker semantics instead of the approved generic document lane. Those uploads are unsupported in 1.0.1; no send click was made.",
       { operation: "semantic-document-remap", fallbackEligible: true, normalizedMimeType: captured.normalizedMimeType },
     );
   }
@@ -8247,7 +8372,7 @@ const assertExactProductionTextPayload = async (page, expectedPeerId, approvedMe
   if (botCommand) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web recognized a bot command that can trigger bot-side actions. Bot-command sends are unsupported in the 1.0.0 runtime; no approval or send click was made.",
+      "Telegram Web recognized a bot command that can trigger bot-side actions. Bot-command sends are unsupported in the 1.0.1 runtime; no approval or send click was made.",
       { operation: "bot-command", fallbackEligible: true },
     );
   }
@@ -8267,7 +8392,7 @@ const assertExactProductionTextPayload = async (page, expectedPeerId, approvedMe
 };
 
 /**
- * Document captions use the narrowest safe 1.0.0 lane: exact plain text whose
+ * Document captions use the narrowest safe 1.0.1 lane: exact plain text whose
  * live Web K parser produces no entity at all. This excludes links, mentions,
  * hashtags, bot commands, emoji entities and every hidden target before local
  * bytes are even selected into the provider UI.
@@ -8280,7 +8405,7 @@ const assertEntityFreeDocumentCaption = async (page, expectedPeerId, caption) =>
     || automatic.length !== 0) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web document captions that produce mentions, links, bot commands, emoji, formatting, or any other entity are unsupported in 1.0.0; no file selection or send click was made.",
+      "Telegram Web document captions that produce mentions, links, bot commands, emoji, formatting, or any other entity are unsupported in 1.0.1; no file selection or send click was made.",
       { operation: "document-caption-entities", fallbackEligible: true },
     );
   }
@@ -9729,7 +9854,7 @@ const inChatSearchIncompleteReasons = (resultCount, requestedLimit, explicitEmpt
   if (resultCount >= requestedLimit) return ["result_limit"];
   // Web K's official first search loader uses a 30-message page and owns a
   // private loadMore/isEnd continuation. This runtime deliberately does not
-  // drive that unverified continuation in 1.0.0, so every non-empty result
+  // drive that unverified continuation in 1.0.1, so every non-empty result
   // below the caller limit remains honestly incomplete rather than pretending
   // that the first visible batch proved provider exhaustion.
   if (resultCount > 0) return ["search_pagination_unproven"];
@@ -10255,7 +10380,7 @@ const runSendCommand = async (page, identity, options, { replyTo = null } = {}) 
   if (replyTo && preparedFiles.length) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Replying with a file is outside the verified 1.0.0 document lane; use a text reply or a separate exact send command.",
+      "Replying with a file is outside the verified 1.0.1 document lane; use a text reply or a separate exact send command.",
       { operation: "reply-file", fallbackEligible: true },
     );
   }
@@ -11181,7 +11306,7 @@ const runCreateDirectCommand = async (page, identity, options) => {
   if (options.files.length) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "create-direct does not accept files in the verified 1.0.0 document lane; use one separate exact send --file operation.",
+      "create-direct does not accept files in the verified 1.0.1 document lane; use one separate exact send --file operation.",
       { operation: "create-direct-file", fallbackEligible: true },
     );
   }
@@ -11377,26 +11502,29 @@ const runProbeCommand = async (identity, options, environment = process.env, dep
   }, environment);
 };
 
-const runLoginCommand = async (identity, options, environment = process.env) => {
-  await bootstrapBrowserRuntime(identity, environment);
+const runLoginCommand = async (identity, options, environment = process.env, dependencies = {}) => {
+  const bootstrapRuntime = dependencies.bootstrapBrowserRuntime || bootstrapBrowserRuntime;
+  const browserRunner = dependencies.withTelegramBrowser || withTelegramBrowser;
+  const openHome = dependencies.openTelegramHome || openTelegramHome;
+  const waitForAuthenticatedAccount = dependencies.waitForAuthenticatedTelegramAccount
+    || waitForAuthenticatedTelegramAccount;
+  const invalidateApproval = dependencies.invalidatePendingApproval || invalidatePendingApproval;
+  const saveAccount = dependencies.savePreferredAccount || savePreferredAccount;
+  await bootstrapRuntime(identity, environment);
   const loginOptions = { ...options, headed: true };
-  const result = await withTelegramBrowser(identity, loginOptions, async ({ page }) => {
-    const surface = await openTelegramHome(page, loginOptions, { allowLoggedOut: true });
-    if (!surface.loggedIn) {
-      await page.bringToFront();
-      try {
-        await page.waitForFunction(() => Boolean(document.querySelector(
-          '.chatlist-chat[data-peer-id], .bubbles-inner, .input-message-input[contenteditable="true"]',
-        )), null, { timeout: options.holdMs });
-      } catch {
-        fail("TELEGRAM_WEB_LOGIN_TIMEOUT", "Telegram Web login was not completed in the visible dedicated browser before the bounded hold expired.");
-      }
-    }
-    const verified = await classifyTelegramSurface(page);
-    if (!verified.loggedIn) fail("TELEGRAM_WEB_LOGIN_REQUIRED", "Telegram Web did not reach one verified authenticated chat surface.");
-    await readCurrentTelegramAccountDigest(page, options.account);
-    await invalidatePendingApproval(identity, environment);
-    await savePreferredAccount(identity, options.account, environment);
+  const result = await browserRunner(identity, loginOptions, async ({ page }) => {
+    await openHome(page, loginOptions, { allowLoggedOut: true });
+    // Browser setup/navigation has its own deadline. Arm a fresh full owner
+    // handoff only when the guarded Telegram page is actually ready, so QR and
+    // 2FA receive every millisecond promised by --hold-ms.
+    loginOptions.commandLifecycle?.beginOwnerHandoff(options.holdMs, "login owner handoff deadline");
+    await page.bringToFront();
+    // Always use the complete proof, including for an apparently restored chat
+    // shell: hidden stale DOM and an already-populated manager identity can
+    // coexist with Telegram's still-visible two-step verification screen.
+    await waitForAuthenticatedAccount(page, options.account, options.holdMs);
+    await invalidateApproval(identity, environment);
+    await saveAccount(identity, options.account, environment);
     return withPublicAccountSlot({
       ok: true,
       command: "login",
@@ -11449,6 +11577,7 @@ const runInspectCommand = async (identity, options, environment = process.env, d
     const initialDigest = initialSurface.loggedIn
       ? await readAccountDigest(page, options.account)
       : null;
+    inspectOptions.commandLifecycle?.beginOwnerHandoff(options.holdMs, "inspection owner handoff deadline");
     await page.bringToFront();
     const canonicalHomeUrl = telegramWebUrlForAccount(options.account);
     emitInspectionEvent({
@@ -11581,8 +11710,9 @@ const runLogoutCommand = async (identity, options, environment = process.env, de
     await assertSelectedAccountUnchanged(page, logoutOptions, "logout action");
     await consumeStructuralApproval(logoutOptions);
     logoutOptions.commandLifecycle?.markDecisive("headed account-owner logout handoff");
+    logoutOptions.commandLifecycle?.beginOwnerHandoff(options.holdMs, "logout owner handoff deadline");
     await page.bringToFront();
-    // Logout is intentionally an account-owner handoff in 1.0.0. Web K does
+    // Logout is intentionally an account-owner handoff in 1.0.1. Web K does
     // not expose a stable, source-verified single-account logout action across
     // its settings variants, so the runtime never pretends that waiting alone
     // performed a click. The owner completes it in the visible dedicated UI.
@@ -11600,7 +11730,6 @@ const runLogoutCommand = async (identity, options, environment = process.env, de
       // a composer-only authenticated page plus a broad canvas must never be
       // mistaken for a completed logout.
       await waitForVerifiedLoggedOutSurface(page, options.holdMs);
-      await requireVerifiedLoggedOutProviderState(page);
     } catch {
       // Revoke while the same profile lock is still held. The operation is
       // ambiguous and its one-use approval remains consumed.
@@ -11701,7 +11830,7 @@ const validateSupportedPlatform = (platform = process.platform) => {
   if (platform !== "darwin") {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web 1.0.0 is qualified only for a local macOS host; this OS lane is disabled fail-closed.",
+      "Telegram Web 1.0.1 is qualified only for a local macOS host; this OS lane is disabled fail-closed.",
       { operation: "unsupported-platform", fallbackEligible: true, platform },
     );
   }
@@ -11731,7 +11860,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
   if (UNSUPPORTED_PILOT_OPERATIONS.has(options.command)) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      `${options.command} is not in the verified Telegram Web 1.0.0 pilot mutation surface. Use telegram-mtproto only when integration routing permits fallback.`,
+      `${options.command} is not in the verified Telegram Web 1.0.1 pilot mutation surface. Use telegram-mtproto only when integration routing permits fallback.`,
       { operation: options.command, fallbackEligible: true },
     );
   }
@@ -11739,7 +11868,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
     const operation = options.command === "reply" ? "reply-file" : "create-direct-file";
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      `${options.command} does not accept files in the verified 1.0.0 document lane. Use one separate exact send --file operation.`,
+      `${options.command} does not accept files in the verified 1.0.1 document lane. Use one separate exact send --file operation.`,
       { operation, fallbackEligible: true },
     );
   }
@@ -11998,6 +12127,7 @@ export const __testing = Object.freeze({
   requireVerifiedLoggedOutProviderState,
   runForgetCommand,
   runInspectCommand,
+  runLoginCommand,
   runOneExactChatSearch,
   runSearchCommand,
   sanitizeDisplayLabel,
@@ -12016,6 +12146,7 @@ export const __testing = Object.freeze({
   waitForVerifiedOutgoing,
   waitForExactOpenPeer,
   waitForInChatSearchCompletion,
+  waitForAuthenticatedTelegramAccount,
   waitForVerifiedLoggedOutSurface,
   verifyExactRuntimeRootShape,
   withValidConsentLease,

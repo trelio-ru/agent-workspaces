@@ -89,9 +89,15 @@
   transport fallback или автоматический повтор. Connections, sessions,
   consent и policy навыков независимы.
 - Канонический Telegram Web skill и signed runtime находятся в
-  `platform-skills/telegram-web/`. Runtime `1.0.0` использует отдельный Web K
+  `platform-skills/telegram-web/`. Runtime `1.0.1` использует отдельный Web K
   profile, visible owner login/consent и headless content-команды, а broad или
   недоказуемые операции возвращает как unsupported до решающего side effect.
+  Login и logout owner handoff нельзя реализовывать одним долгим provider
+  `waitForFunction`: короткие структурные polls остаются под 30-секундным
+  renderer-stall fence, а полный видимый handoff – под exact `holdMs` и общий
+  referenced lifecycle. Login завершается только после стабильного видимого
+  authenticated surface, отсутствия видимого password/passcode handoff и
+  canonical account identity proof; пароль/код runtime не читает и не вводит.
   Awaited command/browser/consent/download deadline timers должны оставаться
   referenced до exact завершения или cleanup: `unref()` не может подменять
   гарантированный timeout преждевременным выходом Node process.

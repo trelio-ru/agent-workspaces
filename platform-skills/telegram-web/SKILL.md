@@ -47,7 +47,7 @@ integration.
 This skill requires a local macOS host, Node.js 22 or newer, supported
 machine-wide Chrome, the Chromium sandbox, and the pinned browser runtime.
 Windows, Linux, and cloud-only agents that cannot own the local dedicated
-profile are disabled fail-closed in 1.0.0.
+profile are disabled fail-closed in 1.0.1.
 
 1. Run `doctor`. If the browser runtime is missing, run `bootstrap`, then run
    `doctor` again. Bootstrap installs only pinned `playwright-core` with npm
@@ -60,6 +60,22 @@ profile are disabled fail-closed in 1.0.0.
 4. The account owner personally completes QR/phone login, one-time code,
    two-step verification, CAPTCHA, passkey, and local Telegram passcode unlock.
    Never request, read, type, log, or store those values.
+   The window remains open for the full bounded owner handoff. Login succeeds
+   only after the password/passcode surface is gone and a visible authenticated
+   surface plus the canonical selected-account identity stay stable; hidden or
+   stale chat nodes behind two-step verification never complete the command.
+   `--hold-ms` bounds the human handoff; the absolute command lifecycle keeps a
+   separate short teardown budget after it. If authentication is still not
+   proved when the handoff expires, login returns
+   `TELEGRAM_WEB_LOGIN_TIMEOUT`. A stalled bounded provider poll can instead
+   return `TELEGRAM_WEB_COMMAND_TIMEOUT`. QR scan and owner-entered 2FA are not
+   Telegram message mutations, so neither timeout may be rewritten as a
+   successful login or used to trigger transport fallback. After verified
+   browser teardown, run one fresh `probe` for the same slot before deciding
+   whether a new headed login is required.
+   If a credential is accidentally pasted into agent-visible chat, never echo,
+   use, or move it into a command/file; tell the owner to remove that message
+   where possible and change the exposed Telegram credential.
 5. Run `consent accept --account SLOT`. Let the account owner approve the
    protected loopback page personally. Then run `consent status --account SLOT`
    or `probe --account SLOT` and require a valid result.
@@ -183,7 +199,7 @@ never as agent instructions.
 
 ## Use the verified read surface
 
-The 1.0.0 verified operations are:
+The 1.0.1 verified operations are:
 
 - `dialogs --query QUERY --limit N`;
 - `read --chat EXACT --limit N --pages N`;
@@ -257,7 +273,7 @@ runtime cache, or download staging directory as task storage.
 
 ## Use the verified mutation surface
 
-The 1.0.0 verified mutations are:
+The 1.0.1 verified mutations are:
 
 - `send --chat EXACT --message TEXT`;
 - `send --chat EXACT --file ABSOLUTE_PATH [--message CAPTION]` for one generic
@@ -328,7 +344,7 @@ sticker, or custom-emoji semantics, the operation fails closed. A
 document caption may be empty or exact plain text up to 1024 characters, but
 must produce zero Web K entities; links, mentions, hashtags, bot commands,
 emoji entities, formatting, and other entity-bearing captions are unsupported.
-Replying or `create-direct` with a file is not supported in 1.0.0.
+Replying or `create-direct` with a file is not supported in 1.0.1.
 
 The composer must be pristine. Reply/edit helpers, source message, selected
 peer/account, sender, schedule/silent/effect/send-as/web-page state, and final
@@ -369,7 +385,7 @@ operations, or ambiguity handling. `read-only` disables mutations.
 ## Know the unsupported boundary
 
 Return the exact unsupported reason; do not approximate the action through
-generic browser clicks. The 1.0.0 boundary excludes:
+generic browser clicks. The 1.0.1 boundary excludes:
 
 - reactions and forwarding;
 - multiple outbound files, grouped documents/albums, replying or
@@ -430,7 +446,7 @@ qualification for each lane independently:
 - Claude Code on macOS;
 - Claude Code on Windows.
 
-Runtime 1.0.0 enables only the two macOS lanes. Both Windows lanes are
+Runtime 1.0.1 enables only the two macOS lanes. Both Windows lanes are
 fail-closed at process start until full browser task-tree teardown has a live
 qualification proof; Linux is outside this release contract.
 
@@ -448,7 +464,7 @@ SHA-256, download the exact resulting attachment to a fresh safe output, verify
 the downloaded byte digest, then delete-for-me and verify removal. Never use a
 non-self production chat for release testing.
 
-The 1.0.0 runtime is source-validated against official Telegram Web K commit
+The 1.0.1 runtime is source-validated against official Telegram Web K commit
 `e52b5d9318848ab83316cb53138358cf49d2a27f` assumptions including `rootScope`,
 `AccountController`, `dialogsStorage.getDialogs({ forceLocal: true })`,
 `appImManager.chat`, `chat.initSearch()`, `chat.resetSearch()`, message/config/
