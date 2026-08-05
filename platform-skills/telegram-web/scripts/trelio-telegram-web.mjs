@@ -1961,7 +1961,9 @@ const launchExternalBrowser = async (url, environment = process.env) => {
       child.kill();
       finish(reject, new Error("browser opener timed out"));
     }, 8_000);
-    timer.unref?.();
+    // Keep the deadline referenced while the opener promise is pending.  An
+    // unreferenced watchdog can let Node terminate before the promised
+    // fail-closed timeout and cleanup have actually happened.
     child.once("error", (error) => finish(reject, error));
     child.once("exit", (code) => code === 0
       ? finish(resolve)
@@ -2232,7 +2234,8 @@ export const acceptConsentInProtectedBrowser = async (
       "TELEGRAM_WEB_CONSENT_TIMEOUT",
       "Protected Telegram consent was not completed before the local page expired.",
     )), CONSENT_TIMEOUT_MS);
-    consentTimer.unref?.();
+    // This is part of the protected consent guarantee, not background
+    // housekeeping: keep the process alive until acceptance or exact expiry.
     const openBrowser = dependencies.openBrowser || ((nextUrl) => launchExternalBrowser(nextUrl, environment));
     const opener = Promise.resolve().then(() => openBrowser(localUrl));
     // The protected deadline starts before the handoff. Even a host/test
@@ -3749,7 +3752,6 @@ export const launchPersistentContextWithProcess = async ({
         Promise.resolve().then(() => context.close()).catch(() => undefined),
         new Promise((resolve) => {
           timer = setTimeout(resolve, 5_000);
-          timer.unref?.();
         }),
       ]).finally(() => clearTimeout(timer));
     }
@@ -3823,7 +3825,6 @@ export const closePersistentContextVerified = async (context, dependencies = {})
         ),
         new Promise((resolve) => {
           timer = setTimeout(() => resolve({ status: "timeout" }), milliseconds);
-          timer.unref?.();
         }),
       ]);
     } finally {
@@ -3989,7 +3990,10 @@ const createCommandLifecycle = (options) => {
     decisiveAttempted,
     "command deadline",
   )), durationMs);
-  globalTimer.unref?.();
+  // A command that is awaiting a stalled provider promise may have no other
+  // referenced event-loop handle.  The absolute lifecycle timer therefore
+  // stays referenced until stop(), so the process cannot disappear without
+  // producing the required timeout/ambiguity result and teardown.
   const assertActive = (label = "operation") => {
     if (!aborted && Date.now() >= deadlineAt) abort(commandLifecycleTimeoutError(decisiveAttempted, label));
     if (aborted) throw abortError;
@@ -4005,7 +4009,6 @@ const createCommandLifecycle = (options) => {
         abort(error);
         reject(error);
       }, boundedMs);
-      timer.unref?.();
     });
     try {
       return await Promise.race([Promise.resolve(promise), abortSignal, localTimeout]);
@@ -10039,7 +10042,9 @@ export const saveDownloadExclusively = async (
       "TELEGRAM_WEB_DOWNLOAD_TIMEOUT",
       "Telegram Web attachment transfer did not complete within the exact --timeout-ms bound and was cancelled.",
     )), timeoutMs);
-    absoluteTimer.unref?.();
+    // The provider can return a promise/iterator that has no referenced I/O
+    // handle.  Keep this exact transfer deadline referenced so Node 22 cannot
+    // exit before cancellation, residue cleanup, and the timeout result.
     consentTimer = setInterval(() => {
       if (guardRunning || transferAbortError) return;
       guardRunning = true;
@@ -11324,8 +11329,12 @@ const runDoctorCommand = async (identity, environment = process.env) => {
   };
 };
 
-const runProbeCommand = async (identity, options, environment = process.env) => {
-  const browser = await findChromeExecutable(environment);
+const runProbeCommand = async (identity, options, environment = process.env, dependencies = {}) => {
+  // Browser discovery is injectable only through the exported in-process test
+  // seam.  The executable CLI supplies no dependency object and therefore
+  // always performs the real canonical-path/ACL checks below.
+  const discoverBrowser = dependencies.findChromeExecutable || findChromeExecutable;
+  const browser = await discoverBrowser(environment);
   if (!await hasPinnedPlaywright(identity, environment) || !browser) {
     return withPublicAccountSlot({
       ok: true,
@@ -11764,7 +11773,9 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
     }
     return runLogoutCommand(identity, options, environment, dependencies);
   }
-  if (options.command === "probe" || options.command === "access-status") return runProbeCommand(identity, options, environment);
+  if (options.command === "probe" || options.command === "access-status") {
+    return runProbeCommand(identity, options, environment, dependencies);
+  }
 
   if (options.command === "consent") {
     if (!["status", "accept", "revoke"].includes(options.subcommand)) fail("TELEGRAM_WEB_INVALID_ARGUMENT", "consent requires status, accept, or revoke.");

@@ -349,7 +349,12 @@ test("public probe/readback exposes only the selected canonical account slot", a
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-public-slot-")));
   try {
     const environment = environmentFor(temporaryDirectory);
-    const probe = await runCli(["probe", "--account", "3"], environment);
+    // The probe envelope is platform-neutral; real browser path/ACL discovery
+    // has separate regressions and must not depend on whichever Chrome symlink
+    // a hosted CI image happens to preinstall.
+    const probe = await runCli(["probe", "--account", "3"], environment, {
+      findChromeExecutable: async () => null,
+    });
     assert.equal(probe.accountSlot, 3);
     assert.equal(probe.accessStatus, "not_configured");
     assert.equal(JSON.stringify(probe).includes(accountDigest), false);
@@ -4409,6 +4414,20 @@ test("parent exit never substitutes for detached descendant process-group proof"
       try { process.kill(-browserProcess.pid, "SIGKILL"); } catch { /* already gone */ }
     }
   }
+});
+
+test("awaited browser, consent, lifecycle and transfer deadlines stay referenced until cleanup", async () => {
+  const source = await readFile(runtimePath, "utf8");
+  // Node 22 may have no referenced provider handle while an awaited promise or
+  // async iterator is stalled.  Only the periodic consent recheck may be
+  // unreferenced because the independently referenced absolute transfer timer
+  // still owns liveness and performs cancellation/cleanup.
+  assert.doesNotMatch(source, /\b(?:absoluteTimer|globalTimer|timer)\.unref\?\.\(\);/u);
+  assert.deepEqual(
+    source.match(/\b[A-Za-z_$][\w$]*\.unref\?\.\(\);/gu) || [],
+    ["consentTimer.unref?.();"],
+  );
+  assert.match(source, /absoluteTimer = setTimeout[\s\S]*?consentTimer = setInterval[\s\S]*?consentTimer\.unref\?\.\(\);/u);
 });
 
 test("actual pinned Playwright renderer hang releases the profile lock only after exact Chrome exit proof", {

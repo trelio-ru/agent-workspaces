@@ -92,6 +92,9 @@
   `platform-skills/telegram-web/`. Runtime `1.0.0` использует отдельный Web K
   profile, visible owner login/consent и headless content-команды, а broad или
   недоказуемые операции возвращает как unsupported до решающего side effect.
+  Awaited command/browser/consent/download deadline timers должны оставаться
+  referenced до exact завершения или cleanup: `unref()` не может подменять
+  гарантированный timeout преждевременным выходом Node process.
   Общий deterministic regression
   `platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs` обязан
   выполняться в Linux/macOS CI вместе с plugin suites. Этот прогон не заменяет

@@ -58,15 +58,17 @@ jobs:
         with:
           node-version: 22
 
-      # Most Telegram Web regressions are platform-neutral, while the suite
-      # explicitly skips the POSIX-only process-group and mode fixtures. Run
-      # the complete deterministic file on Windows as well so path parsing,
-      # PowerShell/DACL branches, command contracts and approval semantics do
-      # not silently become POSIX-only. This is not a substitute for the
-      # separately recorded live Windows browser qualification lane.
-      - name: Run Telegram Web deterministic regressions
+      # Runtime 1.0.0 rejects Windows before creating profile/state. Exercise
+      # that real fail-closed gate plus pure parsing/environment/source
+      # contracts here; do not inject the macOS lane and then weaken the real
+      # Windows DACL verifier merely to run unreachable profile scenarios.
+      # The complete deterministic behavior suite remains mandatory on both
+      # POSIX runners above. A future Windows qualification must replace this
+      # narrow gate with dedicated live task-tree and private-state coverage.
+      - name: Run Telegram Web Windows gate regressions
         run: >-
           node --test
+          --test-name-pattern="unqualified Linux and Windows hosts fail before doctor, bootstrap, or profile state|account slots use the strict canonical safe subset|browser and opener child environment is an allowlist|source contains exact security contracts"
           platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
 
       # The broader bridge suite contains POSIX-specific fixtures. This job is
