@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram Web"
+  short_description: "Безопасные чаты и документы Telegram Web"
+  default_prompt: "Use $telegram-web through the signed local runtime and an explicit account slot to inspect exact Telegram chats, open headed read-only recovery, prepare a verified plain-text action, or send one approval-bound local document."

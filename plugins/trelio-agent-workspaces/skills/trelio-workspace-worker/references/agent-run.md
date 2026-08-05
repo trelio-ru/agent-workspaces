@@ -46,6 +46,15 @@ submit, or final reporting.
    `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once.
    Missing assignment does not ban a compatible personal skill. Native Trelio
    MCP/workspace operations remain the primary workflow, not catalog fallback.
+   Telegram is the formal two-skill exception to generic purpose-only choice:
+   if exactly one of `telegram-mtproto` / `telegram-web` is enabled, use it; if
+   both are enabled, choose MTProto primary priority `100` before Web secondary
+   priority `200`, independent of list order. Move to Web only for exact
+   `not_configured`, `no_access`, `needs_reconnect`, or
+   `unsupported_operation` from the primary. Catalog/control-plane
+   unavailability, timeout, transient/unknown error, and an ambiguous mutation
+   outcome do not permit switching transports or automatically repeating the
+   mutation; establish the live result or ask the user first.
 3. Search readable workspace files only when prior context can materially help.
    Read exact hits and resolve directly linked scopes with
    `get_agent_workspace_by_scope`; keep selected workspace IDs for the Run.

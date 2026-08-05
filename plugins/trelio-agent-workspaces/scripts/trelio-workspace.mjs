@@ -23,7 +23,7 @@ import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.22";
+export const BRIDGE_VERSION = "1.6.23";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -53,6 +53,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "## Навыки и инструменты",
   "",
   "- Перед корпоративными данными или внешней системой вызови `list_agent_skills` для exact company/project, выбери назначенный навык по назначению и непосредственно перед действием вызови `get_agent_skill`. Отсутствие отдельного integration tool не означает отсутствие интеграции.",
+  "- Для Telegram следуй formal `integrationRouting`, а не порядку массива или названиям: если назначен один из `telegram-mtproto` / `telegram-web`, используй его; если назначены оба, сначала используй `telegram-mtproto` primary priority `100`, а `telegram-web` secondary priority `200` — только после exact `not_configured`, `no_access`, `needs_reconnect` или `unsupported_operation` primary. Недоступность catalog/control plane, timeout, transient/unknown error и неоднозначный результат mutation не разрешают переключение или автоматический повтор; сначала установи live-результат либо спроси пользователя.",
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
   "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill.",
@@ -3240,11 +3241,359 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   };
 };
 
+// A signed runtime is trusted code, but the shell/workspace that launches the
+// plugin is not a trusted source of process configuration. In particular,
+// dynamic-loader hooks (LD_PRELOAD/DYLD_*), NODE_OPTIONS/PYTHONPATH and ambient
+// credentials can act before the materialized runtime has a chance to sanitize
+// itself. Pass only the small set of OS/runtime-location values that an Agent
+// Skill may legitimately need. Connection identity is added separately below
+// from the fresh server resolution and therefore is intentionally absent here.
+const AGENT_SKILL_INHERITED_ENVIRONMENT_KEYS = new Set([
+  "ALL_PROXY",
+  "APPDATA",
+  "COLORTERM",
+  "COMSPEC",
+  // Linux headed login needs the existing desktop-session endpoints. They do
+  // not alter the Node/Python loader before runtime start, unlike the omitted
+  // LD_*/DYLD_*/interpreter-hook variables.
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DISPLAY",
+  "FORCE_COLOR",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "LANG",
+  "LANGUAGE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "NO_COLOR",
+  "NO_PROXY",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "PROGRAMW6432",
+  "SYSTEMROOT",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "TRELIO_CACHE_HOME",
+  "TRELIO_CONFIG_HOME",
+  "TRELIO_ORIGIN",
+  "TZ",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+  "WAYLAND_DISPLAY",
+  "WINDIR",
+  "XAUTHORITY",
+  "XDG_CACHE_HOME",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+  "XDG_STATE_HOME",
+]);
+
+const normalizedWindowsInstallationRoot = (value, expectedBasename) => {
+  const candidate = path.normalize(String(value || ""));
+  if (
+    !path.win32.isAbsolute(candidate)
+    || !/^[A-Za-z]:[\\/]/u.test(candidate)
+    || candidate.startsWith("\\\\")
+    || path.win32.basename(candidate).toLocaleLowerCase("en-US")
+      !== expectedBasename.toLocaleLowerCase("en-US")
+    || path.win32.dirname(candidate).toLocaleLowerCase("en-US")
+      !== path.win32.parse(candidate).root.toLocaleLowerCase("en-US")
+  ) {
+    return null;
+  }
+  return candidate;
+};
+
+/**
+ * Never let a workspace-prepended PATH choose an interpreter or shebang
+ * helper. The host's own absolute Node directory remains available (important
+ * for nvm/asdf installations), followed only by conventional OS-managed
+ * executable roots. A signed runtime that needs another executable must carry
+ * it in its package and declare the `executable` interpreter explicitly.
+ */
+export const buildAgentSkillRuntimePath = (environment = process.env) => {
+  const directories = [path.dirname(process.execPath)];
+
+  if (process.platform === "win32") {
+    const systemRoot = normalizedWindowsInstallationRoot(
+      environment.SYSTEMROOT || environment.SystemRoot || environment.WINDIR,
+      "Windows",
+    );
+    if (systemRoot) {
+      directories.push(
+        path.win32.join(systemRoot, "System32"),
+        systemRoot,
+        path.win32.join(systemRoot, "System32", "Wbem"),
+        path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
+      );
+    }
+  } else {
+    directories.push(
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+      "/run/current-system/sw/bin",
+      "/nix/var/nix/profiles/default/bin",
+    );
+  }
+
+  const seen = new Set();
+  return directories
+    .filter((directory) => {
+      const normalized = process.platform === "win32"
+        ? directory.toLocaleLowerCase("en-US")
+        : directory;
+      if (!path.isAbsolute(directory) || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .join(path.delimiter);
+};
+
+export const sanitizeAgentSkillInheritedEnvironment = (inheritedEnvironment = process.env) => {
+  const sanitized = {};
+
+  for (const [key, value] of Object.entries(inheritedEnvironment || {})) {
+    const normalizedKey = key.toUpperCase();
+    const isLocale = normalizedKey.startsWith("LC_");
+    const isExplicitlyAllowed = AGENT_SKILL_INHERITED_ENVIRONMENT_KEYS.has(normalizedKey);
+    const isLowercaseProxy = [
+      "all_proxy",
+      "http_proxy",
+      "https_proxy",
+      "no_proxy",
+    ].includes(key);
+
+    // PATH/PATHEXT are reconstructed below. Do not leave a differently-cased
+    // duplicate that Windows spawn could choose ahead of the safe value.
+    if (
+      ["PATH", "PATHEXT"].includes(normalizedKey)
+      || (!isLocale && !isExplicitlyAllowed && !isLowercaseProxy)
+      || value === undefined
+    ) {
+      continue;
+    }
+
+    // Keep the original spelling. Unix proxy consumers may distinguish lower
+    // and upper case; Windows receives the same process.env spelling that the
+    // trusted host already had. No unlisted variable survives this boundary.
+    sanitized[key] = String(value);
+  }
+
+  // PATH and Python startup flags are host-authored values, never inherited
+  // policy. `-I` is also used for declared Python runtimes below; these flags
+  // protect executable/shebang packages that invoke Python themselves.
+  sanitized.PATH = buildAgentSkillRuntimePath(inheritedEnvironment);
+  sanitized.PYTHONNOUSERSITE = "1";
+  sanitized.PYTHONSAFEPATH = "1";
+  sanitized.PYTHONDONTWRITEBYTECODE = "1";
+  if (process.platform === "win32") {
+    sanitized.PATHEXT = ".COM;.EXE;.BAT;.CMD";
+  }
+
+  return sanitized;
+};
+
+const pythonInvocationCandidates = (environment = process.env) => {
+  if (process.platform !== "win32") {
+    return [
+      "/opt/homebrew/bin/python3",
+      "/usr/local/bin/python3",
+      "/usr/bin/python3",
+      "/bin/python3",
+      "/run/current-system/sw/bin/python3",
+      "/nix/var/nix/profiles/default/bin/python3",
+    ].map((executable) => ({ executable, argsPrefix: [] }));
+  }
+
+  const candidates = [];
+  for (const [value, basename] of [
+    [environment.PROGRAMFILES, "Program Files"],
+    [environment["PROGRAMFILES(X86)"], "Program Files (x86)"],
+  ]) {
+    const root = normalizedWindowsInstallationRoot(value, basename);
+    if (!root) continue;
+    for (const version of ["314", "313", "312", "311", "310"]) {
+      candidates.push({
+        executable: path.win32.join(root, `Python${version}`, "python.exe"),
+        argsPrefix: [],
+      });
+    }
+  }
+  const systemRoot = normalizedWindowsInstallationRoot(
+    environment.SYSTEMROOT || environment.SystemRoot || environment.WINDIR,
+    "Windows",
+  );
+  if (systemRoot) {
+    candidates.push({
+      executable: path.win32.join(systemRoot, "py.exe"),
+      argsPrefix: ["-3"],
+    });
+  }
+  return candidates;
+};
+
+const pathOverlaps = (leftPath, rightPath) => {
+  const left = path.resolve(leftPath);
+  const right = path.resolve(rightPath);
+  const leftToRight = path.relative(left, right);
+  const rightToLeft = path.relative(right, left);
+  return (!leftToRight.startsWith("..") && !path.isAbsolute(leftToRight))
+    || (!rightToLeft.startsWith("..") && !path.isAbsolute(rightToLeft));
+};
+
+/**
+ * Resolve Python without consulting ambient PATH, then execute a tiny isolated
+ * version probe.  This is a fixed-path and startup-isolation boundary: it
+ * excludes workspace/temp/plugin-cache interpreters, PATH first-hit attacks,
+ * user-site imports and interpreter hooks.  The local OS account and its
+ * installed Node/Python/browser stack remain machine trust roots; this check
+ * deliberately does not claim protection from an active process running as
+ * that same user.
+ */
+export const resolveTrustedPythonInvocation = async ({
+  runtimeDirectory,
+  environment = process.env,
+}) => {
+  const forbiddenRoots = [
+    runtimeDirectory,
+    process.cwd(),
+    os.tmpdir(),
+    LOADED_CODEX_PLUGIN_DIRECTORY,
+  ].map((value) => path.resolve(value));
+  const probeEnvironment = sanitizeAgentSkillInheritedEnvironment(environment);
+
+  for (const candidate of pythonInvocationCandidates(environment)) {
+    if (!path.isAbsolute(candidate.executable)) continue;
+    const canonicalExecutable = await fs.realpath(candidate.executable).catch(() => null);
+    if (!canonicalExecutable) continue;
+    const metadata = await fs.lstat(canonicalExecutable).catch(() => null);
+    if (
+      !metadata
+      || metadata.isSymbolicLink()
+      || !metadata.isFile()
+      || (process.platform !== "win32" && (metadata.mode & 0o111) === 0)
+      || (process.platform !== "win32" && (metadata.mode & 0o022) !== 0)
+      || forbiddenRoots.some((root) => pathOverlaps(root, canonicalExecutable))
+    ) {
+      continue;
+    }
+
+    if (process.platform !== "win32") {
+      // Reject a path whose canonical ancestor is writable by every local
+      // principal. Homebrew commonly keeps its user-owned Cellar group-
+      // writable for the local admin group, so that whole installation is an
+      // explicit machine trust root rather than a boundary this host can
+      // strengthen selectively. The executable itself must still be neither
+      // group- nor world-writable above. Walking the canonical path also keeps
+      // a later refactor from accepting a symlinked directory after realpath().
+      let current = path.dirname(canonicalExecutable);
+      let safeAncestorChain = true;
+      while (true) {
+        const ancestor = await fs.lstat(current).catch(() => null);
+        if (
+          !ancestor
+          || ancestor.isSymbolicLink()
+          || !ancestor.isDirectory()
+          || (ancestor.mode & 0o002) !== 0
+        ) {
+          safeAncestorChain = false;
+          break;
+        }
+        const parent = path.dirname(current);
+        if (parent === current) break;
+        current = parent;
+      }
+      if (!safeAncestorChain) continue;
+    }
+
+    try {
+      const { stdout } = await execFileAsync(
+        canonicalExecutable,
+        [
+          ...candidate.argsPrefix,
+          "-I",
+          "-B",
+          "-c",
+          "import json,sys;print(json.dumps(list(sys.version_info[:2])))",
+        ],
+        {
+          cwd: path.parse(canonicalExecutable).root,
+          env: probeEnvironment,
+          encoding: "utf8",
+          timeout: 5_000,
+          windowsHide: true,
+        },
+      );
+      const version = JSON.parse(String(stdout || "").trim());
+      if (
+        !Array.isArray(version)
+        || version.length !== 2
+        || !version.every(Number.isInteger)
+        || version[0] !== 3
+        || version[1] < 10
+      ) {
+        continue;
+      }
+      return {
+        executable: canonicalExecutable,
+        argsPrefix: candidate.argsPrefix,
+        version: `${version[0]}.${version[1]}`,
+      };
+    } catch {
+      // Probe failures are intentionally indistinguishable. Continue only to
+      // another fixed canonical candidate, never to ambient PATH discovery.
+    }
+  }
+
+  throw new Error(
+    "Не найден фиксированный canonical Python 3.10+ вне workspace/temp/plugin cache. Установите системный Python и повторите запуск навыка.",
+  );
+};
+
+const PYTHON_ISOLATED_RUNTIME_BOOTSTRAP = [
+  "import runpy,sys",
+  "runtime_root,entrypoint,*arguments=sys.argv[1:]",
+  "sys.path.insert(0,runtime_root)",
+  "sys.argv=[entrypoint,*arguments]",
+  "runpy.run_path(entrypoint,run_name='__main__')",
+].join(";");
+
+export const buildIsolatedPythonRuntimeArguments = ({
+  argsPrefix = [],
+  runtimeDirectory,
+  entrypointPath,
+  runtimeArguments = [],
+}) => [
+  ...argsPrefix,
+  "-I",
+  "-B",
+  "-c",
+  PYTHON_ISOLATED_RUNTIME_BOOTSTRAP,
+  runtimeDirectory,
+  entrypointPath,
+  ...runtimeArguments,
+];
+
 export const buildAgentSkillRuntimeEnvironment = ({
   artifact,
   runtimeDirectory,
   executionContext,
   inheritedEnvironment = process.env,
+  grantedEnvironment = {},
 }) => {
   // Эти переменные являются доверенной границей package host. Удаляем
   // одноимённые значения из родительского окружения, чтобы старый shell или
@@ -3261,10 +3610,57 @@ export const buildAgentSkillRuntimeEnvironment = ({
     TRELIO_SKILL_CONNECTION_ID: _staleConnectionId,
     TRELIO_SKILL_CONNECTION_CONFIG_JSON: _staleConnectionConfig,
     ...cleanEnvironment
-  } = inheritedEnvironment;
+  } = sanitizeAgentSkillInheritedEnvironment(inheritedEnvironment);
   const connectionConfigJson = executionContext.companyConnection
     ? JSON.stringify(executionContext.companyConnection.config)
     : null;
+
+  const grantedEntries = Object.entries(grantedEnvironment || {});
+  if (grantedEntries.length > 1) {
+    throw new Error("Agent Secret checkout может передать runtime только одно exact значение.");
+  }
+  const normalizedGrantedEnvironment = {};
+  for (const [key, value] of grantedEntries) {
+    const forbiddenGrantedName = (
+      AGENT_SKILL_INHERITED_ENVIRONMENT_KEYS.has(key)
+      || key.startsWith("LC_")
+      || key.startsWith("TRELIO_SKILL_")
+      || /^(?:LD_|DYLD_|_RLD_|LDR_|NODE_|NPM_|PYTHON|OPENSSL_|GIT_|SSH_)/u.test(key)
+      || [
+        "BASH_ENV",
+        "ENV",
+        "GCONV_PATH",
+        "GLIBC_TUNABLES",
+        "JAVA_TOOL_OPTIONS",
+        "LIBPATH",
+        "LOCPATH",
+        "MALLOC_TRACE",
+        "NLSPATH",
+        "PATH",
+        "PATHEXT",
+        "PERL5LIB",
+        "PERL5OPT",
+        "RUBYLIB",
+        "RUBYOPT",
+        "SHLIB_PATH",
+        "SSLKEYLOGFILE",
+        "TRELIO_CACHE_HOME",
+        "TRELIO_CONFIG_HOME",
+        "TRELIO_ORIGIN",
+      ].includes(key)
+    );
+    if (
+      !/^[A-Z_][A-Z0-9_]{0,127}$/u.test(key)
+      || forbiddenGrantedName
+      || typeof value !== "string"
+      || value.length < 1
+      || Buffer.byteLength(value, "utf8") > 64 * 1024
+      || value.includes("\0")
+    ) {
+      throw new Error("Agent Secret checkout вернул небезопасное runtime env binding.");
+    }
+    normalizedGrantedEnvironment[key] = value;
+  }
 
   return {
     ...cleanEnvironment,
@@ -3288,6 +3684,10 @@ export const buildAgentSkillRuntimeEnvironment = ({
           TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
         }
       : {}),
+    // A consumed one-use grant is not ambient parent environment. It is
+    // supplied only by the in-process secret-exec -> exact skill-run handoff
+    // below, after live release resolution, and cannot override host identity.
+    ...normalizedGrantedEnvironment,
   };
 };
 
@@ -3296,6 +3696,8 @@ const runMaterializedAgentSkill = async ({
   runtimeDirectory,
   runtimeArguments,
   executionContext,
+  grantedEnvironment = {},
+  grantedStdin = null,
 }) => {
   const entrypointPath = path.join(
     runtimeDirectory,
@@ -3309,10 +3711,14 @@ const runMaterializedAgentSkill = async ({
     executable = process.execPath;
     args = [entrypointPath, ...runtimeArguments];
   } else if (interpreter === "python") {
-    executable = process.platform === "win32" ? "py" : "python3";
-    args = process.platform === "win32"
-      ? ["-3", entrypointPath, ...runtimeArguments]
-      : [entrypointPath, ...runtimeArguments];
+    const python = await resolveTrustedPythonInvocation({ runtimeDirectory });
+    executable = python.executable;
+    args = buildIsolatedPythonRuntimeArguments({
+      argsPrefix: python.argsPrefix,
+      runtimeDirectory,
+      entrypointPath,
+      runtimeArguments,
+    });
   }
 
   const exitCode = await new Promise((resolve, reject) => {
@@ -3322,9 +3728,10 @@ const runMaterializedAgentSkill = async ({
         artifact,
         runtimeDirectory,
         executionContext,
+        grantedEnvironment,
       }),
       shell: false,
-      stdio: "inherit",
+      stdio: [grantedStdin === null ? "inherit" : "pipe", "inherit", "inherit"],
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
@@ -3334,6 +3741,9 @@ const runMaterializedAgentSkill = async ({
       }
       resolve(code ?? 1);
     });
+    if (grantedStdin !== null) {
+      child.stdin.end(grantedStdin);
+    }
   });
 
   if (exitCode !== 0) {
@@ -3341,7 +3751,12 @@ const runMaterializedAgentSkill = async ({
   }
 };
 
-const skillCommand = async (origin, options, positional) => {
+const skillCommand = async (
+  origin,
+  options,
+  positional,
+  { grantedEnvironment = {}, grantedStdin = null } = {},
+) => {
   const skillSubcommand = positional[0];
 
   if (skillSubcommand === "pack") {
@@ -3490,6 +3905,8 @@ const skillCommand = async (origin, options, positional) => {
       localIdentity: resolution.localIdentity,
       companyConnection: resolution.companyConnection,
     },
+    grantedEnvironment,
+    grantedStdin,
   });
 };
 
@@ -6072,14 +6489,18 @@ const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentV
   const childEnvironment = { ...process.env };
   let temporaryDirectory = null;
   let childStdin = "inherit";
+  let grantedEnvironment = {};
+  let grantedStdin = null;
 
   if (deliveryMode === "env") {
     if (!environmentVariable) {
       throw new Error("Сервер не указал переменную окружения для env checkout.");
     }
     childEnvironment[environmentVariable] = secretValue;
+    grantedEnvironment = { [environmentVariable]: secretValue };
   } else if (deliveryMode === "stdin") {
     childStdin = "pipe";
+    grantedStdin = secretValue;
   } else if (deliveryMode === "file") {
     temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-secret-"));
     await fs.chmod(temporaryDirectory, 0o700);
@@ -6089,11 +6510,29 @@ const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentV
     // Фиксированное имя не содержит название секрета и позволяет инструменту
     // прочитать файл без подстановки plaintext в argv или shell history.
     childEnvironment.TRELIO_SECRET_FILE = secretFilePath;
+    grantedEnvironment = { TRELIO_SECRET_FILE: secretFilePath };
   } else {
     throw new Error(`Неизвестный delivery mode: ${deliveryMode}`);
   }
 
   try {
+    if (logicalExecutable === "trelio-workspace") {
+      const parsed = parseArguments(logicalArgs);
+      if (parsed.command === "skill" && parsed.positional[0] === "run") {
+        // Do not re-enter the bridge through inherited process.env: the skill
+        // host intentionally strips ambient variables before the signed child
+        // starts. Keep the already-consumed one-use value in this process and
+        // hand it explicitly to exactly one live-resolved runtime invocation.
+        // This also covers file/stdin delivery without a forgeable marker env.
+        const origin = normalizeOrigin(parsed.options.origin || DEFAULT_ORIGIN);
+        await skillCommand(origin, parsed.options, parsed.positional, {
+          grantedEnvironment,
+          grantedStdin,
+        });
+        return;
+      }
+    }
+
     const exitCode = await new Promise((resolve, reject) => {
       const child = spawn(executable, args, {
         cwd: process.cwd(),

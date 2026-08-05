@@ -82,38 +82,106 @@ const dodoTools = dodoConfig.allowedTools.map((name) => ({
   },
 }));
 
+const TELEGRAM_TRANSPORT_FALLBACK_REASONS = new Set([
+  "not_configured",
+  "no_access",
+  "needs_reconnect",
+  "unsupported_operation",
+]);
+
 /**
- * Small catalog fixture evaluator used only to make the routing contract
- * concrete in regression tests. The evaluator deliberately matches by
- * declared purpose and execution field, never by a known integration id.
+ * Evaluate one relevant catalog item without assuming that every failure can
+ * safely select another implementation. In particular, an ambiguous mutation
+ * and a transient control-plane failure must remain blocked rather than being
+ * collapsed into the broad `unsupported_operation` bucket.
  */
-const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
-  const relevantSkill = catalog.find(
-    (skill) => Array.isArray(skill.purposes) && skill.purposes.includes(purpose),
-  );
-  if (!relevantSkill) {
-    return { type: "fallback", reason: "no_relevant_skill" };
+const resolveCatalogFixtureSkill = (skill, purpose) => {
+  if (skill.mutationOutcome === "ambiguous") {
+    return { type: "blocked", reason: "ambiguous_mutation" };
   }
-  if (relevantSkill.configured === false) {
+  if (skill.controlPlaneAvailable === false) {
+    return { type: "blocked", reason: "control_plane_unavailable" };
+  }
+  if (skill.failureReason) {
+    return { type: "blocked", reason: skill.failureReason };
+  }
+  if (skill.configured === false) {
     return { type: "fallback", reason: "not_configured" };
   }
-  if (["no_access", "needs_reconnect"].includes(relevantSkill.accessStatus)) {
-    return { type: "fallback", reason: relevantSkill.accessStatus };
+  if (["no_access", "needs_reconnect"].includes(skill.accessStatus)) {
+    return { type: "fallback", reason: skill.accessStatus };
   }
   if (
-    Array.isArray(relevantSkill.supportedOperations)
-    && !relevantSkill.supportedOperations.includes(purpose)
+    Array.isArray(skill.supportedOperations)
+    && !skill.supportedOperations.includes(purpose)
   ) {
     return { type: "fallback", reason: "unsupported_operation" };
   }
-  if (relevantSkill.runtimeExecution) {
-    return { type: "runtimeExecution", skillId: relevantSkill.id };
+  if (skill.runtimeExecution) {
+    return { type: "runtimeExecution", skillId: skill.id };
   }
-  if (relevantSkill.remoteMcpExecution) {
-    return { type: "remoteMcpExecution", skillId: relevantSkill.id };
+  if (skill.remoteMcpExecution) {
+    return { type: "remoteMcpExecution", skillId: skill.id };
   }
   return { type: "fallback", reason: "unsupported_operation" };
 };
+
+/**
+ * Small catalog fixture evaluator used only to make the routing contract
+ * concrete in regression tests. Generic integrations remain purpose-based.
+ * Telegram additionally consumes the backend's formal priority metadata, so
+ * reversing catalog order cannot accidentally make Web primary.
+ */
+const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
+  const relevantSkills = catalog.filter(
+    (skill) => Array.isArray(skill.purposes) && skill.purposes.includes(purpose),
+  );
+  if (relevantSkills.length === 0) {
+    return { type: "fallback", reason: "no_relevant_skill" };
+  }
+
+  const telegramSkills = relevantSkills
+    .filter((skill) => skill.integrationRouting?.family === "telegram")
+    .sort((left, right) => (
+      Number(left.integrationRouting.priority)
+      - Number(right.integrationRouting.priority)
+    ));
+  if (telegramSkills.length > 0) {
+    for (let index = 0; index < telegramSkills.length; index += 1) {
+      const route = resolveCatalogFixtureSkill(telegramSkills[index], purpose);
+
+      if (route.type !== "fallback") return route;
+      if (
+        index + 1 < telegramSkills.length
+        && TELEGRAM_TRANSPORT_FALLBACK_REASONS.has(route.reason)
+      ) {
+        continue;
+      }
+      return route;
+    }
+  }
+
+  return resolveCatalogFixtureSkill(relevantSkills[0], purpose);
+};
+
+const buildTelegramCatalogFixture = ({
+  id,
+  priority,
+  role,
+  ...overrides
+}) => ({
+  id,
+  purposes: ["read_team_chat"],
+  supportedOperations: ["read_team_chat"],
+  configured: true,
+  runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
+  integrationRouting: {
+    family: "telegram",
+    priority,
+    role,
+  },
+  ...overrides,
+});
 
 const readRoutingInstructionsFromInitialize = async () => {
   const response = await handleLocalMcpMessage({
@@ -1259,6 +1327,10 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
   assert.match(instructions, /state that exact reason/u);
   assert.match(instructions, /explicitly reports `no_access` or `needs_reconnect`/u);
+  assert.match(instructions, /`telegram-mtproto` as primary priority `100`/u);
+  assert.match(instructions, /`telegram-web` as secondary priority `200`/u);
+  assert.match(instructions, /exactly established `not_configured`, `no_access`, `needs_reconnect`, or `unsupported_operation`/u);
+  assert.match(instructions, /ambiguous mutation outcome never permit transport fallback or an automatic repeat/u);
   assert.match(instructions, /not a reason to refuse requested work/u);
   assert.match(instructions, /same protected system through another route/u);
   assert.match(instructions, /transient network failure does not by itself establish `no_access`/u);
@@ -1344,6 +1416,105 @@ test("platform routing discovers Telegram even without a separate Telegram tool"
   assert.match(instructions, /even when no integration-specific tool appears in the active tool list/u);
 });
 
+test("Telegram routing uses MTProto 100 before Web 200 regardless of catalog order", () => {
+  const web = buildTelegramCatalogFixture({
+    id: "telegram-web",
+    priority: 200,
+    role: "secondary",
+  });
+  const mtproto = buildTelegramCatalogFixture({
+    id: "telegram-mtproto",
+    priority: 100,
+    role: "primary",
+  });
+
+  assert.deepEqual(resolveCatalogFixtureRoute({
+    purpose: "read_team_chat",
+    catalog: [web, mtproto],
+  }), {
+    type: "runtimeExecution",
+    skillId: "telegram-mtproto",
+  });
+  assert.deepEqual(resolveCatalogFixtureRoute({
+    purpose: "read_team_chat",
+    catalog: [web],
+  }), {
+    type: "runtimeExecution",
+    skillId: "telegram-web",
+  });
+});
+
+test("Telegram secondary is used only for the four exact primary fallback reasons", () => {
+  const web = buildTelegramCatalogFixture({
+    id: "telegram-web",
+    priority: 200,
+    role: "secondary",
+  });
+  const primaryBase = {
+    id: "telegram-mtproto",
+    priority: 100,
+    role: "primary",
+  };
+  const primaryCases = [
+    { configured: false },
+    { accessStatus: "no_access" },
+    { accessStatus: "needs_reconnect" },
+    { supportedOperations: [] },
+  ];
+
+  for (const overrides of primaryCases) {
+    const mtproto = buildTelegramCatalogFixture({ ...primaryBase, ...overrides });
+    assert.deepEqual(resolveCatalogFixtureRoute({
+      purpose: "read_team_chat",
+      catalog: [web, mtproto],
+    }), {
+      type: "runtimeExecution",
+      skillId: "telegram-web",
+    });
+  }
+});
+
+test("Telegram never falls back after transient, control-plane, or ambiguous mutation outcomes", () => {
+  const web = buildTelegramCatalogFixture({
+    id: "telegram-web",
+    priority: 200,
+    role: "secondary",
+  });
+  const primaryBase = {
+    id: "telegram-mtproto",
+    priority: 100,
+    role: "primary",
+  };
+  const blockedCases = [
+    {
+      overrides: { failureReason: "transient_network_failure" },
+      reason: "transient_network_failure",
+    },
+    {
+      overrides: { controlPlaneAvailable: false },
+      reason: "control_plane_unavailable",
+    },
+    {
+      overrides: { mutationOutcome: "ambiguous" },
+      reason: "ambiguous_mutation",
+    },
+  ];
+
+  for (const blockedCase of blockedCases) {
+    const mtproto = buildTelegramCatalogFixture({
+      ...primaryBase,
+      ...blockedCase.overrides,
+    });
+    assert.deepEqual(resolveCatalogFixtureRoute({
+      purpose: "read_team_chat",
+      catalog: [web, mtproto],
+    }), {
+      type: "blocked",
+      reason: blockedCase.reason,
+    });
+  }
+});
+
 test("platform routing is purpose-based and works for an unknown future skill", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
   const route = resolveCatalogFixtureRoute({
@@ -1367,7 +1538,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
   assert.match(instructions, /Select a relevant assigned skill by its purpose/u);
   assert.doesNotMatch(
     instructions,
-    /1c-edo|dodo-knowledge-base|telegram-mtproto|future-orbital-inventory/iu,
+    /1c-edo|dodo-knowledge-base|future-orbital-inventory/iu,
   );
 });
 
@@ -1452,7 +1623,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.6.22");
+  assert.equal(frames[0].result.serverInfo.version, "1.6.23");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);

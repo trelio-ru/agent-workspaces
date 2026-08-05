@@ -40,6 +40,17 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
    network failure сами по себе не доказывают `no_access`.
 9. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 
+Telegram имеет формальный двухтранспортный routing поверх общего purpose
+выбора. Если назначен только один из `telegram-mtproto` / `telegram-web`,
+используется он. Если назначены оба, lower numeric priority выбирает
+`telegram-mtproto` primary `100` перед `telegram-web` secondary `200` независимо
+от порядка catalog rows. Secondary допустим только после exact
+`not_configured`, `no_access`, `needs_reconnect` или `unsupported_operation`
+primary. Недоступность catalog/control plane, timeout, transient/unknown error
+и ambiguous mutation outcome не являются fallback: сначала устанавливается
+live-результат либо пользователь решает, нужен ли повтор. Assignments,
+connections, local sessions, consent и policy двух навыков независимы.
+
 Leading `trelio-workspace` – logical launcher текущего plugin. Проверить PATH
 без пробного запуска; если отсутствует, заменить только первый token на Node.js
 22+ и bundled bridge этой версии. Остальные args сохраняются literally. Нельзя
@@ -55,9 +66,38 @@ Cache content-addressed; stale release не запускается. На
 `AGENT_SKILL_RELEASE_CHANGED` нужно перечитать skill.
 
 Resolve может вернуть только normalized safe company config и stable identity.
-Host удаляет одноимённые parent `TRELIO_SKILL_*` env перед injection. Secret
-bindings не содержат secret value/id; plaintext приходит только через
-одноразовый checkout.
+Host не передаёт signed runtime ambient shell/workspace environment: до
+`spawn` он строит явный allowlist OS path, locale, proxy и Trelio config/cache
+roots, удаляя dynamic-loader/interpreter hooks, ambient credentials и stale
+`TRELIO_SKILL_*`. Затем exact skill/company/member/connection identity и
+normalized config добавляются только из свежего authenticated resolve. Сам
+runtime повторно санитизирует environment каждого browser/opener/bootstrap
+child process. Secret bindings не содержат secret value/id; plaintext приходит
+только через одноразовый checkout.
+
+Host-authored `PATH` состоит из директории exact `process.execPath` и fixed OS
+roots, а не из ambient first-hit. `interpreter=python` разрешает canonical
+fixed Python 3.10+ вне workspace/temp/plugin cache и запускает entrypoint через
+`-I -B`: user site/`.pth` и ambient Python hooks выключены, но signed runtime
+root явно добавлен для sibling imports. `executable` получает тот же safe PATH
+и `PYTHONNOUSERSITE` / `PYTHONSAFEPATH` как defense для signed shebang.
+
+Это fixed-path/startup-isolation, а не отдельная OS security boundary. Host
+отклоняет group/world-writable executable и world-writable canonical ancestor
+chain, но user-owned installation (например Homebrew или nvm), включая обычный
+group-writable Homebrew Cellar, локальный browser, plugin/runtime cache, профили
+и credential storage остаются machine trust roots. Активный процесс под тем же
+OS user может читать или менять доступные этому пользователю файлы и память;
+защита от такого противника требует запуска в отдельном OS account/system
+sandbox всего Node/Python/browser stack. Нельзя описывать одну canonical-
+проверку Python как защиту от same-user malware.
+
+Consumed Agent Secret не возвращается через ambient parent environment. Когда
+grant закреплён за logical executable `trelio-workspace` и exact command
+`skill run`, текущий bridge без nested re-exec передаёт только одно server-
+returned env/file/stdin значение ровно одному заново resolved signed runtime.
+Grant binding не может переопределить `TRELIO_SKILL_*`, config/cache roots или
+другой host-owned context; file delivery удаляется в исходном `finally`.
 
 ## Remote MCP
 
@@ -152,17 +192,35 @@ Email – TLS IMAP/SMTP. Gmail app password link официальный, visual 
 
 Telegram login – browser-first code или in-memory QR; phone/code/2FA/session/
 api_hash не попадают в MCP/argv/workspace/log. 2FA hint bounded и HTML-escaped.
-Read/search возвращают bounded link entities и one-level reply context без raw
-peer/access hash. `export` и совместимый alias `daily-export` читают точный
+Read/search возвращают bounded author/date/link entities, model-bound
+attachment metadata и one-level reply context без `inputPeer`, `access_hash`,
+file reference и другого capability-bearing peer material. Нормализованный
+safe-integer opaque `peerId` допустим только как
+exact routing/disambiguation identifier, не содержит access hash и для Saved
+Messages заменяется semantic identifier; raw current-account user ID также не
+возвращается как author PeerId в обычном чате, вместо него используется
+semantic `self`. Account-specific public result и
+mutation preview Telegram Web всегда показывают canonical `accountSlot` 1–4,
+не раскрывая raw account user ID/digest. `export` и совместимый alias
+`daily-export` читают точный
 полуоткрытый период `since <= message.date < until`: naive границы получают
 явную IANA timezone (`Europe/Moscow` по умолчанию), а `until` передаётся
 Telethon как server-side history cursor. Массовое чтение требует exact
 повторяемых `--chat` либо bounded `--all-dialogs`, фильтра broad chat type,
 per-chat/scan/global-message/JSON-byte limits и явных incomplete reasons для
-каждого достигнутого ограничения. Вложения остаются только метаданными;
-структурированные ссылки opt-in. Перед исходящим сообщением читать последние
-5–10 содержательных реплик exact dialog и reply target; сохранять tone/ты-вы,
-explicit instruction имеет приоритет.
+каждого достигнутого ограничения. Именно в MTProto export вложения остаются
+только метаданными, а структурированные ссылки включаются opt-in. Telegram Web
+`read` / `search`, напротив, всегда возвращают bounded `linkEntities` и
+bounded безопасные attachment metadata в общем message artifact. Перед обычным исходящим сообщением или
+file-caption читать последние 5–10 содержательных реплик exact dialog и reply
+target; сохранять tone/ты-вы, explicit instruction имеет приоритет. Узкое
+исключение – captionless document в собственные Saved Messages, включая
+release E2E: для него нельзя читать несвязанную self-history только ради этого
+tone-правила.
+
+Title-only Telegram Web discovery удаляет control/bidi символы из bounded
+display title и показывает title, opaque PeerId как отдельный code literal и
+`accountSlot` раздельно; display sanitizer никогда не преобразует сам PeerId.
 
 MAX partial match допустим только discovery. Перед read/send нужен один exact
 normalized title; single partial не достаточно. После DOM load ждать

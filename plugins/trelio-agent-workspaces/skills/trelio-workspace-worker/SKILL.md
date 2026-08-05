@@ -80,6 +80,15 @@ request, but never another route into the same protected system or weaker ACL.
 Native Trelio MCP and Agent Workspace control-plane operations remain the
 primary workflow and do not require a separate catalog skill.
 
+For Telegram, obey formal `integrationRouting` independently of catalog order.
+If only one of `telegram-mtproto` / `telegram-web` is enabled, use it. If both
+are enabled, use MTProto primary priority `100` first and Telegram Web secondary
+priority `200` only after exact `not_configured`, `no_access`,
+`needs_reconnect`, or `unsupported_operation`. Catalog/control-plane outage,
+timeout, transient/unknown failure, and an ambiguous mutation outcome never
+permit transport fallback or an automatic retry; establish the live result or
+ask the user first.
+
 Use `list_agent_secrets` only for safe metadata. If access is missing, call
 `request_agent_secret_access`; never ask the user to paste a password, token,
 or private key into chat. Create a record only with

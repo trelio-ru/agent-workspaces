@@ -32,17 +32,21 @@ jobs:
           node-version: 22
 
       # Keep the exact test paths explicit so both shells pass the same files
-      # to Node without relying on glob expansion.
-      - name: Run plugin Node tests
+      # to Node without relying on glob expansion. Telegram Web's deterministic
+      # runtime suite belongs in both POSIX lanes; real browser/account smoke
+      # remains a separately recorded release qualification and is not inferred
+      # from these platform-neutral regressions.
+      - name: Run plugin and platform runtime Node tests
         run: >-
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-messaging.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
+          platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
 
   windows-acl:
-    name: Windows private ACL
+    name: Windows runtime and private ACL
     runs-on: windows-latest
 
     steps:
@@ -53,6 +57,17 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # Most Telegram Web regressions are platform-neutral, while the suite
+      # explicitly skips the POSIX-only process-group and mode fixtures. Run
+      # the complete deterministic file on Windows as well so path parsing,
+      # PowerShell/DACL branches, command contracts and approval semantics do
+      # not silently become POSIX-only. This is not a substitute for the
+      # separately recorded live Windows browser qualification lane.
+      - name: Run Telegram Web deterministic regressions
+        run: >-
+          node --test
+          platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
 
       # The broader bridge suite contains POSIX-specific fixtures. This job is
       # intentionally narrow: it exercises the command transport and the real

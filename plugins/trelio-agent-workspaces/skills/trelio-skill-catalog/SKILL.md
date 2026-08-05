@@ -26,6 +26,28 @@ script.
 Absence of a dedicated tool from the current active tool list is not evidence
 that the integration is unavailable.
 
+### Route Telegram transports deterministically
+
+Use the formal `integrationRouting` returned on each Telegram catalog item;
+never infer precedence from array order, titles, installation state, or which
+runtime was used most recently.
+
+- If exactly one of `telegram-mtproto` or `telegram-web` is enabled, use that
+  assigned skill.
+- If both are enabled, `telegram-mtproto` is primary with priority `100` and
+  `telegram-web` is secondary with priority `200`; lower numeric priority wins.
+- Switch from the primary to the secondary only after the primary has exactly
+  established `not_configured`, `no_access`, `needs_reconnect`, or
+  `unsupported_operation`.
+- An unavailable catalog or skill control plane, a timeout, a transient or
+  unknown error, and any ambiguous mutation outcome are not fallback reasons.
+  Do not switch transports or repeat the mutation automatically; establish the
+  live result first or ask the user whether to retry.
+
+The two Telegram skills keep independent assignments, company connections,
+local sessions, consent, and policy. Never reuse one skill's connection or
+session for the other.
+
 Do not call `request_plugin_install`, open another integration's authorization,
 or invoke an overlapping native connector until the Trelio catalog check above
 has resolved the selected company. If that catalog contains an enabled and

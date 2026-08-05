@@ -80,6 +80,23 @@
   connector; при нескольких компаниях нужно спросить exact company, а не
   сканировать все каталоги. Если подходящего навыка нет, пользовательский навык
   или коннектор разрешён обычным fallback-контрактом.
+- Telegram catalog routing использует formal `integrationRouting`: один
+  назначенный `telegram-mtproto` / `telegram-web` используется самостоятельно,
+  а при двух MTProto primary `100` предшествует Web secondary `200`. Secondary
+  разрешён только после exact `not_configured`, `no_access`,
+  `needs_reconnect` или `unsupported_operation` primary. Catalog/control-plane
+  outage, timeout, transient/unknown error и ambiguous mutation не разрешают
+  transport fallback или автоматический повтор. Connections, sessions,
+  consent и policy навыков независимы.
+- Канонический Telegram Web skill и signed runtime находятся в
+  `platform-skills/telegram-web/`. Runtime `1.0.0` использует отдельный Web K
+  profile, visible owner login/consent и headless content-команды, а broad или
+  недоказуемые операции возвращает как unsupported до решающего side effect.
+  Общий deterministic regression
+  `platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs` обязан
+  выполняться в Linux/macOS CI вместе с plugin suites. Этот прогон не заменяет
+  real Chrome/account qualification и не даёт права называть непроверенные
+  Codex/Claude/OS lanes live-tested.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
 - ConsultantPlus показывает browser только для входа, CAPTCHA и другого exact
@@ -92,6 +109,25 @@
   provenance; просмотренные, но не использованные документы не сохраняются, а
   commentary маркируется отдельно и не выдаётся за primary legal source.
   Source files не прикладываются к task comment автоматически.
+- Signed Agent Skill process не наследует ambient shell/workspace environment.
+  Host передаёт только явный allowlist OS path, locale, proxy и Trelio
+  config/cache roots, затем добавляет exact live-resolved `TRELIO_SKILL_*`.
+  Loader/interpreter hooks, ambient credentials и stale skill identity должны
+  быть удалены до `spawn`; runtime дополнительно санитизирует окружение всех
+  запускаемых browser/opener/bootstrap child processes. `PATH` строится host-ом
+  из fixed OS roots и директории exact host Node, а Python runtime запускается
+  через canonical fixed interpreter 3.10+ с `-I -B` и только signed runtime
+  root в добавленном import path; ambient/user site не участвуют. Это защищает
+  от подмены через ambient PATH/loader/module hooks, но не объявляет активный
+  процесс под тем же OS user недоверенным: локальные Node/Python/browser,
+  plugin cache, Agent Skill cache, профили и credential storage являются
+  machine trust roots. Более сильная граница требует отдельного OS user или
+  системного sandbox для всего runtime stack, а не только проверки Python.
+- One-use Agent Secret grant для `trelio-workspace skill run` не превращать в
+  ambient allowlist. После atomic consume bridge в том же процессе передаёт
+  exact одно env/file/stdin значение одному live-resolved runtime и сразу
+  очищает file delivery; grant не может менять `TRELIO_SKILL_*`, config/cache
+  roots или другой host-owned context.
 - Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
   диагностирует её отдельно от Trelio OAuth, при отсутствии только предлагает
   platform-native установку и ждёт явного подтверждения. Глобальный

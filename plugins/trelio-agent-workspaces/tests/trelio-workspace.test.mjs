@@ -33,7 +33,11 @@ import {
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
   buildAgentSkillPackage,
+  buildAgentSkillRuntimePath,
   buildAgentSkillRuntimeEnvironment,
+  buildIsolatedPythonRuntimeArguments,
+  resolveTrustedPythonInvocation,
+  sanitizeAgentSkillInheritedEnvironment,
   buildWindowsPrivateAclPowerShellInvocation,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
@@ -629,9 +633,35 @@ test("Codex plugin updater retains exact versioned skill paths across repeated c
     );
 
     const version121Path = path.join(pluginCacheDirectory, "1.6.21");
+    const thirdUpdate = await updateFrom("1.6.21", "1.6.22");
+    assert.equal(thirdUpdate.version, "1.6.22");
+    assert.equal(
+      await readFile(path.join(
+        version121Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.21\n",
+    );
+
+    const version122Path = path.join(pluginCacheDirectory, "1.6.22");
+    const fourthUpdate = await updateFrom("1.6.22", "1.6.23");
+    assert.equal(fourthUpdate.version, "1.6.23");
+    assert.equal(
+      await readFile(path.join(
+        version122Path,
+        "skills",
+        "trelio-skill-catalog",
+        "SKILL.md",
+      ), "utf8"),
+      "exact skill 1.6.22\n",
+    );
+
+    const version123Path = path.join(pluginCacheDirectory, "1.6.23");
     await retainLoadedCodexPluginInstallation({
-      loadedPluginDirectory: version121Path,
-      loadedPluginVersion: "1.6.21",
+      loadedPluginDirectory: version123Path,
+      loadedPluginVersion: "1.6.23",
       retentionDirectory,
     });
     await Promise.all([
@@ -640,7 +670,7 @@ test("Codex plugin updater retains exact versioned skill paths across repeated c
     ]);
     assert.equal(
       await restoreRetainedCodexPluginInstallations({ retentionDirectory }),
-      3,
+      5,
     );
     assert.equal(
       await readFile(path.join(
@@ -1141,6 +1171,10 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Перед корпоративными данными или внешней системой вызови `list_agent_skills`/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-mtproto` primary priority `100`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-web` secondary priority `200`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact `not_configured`, `no_access`, `needs_reconnect` или `unsupported_operation`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не разрешают переключение или автоматический повтор/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
@@ -1928,7 +1962,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.22");
+  assert.equal(BRIDGE_VERSION, "1.6.23");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -1980,6 +2014,9 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
     /Fallback допустим, когда релевантного навыка нет/u,
     /`no_access` \/ `needs_reconnect`/u,
+    /`telegram-mtproto` primary priority `100`/u,
+    /`telegram-web` secondary priority `200`/u,
+    /не разрешают переключение или автоматический повтор/u,
     /а не отказывайся из-за отсутствия или недоступности навыка/u,
     /ту же защищённую систему другим путём/u,
     /Недоступность каталога и transient network failure сами по себе не равны `no_access`/u,
@@ -2607,6 +2644,9 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Never bypass a matching usable skill through browser, Computer Use, direct\s+HTTP, another MCP, or a script/);
   assert.match(workerSkill, /Fallback is allowed only when no relevant\s+skill exists/);
   assert.match(workerSkill, /explicit runtime `no_access` or\s+`needs_reconnect`/);
+  assert.match(workerSkill, /MTProto primary priority `100` before Web secondary\s+priority `200`/u);
+  assert.match(workerSkill, /exact\s+`not_configured`, `no_access`, `needs_reconnect`, or\s+`unsupported_operation`/u);
+  assert.match(workerSkill, /ambiguous mutation\s+outcome do not permit switching transports or automatically repeating/u);
   assert.match(workerSkill, /not a reason to refuse requested work/);
   assert.match(workerSkill, /same protected system through another route/);
   assert.match(workerSkill, /Native Trelio\s+MCP\/workspace operations remain the primary workflow/);
@@ -2635,6 +2675,10 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
   assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);
+  assert.match(catalogSkill, /`telegram-mtproto` is primary with priority `100`/u);
+  assert.match(catalogSkill, /`telegram-web` is secondary with priority `200`/u);
+  assert.match(catalogSkill, /`not_configured`, `no_access`, `needs_reconnect`, or\s+`unsupported_operation`/u);
+  assert.match(catalogSkill, /ambiguous mutation outcome are not fallback reasons/u);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {
@@ -2751,18 +2795,85 @@ test("connection-free skill runtime receives member identity without synthetic c
     },
     inheritedEnvironment: {
       SAFE_PARENT_VALUE: "kept",
+      HOME: "/trusted/home",
+      HTTPS_PROXY: "http://127.0.0.1:3128",
+      LC_CTYPE: "en_US.UTF-8",
+      LD_PRELOAD: "/workspace/hostile-loader.so",
+      DYLD_INSERT_LIBRARIES: "/workspace/hostile-loader.dylib",
+      NODE_OPTIONS: "--require=/workspace/hostile-node.cjs",
+      NODE_PATH: "/workspace/node_modules",
+      PYTHONPATH: "/workspace/python",
+      SSLKEYLOGFILE: "/workspace/tls-keys.log",
+      AWS_SECRET_ACCESS_KEY: "must-not-reach-skill",
       TRELIO_SKILL_PROJECT_ID: "stale-project",
       TRELIO_SKILL_CONNECTION_ID: "stale-connection",
       TRELIO_SKILL_CONNECTION_CONFIG_JSON: "stale-config",
     },
   });
 
-  assert.equal(environment.SAFE_PARENT_VALUE, "kept");
+  assert.equal(environment.SAFE_PARENT_VALUE, undefined);
+  assert.equal(environment.HOME, "/trusted/home");
+  assert.equal(environment.HTTPS_PROXY, "http://127.0.0.1:3128");
+  assert.equal(environment.LC_CTYPE, "en_US.UTF-8");
+  for (const rejectedKey of [
+    "LD_PRELOAD",
+    "DYLD_INSERT_LIBRARIES",
+    "NODE_OPTIONS",
+    "NODE_PATH",
+    "PYTHONPATH",
+    "SSLKEYLOGFILE",
+    "AWS_SECRET_ACCESS_KEY",
+  ]) {
+    assert.equal(environment[rejectedKey], undefined);
+  }
   assert.equal(environment.TRELIO_SKILL_COMPANY_ID, companyId);
   assert.equal(environment.TRELIO_SKILL_MEMBER_ID, memberId);
   assert.equal(environment.TRELIO_SKILL_CONNECTION_ID, undefined);
   assert.equal(environment.TRELIO_SKILL_CONNECTION_CONFIG_JSON, undefined);
   assert.equal(environment.TRELIO_SKILL_PROJECT_ID, undefined);
+
+  for (const forbiddenGrantName of [
+    "TRELIO_SKILL_COMPANY_ID",
+    "NODE_OPTIONS",
+    "HOME",
+    "BASH_ENV",
+  ]) {
+    assert.throws(
+      () => buildAgentSkillRuntimeEnvironment({
+        artifact: resolution.artifact,
+        runtimeDirectory: "/verified/runtime",
+        executionContext: {
+          companyId,
+          projectId: null,
+          releaseId,
+          localIdentity: resolution.localIdentity,
+          companyConnection: resolution.companyConnection,
+        },
+        grantedEnvironment: {
+          [forbiddenGrantName]: "forged-host-context",
+        },
+      }),
+      /небезопасное runtime env binding/u,
+    );
+  }
+  assert.throws(
+    () => buildAgentSkillRuntimeEnvironment({
+      artifact: resolution.artifact,
+      runtimeDirectory: "/verified/runtime",
+      executionContext: {
+        companyId,
+        projectId: null,
+        releaseId,
+        localIdentity: resolution.localIdentity,
+        companyConnection: resolution.companyConnection,
+      },
+      grantedEnvironment: {
+        TRELIO_FIRST_SECRET: "one",
+        TRELIO_SECOND_SECRET: "two",
+      },
+    }),
+    /только одно exact значение/u,
+  );
 
   assert.throws(
     () => normalizeResolvedSkillRuntimeArtifact({
@@ -2771,6 +2882,124 @@ test("connection-free skill runtime receives member identity without synthetic c
     }),
     /некорректную runtime resolution/u,
   );
+});
+
+test("skill host environment allowlist strips pre-runtime injection and ambient secrets", () => {
+  const environment = sanitizeAgentSkillInheritedEnvironment({
+    PATH: "/usr/bin:/bin",
+    TRELIO_CONFIG_HOME: "/private/config",
+    XDG_CACHE_HOME: "/private/cache",
+    DISPLAY: ":1",
+    WAYLAND_DISPLAY: "wayland-1",
+    XAUTHORITY: "/run/user/1000/xauth",
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    http_proxy: "http://127.0.0.1:8080",
+    LD_AUDIT: "/workspace/audit.so",
+    DYLD_LIBRARY_PATH: "/workspace/libraries",
+    GCONV_PATH: "/workspace/gconv",
+    OPENSSL_CONF: "/workspace/openssl.cnf",
+    NODE_EXTRA_CA_CERTS: "/workspace/ca.pem",
+    BASH_ENV: "/workspace/bash-env",
+    GITHUB_TOKEN: "must-not-reach-skill",
+    TRELIO_SKILL_COMPANY_ID: "stale-company",
+  });
+
+  assert.equal(environment.TRELIO_CONFIG_HOME, "/private/config");
+  assert.equal(environment.XDG_CACHE_HOME, "/private/cache");
+  assert.equal(environment.DISPLAY, ":1");
+  assert.equal(environment.WAYLAND_DISPLAY, "wayland-1");
+  assert.equal(environment.XAUTHORITY, "/run/user/1000/xauth");
+  assert.equal(environment.DBUS_SESSION_BUS_ADDRESS, "unix:path=/run/user/1000/bus");
+  assert.equal(environment.XDG_RUNTIME_DIR, "/run/user/1000");
+  assert.equal(environment.http_proxy, "http://127.0.0.1:8080");
+  assert.equal(environment.PATH, buildAgentSkillRuntimePath({}));
+  assert.doesNotMatch(environment.PATH, /workspace/u);
+  assert.equal(environment.PYTHONNOUSERSITE, "1");
+  assert.equal(environment.PYTHONSAFEPATH, "1");
+  assert.equal(environment.PYTHONDONTWRITEBYTECODE, "1");
+});
+
+test("skill host ignores a PATH python hijack and runs Python entrypoints in isolated mode", async () => {
+  const temporaryDirectory = await mkdtemp(
+    path.join(os.tmpdir(), "trelio-python-runtime-isolation-test-"),
+  );
+  const hostileBin = path.join(temporaryDirectory, "hostile-bin");
+  const runtimeDirectory = path.join(temporaryDirectory, "runtime");
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const hostileMarker = path.join(temporaryDirectory, "path-hijack-ran");
+  const userSiteMarker = path.join(temporaryDirectory, "user-site-ran");
+  const resultFile = path.join(temporaryDirectory, "result.txt");
+  try {
+    await Promise.all([
+      mkdir(hostileBin, { recursive: true }),
+      mkdir(runtimeDirectory, { recursive: true }),
+      mkdir(homeDirectory, { recursive: true }),
+    ]);
+    const hostilePython = path.join(hostileBin, process.platform === "win32" ? "python3.cmd" : "python3");
+    await writeFile(
+      hostilePython,
+      process.platform === "win32"
+        ? `@echo off\r\necho bad>"${hostileMarker}"\r\n`
+        : `#!/bin/sh\nprintf bad > '${hostileMarker}'\n`,
+    );
+    if (process.platform !== "win32") await chmod(hostilePython, 0o755);
+
+    const python = await resolveTrustedPythonInvocation({
+      runtimeDirectory,
+      environment: {
+        ...process.env,
+        HOME: homeDirectory,
+        PATH: `${hostileBin}${path.delimiter}${process.env.PATH || ""}`,
+      },
+    });
+    assert.equal(path.isAbsolute(python.executable), true);
+    assert.notEqual(python.executable, hostilePython);
+    assert.equal(await stat(hostileMarker).catch(() => null), null);
+
+    const sanitizedEnvironment = sanitizeAgentSkillInheritedEnvironment({
+      ...process.env,
+      HOME: homeDirectory,
+      PATH: `${hostileBin}${path.delimiter}${process.env.PATH || ""}`,
+    });
+    const { stdout: userSitePathOutput } = await execFileAsync(
+      python.executable,
+      [...python.argsPrefix, "-I", "-B", "-c", "import site;print(site.getusersitepackages())"],
+      { env: sanitizedEnvironment, encoding: "utf8" },
+    );
+    const userSiteDirectory = String(userSitePathOutput || "").trim();
+    await mkdir(userSiteDirectory, { recursive: true });
+    await writeFile(
+      path.join(userSiteDirectory, "trelio-hostile-user-site.pth"),
+      `import pathlib;pathlib.Path(${JSON.stringify(userSiteMarker)}).write_text('bad')\n`,
+    );
+    await writeFile(path.join(runtimeDirectory, "helper.py"), "VALUE = 'signed-sibling-import'\n");
+    const entrypointPath = path.join(runtimeDirectory, "main.py");
+    await writeFile(
+      entrypointPath,
+      "import pathlib,sys\nfrom helper import VALUE\npathlib.Path(sys.argv[1]).write_text(VALUE)\n",
+    );
+
+    await execFileAsync(
+      python.executable,
+      buildIsolatedPythonRuntimeArguments({
+        argsPrefix: python.argsPrefix,
+        runtimeDirectory,
+        entrypointPath,
+        runtimeArguments: [resultFile],
+      }),
+      {
+        cwd: runtimeDirectory,
+        env: sanitizedEnvironment,
+        encoding: "utf8",
+      },
+    );
+    assert.equal(await readFile(resultFile, "utf8"), "signed-sibling-import");
+    assert.equal(await stat(userSiteMarker).catch(() => null), null);
+    assert.equal(await stat(hostileMarker).catch(() => null), null);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("skill host resolves on every run, verifies signed package, caches it and repairs tampering", {
@@ -2785,14 +3014,37 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   const companyId = "99999999-9999-4999-8999-999999999999";
   const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const connectionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const deliveredFilePathLog = path.join(temporaryDirectory, "delivered-file-path.txt");
+  const runId = "66666666-6666-4666-8666-666666666666";
+  const grantIds = {
+    env: "11111111-1111-4111-8111-111111111111",
+    file: "22222222-2222-4222-8222-222222222222",
+    stdin: "33333333-3333-4333-8333-333333333333",
+  };
+  const secretValues = {
+    env: "one-use-env-secret",
+    file: "one-use-file-secret",
+    stdin: "one-use-stdin-secret",
+  };
   let resolveCount = 0;
   let packageDownloadCount = 0;
+  const consumedGrants = [];
   let serverError = null;
 
   await mkdir(sourceDirectory, { recursive: true });
   await writeFile(
     path.join(sourceDirectory, "main.mjs"),
-    "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}:${process.env.TRELIO_SKILL_MEMBER_ID}:${process.env.TRELIO_SKILL_CONNECTION_ID}:${process.env.TRELIO_SKILL_CONNECTION_CONFIG_JSON}:project=${process.env.TRELIO_SKILL_PROJECT_ID || 'none'}\\n`);\n",
+    [
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'let stdinValue = "";',
+      'if (process.argv.includes("--read-stdin")) { for await (const chunk of process.stdin) stdinValue += chunk; }',
+      `const envGrant = process.env.DEPLOY_TOKEN === ${JSON.stringify(secretValues.env)};`,
+      `const fileGrant = process.env.TRELIO_SECRET_FILE ? (await readFile(process.env.TRELIO_SECRET_FILE, "utf8")) === ${JSON.stringify(secretValues.file)} : false;`,
+      `if (process.env.TRELIO_SECRET_FILE) await writeFile(${JSON.stringify(deliveredFilePathLog)}, process.env.TRELIO_SECRET_FILE, "utf8");`,
+      `const stdinGrant = stdinValue === ${JSON.stringify(secretValues.stdin)};`,
+      "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}:${process.env.TRELIO_SKILL_MEMBER_ID}:${process.env.TRELIO_SKILL_CONNECTION_ID}:${process.env.TRELIO_SKILL_CONNECTION_CONFIG_JSON}:project=${process.env.TRELIO_SKILL_PROJECT_ID || 'none'}:grants=${envGrant},${fileGrant},${stdinGrant}\\n`);",
+      "",
+    ].join("\n"),
     { mode: 0o755 },
   );
   const packageBytes = await buildAgentSkillPackage({
@@ -2822,6 +3074,28 @@ test("skill host resolves on every run, verifies signed package, caches it and r
         response.end(JSON.stringify({
           supported: true,
           minimumVersion: BRIDGE_VERSION,
+        }));
+        return;
+      }
+
+      const grantEntry = Object.entries(grantIds).find(([, grantId]) => (
+        request.method === "POST"
+        && request.url === `/api/agent-secrets/checkout-grants/${grantId}/consume`
+      ));
+      if (grantEntry) {
+        const [deliveryMode, grantId] = grantEntry;
+        assert.deepEqual(
+          JSON.parse((await readRequestBody(request)).toString("utf8")),
+          { runId },
+        );
+        consumedGrants.push(grantId);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          runId,
+          executable: "trelio-workspace",
+          deliveryMode,
+          environmentVariable: deliveryMode === "env" ? "DEPLOY_TOKEN" : null,
+          value: secretValues[deliveryMode],
         }));
         return;
       }
@@ -2901,7 +3175,12 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   });
 
   try {
-    await mkdir(homeDirectory, { recursive: true });
+    const runRoot = path.join(temporaryDirectory, "run");
+    const runWorkspace = path.join(runRoot, "workspace");
+    await Promise.all([
+      mkdir(homeDirectory, { recursive: true }),
+      mkdir(runWorkspace, { recursive: true }),
+    ]);
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
@@ -2910,6 +3189,11 @@ test("skill host resolves on every run, verifies signed package, caches it and r
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${address.port}`;
     await writeTestCredential(homeDirectory, origin);
+    await writeFile(
+      path.join(runRoot, ".trelio-run.json"),
+      `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
+      "utf8",
+    );
     const runSkill = () => execFileAsync(
       process.execPath,
       [
@@ -2939,17 +3223,82 @@ test("skill host resolves on every run, verifies signed package, caches it and r
           // A caller cannot smuggle stale host-owned context into a run that
           // was live-resolved without a project.
           TRELIO_SKILL_PROJECT_ID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+          // Even an exact-looking ambient secret is not a consumed grant and
+          // must remain absent from an ordinary skill invocation.
+          DEPLOY_TOKEN: secretValues.env,
+        },
+      },
+    );
+    const runWithGrant = (deliveryMode) => execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "secret",
+        "exec",
+        "--origin",
+        origin,
+        "--grant",
+        grantIds[deliveryMode],
+        "--",
+        "trelio-workspace",
+        "skill",
+        "run",
+        "--origin",
+        origin,
+        "--company",
+        companyId,
+        "--skill",
+        skillId,
+        "--release",
+        releaseId,
+        "--",
+        "--message",
+        deliveryMode,
+        ...(deliveryMode === "stdin" ? ["--read-stdin"] : []),
+      ],
+      {
+        cwd: runWorkspace,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          HOME: homeDirectory,
+          XDG_CACHE_HOME: path.join(homeDirectory, ".cache"),
+          TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
         },
       },
     );
 
     const firstRun = await runSkill();
     const secondRun = await runSkill();
-    const expectedRuntimeOutput = `runtime:--message,hello:${releaseId}:${memberId}:${connectionId}:{"schemaVersion":1,"baseUrl":"https://example.test/"}:project=none`;
+    const expectedRuntimeOutput = `runtime:--message,hello:${releaseId}:${memberId}:${connectionId}:{"schemaVersion":1,"baseUrl":"https://example.test/"}:project=none:grants=false,false,false`;
     assert.match(firstRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.match(secondRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.equal(resolveCount, 2, "every invocation must resolve the current release");
     assert.equal(packageDownloadCount, 1, "second invocation must use verified cache");
+
+    for (const deliveryMode of ["env", "file", "stdin"]) {
+      const grantedRun = await runWithGrant(deliveryMode);
+      const expectedGrantTuple = {
+        env: "true,false,false",
+        file: "false,true,false",
+        stdin: "false,false,true",
+      }[deliveryMode];
+      assert.match(grantedRun.stdout, new RegExp(
+        `runtime:--message,${deliveryMode}[^\\n]*:grants=${expectedGrantTuple}`,
+      ));
+      for (const secretValue of Object.values(secretValues)) {
+        assert.doesNotMatch(grantedRun.stdout, new RegExp(secretValue, "u"));
+        assert.doesNotMatch(grantedRun.stderr, new RegExp(secretValue, "u"));
+      }
+    }
+    assert.deepEqual(consumedGrants, [grantIds.env, grantIds.file, grantIds.stdin]);
+    const deliveredFilePath = await readFile(deliveredFilePathLog, "utf8");
+    assert.equal(await stat(deliveredFilePath).catch(() => null), null);
+    assert.equal(await stat(path.dirname(deliveredFilePath)).catch(() => null), null);
+
+    const postGrantRun = await runSkill();
+    assert.match(postGrantRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
 
     const cachedEntrypoint = path.join(
       homeDirectory,
@@ -2966,7 +3315,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
 
     const repairedRun = await runSkill();
     assert.match(repairedRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-    assert.equal(resolveCount, 3);
+    assert.equal(resolveCount, 7);
     assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
     assert.ifError(serverError);
   } finally {
