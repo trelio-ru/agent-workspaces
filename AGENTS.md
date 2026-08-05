@@ -89,7 +89,7 @@
   transport fallback или автоматический повтор. Connections, sessions,
   consent и policy навыков независимы.
 - Канонический Telegram Web skill и signed runtime находятся в
-  `platform-skills/telegram-web/`. Runtime `1.0.3` использует отдельный Web K
+  `platform-skills/telegram-web/`. Runtime `1.0.4` использует отдельный Web K
   profile, visible owner login/consent и headless content-команды, а broad или
   недоказуемые операции возвращает как unsupported до решающего side effect.
   Login и logout owner handoff нельзя реализовывать одним долгим provider
@@ -110,6 +110,15 @@
   browser/provider ошибки в `TELEGRAM_WEB_PROBE_FAILED` только с фиксированной
   безопасной phase, не раскрывая raw error, URL, path, content или account
   digest; deliberate runtime errors сохраняют исходный code.
+  Protected consent на macOS открывается только через exact machine-wide
+  Chrome/Chromium/Edge, который уже выбран и повторно проверен текущей browser-
+  сессией: generic/default URL handler и ChatGPT Browser для этого handoff
+  запрещены. `Referrer-Policy: origin` сохраняет normal Chrome Origin, но не
+  раскрывает one-use path; строгие Origin, Fetch Metadata, content-type и cookie
+  проверки POST не ослабляются, а runtime не нажимает consent за владельца.
+  Zero-exit opener не является delivery proof: exact landing GET должен
+  завершиться за 30 секунд. После admitted landing malformed protected POST
+  отдаёт явный HTTP error и terminal-завершает команду без десятиминутного lock.
   Awaited command/browser/consent/download deadline timers должны оставаться
   referenced до exact завершения или cleanup: `unref()` не может подменять
   гарантированный timeout преждевременным выходом Node process.

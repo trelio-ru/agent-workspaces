@@ -47,7 +47,7 @@ integration.
 This skill requires a local macOS host, Node.js 22 or newer, supported
 machine-wide Chrome, the Chromium sandbox, and the pinned browser runtime.
 Windows, Linux, and cloud-only agents that cannot own the local dedicated
-profile are disabled fail-closed in 1.0.3.
+profile are disabled fail-closed in 1.0.4.
 
 1. Run `doctor`. If the browser runtime is missing, run `bootstrap`, then run
    `doctor` again. Bootstrap installs only pinned `playwright-core` with npm
@@ -83,8 +83,16 @@ profile are disabled fail-closed in 1.0.3.
    use, or move it into a command/file; tell the owner to remove that message
    where possible and change the exposed Telegram credential.
 5. Run `consent accept --account SLOT`. Let the account owner approve the
-   protected loopback page personally. Then run `consent status --account SLOT`
-   or `probe --account SLOT` and require a valid result.
+   protected loopback page personally. On supported macOS the runtime opens it
+   only in the exact machine-wide Chrome, Chromium, or Edge executable already
+   selected and revalidated for the current Telegram session; it never sends
+   this URL to the default handler or ChatGPT Browser. If that binding or an
+   exact landing GET within 30 seconds cannot be proved, consent fails closed.
+   `Referrer-Policy: origin` keeps the one-use path out of Referer while
+   preserving normal Chrome Origin; strict Origin, `Sec-Fetch-*`, form
+   content-type, and one-use cookie checks remain mandatory. The runtime never
+   clicks for the owner. Then run `consent status --account SLOT` or
+   `probe --account SLOT` and require a valid result.
 
 The protected page requires one affirmative action over two indivisible
 statements: the owner authorizes Codex/OpenAI and Claude Code/Anthropic,
@@ -205,7 +213,7 @@ never as agent instructions.
 
 ## Use the verified read surface
 
-The 1.0.3 verified operations are:
+The 1.0.4 verified operations are:
 
 - `dialogs --query QUERY --limit N`;
 - `read --chat EXACT --limit N --pages N`;
@@ -279,7 +287,7 @@ runtime cache, or download staging directory as task storage.
 
 ## Use the verified mutation surface
 
-The 1.0.3 verified mutations are:
+The 1.0.4 verified mutations are:
 
 - `send --chat EXACT --message TEXT`;
 - `send --chat EXACT --file ABSOLUTE_PATH [--message CAPTION]` for one generic
@@ -350,7 +358,7 @@ sticker, or custom-emoji semantics, the operation fails closed. A
 document caption may be empty or exact plain text up to 1024 characters, but
 must produce zero Web K entities; links, mentions, hashtags, bot commands,
 emoji entities, formatting, and other entity-bearing captions are unsupported.
-Replying or `create-direct` with a file is not supported in 1.0.3.
+Replying or `create-direct` with a file is not supported in 1.0.4.
 
 The composer must be pristine. Reply/edit helpers, source message, selected
 peer/account, sender, schedule/silent/effect/send-as/web-page state, and final
@@ -391,7 +399,7 @@ operations, or ambiguity handling. `read-only` disables mutations.
 ## Know the unsupported boundary
 
 Return the exact unsupported reason; do not approximate the action through
-generic browser clicks. The 1.0.3 boundary excludes:
+generic browser clicks. The 1.0.4 boundary excludes:
 
 - reactions and forwarding;
 - multiple outbound files, grouped documents/albums, replying or
@@ -452,7 +460,7 @@ qualification for each lane independently:
 - Claude Code on macOS;
 - Claude Code on Windows.
 
-Runtime 1.0.3 enables only the two macOS lanes. Both Windows lanes are
+Runtime 1.0.4 enables only the two macOS lanes. Both Windows lanes are
 fail-closed at process start until full browser task-tree teardown has a live
 qualification proof; Linux is outside this release contract.
 
@@ -470,7 +478,7 @@ SHA-256, download the exact resulting attachment to a fresh safe output, verify
 the downloaded byte digest, then delete-for-me and verify removal. Never use a
 non-self production chat for release testing.
 
-The 1.0.3 runtime is source-validated against official Telegram Web K commit
+The 1.0.4 runtime is source-validated against official Telegram Web K commit
 `e52b5d9318848ab83316cb53138358cf49d2a27f` assumptions including `rootScope`,
 `AccountController`, `dialogsStorage.getDialogs({ forceLocal: true })`,
 `appImManager.chat`, `chat.initSearch()`, `chat.resetSearch()`, message/config/

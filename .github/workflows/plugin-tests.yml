@@ -33,9 +33,11 @@ jobs:
 
       # Keep the exact test paths explicit so both shells pass the same files
       # to Node without relying on glob expansion. Telegram Web's deterministic
-      # runtime suite belongs in both POSIX lanes; real browser/account smoke
-      # remains a separately recorded release qualification and is not inferred
-      # from these platform-neutral regressions.
+      # runtime suite belongs in both POSIX lanes, including the injected exact
+      # macOS `open -n -a <verified .app> URL` consent argv, landing-admission,
+      # and terminal malformed-POST contracts. Real browser/account smoke is a
+      # separately recorded release qualification and is not inferred from
+      # these platform-neutral tests.
       - name: Run plugin and platform runtime Node tests
         run: >-
           node --test
@@ -58,7 +60,7 @@ jobs:
         with:
           node-version: 22
 
-      # Runtime 1.0.3 rejects Windows before creating profile/state. Exercise
+      # Runtime 1.0.4 rejects Windows before creating profile/state. Exercise
       # that real fail-closed gate plus pure parsing/environment/source
       # contracts here; do not inject the macOS lane and then weaken the real
       # Windows DACL verifier merely to run unreachable profile scenarios.

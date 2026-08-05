@@ -106,7 +106,7 @@ const environmentFor = (temporaryDirectory, overrides = {}) => ({
   TRELIO_CONFIG_HOME: path.join(temporaryDirectory, "config"),
   TRELIO_CACHE_HOME: path.join(temporaryDirectory, "cache"),
   TRELIO_SKILL_ID: "telegram-web",
-  TRELIO_SKILL_RUNTIME_VERSION: "1.0.3",
+  TRELIO_SKILL_RUNTIME_VERSION: "1.0.4",
   TRELIO_SKILL_COMPANY_ID: companyId,
   TRELIO_SKILL_MEMBER_ID: memberId,
   TRELIO_SKILL_CONNECTION_ID: connectionId,
@@ -1727,6 +1727,86 @@ test("browser and opener child environment is an allowlist with fixed system PAT
   assert.equal(bootstrap.NODE_PATH, undefined);
   assert.equal(bootstrap.npm_config_ignore_scripts, "true");
   assert.equal(bootstrap.npm_config_registry, "https://registry.npmjs.org/");
+});
+
+test("protected consent opens a separate exact supported macOS browser instead of the default handler or headless instance", async () => {
+  const url = `http://127.0.0.1:43123/consent/${"x".repeat(43)}`;
+  const browsers = [
+    [
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Google Chrome.app",
+    ],
+    [
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+      "/Applications/Chromium.app",
+    ],
+    [
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/Applications/Microsoft Edge.app",
+    ],
+  ];
+  for (const [browserExecutable, applicationBundle] of browsers) {
+    const verified = [];
+    let launched = null;
+    await __testing.launchProtectedConsentBrowser(url, browserExecutable, {
+      HOME: "/safe/home",
+      SECRET_TOKEN: "must-not-reach-opener",
+    }, {
+      platform: "darwin",
+      assertTrustedPosixExecutableChain: async (candidate) => {
+        verified.push(candidate);
+        return candidate;
+      },
+      requireTrustedAbsoluteExecutable: async (candidates) => {
+        assert.deepEqual(candidates, ["/usr/bin/open"]);
+        return "/usr/bin/open";
+      },
+      spawn: (executable, args, options) => {
+        launched = { executable, args, options };
+        const child = new EventEmitter();
+        child.kill = () => undefined;
+        setImmediate(() => child.emit("exit", 0));
+        return child;
+      },
+    });
+    assert.equal(launched.executable, "/usr/bin/open");
+    assert.deepEqual(launched.args, ["-n", "-a", applicationBundle, url]);
+    assert.deepEqual(verified, [browserExecutable, "/usr/bin/open", browserExecutable]);
+    assert.equal(launched.options.detached, true);
+    assert.equal(launched.options.shell, false);
+    assert.equal(launched.options.env.SECRET_TOKEN, undefined);
+  }
+
+  let spawnCalled = false;
+  await expectCode(
+    () => __testing.launchProtectedConsentBrowser(url, "/Users/example/Chrome", {}, {
+      platform: "darwin",
+      spawn: () => { spawnCalled = true; },
+    }),
+    "TELEGRAM_WEB_BROWSER_OPEN_FAILED",
+  );
+  assert.equal(spawnCalled, false);
+
+  const selectedBrowser = browsers[0][0];
+  let selectedBrowserChecks = 0;
+  await expectCode(
+    () => __testing.launchProtectedConsentBrowser(url, selectedBrowser, {}, {
+      platform: "darwin",
+      requireTrustedAbsoluteExecutable: async () => "/usr/bin/open",
+      assertTrustedPosixExecutableChain: async (candidate) => {
+        if (candidate !== selectedBrowser) return candidate;
+        selectedBrowserChecks += 1;
+        // Simulate an identity/path recheck disagreement exactly at the final
+        // spawn boundary. The selected .app must not be replaced by another
+        // otherwise-supported browser merely because both are trusted.
+        return selectedBrowserChecks === 1 ? candidate : browsers[1][0];
+      },
+      spawn: () => { spawnCalled = true; },
+    }),
+    "TELEGRAM_WEB_BROWSER_OPEN_FAILED",
+  );
+  assert.equal(selectedBrowserChecks, 2);
+  assert.equal(spawnCalled, false);
 });
 
 test("automatic entities come from the live source-validated Web K parser and reject bot commands", async () => {
@@ -3592,13 +3672,19 @@ const submitProtectedConsent = async (url, inspectHtml = () => undefined) => {
       response.on("end", () => resolve({ response, body: Buffer.concat(chunks).toString("utf8") }));
     }).on("error", reject);
   });
+  assert.equal(landing.response.headers["referrer-policy"], "origin");
   assert.match(landing.body, /Codex.*Claude Code/su);
+  assert.match(landing.body, /rel="noreferrer noopener"/u);
   inspectHtml(landing.body);
   assert.match(new URL(url).pathname, /^\/consent\/[A-Za-z0-9_-]{43}$/u);
   const cookie = landing.response.headers["set-cookie"]?.[0]?.split(";", 1)[0];
   const formAction = landing.body.match(/<form method="post" action="([^"]+)"/u)?.[1];
   assert.match(formAction || "", /^\/confirm\/[A-Za-z0-9_-]{43}$/u);
   const target = new URL(formAction, url);
+  const originOnlyReferrer = `${target.origin}/`;
+  assert.equal(new URL(originOnlyReferrer).pathname, "/");
+  assert.equal(originOnlyReferrer.includes(new URL(url).pathname), false);
+  assert.equal(originOnlyReferrer.includes(target.pathname), false);
 
   // The protected landing capability is single-admission. A competing local
   // request cannot refresh it to obtain another authorization cookie.
@@ -3617,9 +3703,11 @@ const submitProtectedConsent = async (url, inspectHtml = () => undefined) => {
         "content-length": Buffer.byteLength("affirm=yes"),
         cookie,
         origin: target.origin,
+        referer: originOnlyReferrer,
         "sec-fetch-site": "same-origin",
         "sec-fetch-mode": "navigate",
         "sec-fetch-dest": "document",
+        "sec-fetch-user": "?1",
       },
     }, (response) => {
       response.resume();
@@ -3636,8 +3724,11 @@ test("protected local consent page grants Codex and Claude Code together without
     const environment = environmentFor(temporaryDirectory);
     const identity = identityFor(environment);
     let written = null;
+    const selectedBrowserExecutable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
     const accepted = await acceptConsentInProtectedBrowser(identity, accountDigest, environment, {
-      openBrowser: async (url) => {
+      browserExecutable: selectedBrowserExecutable,
+      openBrowser: async (url, browserExecutable) => {
+        assert.equal(browserExecutable, selectedBrowserExecutable);
         // Knowing only the loopback origin/port is insufficient: historical
         // fixed routes expose neither the landing cookie nor confirmation.
         const origin = new URL(url).origin;
@@ -3674,6 +3765,212 @@ test("protected local consent page grants Codex and Claude Code together without
       createHash("sha256").update(JSON.stringify({ statements: CONSENT_STATEMENTS })).digest("hex"),
     );
   } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("zero-exit consent opener without the exact landing GET fails on the bounded admission fence", async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-consent-admission-")));
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const identity = identityFor(environment);
+    let openerCalls = 0;
+    const startedAt = Date.now();
+    await expectCode(
+      () => acceptConsentInProtectedBrowser(identity, accountDigest, environment, {
+        browserExecutable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        landingAdmissionTimeoutMs: 50,
+        openBrowser: async () => { openerCalls += 1; },
+      }),
+      "TELEGRAM_WEB_BROWSER_OPEN_FAILED",
+    );
+    assert.equal(openerCalls, 1);
+    assert.ok(Date.now() - startedAt < 2_000);
+    const status = await renderConsentStatus(identity, accountDigest, new Date(), environment);
+    assert.equal(status.valid, false);
+    assert.equal(status.reason, "revoked");
+    assert.equal(await lstat(runtimeLocations(identity, environment).consentFile).catch(() => null), null);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("protected consent keeps Origin strict under origin-only referrer policy and rejects missing Fetch Metadata", async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-consent-fetch-metadata-")));
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const identity = identityFor(environment);
+    const runInvalidSubmission = async (headersFor) => {
+      let invalidResponse = null;
+      let resolveResponseDelivered;
+      const responseDelivered = new Promise((resolve) => { resolveResponseDelivered = resolve; });
+      const acceptance = acceptConsentInProtectedBrowser(identity, accountDigest, environment, {
+        browserExecutable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        landingAdmissionTimeoutMs: 1_000,
+        openBrowser: async (url) => {
+          const landing = await new Promise((resolve, reject) => {
+            http.get(url, (response) => {
+              const chunks = [];
+              response.on("data", (chunk) => chunks.push(chunk));
+              response.on("end", () => resolve({
+                response,
+                body: Buffer.concat(chunks).toString("utf8"),
+              }));
+            }).on("error", reject);
+          });
+          assert.equal(landing.response.headers["referrer-policy"], "origin");
+          const cookie = landing.response.headers["set-cookie"]?.[0]?.split(";", 1)[0];
+          const formAction = landing.body.match(/<form method="post" action="([^"]+)"/u)?.[1];
+          const target = new URL(formAction, url);
+          invalidResponse = await new Promise((resolve, reject) => {
+            const request = http.request(target, { method: "POST", headers: headersFor({ cookie, target }) }, (response) => {
+              const responseChunks = [];
+              response.on("data", (chunk) => responseChunks.push(chunk));
+              response.on("end", () => resolve({
+                status: response.statusCode,
+                body: Buffer.concat(responseChunks).toString("utf8"),
+                connection: response.headers.connection,
+              }));
+            });
+            request.on("error", reject);
+            request.end("affirm=yes");
+          });
+          resolveResponseDelivered();
+        },
+      });
+      await expectCode(() => acceptance, "TELEGRAM_WEB_CONSENT_INVALID_SUBMISSION");
+      await responseDelivered;
+      return invalidResponse;
+    };
+    const baseHeaders = ({ cookie, target }) => ({
+      "content-type": "application/x-www-form-urlencoded",
+      "content-length": Buffer.byteLength("affirm=yes"),
+      cookie,
+      referer: `${target.origin}/`,
+    });
+    const nullOriginResponse = await runInvalidSubmission(({ cookie, target }) => ({
+      ...baseHeaders({ cookie, target }),
+      // This is the exact Chrome 150 failure produced by no-referrer. The
+      // policy changes to origin; the server must still reject null rather
+      // than weakening its exact same-origin validation.
+      origin: "null",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "document",
+      "sec-fetch-user": "?1",
+    }));
+    const missingUserActivationResponse = await runInvalidSubmission(({ cookie, target }) => ({
+      ...baseHeaders({ cookie, target }),
+      origin: target.origin,
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "document",
+      // A scripted form submit has no trusted top-level user activation and
+      // must not be accepted as the owner's affirmative button click.
+    }));
+    const missingFetchMetadataResponse = await runInvalidSubmission(({ cookie, target }) => ({
+      ...baseHeaders({ cookie, target }),
+      origin: target.origin,
+      // Deliberately omit every Sec-Fetch-* header. Accepting this request
+      // would hide an unsupported embedded-browser route by weakening
+      // protected consent instead of fixing browser selection.
+    }));
+    assert.deepEqual(nullOriginResponse, { status: 403, body: "Invalid browser submission", connection: "close" });
+    assert.deepEqual(missingUserActivationResponse, { status: 403, body: "Invalid browser submission", connection: "close" });
+    assert.deepEqual(missingFetchMetadataResponse, { status: 403, body: "Invalid browser submission", connection: "close" });
+    const status = await renderConsentStatus(identity, accountDigest, new Date(), environment);
+    assert.equal(status.valid, false);
+    assert.equal(status.reason, "revoked");
+    assert.equal(await lstat(runtimeLocations(identity, environment).consentFile).catch(() => null), null);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("actual supported Chrome submits exact protected consent headers without leaking capability paths", {
+  skip: process.platform !== "darwin" || process.env.TELEGRAM_WEB_REAL_CONSENT_HEADERS_TEST !== "1",
+  timeout: 120_000,
+}, async () => {
+  const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-real-consent-headers-")));
+  let browserContext = null;
+  let lifecycleTimer = null;
+  try {
+    const environment = environmentFor(temporaryDirectory);
+    const identity = identityFor(environment);
+    await bootstrapBrowserRuntime(identity, environment);
+    const browserExecutable = await __testing.findChromeExecutable(environment);
+    assert.equal(typeof browserExecutable, "string");
+    const profileDirectory = path.join(temporaryDirectory, "browser-profile");
+    const downloadsPath = path.join(temporaryDirectory, "browser-downloads");
+    await mkdir(profileDirectory, { mode: 0o700 });
+    await mkdir(downloadsPath, { mode: 0o700 });
+    const { chromium } = await __testing.loadPlaywright(identity, environment);
+    browserContext = await chromium.launchPersistentContext(profileDirectory, buildChromiumLaunchOptions({
+      executablePath: browserExecutable,
+      headless: true,
+      downloadsPath,
+      timeoutMs: 20_000,
+      environment,
+    }));
+    const page = browserContext.pages()[0] || await browserContext.newPage();
+    const abortHandlers = new Set();
+    let lifecycleAborted = false;
+    const lifecycleError = new TelegramWebRuntimeError(
+      "TELEGRAM_WEB_COMMAND_TIMEOUT",
+      "actual Chrome protected-consent header regression timed out",
+      { safeToRetry: false },
+    );
+    const commandLifecycle = {
+      assertActive: () => {
+        if (lifecycleAborted) throw lifecycleError;
+      },
+      onAbort: (handler) => {
+        abortHandlers.add(handler);
+        return () => abortHandlers.delete(handler);
+      },
+    };
+    lifecycleTimer = setTimeout(() => {
+      lifecycleAborted = true;
+      for (const handler of abortHandlers) handler(lifecycleError);
+    }, 30_000);
+    let landingOrigin = null;
+    let resolveRequestHeaders;
+    let rejectRequestHeaders;
+    const requestHeaders = new Promise((resolve, reject) => {
+      resolveRequestHeaders = resolve;
+      rejectRequestHeaders = reject;
+    });
+    page.on("request", (request) => {
+      if (request.method() !== "POST" || !new URL(request.url()).pathname.startsWith("/confirm/")) return;
+      void request.allHeaders().then(resolveRequestHeaders, rejectRequestHeaders);
+    });
+    await acceptConsentInProtectedBrowser(identity, accountDigest, environment, {
+      browserExecutable,
+      commandLifecycle,
+      openBrowser: async (url, selectedBrowserExecutable) => {
+        assert.equal(selectedBrowserExecutable, browserExecutable);
+        landingOrigin = new URL(url).origin;
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 20_000 });
+        // This click exists only in the opt-in isolated browser regression. The
+        // production runtime continues to leave the affirmative owner action
+        // entirely manual and exposes no code path that calls this locator.
+        await page.locator('button[type="submit"][name="affirm"][value="yes"]').click({ timeout: 20_000 });
+      },
+    });
+    const headers = await requestHeaders;
+    assert.equal(headers.origin, landingOrigin);
+    assert.equal(headers["sec-fetch-site"], "same-origin");
+    assert.equal(headers["sec-fetch-mode"], "navigate");
+    assert.equal(headers["sec-fetch-dest"], "document");
+    assert.equal(headers["sec-fetch-user"], "?1");
+    assert.match(headers["content-type"] || "", /^application\/x-www-form-urlencoded/u);
+    assert.match(headers.cookie || "", /(?:^|;\s*)trelio_tg_consent=/u);
+    assert.equal(headers.referer, `${landingOrigin}/`);
+    assert.equal(headers.referer.includes("/consent/"), false);
+    assert.equal(headers.referer.includes("/confirm/"), false);
+  } finally {
+    clearTimeout(lifecycleTimer);
+    await browserContext?.close().catch(() => undefined);
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
@@ -3787,7 +4084,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
     await writeFile(managedFile, "secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(managedFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
 
-    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.3", "node_modules", "secret.txt");
+    const runtimeCacheFile = path.join(environment.TRELIO_CACHE_HOME, "runtimes", "telegram-web", "1.0.4", "node_modules", "secret.txt");
     await mkdir(path.dirname(runtimeCacheFile), { recursive: true, mode: 0o700 });
     await writeFile(runtimeCacheFile, "cache-secret", { mode: 0o600 });
     await expectCode(() => __testing.readRegularFileSnapshot(runtimeCacheFile, 1024, environment), "TELEGRAM_WEB_UNSAFE_PATH");
@@ -3810,7 +4107,7 @@ test("managed Telegram namespaces cannot be read as outbound text or used as dow
 
 test("outbound document snapshots require canonical private non-empty regular files", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.3 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.4 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-input-")));
@@ -3940,7 +4237,7 @@ test("document approval binds one source snapshot, caption, destination and all 
 
 test("one-document send still requires dry-run approval under autonomous text policy before browser launch", async (context) => {
   if (process.platform === "win32") {
-    context.skip("The 1.0.3 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
+    context.skip("The 1.0.4 input-file lane is macOS/POSIX-only; Windows is fail-closed before state.");
     return;
   }
   const temporaryDirectory = await realpath(await mkdtemp(path.join(os.homedir(), ".telegram-web-file-policy-")));
@@ -4213,7 +4510,7 @@ test("default host cache is allowed only from its exact materialized skill-runti
   const previousCwd = process.cwd();
   try {
     const cacheBase = path.join(temporaryDirectory, "cache");
-    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.3");
+    const materialized = path.join(cacheBase, "workspace-bridge", "skill-runtimes", "telegram-web", "1.0.4");
     await mkdir(materialized, { recursive: true, mode: 0o700 });
     process.chdir(materialized);
     assert.equal(
@@ -4246,7 +4543,7 @@ test("runtime cache accepts an owned 0755 base but rejects unsafe descendants be
     const environment = environmentFor(temporaryDirectory);
     const identity = identityFor(environment);
     const cacheBase = environment.TRELIO_CACHE_HOME;
-    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.3");
+    const runtimeRoot = path.join(cacheBase, "runtimes", "telegram-web", "1.0.4");
     await mkdir(cacheBase, { mode: 0o755 });
     await chmod(cacheBase, 0o755);
     await __testing.ensurePrivateTree(cacheBase, runtimeRoot, environment);
@@ -5418,7 +5715,6 @@ test("source contains exact security contracts for headless watch, logout, Windo
   assert.match(source, /Long-running in-process Telegram Web watch loops are unsupported/u);
   assert.match(source, /TELEGRAM_WEB_USER_ACTION_REQUIRED/u);
   assert.match(source, /performedBy: "account-owner-in-headed-telegram-web"/u);
-  assert.match(source, /cwd: path\.dirname\(executable\)/u);
   assert.match(source, /path\.parse\(systemRoot\)\.root/u);
   assert.match(source, /workspace-bridge", "skill-runtimes/u);
   assert.match(source, /runtimeSearchResultPersistence: "none"/u);
@@ -5434,6 +5730,16 @@ test("source contains exact security contracts for headless watch, logout, Windo
   assert.match(source, /const protectedCredentialSurface = authRootVisible \|\| passwordInput/u);
   assert.match(source, /requireFreshNavigation: true/u);
   assert.match(source, /withTelegramBrowserSession/u);
+  assert.match(source, /browserExecutable: launchExecutablePath/u);
+  assert.match(source, /args: \["-n", "-a", applicationBundle, url\]/u);
+  assert.doesNotMatch(source, /args: \[url\]/u);
+  assert.match(source, /"referrer-policy": "origin"/u);
+  assert.doesNotMatch(source, /"referrer-policy": "no-referrer"/u);
+  assert.match(source, /CONSENT_LANDING_ADMISSION_TIMEOUT_MS = 30_000/u);
+  assert.match(source, /CONSENT_TERMINAL_RESPONSE_DRAIN_TIMEOUT_MS = 250/u);
+  assert.match(source, /rejectTerminalAfterResponse\(403, "Invalid browser submission"/u);
+  assert.match(source, /await Promise\.race\(\[landingAdmitted, accepted\]\)/u);
+  assert.match(source, /request\.headers\.origin !== origin[\s\S]*?fetchSite !== "same-origin"[\s\S]*?fetchMode !== "navigate"[\s\S]*?fetchDest !== "document"[\s\S]*?fetchUser !== "\?1"[\s\S]*?application\/x-www-form-urlencoded/u);
   assert.match(source, /requireGracefulTeardown: true/u);
   assert.match(source, /TELEGRAM_WEB_LOGIN_NOT_PERSISTED/u);
   assert.match(source, /TELEGRAM_WEB_LOGIN_PERSISTENCE_LOCKED/u);
@@ -5451,6 +5757,8 @@ test("source contains exact security contracts for headless watch, logout, Windo
   assert.match(skill, /native skill-invocation syntax/u);
   assert.match(skill, /MUST NOT re-prompt for consent for each non-self chat/u);
   assert.match(skill, /Ask for consent again only when the annual grant is/u);
+  assert.match(skill, /never sends[\s\S]*URL to the default handler or ChatGPT Browser/u);
+  assert.match(skill, /Referrer-Policy: origin` keeps the one-use[\s\S]*path out of Referer/u);
   assert.match(skill, /exact opaque PeerId as an inline[\s\S]*code literal, and `accountSlot`/u);
   assert.match(agentMetadata, /default_prompt: "Use \$telegram-web\b/u);
   assert.match(integrationContract, /captionless document в собственные Saved Messages/u);

@@ -141,6 +141,13 @@ const TELEGRAM_READY_SURFACE_SELECTORS = Object.freeze([
 ]);
 const CONSENT_BODY_LIMIT = 8 * 1024;
 const CONSENT_TIMEOUT_MS = 10 * 60_000;
+// `/usr/bin/open` returning zero proves only that LaunchServices accepted the
+// request. The selected browser must actually claim and receive the exact
+// one-use landing response before this shorter handoff fence expires.
+const CONSENT_LANDING_ADMISSION_TIMEOUT_MS = 30_000;
+// A malformed protected POST is terminal, but its explicit HTTP error must be
+// allowed a short bounded drain before loopback teardown destroys sockets.
+const CONSENT_TERMINAL_RESPONSE_DRAIN_TIMEOUT_MS = 250;
 // The revoke path waits at most ten seconds for the consent-state lock.  A
 // decisive browser lease therefore contains a bounded surface snapshot, one
 // bounded read-only source/composer reproof, and one Locator.click(). Their
@@ -600,7 +607,7 @@ read/search return bounded author/date/text, at most 32 safe link entities, and
 at most one 2000-character reply context. Opaque PeerId is routing metadata,
 never an inputPeer/access_hash capability; Saved Messages redacts it.
 
-Unsupported in the 1.0.3 pilot (returns TELEGRAM_WEB_UNSUPPORTED_OPERATION):
+Unsupported in the 1.0.4 pilot (returns TELEGRAM_WEB_UNSUPPORTED_OPERATION):
   react, forward, reply/create-direct files, media conversion/albums,
   audio/OGG/GIF/TGS document remapping, create-group, members,
   member-add, member-remove, chat-update, bot commands, dice-media,
@@ -1902,7 +1909,11 @@ const securityHeaders = Object.freeze({
   "cache-control": "no-store, max-age=0",
   "content-security-policy": `default-src 'none'; style-src 'sha256-${CONSENT_STYLE_CSP_HASH}'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   "cross-origin-opener-policy": "same-origin",
-  "referrer-policy": "no-referrer",
+  // Chrome 150 serializes a same-origin form POST as `Origin: null` under
+  // `no-referrer`. `origin` preserves the mandatory exact Origin header while
+  // limiting Referer to scheme/loopback host/port: neither one-use capability
+  // path can leave in it. External links independently use rel=noreferrer.
+  "referrer-policy": "origin",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
 });
@@ -1914,6 +1925,47 @@ const htmlEscape = (value) => String(value).replace(/[&<>"']/gu, (character) => 
   "\"": "&quot;",
   "'": "&#39;",
 }[character]));
+
+// Consent is an account-owner handoff, so macOS must not delegate its one-use
+// loopback URL to the current default handler. Codex's in-app Browser can be
+// that handler, but its form submission is not guaranteed to carry Chromium's
+// normal top-level Fetch Metadata headers. Keep the executable -> application
+// mapping exact and machine-wide: it is the same closed set used to select the
+// persistent Telegram browser below, not a name/bundle-id lookup that could
+// resolve to another installed application.
+const DARWIN_SUPPORTED_BROWSER_APPLICATIONS = Object.freeze({
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome": "/Applications/Google Chrome.app",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium": "/Applications/Chromium.app",
+  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge": "/Applications/Microsoft Edge.app",
+});
+
+const buildProtectedConsentBrowserOpenCommand = (url, browserExecutable, openerExecutable = "/usr/bin/open") => {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:"
+    || parsed.hostname !== "127.0.0.1"
+    || !parsed.port
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+    || !/^\/consent\/[A-Za-z0-9_-]{43}$/u.test(parsed.pathname)) {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Protected consent received an invalid local browser handoff URL.");
+  }
+  const applicationBundle = DARWIN_SUPPORTED_BROWSER_APPLICATIONS[browserExecutable];
+  if (!applicationBundle) {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Protected consent requires the exact supported machine-wide browser selected for Telegram Web.");
+  }
+  return {
+    executable: openerExecutable,
+    // `-a` prevents the default ChatGPT Browser route. `-n` asks
+    // LaunchServices for a separate visible application instance instead of
+    // delivering the URL to the already-running headless Telegram process of
+    // the same bundle. Do not add `-F`: fresh-state behavior is unnecessary
+    // for this one tab and can interfere with the owner's browser state.
+    args: ["-n", "-a", applicationBundle, url],
+    cwd: "/",
+  };
+};
 
 const requireTrustedAbsoluteExecutable = async (candidates) => {
   for (const candidate of candidates) {
@@ -1928,31 +1980,43 @@ const requireTrustedAbsoluteExecutable = async (candidates) => {
   fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "No trusted absolute system browser opener was found.");
 };
 
-const launchExternalBrowser = async (url, environment = process.env) => {
-  let command;
-  if (process.platform === "darwin") {
-    command = { executable: await requireTrustedAbsoluteExecutable(["/usr/bin/open"]), args: [url], cwd: "/" };
-  } else if (process.platform === "win32") {
-    const executable = await resolveTrustedWindowsSystemExecutable(environment, "rundll32.exe");
-    const urlLibrary = await resolveTrustedWindowsSystemExecutable(environment, "url.dll");
-    command = {
-      executable,
-      args: [`${urlLibrary},FileProtocolHandler`, url],
-      cwd: path.dirname(executable),
-    };
-  } else {
-    command = {
-      executable: await requireTrustedAbsoluteExecutable(["/usr/bin/xdg-open", "/bin/xdg-open"]),
-      args: [url],
-      cwd: "/",
-    };
+const launchProtectedConsentBrowser = async (
+  url,
+  browserExecutable,
+  environment = process.env,
+  dependencies = {},
+) => {
+  const platform = dependencies.platform || process.platform;
+  const verifyExecutable = dependencies.assertTrustedPosixExecutableChain || assertTrustedPosixExecutableChain;
+  const resolveOpener = dependencies.requireTrustedAbsoluteExecutable || requireTrustedAbsoluteExecutable;
+  const spawnChild = dependencies.spawn || spawn;
+  if (platform !== "darwin") {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Protected consent is available only in the qualified local macOS browser lane.");
   }
-  // The opener argv carries the one-use landing capability. Revalidate the
-  // complete POSIX owner/mode/link/identity chain immediately before spawn.
-  if (process.platform !== "win32") await assertTrustedPosixExecutableChain(command.executable);
+  if (!Object.hasOwn(DARWIN_SUPPORTED_BROWSER_APPLICATIONS, browserExecutable)) {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Protected consent did not receive the supported browser selected for this Telegram Web session.");
+  }
+  // The caller passes the exact executable that already survived discovery,
+  // chain verification, sandboxed Playwright launch, and authenticated account
+  // proof in this same profile-locked command. Revalidate it immediately before
+  // handing its application bundle to LaunchServices; never rediscover a
+  // different browser or fall back to the default URL handler.
+  const verifiedBrowserExecutable = await verifyExecutable(browserExecutable);
+  if (verifiedBrowserExecutable !== browserExecutable) {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "The selected supported browser changed before protected consent could open.");
+  }
+  const openerExecutable = await resolveOpener(["/usr/bin/open"]);
+  const command = buildProtectedConsentBrowserOpenCommand(url, verifiedBrowserExecutable, openerExecutable);
+  // Both argv capabilities are rechecked at the final spawn boundary. The
+  // browser executable itself is not launched by this child, but its verified
+  // exact .app bundle is what `open -a` is authorized to address.
+  await verifyExecutable(command.executable);
+  if (await verifyExecutable(browserExecutable) !== verifiedBrowserExecutable) {
+    fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "The selected supported browser changed at the protected consent launch boundary.");
+  }
   await new Promise((resolve, reject) => {
-    const child = spawn(command.executable, command.args, {
-      detached: process.platform !== "win32",
+    const child = spawnChild(command.executable, command.args, {
+      detached: platform !== "win32",
       shell: false,
       stdio: "ignore",
       windowsHide: true,
@@ -1977,7 +2041,7 @@ const launchExternalBrowser = async (url, environment = process.env) => {
     child.once("exit", (code) => code === 0
       ? finish(resolve)
       : finish(reject, new Error("browser opener failed")));
-  }).catch(() => fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Could not open the protected local consent page in the system browser."));
+  }).catch(() => fail("TELEGRAM_WEB_BROWSER_OPEN_FAILED", "Could not open the protected local consent page in the selected supported browser."));
 };
 
 export const acceptConsentInProtectedBrowser = async (
@@ -2015,14 +2079,19 @@ export const acceptConsentInProtectedBrowser = async (
   let landingClaimed = false;
   let submissionStarted = false;
   let consentTimer;
+  let landingAdmissionTimer;
   let terminalError = null;
   let server = null;
   let unsubscribeLifecycleAbort = () => undefined;
   let resolveAccepted;
   let rejectAccepted;
+  let resolveLandingAdmitted;
   const accepted = new Promise((resolve, reject) => {
     resolveAccepted = resolve;
     rejectAccepted = reject;
+  });
+  const landingAdmitted = new Promise((resolve) => {
+    resolveLandingAdmitted = resolve;
   });
   const shutdownLoopback = () => {
     server?.close();
@@ -2037,9 +2106,39 @@ export const acceptConsentInProtectedBrowser = async (
   };
 
   server = http.createServer((request, response) => {
-    const reject = (status, message) => {
-      response.writeHead(status, { ...securityHeaders, "content-type": "text/plain; charset=utf-8" });
+    const reject = (status, message, extraHeaders = {}) => {
+      response.writeHead(status, {
+        ...securityHeaders,
+        "content-type": "text/plain; charset=utf-8",
+        ...extraHeaders,
+      });
       response.end(message);
+    };
+    const rejectTerminalAfterResponse = (status, message, error) => {
+      // Once the protected page has been admitted, a malformed browser submit
+      // cannot become valid by waiting. Claim the one-use submission now, but
+      // let Node finish (or close) the explicit error response before teardown
+      // destroys loopback sockets. Both events may fire; finalization is local
+      // and idempotent so only the first can settle the command.
+      submissionStarted = true;
+      let finalized = false;
+      let drainTimer = null;
+      const finalize = () => {
+        if (finalized) return;
+        finalized = true;
+        clearTimeout(drainTimer);
+        finishError(error);
+      };
+      // `finish` means Node handed bytes to the kernel, not that the client
+      // consumed them. Ask HTTP to close after the response, finalize on the
+      // resulting response/socket close, and retain a short referenced fallback
+      // so a stuck keep-alive implementation cannot preserve the profile lock.
+      response.once("finish", () => {
+        if (finalized) return;
+        drainTimer = setTimeout(finalize, CONSENT_TERMINAL_RESPONSE_DRAIN_TIMEOUT_MS);
+      });
+      response.once("close", finalize);
+      reject(status, message, { connection: "close" });
     };
     const local = request.socket.remoteAddress === "127.0.0.1" || request.socket.remoteAddress === "::ffff:127.0.0.1";
     const exactHost = `127.0.0.1:${server.address()?.port}`;
@@ -2061,6 +2160,19 @@ export const acceptConsentInProtectedBrowser = async (
         return;
       }
       landingClaimed = true;
+      let landingResponseFinished = false;
+      response.once("finish", () => {
+        landingResponseFinished = true;
+        clearTimeout(landingAdmissionTimer);
+        resolveLandingAdmitted();
+      });
+      response.once("close", () => {
+        if (landingResponseFinished || settled) return;
+        finishError(new TelegramWebRuntimeError(
+          "TELEGRAM_WEB_BROWSER_OPEN_FAILED",
+          "The selected supported browser closed the protected consent landing response before admission could be proved.",
+        ));
+      });
       const body = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Telegram Web – согласие</title><style>${CONSENT_STYLE}</style></head><body><h1>Обработка чатов Telegram</h1><p>Оба локальных ИИ-клиента – Codex от OpenAI и Claude Code от Anthropic – вместе со своими агентами и модельными провайдерами смогут по вашим запросам читать и обрабатывать сообщения, имена, даты и время, а также выбранные вложения, только для выполнения ваших задач с Telegram. Для каждого клиента действуют правила конфиденциальности и хранения данных его провайдера.</p><p>Raw Telegram content не отправляется на сервер Trelio самим runtime. Он попадёт в Trelio только если вы отдельно попросите сохранить результат, файл или выдержку в Trelio.</p><p>Подтверждение действует 365 дней только на этом устройстве, для текущего подключения Trelio и текущего Telegram-аккаунта. Его можно отозвать командой <code>consent revoke --confirm</code>.</p><form method="post" action="${htmlEscape(confirmPath)}"><fieldset><legend>Два неделимых пункта подтверждения</legend><p>1. ${htmlEscape(CONSENT_STATEMENTS[0])}</p><p>2. ${htmlEscape(CONSENT_STATEMENTS[1])}</p><button type="submit" name="affirm" value="yes">Да, подтверждаю оба пункта</button></fieldset></form><p><small>Версия условий: ${htmlEscape(CONSENT_TERMS_VERSION)}. Официальные условия: <a rel="noreferrer noopener" target="_blank" href="https://telegram.org/tos/content-licensing">Content Licensing Terms</a> и <a rel="noreferrer noopener" target="_blank" href="https://core.telegram.org/api/terms">API Terms</a>. Это подтверждение не является согласием за других людей, доказательством наличия или сохранения их согласия, подтверждением соблюдения закона либо разрешением Telegram. Runtime не может проверить эти внешние факты.</small></p></body></html>`;
       response.writeHead(200, {
         ...securityHeaders,
@@ -2079,14 +2191,23 @@ export const acceptConsentInProtectedBrowser = async (
     const fetchSite = String(request.headers["sec-fetch-site"] || "");
     const fetchMode = String(request.headers["sec-fetch-mode"] || "");
     const fetchDest = String(request.headers["sec-fetch-dest"] || "");
+    const fetchUser = String(request.headers["sec-fetch-user"] || "");
     if (
       request.headers.origin !== origin
       || fetchSite !== "same-origin"
       || fetchMode !== "navigate"
       || fetchDest !== "document"
+      || fetchUser !== "?1"
       || !String(request.headers["content-type"] || "").startsWith("application/x-www-form-urlencoded")
     ) {
-      reject(403, "Invalid browser submission");
+      if (landingClaimed) {
+        rejectTerminalAfterResponse(403, "Invalid browser submission", new TelegramWebRuntimeError(
+          "TELEGRAM_WEB_CONSENT_INVALID_SUBMISSION",
+          "Protected Telegram consent received a browser submission without the mandatory exact same-origin user-activated navigation headers.",
+        ));
+      } else {
+        reject(403, "Invalid browser submission");
+      }
       return;
     }
 
@@ -2099,9 +2220,7 @@ export const acceptConsentInProtectedBrowser = async (
         return;
       }
       if (!submissionStarted && !settled) {
-        submissionStarted = true;
-        reject(413, "Consent request body is too large");
-        finishError(new TelegramWebRuntimeError(
+        rejectTerminalAfterResponse(413, "Consent request body is too large", new TelegramWebRuntimeError(
           "TELEGRAM_WEB_CONSENT_INVALID_SUBMISSION",
           "Protected Telegram consent received an oversized form submission and was closed.",
         ));
@@ -2112,7 +2231,10 @@ export const acceptConsentInProtectedBrowser = async (
       const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
       const cookie = String(request.headers.cookie || "");
       if (!cookie.split(/;\s*/u).includes(`trelio_tg_consent=${nonce}`) || form.get("affirm") !== "yes") {
-        reject(400, "The single affirmation of both statements is required");
+        rejectTerminalAfterResponse(400, "The single affirmation of both statements is required", new TelegramWebRuntimeError(
+          "TELEGRAM_WEB_CONSENT_INVALID_SUBMISSION",
+          "Protected Telegram consent received a browser submission without its one-use cookie and exact joint affirmation.",
+        ));
         return;
       }
       // Claim the one-use nonce synchronously before the first await. Two
@@ -2243,17 +2365,38 @@ export const acceptConsentInProtectedBrowser = async (
       "TELEGRAM_WEB_CONSENT_TIMEOUT",
       "Protected Telegram consent was not completed before the local page expired.",
     )), CONSENT_TIMEOUT_MS);
+    const landingAdmissionTimeoutMs = dependencies.landingAdmissionTimeoutMs
+      ?? CONSENT_LANDING_ADMISSION_TIMEOUT_MS;
+    if (!Number.isInteger(landingAdmissionTimeoutMs)
+      || landingAdmissionTimeoutMs < 1
+      || landingAdmissionTimeoutMs > CONSENT_LANDING_ADMISSION_TIMEOUT_MS) {
+      fail("TELEGRAM_WEB_INVALID_ARGUMENT", "Protected consent landing-admission timeout is invalid.");
+    }
+    landingAdmissionTimer = setTimeout(() => finishError(new TelegramWebRuntimeError(
+      "TELEGRAM_WEB_BROWSER_OPEN_FAILED",
+      "The selected supported browser did not admit the protected local consent page before the bounded handoff deadline.",
+    )), landingAdmissionTimeoutMs);
     // This is part of the protected consent guarantee, not background
     // housekeeping: keep the process alive until acceptance or exact expiry.
-    const openBrowser = dependencies.openBrowser || ((nextUrl) => launchExternalBrowser(nextUrl, environment));
-    const opener = Promise.resolve().then(() => openBrowser(localUrl));
+    const openBrowser = dependencies.openBrowser
+      || ((nextUrl, selectedBrowserExecutable) => launchProtectedConsentBrowser(
+        nextUrl,
+        selectedBrowserExecutable,
+        environment,
+      ));
+    const opener = Promise.resolve().then(() => openBrowser(localUrl, dependencies.browserExecutable));
     // The protected deadline starts before the handoff. Even a host/test
     // opener dependency that never settles cannot retain the profile lock and
     // loopback server indefinitely.
     await Promise.race([opener, accepted]);
+    // A zero-exit opener is not delivery proof. Keep the same full ten-minute
+    // owner timer running, but do not enter that long wait until the exact
+    // landing GET response has completed inside the 30-second admission fence.
+    await Promise.race([landingAdmitted, accepted]);
     return await accepted;
   } finally {
     clearTimeout(consentTimer);
+    clearTimeout(landingAdmissionTimer);
     unsubscribeLifecycleAbort();
     shutdownLoopback();
   }
@@ -2261,11 +2404,7 @@ export const acceptConsentInProtectedBrowser = async (
 
 const knownChromeCandidates = (environment = process.env) => {
   if (process.platform === "darwin") {
-    return [
-      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-      "/Applications/Chromium.app/Contents/MacOS/Chromium",
-      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    ];
+    return Object.keys(DARWIN_SUPPORTED_BROWSER_APPLICATIONS);
   }
   if (process.platform === "win32") {
     return [];
@@ -2391,7 +2530,7 @@ export const findChromeExecutable = async (environment = process.env) => {
   // Establish the same inherited-OS environment boundary used by ACL tools.
   // This is a canonical path/type check, not a cryptographic Authenticode
   // signature claim. Per-user LocalAppData browser installs are intentionally
-  // excluded from 1.0.3 because that root overlaps user-controlled state.
+  // excluded from 1.0.4 because that root overlaps user-controlled state.
   const commandProcessor = await resolveTrustedWindowsSystemExecutable(environment, "cmd.exe");
   const validatedSystemRoot = path.dirname(path.dirname(commandProcessor));
   const validatedDriveRoot = path.parse(validatedSystemRoot).root;
@@ -3184,19 +3323,19 @@ const installBrowserRuntimeUnlocked = async (identity, environment = process.env
   await ensurePrivateTree(cacheHome, parent, environment);
   const packageDocument = {
     name: "trelio-telegram-web-runtime",
-    version: "1.0.3",
+    version: "1.0.4",
     private: true,
     dependencies: { "playwright-core": PLAYWRIGHT_VERSION },
   };
   const lockDocument = {
     name: "trelio-telegram-web-runtime",
-    version: "1.0.3",
+    version: "1.0.4",
     lockfileVersion: 3,
     requires: true,
     packages: {
       "": {
         name: "trelio-telegram-web-runtime",
-        version: "1.0.3",
+        version: "1.0.4",
         dependencies: { "playwright-core": PLAYWRIGHT_VERSION },
       },
       "node_modules/playwright-core": {
@@ -4418,7 +4557,15 @@ const withTelegramBrowserSession = async (
       });
       const boundedPage = boundedPageProxy(primary, lifecycle, options);
       const result = await lifecycle.race(
-        Promise.race([callback({ context, page: boundedPage }), navigationViolation]),
+        Promise.race([callback({
+          context,
+          page: boundedPage,
+          // Protected consent must target the exact machine-wide browser that
+          // this session already discovered, revalidated, and launched. Never
+          // let the callback rediscover a different binary or use the default
+          // macOS URL handler.
+          browserExecutable: launchExecutablePath,
+        }), navigationViolation]),
         "running the bounded Telegram Web command",
       );
       if (blockedNavigation) {
@@ -7126,7 +7273,7 @@ const captureExactDocumentPopup = async (page, expectedPeerId, snapshot, timeout
   if (captured?.reason === "semantic_media") {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web reclassified the selected file into audio, OGG, GIF, or TGS sticker semantics instead of the approved generic document lane. Those uploads are unsupported in 1.0.3; no send click was made.",
+      "Telegram Web reclassified the selected file into audio, OGG, GIF, or TGS sticker semantics instead of the approved generic document lane. Those uploads are unsupported in 1.0.4; no send click was made.",
       { operation: "semantic-document-remap", fallbackEligible: true, normalizedMimeType: captured.normalizedMimeType },
     );
   }
@@ -8486,7 +8633,7 @@ const assertExactProductionTextPayload = async (page, expectedPeerId, approvedMe
   if (botCommand) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web recognized a bot command that can trigger bot-side actions. Bot-command sends are unsupported in the 1.0.3 runtime; no approval or send click was made.",
+      "Telegram Web recognized a bot command that can trigger bot-side actions. Bot-command sends are unsupported in the 1.0.4 runtime; no approval or send click was made.",
       { operation: "bot-command", fallbackEligible: true },
     );
   }
@@ -8506,7 +8653,7 @@ const assertExactProductionTextPayload = async (page, expectedPeerId, approvedMe
 };
 
 /**
- * Document captions use the narrowest safe 1.0.3 lane: exact plain text whose
+ * Document captions use the narrowest safe 1.0.4 lane: exact plain text whose
  * live Web K parser produces no entity at all. This excludes links, mentions,
  * hashtags, bot commands, emoji entities and every hidden target before local
  * bytes are even selected into the provider UI.
@@ -8519,7 +8666,7 @@ const assertEntityFreeDocumentCaption = async (page, expectedPeerId, caption) =>
     || automatic.length !== 0) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web document captions that produce mentions, links, bot commands, emoji, formatting, or any other entity are unsupported in 1.0.3; no file selection or send click was made.",
+      "Telegram Web document captions that produce mentions, links, bot commands, emoji, formatting, or any other entity are unsupported in 1.0.4; no file selection or send click was made.",
       { operation: "document-caption-entities", fallbackEligible: true },
     );
   }
@@ -9968,7 +10115,7 @@ const inChatSearchIncompleteReasons = (resultCount, requestedLimit, explicitEmpt
   if (resultCount >= requestedLimit) return ["result_limit"];
   // Web K's official first search loader uses a 30-message page and owns a
   // private loadMore/isEnd continuation. This runtime deliberately does not
-  // drive that unverified continuation in 1.0.3, so every non-empty result
+  // drive that unverified continuation in 1.0.4, so every non-empty result
   // below the caller limit remains honestly incomplete rather than pretending
   // that the first visible batch proved provider exhaustion.
   if (resultCount > 0) return ["search_pagination_unproven"];
@@ -10494,7 +10641,7 @@ const runSendCommand = async (page, identity, options, { replyTo = null } = {}) 
   if (replyTo && preparedFiles.length) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Replying with a file is outside the verified 1.0.3 document lane; use a text reply or a separate exact send command.",
+      "Replying with a file is outside the verified 1.0.4 document lane; use a text reply or a separate exact send command.",
       { operation: "reply-file", fallbackEligible: true },
     );
   }
@@ -11420,7 +11567,7 @@ const runCreateDirectCommand = async (page, identity, options) => {
   if (options.files.length) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "create-direct does not accept files in the verified 1.0.3 document lane; use one separate exact send --file operation.",
+      "create-direct does not accept files in the verified 1.0.4 document lane; use one separate exact send --file operation.",
       { operation: "create-direct-file", fallbackEligible: true },
     );
   }
@@ -11989,7 +12136,7 @@ const runLogoutCommand = async (identity, options, environment = process.env, de
     logoutOptions.commandLifecycle?.markDecisive("headed account-owner logout handoff");
     logoutOptions.commandLifecycle?.beginOwnerHandoff(options.holdMs, "logout owner handoff deadline");
     await page.bringToFront();
-    // Logout is intentionally an account-owner handoff in 1.0.3. Web K does
+    // Logout is intentionally an account-owner handoff in 1.0.4. Web K does
     // not expose a stable, source-verified single-account logout action across
     // its settings variants, so the runtime never pretends that waiting alone
     // performed a click. The owner completes it in the visible dedicated UI.
@@ -12107,7 +12254,7 @@ const validateSupportedPlatform = (platform = process.platform) => {
   if (platform !== "darwin") {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      "Telegram Web 1.0.3 is qualified only for a local macOS host; this OS lane is disabled fail-closed.",
+      "Telegram Web 1.0.4 is qualified only for a local macOS host; this OS lane is disabled fail-closed.",
       { operation: "unsupported-platform", fallbackEligible: true, platform },
     );
   }
@@ -12137,7 +12284,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
   if (UNSUPPORTED_PILOT_OPERATIONS.has(options.command)) {
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      `${options.command} is not in the verified Telegram Web 1.0.3 pilot mutation surface. Use telegram-mtproto only when integration routing permits fallback.`,
+      `${options.command} is not in the verified Telegram Web 1.0.4 pilot mutation surface. Use telegram-mtproto only when integration routing permits fallback.`,
       { operation: options.command, fallbackEligible: true },
     );
   }
@@ -12145,7 +12292,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
     const operation = options.command === "reply" ? "reply-file" : "create-direct-file";
     fail(
       "TELEGRAM_WEB_UNSUPPORTED_OPERATION",
-      `${options.command} does not accept files in the verified 1.0.3 document lane. Use one separate exact send --file operation.`,
+      `${options.command} does not accept files in the verified 1.0.4 document lane. Use one separate exact send --file operation.`,
       { operation, fallbackEligible: true },
     );
   }
@@ -12197,7 +12344,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
       }
       await bootstrapBrowserRuntime(identity, environment);
     }
-    const consentResult = await withTelegramBrowser(identity, options, async ({ page }) => {
+    const consentResult = await withTelegramBrowser(identity, options, async ({ page, browserExecutable }) => {
       const surface = await openTelegramHome(page, options, { allowLoggedOut: true });
       if (!surface.loggedIn) return { digest: null };
       const digest = await readCurrentTelegramAccountDigest(page, options.account);
@@ -12207,6 +12354,7 @@ export const runCli = async (argv = process.argv.slice(2), environment = process
         // cannot race a delayed valid browser submission and be resurrected.
         await acceptConsentInProtectedBrowser(identity, digest, environment, {
           commandLifecycle: options.commandLifecycle,
+          browserExecutable,
         });
         await invalidatePendingApproval(identity, environment);
       }
@@ -12373,6 +12521,7 @@ export const __testing = Object.freeze({
   inspectPinnedPlaywright,
   inspectPinnedPlaywrightRoot,
   launchPersistentContextWithProcess,
+  launchProtectedConsentBrowser,
   loadPlaywright,
   inChatSearchIncompleteReasons,
   inspectAccountWideMessageSearchGuard,
