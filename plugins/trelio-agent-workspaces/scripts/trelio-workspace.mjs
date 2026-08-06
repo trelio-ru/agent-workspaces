@@ -21,6 +21,10 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
+import {
+  SecretBrowserFillError,
+  runSecretBrowserFill,
+} from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
 export const BRIDGE_VERSION = "1.6.27";
@@ -49,6 +53,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   `- Полностью прочитай по порядку: \`../context/agent-instructions.md\`, \`../context/user-profile.md\`, при наличии \`../context/run-checkpoint.json\`, затем \`${workspaceContextFileName}\` и [\`WORKLOG.md\`](./WORKLOG.md). Первые три файла read-only; профиль, checkpoint и workspace-контекст не отменяют ACL, approval, company/project rules или системные ограничения.`,
   `- Храни в \`${workspaceContextFileName}\` только устойчивые факты, принятые решения и открытые вопросы. Следуй формату \`WORKLOG.md\`: одна новая запись в \`worklog/\` на содержательный Run, без переписки, chain-of-thought, рутинных команд, raw tool output и секретов; старые записи не переписывай.`,
+  `- Если выбранный Agent Secret стал устойчивой зависимостью workspace, запиши в \`${workspaceContextFileName}\` только \`Agent Secret: <текущее safe название> (secretId: <UUID>) — <назначение>\`. \`secretId\` каноничен; освежай название через \`list_agent_secrets\`. Не сохраняй value, version, grant, setup URL или runtime arguments и не добавляй ссылки для неиспользованных найденных секретов.`,
   "",
   "## Навыки и инструменты",
   "",
@@ -57,6 +62,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
   "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill.",
+  "- Для browser-поля не передавай Agent Secret в literal-text Browser/Chrome tool. Вызови `prepare_agent_secret_browser_fill` для exact Run и HTTPS target URL, выполни возвращённый `trelio-workspace secret browser-fill`, затем попроси пользователя сфокусировать поле в выделенном Trelio Secret Browser и подтвердить Alt/Option+Shift+S. Не читай значение обратно и не переноси его через clipboard.",
   "",
   "## Работа и результат",
   "",
@@ -172,6 +178,11 @@ const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
+const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
+const SECRET_BROWSER_PROFILE_DIRECTORY = path.join(
+  SECRET_BROWSER_DIRECTORY,
+  "profile",
+);
 const CODEX_PLUGIN_RETENTION_DIRECTORY = path.join(
   CONFIG_DIRECTORY,
   "codex-plugin-retention",
@@ -6656,6 +6667,156 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
   });
 });
 
+const isRetryableBrowserOutcomeError = (error) => (
+  error instanceof TypeError
+  || (error instanceof TrelioApiError && error.statusCode >= 500)
+);
+
+// Outcome endpoint идемпотентен для того же результата. Поэтому после
+// транспортного сбоя безопасно сделать три bounded retry, не повторяя ни
+// checkout, ни саму подстановку значения.
+const reportSecretBrowserFillOutcome = async ({
+  origin,
+  token,
+  grantId,
+  runId,
+  outcome,
+  reasonCode,
+}) => {
+  let lastError;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await request(
+        origin,
+        token,
+        `/api/agent-secrets/checkout-grants/${grantId}/browser-fill-outcome`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            runId,
+            outcome,
+            ...(reasonCode ? { reasonCode } : {}),
+          }),
+        },
+      );
+      await response.json();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableBrowserOutcomeError(error) || attempt === 3) throw error;
+      await wait(250 * attempt);
+    }
+  }
+  throw lastError;
+};
+
+const executeSecretBrowserFill = async (options, positional) => withRun(async ({
+  metadata,
+  origin,
+  token,
+}) => {
+  if (positional[0] !== "browser-fill") {
+    throw new Error("Поддерживается команда `trelio-workspace secret browser-fill --grant UUID --target HTTPS_URL`.");
+  }
+  const grantId = requireUuid(options.grant, "grant");
+  const targetUrl = String(options.target || "");
+  if (!targetUrl || Array.isArray(options.target)) {
+    throw new Error("Для browser-fill требуется один exact --target HTTPS_URL.");
+  }
+  if (!metadata.runId) {
+    throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
+  }
+
+  // Plaintext появляется только в памяти bridge после atomic consume. Target
+  // URL не доверяется: helper повторно сравнит его с закреплённым origin.
+  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId: metadata.runId }),
+  });
+  const payload = await response.json();
+  if (
+    payload.runId !== metadata.runId
+    || payload.deliveryMode !== "browser"
+    || payload.executable !== "trelio-workspace"
+    || typeof payload.targetOrigin !== "string"
+    || typeof payload.value !== "string"
+  ) {
+    throw new Error("Trelio вернул некорректный browser-fill grant.");
+  }
+
+  process.stdout.write(
+    `Открываю Trelio Secret Browser для ${payload.targetOrigin}. `
+    + "Сфокусируйте нужное поле и нажмите Alt+Shift+S (Option+Shift+S на macOS).\n",
+  );
+
+  let localResult = null;
+  let outcomeReported = false;
+  try {
+    const result = await runSecretBrowserFill({
+      secretValue: payload.value,
+      targetUrl,
+      targetOrigin: payload.targetOrigin,
+      profileDirectory: SECRET_BROWSER_PROFILE_DIRECTORY,
+      ensurePrivateDirectory,
+    });
+    localResult = result;
+
+    await reportSecretBrowserFillOutcome({
+      origin,
+      token,
+      grantId,
+      runId: metadata.runId,
+      outcome: result.outcome,
+      reasonCode: result.reasonCode,
+    });
+    outcomeReported = true;
+    if (result.outcome !== "succeeded") {
+      throw new SecretBrowserFillError(
+        result.outcome === "cancelled"
+          ? "Пользователь отменил browser-подстановку значения."
+          : "Trelio Secret Browser не подтвердил подстановку значения.",
+        result.reasonCode || "adapter_error",
+      );
+    }
+    process.stdout.write("Секрет вставлен в подтверждённое поле; plaintext агенту не возвращался.\n");
+  } catch (error) {
+    // Локальный результат уже мог наступить, а потерялся только ответ audit
+    // endpoint. В таком случае нельзя записывать противоречивый outcome.
+    if (localResult && !outcomeReported) {
+      throw new Error(
+        "Browser fill завершился локально, но безопасный audit outcome не удалось подтвердить после трёх попыток. Не повторяйте операцию автоматически.",
+        { cause: error },
+      );
+    }
+    if (localResult && outcomeReported) throw error;
+    const reasonCode = error instanceof SecretBrowserFillError
+      ? error.reasonCode
+      : "adapter_error";
+    let outcomeError = null;
+    try {
+      await reportSecretBrowserFillOutcome({
+        origin,
+        token,
+        grantId,
+        runId: metadata.runId,
+        outcome: "failed",
+        reasonCode,
+      });
+    } catch (reportError) {
+      outcomeError = reportError;
+    }
+    if (outcomeError) {
+      throw new Error(
+        "Browser fill завершился ошибкой, а безопасный audit outcome не удалось подтвердить после трёх попыток.",
+        { cause: new AggregateError([error, outcomeError]) },
+      );
+    }
+    throw error;
+  }
+});
+
 const calculateDirectoryBytes = async (directory) => {
   let totalBytes = 0;
   const entries = await fs.readdir(directory, { withFileTypes: true });
@@ -7134,6 +7295,7 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace skill pack --skill ID --runtime-version X.Y.Z --source DIR --entry PATH --interpreter node|python|executable --output FILE [--capability VALUE]\n");
   process.stdout.write("  trelio-workspace skill run --company UUID [--project UUID] --skill ID --release UUID -- [ARGS...]\n");
   process.stdout.write("  trelio-workspace secret exec --grant UUID -- COMMAND [ARGS...]\n");
+  process.stdout.write("  trelio-workspace secret browser-fill --grant UUID --target HTTPS_URL\n");
   process.stdout.write("  COMMAND | trelio-workspace secret set --secret UUID\n");
   process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH\n");
 };
@@ -7379,6 +7541,8 @@ const main = async () => {
   } else if (command === "secret") {
     if (positional[0] === "set") {
       await setSecretValue(options, positional);
+    } else if (positional[0] === "browser-fill") {
+      await executeSecretBrowserFill(options, positional);
     } else {
       await executeSecretCheckout(options, positional);
     }

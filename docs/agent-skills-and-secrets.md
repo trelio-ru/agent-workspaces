@@ -125,8 +125,38 @@ Agent Secrets хранятся в Trelio Vault. MCP показывает safe me
 раз и передаёт локально через разрешённый `stdin`, env или приватный temp file.
 Trelio команду не исполняет.
 
+Для browser-поля используется отдельный
+`prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
+`trelio-workspace` и canonical HTTPS origin. Возвращённая команда открывает
+отдельный постоянный локальный профиль Trelio Secret Browser. Пользователь
+фокусирует top-level `input`/`textarea`, нажимает `Alt+Shift+S`
+(`Option+Shift+S` на macOS) и подтверждает нативный prompt. Trusted adapter
+работает через локальный DevTools transport и isolated world выделенного
+профиля, повторно сверяет origin и записывает значение без MCP, argv, stdout
+или clipboard. Широкое browser-extension permission ему не требуется.
+Cross-origin iframe, hidden/read-only поле и переход на другой origin
+отклоняются. Password saving выключен только в выделенном профиле; обычный
+профиль пользователя не изменяется.
+
+Atomic consume по-прежнему создаёт аудит `secret.checked_out` с пользователем
+и временем. Adapter отдельно сообщает безопасный
+`secret.browser_fill_succeeded|failed|cancelled`; audit хранит origin и reason
+code, но не path/query, DOM selector или plaintext. Обычный browser tool с
+literal-text API для этого flow не применяется и не получает read-back.
+
 Нельзя просить secret в чате, помещать его в argv/shell variable/workspace,
 заменять executable на shell/logger/`env`/`cat` или сохранять plaintext в
 checkpoint/handoff. Новая запись создаётся placeholder-ом, а значение вводится
 в защищённой Trelio форме либо подаётся из уже существующего локального
 producer/file напрямую в bridge.
+
+Если выбранный secret стал устойчивой зависимостью workspace, агент сохраняет
+в `WORKSPACE_CONTEXT.md` только безопасную ссылку:
+
+```markdown
+- Agent Secret: `Текущее safe название` (`secretId: UUID`) — точное назначение.
+```
+
+`secretId` каноничен, название освежается через `list_agent_secrets`. Value,
+version, grant, setup URL, runtime arguments и найденные, но неиспользованные
+секреты в workspace не записываются.

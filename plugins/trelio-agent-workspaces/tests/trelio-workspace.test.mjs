@@ -64,6 +64,13 @@ import {
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
 } from "../scripts/trelio-workspace.mjs";
+import {
+  buildSecretBrowserArguments,
+  controlSecretBrowserViaDevTools,
+  createSecretBrowserControllerExpression,
+  normalizeSecretBrowserTarget,
+  runSecretBrowserFill,
+} from "../scripts/trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -2387,6 +2394,109 @@ test("1C EDO secret checkout instructions avoid a nested bridge executable", asy
     skillMarkdown,
     /trelio-workspace secret exec --grant \.\.\. -- skill run/,
   );
+});
+
+test("workspace instructions keep a canonical safe Agent Secret reference and use browser-fill", async () => {
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+  const bridgeSource = await readFile(bridgePath, "utf8");
+
+  for (const instructions of [workspaceSkill, bridgeSource]) {
+    assert.match(instructions, /secretId/u);
+    assert.match(instructions, /current safe name|текущее safe название/u);
+    assert.match(instructions, /prepare_agent_secret_browser_fill/u);
+    assert.match(instructions, /Alt\/Option\+Shift\+S|Alt\+Shift\+S/u);
+    assert.match(instructions, /literal-text Browser\/Chrome tool|literal-text Browser\/Chrome\/Computer Use action/u);
+    assert.match(instructions, /clipboard/u);
+  }
+  assert.match(workspaceSkill, /merely\s+discovered but unused secrets/u);
+  assert.match(bridgeSource, /неиспользованных найденных секретов/u);
+});
+
+test("Trelio Secret Browser transports a value once through its isolated controller", {
+  timeout: 10_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-browser-"));
+  const profileDirectory = path.join(temporaryDirectory, "profile");
+  const targetUrl = "https://login.example.test/account";
+  const targetOrigin = "https://login.example.test";
+  const secretValue = "must-never-appear-in-browser-arguments";
+  let observedArguments = [];
+  const devToolsRequests = [];
+  let clientClosed = false;
+
+  const client = {
+    request: async (method, params = {}, sessionId = undefined) => {
+      devToolsRequests.push({ method, params, sessionId });
+      if (method === "Target.createTarget") return { targetId: "target-1" };
+      if (method === "Target.activateTarget") return {};
+      if (method === "Target.getTargetInfo") return { targetInfo: { url: targetUrl } };
+      if (method === "Target.attachToTarget") return { sessionId: "session-1" };
+      if (method === "Page.enable" || method === "Runtime.enable") return {};
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "frame-1" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 41 };
+      if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserController?.()")) {
+        return { result: { value: { status: "confirmed" } } };
+      }
+      if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserApply")) {
+        return { result: { value: { outcome: "succeeded" } } };
+      }
+      if (method === "Runtime.evaluate") return { result: {} };
+      throw new Error(`Unexpected DevTools request: ${method}`);
+    },
+    close: () => {
+      clientClosed = true;
+    },
+  };
+
+  try {
+    const result = await runSecretBrowserFill({
+      secretValue,
+      targetUrl,
+      targetOrigin,
+      profileDirectory,
+      ensurePrivateDirectory: async (directory) => {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        if (process.platform !== "win32") await chmod(directory, 0o700);
+      },
+      acquireBrowser: async ({ args }) => {
+        observedArguments = args;
+        return client;
+      },
+      controlBrowser: controlSecretBrowserViaDevTools,
+      fillTimeoutMs: 2_000,
+    });
+
+    assert.deepEqual(result, { outcome: "succeeded" });
+    assert.equal(clientClosed, true);
+    assert.equal(observedArguments.some((argument) => argument.includes(secretValue)), false);
+    assert.deepEqual(observedArguments.slice(-2), ["--new-window", "about:blank"]);
+    assert.equal(observedArguments.some((argument) => argument.includes("load-extension")), false);
+
+    const secretBearingRequests = devToolsRequests.filter((request) => (
+      JSON.stringify(request).includes(secretValue)
+    ));
+    assert.equal(secretBearingRequests.length, 1);
+    assert.equal(secretBearingRequests[0].method, "Runtime.evaluate");
+    assert.match(secretBearingRequests[0].params.expression, /__trelioSecretBrowserApply/u);
+
+    const preferences = JSON.parse(await readFile(path.join(profileDirectory, "Default", "Preferences"), "utf8"));
+    assert.equal(preferences.credentials_enable_service, false);
+    assert.equal(preferences.profile.password_manager_enabled, false);
+    assert.doesNotMatch(createSecretBrowserControllerExpression(targetOrigin), new RegExp(secretValue, "u"));
+    assert.equal(normalizeSecretBrowserTarget(targetUrl, targetOrigin), targetUrl);
+    assert.throws(
+      () => normalizeSecretBrowserTarget("https://other.example.test/", targetOrigin),
+      /origin/u,
+    );
+    assert.deepEqual(
+      buildSecretBrowserArguments({
+        profileDirectory: "/private/profile",
+      }).slice(-2),
+      ["--new-window", "about:blank"],
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("secret checkout self-dispatches trelio-workspace without resolving PATH", {

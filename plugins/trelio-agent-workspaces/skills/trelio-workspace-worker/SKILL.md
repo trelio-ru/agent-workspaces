@@ -106,6 +106,32 @@ private temporary-file mode; Trelio does not execute the command. Never replace
 the executable with a shell, logger, `env`, `printenv`, `cat`, or another
 program intended to reveal it.
 
+When the exact destination is a browser field, do not pass the value to a
+literal-text Browser/Chrome/Computer Use action. Call
+`prepare_agent_secret_browser_fill` with the exact current Run and HTTPS target
+URL, then execute the returned
+`trelio-workspace secret browser-fill --grant ... --target ...` command. It
+opens the dedicated local Trelio Secret Browser. Ask the user to focus the
+exact top-level input/textarea, press `Alt+Shift+S` (`Option+Shift+S` on macOS),
+and confirm the native prompt. The trusted local adapter checks the grant-bound
+origin and fills through an isolated browser context without MCP, argv, logs,
+workspace files, clipboard, or a broad extension permission. Never read the
+field back, transfer the value to a universal browser tool, or treat a
+cross-origin iframe as supported.
+
+When one selected secret becomes a durable dependency of the task, dossier or
+other writable workspace, record only this safe reference in
+`WORKSPACE_CONTEXT.md`:
+
+```markdown
+- Agent Secret: `Current safe name` (`secretId: 00000000-0000-4000-8000-000000000000`) — exact purpose.
+```
+
+The `secretId` is canonical. Refresh the readable name with
+`list_agent_secrets` when revisiting the dependency. Never persist the value,
+version, checkout grant, setup URL, runtime arguments, or a list of merely
+discovered but unused secrets.
+
 ## Resolve the bundled launcher safely
 
 Treat a leading `trelio-workspace` token in a server-returned bridge or
