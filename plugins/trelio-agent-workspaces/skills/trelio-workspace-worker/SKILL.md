@@ -108,16 +108,18 @@ program intended to reveal it.
 
 When the exact destination is a browser field, do not pass the value to a
 literal-text Browser/Chrome/Computer Use action. Call
-`prepare_agent_secret_browser_fill` with the exact current Run and HTTPS target
-URL, then execute the returned
+`prepare_agent_secret_browser_fill` with the exact current Run, HTTPS target
+URL, and a precise CSS selector for exactly one visible supported top-level
+`input`/`textarea`, then execute the returned
 `trelio-workspace secret browser-fill --grant ... --target ...` command. It
-opens the dedicated local Trelio Secret Browser. Ask the user to focus the
-exact top-level input/textarea, press `Alt+Shift+S` (`Option+Shift+S` on macOS),
-and confirm the native prompt. The trusted local adapter checks the grant-bound
-origin and fills through an isolated browser context without MCP, argv, logs,
-workspace files, clipboard, or a broad extension permission. Never read the
-field back, transfer the value to a universal browser tool, or treat a
-cross-origin iframe as supported.
+opens the dedicated local Trelio Secret Browser and fills automatically; do not
+ask the user to focus a field, press a shortcut, or confirm the fill. The
+trusted local adapter checks the grant-bound exact URL and selector and fills
+through an isolated browser context without MCP, argv, logs, workspace files,
+clipboard, or a broad extension permission. If the selector is absent,
+ambiguous, hidden, read-only, disabled, unsupported, inside a cross-origin
+iframe, or the page changes URL/origin, stop without retrying the value. Never
+read the field back or transfer the value to a universal browser tool.
 
 When one selected secret becomes a durable dependency of the task, dossier or
 other writable workspace, record only this safe reference in

@@ -127,20 +127,21 @@ Trelio команду не исполняет.
 
 Для browser-поля используется отдельный
 `prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
-`trelio-workspace` и canonical HTTPS origin. Возвращённая команда открывает
-отдельный постоянный локальный профиль Trelio Secret Browser. Пользователь
-фокусирует top-level `input`/`textarea`, нажимает `Alt+Shift+S`
-(`Option+Shift+S` на macOS) и подтверждает нативный prompt. Trusted adapter
-работает через локальный DevTools transport и isolated world выделенного
-профиля, повторно сверяет origin и записывает значение без MCP, argv, stdout
+`trelio-workspace`, canonical HTTPS origin, SHA-256 exact target URL и точный
+CSS-selector. Возвращённая команда открывает отдельный постоянный локальный
+профиль Trelio Secret Browser и автоматически подставляет значение, когда
+selector разрешается ровно в один видимый поддерживаемый top-level
+`input`/`textarea`; действий пользователя и отдельного подтверждения нет.
+Trusted adapter работает через локальный DevTools transport и isolated world,
+повторно сверяет exact URL/origin и записывает значение без MCP, argv, stdout
 или clipboard. Широкое browser-extension permission ему не требуется.
-Cross-origin iframe, hidden/read-only поле и переход на другой origin
-отклоняются. Password saving выключен только в выделенном профиле; обычный
-профиль пользователя не изменяется.
+Cross-origin iframe, отсутствующее/неоднозначное/hidden/read-only поле и переход
+на другой URL отклоняются до передачи значения. Password saving выключен только
+в выделенном профиле; обычный профиль пользователя не изменяется.
 
 Atomic consume по-прежнему создаёт аудит `secret.checked_out` с пользователем
 и временем. Adapter отдельно сообщает безопасный
-`secret.browser_fill_succeeded|failed|cancelled`; audit хранит origin и reason
+`secret.browser_fill_succeeded|failed`; audit хранит origin и reason
 code, но не path/query, DOM selector или plaintext. Обычный browser tool с
 literal-text API для этого flow не применяется и не получает read-back.
 

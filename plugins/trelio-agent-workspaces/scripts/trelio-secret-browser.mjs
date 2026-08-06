@@ -5,17 +5,20 @@ import path from "node:path";
 
 const DEVTOOLS_ACTIVE_PORT_FILE = "DevToolsActivePort";
 const DEFAULT_BROWSER_START_TIMEOUT_MS = 15_000;
-const DEFAULT_FILL_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_FILL_TIMEOUT_MS = 60_000;
 const DEVTOOLS_REQUEST_TIMEOUT_MS = 10_000;
 const CONTROLLER_WORLD_NAME = "trelio-secret-browser";
 const SAFE_REASON_CODES = new Set([
   "adapter_error",
   "browser_closed",
   "browser_unavailable",
+  "field_ambiguous",
+  "field_not_found",
+  "field_selector_invalid",
   "field_write_failed",
   "target_origin_changed",
+  "target_url_changed",
   "timeout",
-  "user_cancelled",
 ]);
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -27,7 +30,11 @@ export class SecretBrowserFillError extends Error {
   }
 }
 
-export const normalizeSecretBrowserTarget = (rawTargetUrl, expectedOrigin) => {
+const hashSecretBrowserTargetUrl = (targetUrl) => (
+  crypto.createHash("sha256").update(targetUrl, "utf8").digest("hex")
+);
+
+export const normalizeSecretBrowserTarget = (rawTargetUrl, expectedOrigin, expectedUrlSha256) => {
   let targetUrl;
   try {
     targetUrl = new URL(String(rawTargetUrl || ""));
@@ -46,7 +53,28 @@ export const normalizeSecretBrowserTarget = (rawTargetUrl, expectedOrigin) => {
       "target_origin_changed",
     );
   }
-  return targetUrl.toString();
+  const normalizedTargetUrl = targetUrl.toString();
+  if (
+    !/^[0-9a-f]{64}$/u.test(String(expectedUrlSha256 || ""))
+    || hashSecretBrowserTargetUrl(normalizedTargetUrl) !== expectedUrlSha256
+  ) {
+    throw new SecretBrowserFillError(
+      "Browser fill target не совпадает с exact URL одноразового grant.",
+      "target_url_changed",
+    );
+  }
+  return normalizedTargetUrl;
+};
+
+export const normalizeSecretBrowserFieldSelector = (rawSelector) => {
+  const selector = String(rawSelector || "").trim();
+  if (!selector || selector.length > 512 || /[\0-\x1f\x7f]/u.test(selector)) {
+    throw new SecretBrowserFillError(
+      "Browser fill field selector некорректен.",
+      "field_selector_invalid",
+    );
+  }
+  return selector;
 };
 
 const candidateBrowserPaths = ({ platform, environment }) => {
@@ -348,10 +376,11 @@ const acquireSecretBrowser = async ({
   );
 };
 
-// Код исполняется в отдельном isolated world DevTools. Сайт видит только
-// значение уже после записи в выбранное пользователем поле и не получает
-// handle, callback или loopback endpoint Trelio.
-const installSecretBrowserController = (expectedOrigin) => {
+// Код исполняется в отдельном isolated world DevTools. Он автоматически
+// разрешает exact server-bound selector, но не угадывает поле: допустимо ровно
+// одно top-level совпадение. Сайт видит только значение после native setter и
+// не получает handle, callback или loopback endpoint Trelio.
+const installSecretBrowserController = (expectedOrigin, fieldSelector) => {
   if (globalThis.__trelioSecretBrowserController) return;
 
   const state = {
@@ -376,52 +405,55 @@ const installSecretBrowserController = (expectedOrigin) => {
       && style.visibility !== "hidden";
   };
 
-  document.addEventListener("keydown", (event) => {
-    if (
-      state.status !== "waiting"
-      || event.repeat
-      || !event.altKey
-      || !event.shiftKey
-      || event.ctrlKey
-      || event.metaKey
-      || event.code !== "KeyS"
-    ) {
+  const resolveTarget = () => {
+    if (state.status !== "waiting") return;
+    let matches;
+    try {
+      matches = document.querySelectorAll(fieldSelector);
+    } catch {
+      state.status = "failed";
+      state.reasonCode = "field_selector_invalid";
       return;
     }
-    event.preventDefault();
-    event.stopImmediatePropagation();
-
-    const target = document.activeElement;
-    if (!isSupportedField(target) || !isVisible(target)) {
-      alert("Сначала выберите видимое поле пароля или токена на этой странице.");
+    if (matches.length === 0) return;
+    if (matches.length !== 1) {
+      state.status = "failed";
+      state.reasonCode = "field_ambiguous";
       return;
     }
-
-    const confirmed = confirm(
-      `Вставить Agent Secret Trelio в выбранное поле на ${location.origin}?\n\n`
-      + "Значение не попадёт в чат, инструменты агента или буфер обмена.",
-    );
-    if (!confirmed) {
-      state.status = "cancelled";
-      state.reasonCode = "user_cancelled";
-      return;
-    }
+    const [target] = matches;
+    if (!isSupportedField(target) || !isVisible(target)) return;
     state.target = target;
-    state.status = "confirmed";
-  }, true);
+    state.status = "ready";
+  };
 
-  globalThis.__trelioSecretBrowserController = () => ({
-    status: state.status,
-    ...(state.reasonCode ? { reasonCode: state.reasonCode } : {}),
-  });
+  globalThis.__trelioSecretBrowserController = () => {
+    resolveTarget();
+    return {
+      status: state.status,
+      ...(state.reasonCode ? { reasonCode: state.reasonCode } : {}),
+    };
+  };
 
   globalThis.__trelioSecretBrowserApply = (value) => {
     try {
-      if (location.origin !== expectedOrigin || state.status !== "confirmed") {
+      if (location.origin !== expectedOrigin || state.status !== "ready") {
         throw new Error("origin_or_state_changed");
       }
       const target = state.target;
-      if (!target?.isConnected || document.activeElement !== target || !isSupportedField(target) || !isVisible(target)) {
+      let matches;
+      try {
+        matches = document.querySelectorAll(fieldSelector);
+      } catch {
+        throw new Error("selector_changed");
+      }
+      if (
+        !target?.isConnected
+        || matches.length !== 1
+        || matches[0] !== target
+        || !isSupportedField(target)
+        || !isVisible(target)
+      ) {
         throw new Error("field_changed");
       }
 
@@ -439,9 +471,9 @@ const installSecretBrowserController = (expectedOrigin) => {
         data: null,
       }));
       target.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+      if (target.value !== value) throw new Error("value_not_retained");
       state.target = null;
       state.status = "succeeded";
-      alert("Секрет вставлен. Проверьте адрес сайта и продолжите вход.");
       return { outcome: "succeeded" };
     } catch {
       state.target = null;
@@ -452,8 +484,8 @@ const installSecretBrowserController = (expectedOrigin) => {
   };
 };
 
-export const createSecretBrowserControllerExpression = (targetOrigin) => (
-  `(${installSecretBrowserController.toString()})(${JSON.stringify(targetOrigin)})`
+export const createSecretBrowserControllerExpression = (targetOrigin, fieldSelector) => (
+  `(${installSecretBrowserController.toString()})(${JSON.stringify(targetOrigin)},${JSON.stringify(fieldSelector)})`
 );
 
 const targetOriginFromUrl = (rawUrl) => {
@@ -464,7 +496,13 @@ const targetOriginFromUrl = (rawUrl) => {
   }
 };
 
-const readExactTargetInfo = async ({ client, targetId, targetOrigin, allowInitialBlank = false }) => {
+const readExactTargetInfo = async ({
+  client,
+  targetId,
+  targetOrigin,
+  targetUrlSha256,
+  allowInitialBlank = false,
+}) => {
   const { targetInfo } = await client.request("Target.getTargetInfo", { targetId });
   const currentUrl = String(targetInfo?.url || "");
   if (allowInitialBlank && currentUrl === "about:blank") return null;
@@ -474,10 +512,25 @@ const readExactTargetInfo = async ({ client, targetId, targetOrigin, allowInitia
       "target_origin_changed",
     );
   }
+  let normalizedCurrentUrl;
+  try {
+    normalizedCurrentUrl = new URL(currentUrl).toString();
+  } catch {
+    throw new SecretBrowserFillError(
+      "Вкладка Trelio Secret Browser открыла некорректный URL.",
+      "target_url_changed",
+    );
+  }
+  if (hashSecretBrowserTargetUrl(normalizedCurrentUrl) !== targetUrlSha256) {
+    throw new SecretBrowserFillError(
+      "Вкладка Trelio Secret Browser ушла с exact URL одноразового grant.",
+      "target_url_changed",
+    );
+  }
   return targetInfo;
 };
 
-const createControllerWorld = async ({ client, sessionId, targetOrigin }) => {
+const createControllerWorld = async ({ client, sessionId, targetOrigin, fieldSelector }) => {
   const { frameTree } = await client.request("Page.getFrameTree", {}, sessionId);
   const frameId = frameTree?.frame?.id;
   if (typeof frameId !== "string") {
@@ -493,7 +546,7 @@ const createControllerWorld = async ({ client, sessionId, targetOrigin }) => {
   }
   await client.request("Runtime.evaluate", {
     contextId: executionContextId,
-    expression: createSecretBrowserControllerExpression(targetOrigin),
+    expression: createSecretBrowserControllerExpression(targetOrigin, fieldSelector),
     returnByValue: true,
   }, sessionId);
   return executionContextId;
@@ -517,6 +570,8 @@ export const controlSecretBrowserViaDevTools = async ({
   secretValue,
   targetUrl,
   targetOrigin,
+  targetUrlSha256,
+  fieldSelector,
   fillTimeoutMs = DEFAULT_FILL_TIMEOUT_MS,
 }) => {
   const { targetId } = await client.request("Target.createTarget", {
@@ -534,13 +589,14 @@ export const controlSecretBrowserViaDevTools = async ({
       client,
       targetId,
       targetOrigin,
+      targetUrlSha256,
       allowInitialBlank: true,
     });
     if (targetInfo) break;
     await wait(100);
   }
   if (Date.now() >= deadline) {
-    throw new SecretBrowserFillError("Browser fill не был подтверждён вовремя.", "timeout");
+    throw new SecretBrowserFillError("Trelio Secret Browser не открыл exact target URL вовремя.", "timeout");
   }
 
   const { sessionId } = await client.request("Target.attachToTarget", { targetId, flatten: true });
@@ -550,9 +606,14 @@ export const controlSecretBrowserViaDevTools = async ({
   await client.request("Page.enable", {}, sessionId);
   await client.request("Runtime.enable", {}, sessionId);
 
-  let executionContextId = await createControllerWorld({ client, sessionId, targetOrigin });
+  let executionContextId = await createControllerWorld({
+    client,
+    sessionId,
+    targetOrigin,
+    fieldSelector,
+  });
   while (Date.now() < deadline) {
-    await readExactTargetInfo({ client, targetId, targetOrigin });
+    await readExactTargetInfo({ client, targetId, targetOrigin, targetUrlSha256 });
     let state;
     try {
       state = await evaluateController({
@@ -564,15 +625,17 @@ export const controlSecretBrowserViaDevTools = async ({
     } catch {
       // Exact-origin reload destroys the previous isolated world. Recreate it;
       // a cross-origin navigation is rejected above before any value is sent.
-      executionContextId = await createControllerWorld({ client, sessionId, targetOrigin });
+      executionContextId = await createControllerWorld({
+        client,
+        sessionId,
+        targetOrigin,
+        fieldSelector,
+      });
       await wait(100);
       continue;
     }
 
-    if (state?.status === "cancelled") {
-      return { outcome: "cancelled", reasonCode: "user_cancelled" };
-    }
-    if (state?.status === "confirmed") {
+    if (state?.status === "ready") {
       const expression = `globalThis.__trelioSecretBrowserApply(${JSON.stringify(secretValue)})`;
       const result = await evaluateController({
         client,
@@ -584,17 +647,27 @@ export const controlSecretBrowserViaDevTools = async ({
       return { outcome: "failed", reasonCode: "field_write_failed" };
     }
     if (state?.status === "failed") {
-      return { outcome: "failed", reasonCode: "field_write_failed" };
+      return {
+        outcome: "failed",
+        reasonCode: SAFE_REASON_CODES.has(state.reasonCode)
+          ? state.reasonCode
+          : "field_write_failed",
+      };
     }
     await wait(150);
   }
-  throw new SecretBrowserFillError("Browser fill не был подтверждён вовремя.", "timeout");
+  throw new SecretBrowserFillError(
+    "Exact browser field не появился автоматически вовремя.",
+    "field_not_found",
+  );
 };
 
 export const runSecretBrowserFill = async ({
   secretValue,
   targetUrl,
   targetOrigin,
+  targetUrlSha256,
+  fieldSelector,
   profileDirectory,
   ensurePrivateDirectory,
   resolveBrowserExecutable = resolveTrustedSecretBrowserExecutable,
@@ -604,7 +677,12 @@ export const runSecretBrowserFill = async ({
   browserStartTimeoutMs = DEFAULT_BROWSER_START_TIMEOUT_MS,
   fillTimeoutMs = DEFAULT_FILL_TIMEOUT_MS,
 }) => {
-  const normalizedTargetUrl = normalizeSecretBrowserTarget(targetUrl, targetOrigin);
+  const normalizedTargetUrl = normalizeSecretBrowserTarget(
+    targetUrl,
+    targetOrigin,
+    targetUrlSha256,
+  );
+  const normalizedFieldSelector = normalizeSecretBrowserFieldSelector(fieldSelector);
   await prepareSecretBrowserProfile({ profileDirectory, ensurePrivateDirectory });
   const args = buildSecretBrowserArguments({ profileDirectory });
 
@@ -622,6 +700,8 @@ export const runSecretBrowserFill = async ({
       secretValue,
       targetUrl: normalizedTargetUrl,
       targetOrigin,
+      targetUrlSha256,
+      fieldSelector: normalizedFieldSelector,
       fillTimeoutMs,
     });
   } catch (error) {

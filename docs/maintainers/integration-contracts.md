@@ -140,6 +140,16 @@ Agent Secret server-side Vault: metadata отдельно, value только on
 Run/executable grant через stdin/env/private temp. Нельзя использовать
 shell/logger/env/printenv/cat для раскрытия.
 
+Browser fill имеет только автоматический режим. MCP закрепляет grant за exact
+Run, bundled bridge, HTTPS origin, SHA-256 полного target URL и точным bounded
+CSS-selector; plaintext path/query в БД и audit не хранится. Выделенный browser
+через loopback DevTools isolated world передаёт значение ровно один раз только
+когда selector разрешается в один видимый поддерживаемый top-level
+`input`/`textarea`. Фокус, shortcut и user confirmation отсутствуют. Ноль или
+несколько совпадений, hidden/read-only/disabled field, iframe и смена URL/origin
+fail-closed завершают flow до передачи значения. Universal browser tool,
+clipboard, argv, stdout и read-back для plaintext запрещены.
+
 ## Browser-only ConsultantPlus
 
 `consultant-plus` не создаёт company connection и не получает credential.

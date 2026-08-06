@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.28";
+export const BRIDGE_VERSION = "1.6.29";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -62,7 +62,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
   "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill.",
-  "- Для browser-поля не передавай Agent Secret в literal-text Browser/Chrome tool. Вызови `prepare_agent_secret_browser_fill` для exact Run и HTTPS target URL, выполни возвращённый `trelio-workspace secret browser-fill`, затем попроси пользователя сфокусировать поле в выделенном Trelio Secret Browser и подтвердить Alt/Option+Shift+S. Не читай значение обратно и не переноси его через clipboard.",
+  "- Для browser-поля не передавай Agent Secret в literal-text Browser/Chrome tool. Определи exact HTTPS target URL и точный CSS-selector одного видимого top-level input/textarea, вызови `prepare_agent_secret_browser_fill` для exact Run/URL/selector и выполни возвращённый `trelio-workspace secret browser-fill`. Bridge подставляет значение автоматически; не проси пользователя фокусировать поле или подтверждать подстановку, не читай значение обратно и не переноси его через clipboard.",
   "",
   "## Работа и результат",
   "",
@@ -6741,15 +6741,15 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     || payload.deliveryMode !== "browser"
     || payload.executable !== "trelio-workspace"
     || typeof payload.targetOrigin !== "string"
+    || !/^[0-9a-f]{64}$/u.test(payload.targetUrlSha256 || "")
+    || typeof payload.browserFieldSelector !== "string"
+    || !payload.browserFieldSelector
     || typeof payload.value !== "string"
   ) {
     throw new Error("Trelio вернул некорректный browser-fill grant.");
   }
 
-  process.stdout.write(
-    `Открываю Trelio Secret Browser для ${payload.targetOrigin}. `
-    + "Сфокусируйте нужное поле и нажмите Alt+Shift+S (Option+Shift+S на macOS).\n",
-  );
+  process.stdout.write(`Автоматически подставляю Agent Secret на ${payload.targetOrigin}.\n`);
 
   let localResult = null;
   let outcomeReported = false;
@@ -6758,6 +6758,8 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
       secretValue: payload.value,
       targetUrl,
       targetOrigin: payload.targetOrigin,
+      targetUrlSha256: payload.targetUrlSha256,
+      fieldSelector: payload.browserFieldSelector,
       profileDirectory: SECRET_BROWSER_PROFILE_DIRECTORY,
       ensurePrivateDirectory,
     });
@@ -6774,13 +6776,11 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     outcomeReported = true;
     if (result.outcome !== "succeeded") {
       throw new SecretBrowserFillError(
-        result.outcome === "cancelled"
-          ? "Пользователь отменил browser-подстановку значения."
-          : "Trelio Secret Browser не подтвердил подстановку значения.",
+        "Trelio Secret Browser не выполнил автоматическую подстановку значения.",
         result.reasonCode || "adapter_error",
       );
     }
-    process.stdout.write("Секрет вставлен в подтверждённое поле; plaintext агенту не возвращался.\n");
+    process.stdout.write("Секрет автоматически вставлен в exact поле; plaintext агенту не возвращался.\n");
   } catch (error) {
     // Локальный результат уже мог наступить, а потерялся только ответ audit
     // endpoint. В таком случае нельзя записывать противоречивый outcome.
