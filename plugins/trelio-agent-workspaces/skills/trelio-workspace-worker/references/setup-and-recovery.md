@@ -13,11 +13,15 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
 2. Inspect `codex mcp list --json` and distinguish the remote `trelio` server
    from the local `trelio-remote-skills` stdio server. If remote `trelio` needs
    authentication and the ON_INSTALL OAuth window is not already open, run
-   `codex mcp login trelio` immediately and wait for the command. That single
-   browser flow includes Trelio login when needed and then consent. Never ask
-   the user to log in on the site first, report «я вошёл» in chat, or let
-   Computer Use enter credentials. If the OAuth window is already open, do not
-   start a duplicate flow; let the user finish it.
+   `codex mcp login trelio` immediately and wait for the command. Treat
+   `auth_status: "o_auth"` only as the configured authentication scheme, not
+   proof that the current process attached its credential: an exact HTTP 401
+   or required/missing-bearer result from a live Trelio read still means the
+   remote connection needs recovery.
+   That single browser flow includes Trelio login when needed and then consent.
+   Never ask the user to log in on the site first, report «я вошёл» in chat, or
+   let Computer Use enter credentials. If the OAuth window is already open, do
+   not start a duplicate flow; let the user finish it.
 3. If the `Trelio` marketplace or plugin is missing, give the exact command
    `codex plugin marketplace add trelio-ru/agent-workspaces`. It tracks the
    official default branch; refresh an existing snapshot with
@@ -29,8 +33,12 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
 5. After installation or OAuth, refresh `codex mcp list --json` and retry the
    original low-risk Trelio read once in the current task. Continue there when
    the tool is callable. Start a new task only when this live retry proves the
-   current task has not loaded the connection; require a full restart only if
-   the new task still lacks tools or reports the old plugin version.
+   current task has not loaded the connection. If that one retry still reports
+   a missing bearer after completed OAuth, do not run `codex mcp login trelio`
+   again: repeated login creates another credential but cannot repair bearer
+   propagation in an already-open process. Use a fresh task/process and keep
+   the completed authorization; require a full restart only if the new task
+   still lacks tools or reports the old plugin version.
 
 Failure of only `trelio-remote-skills` is not failed Trelio OAuth. Base remote
 Trelio and bridge work may continue. Diagnose Node through the project

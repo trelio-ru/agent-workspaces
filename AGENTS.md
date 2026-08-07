@@ -55,10 +55,12 @@
   `trelio_agent_workspaces_v1`. Scopes клиенты получают из OAuth metadata
   Trelio, поэтому не дублируй их в manifest: полный текущий набор выдаёт сервер,
   а дальнейший insufficient-scope flow расширяет exact user/client grant.
-  Stable client не отменяет fresh Trelio login, consent или PKCE; backend
-  разрешает ephemeral port только на exact callback path соответствующего
-  клиента. Backend migration с seeded client должна попасть в production раньше
-  plugin release.
+  Первый consent, новый scope и legacy DCR client требуют fresh Trelio login.
+  Stable client может повторно подтвердить только уже покрытые exact
+  user/client grant scopes через действующую старую browser-session без
+  impersonation; consent и PKCE сохраняются. Backend разрешает ephemeral port
+  только на exact callback path соответствующего клиента. Backend migration с
+  seeded client должна попасть в production раньше plugin release.
 - Runtime `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only context защищены и
   не входят в accepted candidate.
 - Company/project rules, platform rules, личный профиль и checkpoint
@@ -176,10 +178,13 @@
   отсутствии Node агент только предлагает platform-native установку и ждёт
   явного подтверждения. Initial OAuth является одним browser flow: onboarding
   не открывает предварительный site login, не просит написать «я вошёл» и не
-  запускает Computer Use для credentials. После OAuth агент сначала live
-  проверяет tools и продолжает текущую задачу; новую просит только после
-  доказанного failure. Глобальный `trelio-workspace` в `PATH` не требуется:
-  используется bundled script exact загруженной версии плагина.
+  запускает Computer Use для credentials. `auth_status: "o_auth"` описывает
+  схему, а не наличие bearer в exact процессе. После OAuth агент сначала один
+  раз live проверяет tools и продолжает текущую задачу; при повторном
+  missing-bearer не запускает login-loop, а переходит в свежую задачу/process.
+  Полный restart нужен только после failure там. Глобальный
+  `trelio-workspace` в `PATH` не требуется: используется bundled script exact
+  загруженной версии плагина.
 - Codex `SessionStart` с `source=startup` один раз добавляет в первый model call
   короткое напоминание проверить название текущего основного чата после сбора
   исходного контекста. Это non-blocking reminder, а не проверка результата:

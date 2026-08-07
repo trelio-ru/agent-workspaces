@@ -17,7 +17,11 @@ read the current skill catalog and connection state from Trelio.
    - Inspect `codex mcp list --json` to distinguish an unavailable or
      unauthenticated `trelio` HTTP server from the local
      `trelio-remote-skills` server. The plugin version alone does not prove
-     that either server is ready.
+     that either server is ready. In particular, `auth_status: "o_auth"`
+     identifies the configured authentication scheme; it does not prove that
+     the current Codex process attached a bearer. A failed live Trelio read
+     that explicitly reports HTTP 401 or a required/missing bearer is an OAuth
+     failure even when this status still says `o_auth`.
    - Resolve Node.js without intentionally executing a missing command. On
      native Windows, run this loaded plugin's bundled
      `../../scripts/resolve-node.ps1`; it checks the current process, durable
@@ -37,7 +41,11 @@ read the current skill catalog and connection state from Trelio.
    - After OAuth, refresh `codex mcp list --json` and retry one low-risk Trelio
      read in this same task. Continue onboarding here as soon as the tools are
      callable. Ask for a new task only when that live retry proves the current
-     task still has no refreshed tools; do not assume a static tool list.
+     task still has no refreshed tools; do not assume a static tool list. If
+     that retry still explicitly lacks a bearer after the user completed this
+     one OAuth flow, do not start another login loop: an already-open Codex
+     process may not have adopted the refreshed credential. Continue from a
+     fresh task/process and preserve the successful authorization.
    Require a full Codex restart only when a live current-task retry and then a
    new task still lack the tools or report the old plugin version. If the
    marketplace itself is

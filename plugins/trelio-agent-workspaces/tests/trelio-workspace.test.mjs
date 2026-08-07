@@ -1970,7 +1970,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.29");
+  assert.equal(BRIDGE_VERSION, "1.6.30");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2165,6 +2165,16 @@ test("workspace setup keeps initial OAuth in one browser flow and retries the cu
   assert.match(workspaceSkill, /retry the\s+original low-risk Trelio read once in the current task/u);
   assert.match(workspaceSkill, /Start a new task only when this live retry proves/u);
   assert.match(workspaceSkill, /Failure of only `trelio-remote-skills` is not failed Trelio OAuth/u);
+});
+
+test("workspace OAuth recovery distinguishes configured OAuth from a missing process bearer", async () => {
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+
+  assert.match(workspaceSkill, /`auth_status: "o_auth"` only as the configured authentication scheme/u);
+  assert.match(workspaceSkill, /HTTP 401\s+or required\/missing-bearer/u);
+  assert.match(workspaceSkill, /do not run `codex mcp login trelio`\s+again/u);
+  assert.match(workspaceSkill, /cannot repair bearer\s+propagation in an already-open process/u);
+  assert.match(workspaceSkill, /Use a fresh task\/process and keep\s+the completed authorization/u);
 });
 
 test("Windows Node resolver uses durable PATH when the Codex process PATH is stale", {

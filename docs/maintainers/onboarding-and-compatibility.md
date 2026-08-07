@@ -48,6 +48,15 @@ Missing scope должен возвращать стандартный `mcp/www_
 и без narrowing scope, чтобы сохранить existing grant. 401/403/ACL различать;
 ACL denial не маскировать как reauthorization.
 
+`codex mcp list --json` со значением `auth_status: "o_auth"` подтверждает схему
+авторизации server-а, но не наличие bearer в конкретном app-server процессе.
+Явный HTTP 401 либо required/missing-bearer на live read считается auth failure
+и запускает один login flow, если другое OAuth-окно ещё не открыто. После
+успешного callback текущая задача делает один live retry. Если тот же процесс
+снова не передал bearer, повторный login запрещён: он создаст ещё один credential,
+но не исправит propagation. Recovery продолжается в свежей задаче/process;
+полный restart остаётся последней ступенью после такого же failure там.
+
 Initial OAuth также является одним непрерывным browser flow. Если ON_INSTALL
 card не открылась, onboarding сам запускает `codex mcp login trelio`; authorize
 route при необходимости проводит login и возвращает пользователя к consent.
@@ -60,10 +69,13 @@ credential больше не должен переходить на новый D
 scope-upgrade. Текущий список Trelio scopes клиенты получают из server metadata,
 поэтому manifest его не дублирует. На backend stable client принимает переменный
 RFC 8252 loopback port только при exact host и callback path конкретного клиента,
-а grant scopes объединяются только для exact user/client. Fresh Trelio login,
-consent и PKCE не ослабляются. Legacy DCR clients остаются совместимыми. Backend
-migration/production deploy обязаны предшествовать plugin release, иначе explicit
-client id корректно завершится `invalid_client`.
+а grant scopes объединяются только для exact user/client. Первый consent, новый
+scope и legacy DCR client требуют fresh Trelio login; повторное подтверждение
+уже покрытых stable-client scopes может восстановиться через действующую старую
+browser-session без impersonation. Consent и PKCE не ослабляются. Legacy DCR
+clients остаются совместимыми. Backend migration/production deploy обязаны
+предшествовать plugin release, иначе explicit client id корректно завершится
+`invalid_client`.
 
 Bridge pairing не является вторым OAuth. Verifier остаётся локально; agent
 передаёт только pairing ID/device name в MCP approval и повторяет original
