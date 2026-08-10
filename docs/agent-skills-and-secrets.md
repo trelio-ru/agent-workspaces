@@ -121,24 +121,30 @@ Runtime поддерживает structured bounded history, passive unread poll
 
 ## Agent Secrets
 
-Agent Secrets хранятся в Trelio Vault. MCP показывает safe metadata и создаёт
-одноразовый grant для exact Run и executable. Bridge получает значение один
-раз и передаёт локально через разрешённый `stdin`, env или приватный temp file.
-Trelio команду не исполняет.
+Agent Secrets хранятся в Trelio Vault как контейнеры именованных полей: один
+контейнер может содержать `username`, `password`, `totp` и другие связанные
+значения. MCP видит только safe schema/status и создаёт одноразовый grant для
+exact версии, набора полей, Run и executable. Bridge получает выбранные поля
+один раз и передаёт локально через разрешённый JSON `stdin`/private temp file
+либо явное соответствие `fieldKey -> ENV_NAME`. TOTP seed не выдаётся: backend
+передаёт только код текущего короткого временного окна. Trelio команду не
+исполняет.
 
 Для browser-поля используется отдельный
 `prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
-`trelio-workspace`, canonical HTTPS origin, SHA-256 exact target URL и точный
-CSS-selector. Возвращённая команда открывает отдельный постоянный локальный
-профиль Trelio Secret Browser и автоматически подставляет значение, когда
-selector разрешается ровно в один видимый поддерживаемый top-level
-`input`/`textarea`; действий пользователя и отдельного подтверждения нет.
+`trelio-workspace` и ordered steps. Каждый step содержит exact HTTPS URL и
+несколько `fieldKey -> CSS-selector`; логин и пароль одной страницы обязательно
+передаются одним step. Возвращённая единственная команда открывает ровно одно
+окно/вкладку постоянного локального профиля Trelio Secret Browser и сохраняет
+их для последующих страниц того же входа. Отдельный grant или browser process
+на каждое поле запрещён.
 Trusted adapter работает через локальный DevTools transport и isolated world,
 повторно сверяет exact URL/origin и записывает значение без MCP, argv, stdout
 или clipboard. Широкое browser-extension permission ему не требуется.
 Cross-origin iframe, отсутствующее/неоднозначное/hidden/read-only поле и переход
-на другой URL отклоняются до передачи значения. Password saving выключен только
-в выделенном профиле; обычный профиль пользователя не изменяется.
+на незакреплённый URL отклоняют весь сеанс без fallback-окна и повтора значения.
+Password saving выключен только в выделенном профиле; обычный профиль
+пользователя не изменяется.
 
 Atomic consume по-прежнему создаёт аудит `secret.checked_out` с пользователем
 и временем. Adapter отдельно сообщает безопасный

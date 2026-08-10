@@ -137,19 +137,21 @@ skill/company/member/connection namespace. Credential fingerprint меняетс
 endpoint/auth/config change. Forget удаляет local copy, но не отзывает provider
 credential.
 
-Agent Secret server-side Vault: metadata отдельно, value только one-use exact
-Run/executable grant через stdin/env/private temp. Нельзя использовать
-shell/logger/env/printenv/cat для раскрытия.
+Agent Secret server-side Vault: safe schema отдельно, encrypted immutable
+version содержит атомарный JSON bundle именованных полей. One-use grant связан
+с exact version/field set/Run/executable; multi-field stdin/private temp
+получает JSON, env требует exact mapping, а TOTP delivery получает derived code,
+не seed. Нельзя использовать shell/logger/env/printenv/cat для раскрытия.
 
 Browser fill имеет только автоматический режим. MCP закрепляет grant за exact
-Run, bundled bridge, HTTPS origin, SHA-256 полного target URL и точным bounded
-CSS-selector; plaintext path/query в БД и audit не хранится. Выделенный browser
-через loopback DevTools isolated world передаёт значение ровно один раз только
-когда selector разрешается в один видимый поддерживаемый top-level
-`input`/`textarea`. Фокус, shortcut и user confirmation отсутствуют. Ноль или
-несколько совпадений, hidden/read-only/disabled field, iframe и смена URL/origin
-fail-closed завершают flow до передачи значения. Universal browser tool,
-clipboard, argv, stdout и read-back для plaintext запрещены.
+Run, bundled bridge и ordered steps с exact URL hash/origin и bounded mapping
+каждого fieldKey к selector; plaintext path/query в БД и audit не хранится.
+Один grant всегда создаёт один Target/window/tab/profile: все поля страницы
+заполняются общим preflight, а следующая страница продолжает тот же browser
+session. Ноль или несколько совпадений, hidden/read-only/disabled field, iframe
+и незакреплённая смена URL/origin fail-closed завершают весь flow без второго
+окна или fallback. Universal browser tool, clipboard, secret values в argv,
+stdout и read-back запрещены.
 
 ## Browser-only ConsultantPlus
 

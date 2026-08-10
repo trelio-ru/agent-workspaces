@@ -1969,7 +1969,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.7.0");
+  assert.equal(BRIDGE_VERSION, "1.8.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2454,7 +2454,7 @@ test("Trelio Secret Browser transports a value once through its isolated control
       if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserController?.()")) {
         return { result: { value: { status: "ready" } } };
       }
-      if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserApply")) {
+      if (method === "Runtime.evaluate" && params.expression.startsWith("globalThis.__trelioSecretBrowserApply(")) {
         return { result: { value: { outcome: "succeeded" } } };
       }
       if (method === "Runtime.evaluate") return { result: {} };
@@ -2561,6 +2561,72 @@ test("Trelio Secret Browser fails closed before sending a value for an ambiguous
 
   assert.deepEqual(result, { outcome: "failed", reasonCode: "field_ambiguous" });
   assert.equal(requests.some((request) => JSON.stringify(request).includes(secretValue)), false);
+});
+
+test("Trelio Secret Browser fills login and password in one browser window and keeps it for later steps", async () => {
+  const firstUrl = "https://login.example.test/account";
+  const secondUrl = "https://login.example.test/otp";
+  const steps = [
+    {
+      targetOrigin: "https://login.example.test",
+      targetUrlSha256: createHash("sha256").update(firstUrl).digest("hex"),
+      fields: [
+        { fieldKey: "username", selector: "#username" },
+        { fieldKey: "password", selector: "#password" },
+      ],
+    },
+    {
+      targetOrigin: "https://login.example.test",
+      targetUrlSha256: createHash("sha256").update(secondUrl).digest("hex"),
+      fields: [{ fieldKey: "totp", selector: "#otp" }],
+    },
+  ];
+  const values = { username: "agent-login", password: "agent-password", totp: "123456" };
+  const requests = [];
+  let appliedSteps = 0;
+  const client = {
+    request: async (method, params = {}, sessionId = undefined) => {
+      requests.push({ method, params, sessionId });
+      if (method === "Target.createTarget") return { targetId: "one-window-target" };
+      if (method === "Target.activateTarget") return {};
+      if (method === "Target.getTargetInfo") {
+        return { targetInfo: { url: appliedSteps === 0 ? firstUrl : secondUrl } };
+      }
+      if (method === "Target.attachToTarget") return { sessionId: "one-window-session" };
+      if (method === "Page.enable" || method === "Runtime.enable") return {};
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "one-window-frame" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 50 + appliedSteps };
+      if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserController?.()")) {
+        return { result: { value: { status: "ready" } } };
+      }
+      if (method === "Runtime.evaluate" && params.expression.includes("__trelioSecretBrowserApply")) {
+        appliedSteps += 1;
+        return { result: { value: { outcome: "succeeded" } } };
+      }
+      if (method === "Runtime.evaluate") return { result: {} };
+      throw new Error(`Unexpected DevTools request: ${method}`);
+    },
+  };
+
+  const result = await controlSecretBrowserViaDevTools({
+    client,
+    secretValues: values,
+    targetUrl: firstUrl,
+    browserSteps: steps,
+    fillTimeoutMs: 1_000,
+  });
+
+  assert.deepEqual(result, { outcome: "succeeded" });
+  assert.equal(requests.filter((request) => request.method === "Target.createTarget").length, 1);
+  assert.equal(requests.filter((request) => request.method === "Target.attachToTarget").length, 1);
+  const applyExpressions = requests
+    .filter((request) => request.method === "Runtime.evaluate" && request.params.expression.startsWith("globalThis.__trelioSecretBrowserApply("))
+    .map((request) => request.params.expression);
+  assert.equal(applyExpressions.length, 2);
+  assert.match(applyExpressions[0], /agent-login/u);
+  assert.match(applyExpressions[0], /agent-password/u);
+  assert.doesNotMatch(applyExpressions[0], /123456/u);
+  assert.match(applyExpressions[1], /123456/u);
 });
 
 test("secret checkout self-dispatches trelio-workspace without resolving PATH", {

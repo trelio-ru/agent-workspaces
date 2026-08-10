@@ -380,13 +380,17 @@ const acquireSecretBrowser = async ({
 // разрешает exact server-bound selector, но не угадывает поле: допустимо ровно
 // одно top-level совпадение. Сайт видит только значение после native setter и
 // не получает handle, callback или loopback endpoint Trelio.
-const installSecretBrowserController = (expectedOrigin, fieldSelector) => {
+const installSecretBrowserController = (expectedOrigin, rawFieldMappings) => {
   if (globalThis.__trelioSecretBrowserController) return;
+
+  const fieldMappings = typeof rawFieldMappings === "string"
+    ? [{ fieldKey: "value", selector: rawFieldMappings }]
+    : rawFieldMappings;
 
   const state = {
     status: "waiting",
     reasonCode: null,
-    target: null,
+    targets: null,
   };
 
   const isSupportedField = (element) => {
@@ -407,23 +411,27 @@ const installSecretBrowserController = (expectedOrigin, fieldSelector) => {
 
   const resolveTarget = () => {
     if (state.status !== "waiting") return;
-    let matches;
-    try {
-      matches = document.querySelectorAll(fieldSelector);
-    } catch {
-      state.status = "failed";
-      state.reasonCode = "field_selector_invalid";
-      return;
+    const targets = [];
+    for (const mapping of fieldMappings) {
+      let matches;
+      try {
+        matches = document.querySelectorAll(mapping.selector);
+      } catch {
+        state.status = "failed";
+        state.reasonCode = "field_selector_invalid";
+        return;
+      }
+      if (matches.length === 0) return;
+      if (matches.length !== 1) {
+        state.status = "failed";
+        state.reasonCode = "field_ambiguous";
+        return;
+      }
+      const [target] = matches;
+      if (!isSupportedField(target) || !isVisible(target)) return;
+      targets.push({ ...mapping, target });
     }
-    if (matches.length === 0) return;
-    if (matches.length !== 1) {
-      state.status = "failed";
-      state.reasonCode = "field_ambiguous";
-      return;
-    }
-    const [target] = matches;
-    if (!isSupportedField(target) || !isVisible(target)) return;
-    state.target = target;
+    state.targets = targets;
     state.status = "ready";
   };
 
@@ -435,48 +443,60 @@ const installSecretBrowserController = (expectedOrigin, fieldSelector) => {
     };
   };
 
-  globalThis.__trelioSecretBrowserApply = (value) => {
+  globalThis.__trelioSecretBrowserApply = (rawValues) => {
     try {
       if (location.origin !== expectedOrigin || state.status !== "ready") {
         throw new Error("origin_or_state_changed");
       }
-      const target = state.target;
-      let matches;
-      try {
-        matches = document.querySelectorAll(fieldSelector);
-      } catch {
-        throw new Error("selector_changed");
-      }
-      if (
-        !target?.isConnected
-        || matches.length !== 1
-        || matches[0] !== target
-        || !isSupportedField(target)
-        || !isVisible(target)
-      ) {
-        throw new Error("field_changed");
+      const values = typeof rawValues === "string" ? { value: rawValues } : rawValues;
+      if (!values || typeof values !== "object" || !Array.isArray(state.targets)) {
+        throw new Error("values_missing");
       }
 
-      const prototype = target instanceof HTMLTextAreaElement
-        ? HTMLTextAreaElement.prototype
-        : HTMLInputElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
-      if (typeof setter !== "function") throw new Error("setter_missing");
+      // Сначала повторно проверяем все поля. Только после общего preflight
+      // начинаем native-setter записи, чтобы отсутствие второго поля не
+      // оставило форму частично заполненной.
+      for (const { fieldKey, selector, target } of state.targets) {
+        let matches;
+        try {
+          matches = document.querySelectorAll(selector);
+        } catch {
+          throw new Error("selector_changed");
+        }
+        if (
+          typeof values[fieldKey] !== "string"
+          || !target?.isConnected
+          || matches.length !== 1
+          || matches[0] !== target
+          || !isSupportedField(target)
+          || !isVisible(target)
+        ) {
+          throw new Error("field_changed");
+        }
+      }
 
-      setter.call(target, value);
-      target.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        composed: true,
-        inputType: "insertText",
-        data: null,
-      }));
-      target.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-      if (target.value !== value) throw new Error("value_not_retained");
-      state.target = null;
+      for (const { fieldKey, target } of state.targets) {
+        const prototype = target instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+        if (typeof setter !== "function") throw new Error("setter_missing");
+        const value = values[fieldKey];
+        setter.call(target, value);
+        target.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          composed: true,
+          inputType: "insertText",
+          data: null,
+        }));
+        target.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
+        if (target.value !== value) throw new Error("value_not_retained");
+      }
+      state.targets = null;
       state.status = "succeeded";
       return { outcome: "succeeded" };
     } catch {
-      state.target = null;
+      state.targets = null;
       state.status = "failed";
       state.reasonCode = "field_write_failed";
       return { outcome: "failed", reasonCode: state.reasonCode };
@@ -484,8 +504,8 @@ const installSecretBrowserController = (expectedOrigin, fieldSelector) => {
   };
 };
 
-export const createSecretBrowserControllerExpression = (targetOrigin, fieldSelector) => (
-  `(${installSecretBrowserController.toString()})(${JSON.stringify(targetOrigin)},${JSON.stringify(fieldSelector)})`
+export const createSecretBrowserControllerExpression = (targetOrigin, fieldMappings) => (
+  `(${installSecretBrowserController.toString()})(${JSON.stringify(targetOrigin)},${JSON.stringify(fieldMappings)})`
 );
 
 const targetOriginFromUrl = (rawUrl) => {
@@ -530,7 +550,7 @@ const readExactTargetInfo = async ({
   return targetInfo;
 };
 
-const createControllerWorld = async ({ client, sessionId, targetOrigin, fieldSelector }) => {
+const createControllerWorld = async ({ client, sessionId, targetOrigin, fieldMappings }) => {
   const { frameTree } = await client.request("Page.getFrameTree", {}, sessionId);
   const frameId = frameTree?.frame?.id;
   if (typeof frameId !== "string") {
@@ -546,7 +566,7 @@ const createControllerWorld = async ({ client, sessionId, targetOrigin, fieldSel
   }
   await client.request("Runtime.evaluate", {
     contextId: executionContextId,
-    expression: createSecretBrowserControllerExpression(targetOrigin, fieldSelector),
+    expression: createSecretBrowserControllerExpression(targetOrigin, fieldMappings),
     returnByValue: true,
   }, sessionId);
   return executionContextId;
@@ -568,12 +588,22 @@ const evaluateController = async ({ client, sessionId, executionContextId, expre
 export const controlSecretBrowserViaDevTools = async ({
   client,
   secretValue,
+  secretValues,
   targetUrl,
   targetOrigin,
   targetUrlSha256,
   fieldSelector,
+  browserSteps,
   fillTimeoutMs = DEFAULT_FILL_TIMEOUT_MS,
 }) => {
+  const values = secretValues ?? { value: secretValue };
+  const steps = Array.isArray(browserSteps) && browserSteps.length > 0
+    ? browserSteps
+    : [{
+      targetOrigin,
+      targetUrlSha256,
+      fields: [{ fieldKey: "value", selector: fieldSelector }],
+    }];
   const { targetId } = await client.request("Target.createTarget", {
     url: targetUrl,
     newWindow: true,
@@ -588,8 +618,8 @@ export const controlSecretBrowserViaDevTools = async ({
     const targetInfo = await readExactTargetInfo({
       client,
       targetId,
-      targetOrigin,
-      targetUrlSha256,
+      targetOrigin: steps[0].targetOrigin,
+      targetUrlSha256: steps[0].targetUrlSha256,
       allowInitialBlank: true,
     });
     if (targetInfo) break;
@@ -606,68 +636,100 @@ export const controlSecretBrowserViaDevTools = async ({
   await client.request("Page.enable", {}, sessionId);
   await client.request("Runtime.enable", {}, sessionId);
 
-  let executionContextId = await createControllerWorld({
-    client,
-    sessionId,
-    targetOrigin,
-    fieldSelector,
-  });
-  while (Date.now() < deadline) {
-    await readExactTargetInfo({ client, targetId, targetOrigin, targetUrlSha256 });
-    let state;
-    try {
-      state = await evaluateController({
-        client,
-        sessionId,
-        executionContextId,
-        expression: "globalThis.__trelioSecretBrowserController?.()",
-      });
-    } catch {
-      // Exact-origin reload destroys the previous isolated world. Recreate it;
-      // a cross-origin navigation is rejected above before any value is sent.
-      executionContextId = await createControllerWorld({
-        client,
-        sessionId,
-        targetOrigin,
-        fieldSelector,
-      });
-      await wait(100);
-      continue;
-    }
+  for (let stepIndex = 0; stepIndex < steps.length; stepIndex += 1) {
+    const step = steps[stepIndex];
+    let executionContextId = null;
+    let stepReached = false;
 
-    if (state?.status === "ready") {
-      const expression = `globalThis.__trelioSecretBrowserApply(${JSON.stringify(secretValue)})`;
-      const result = await evaluateController({
-        client,
-        sessionId,
-        executionContextId,
-        expression,
-      }).catch(() => null);
-      if (result?.outcome === "succeeded") return { outcome: "succeeded" };
-      return { outcome: "failed", reasonCode: "field_write_failed" };
+    while (Date.now() < deadline) {
+      try {
+        await readExactTargetInfo({
+          client,
+          targetId,
+          targetOrigin: step.targetOrigin,
+          targetUrlSha256: step.targetUrlSha256,
+        });
+        stepReached = true;
+      } catch (error) {
+        // Между шагами вкладка может ещё оставаться на успешно заполненном
+        // предыдущем exact URL. Ждём штатную навигацию в той же вкладке, но
+        // любой третий origin/URL завершаем fail-closed.
+        const previousStep = stepIndex > 0 ? steps[stepIndex - 1] : null;
+        if (!previousStep) throw error;
+        await readExactTargetInfo({
+          client,
+          targetId,
+          targetOrigin: previousStep.targetOrigin,
+          targetUrlSha256: previousStep.targetUrlSha256,
+        });
+        await wait(150);
+        continue;
+      }
+
+      if (!executionContextId) {
+        executionContextId = await createControllerWorld({
+          client,
+          sessionId,
+          targetOrigin: step.targetOrigin,
+          fieldMappings: step.fields,
+        });
+      }
+      let state;
+      try {
+        state = await evaluateController({
+          client,
+          sessionId,
+          executionContextId,
+          expression: "globalThis.__trelioSecretBrowserController?.()",
+        });
+      } catch {
+        executionContextId = null;
+        await wait(100);
+        continue;
+      }
+
+      if (state?.status === "ready") {
+        const stepValues = Object.fromEntries(step.fields.map(({ fieldKey }) => [fieldKey, values[fieldKey]]));
+        const expression = `globalThis.__trelioSecretBrowserApply(${JSON.stringify(stepValues)})`;
+        const result = await evaluateController({
+          client,
+          sessionId,
+          executionContextId,
+          expression,
+        }).catch(() => null);
+        if (result?.outcome !== "succeeded") {
+          return { outcome: "failed", reasonCode: "field_write_failed" };
+        }
+        break;
+      }
+      if (state?.status === "failed") {
+        return {
+          outcome: "failed",
+          reasonCode: SAFE_REASON_CODES.has(state.reasonCode)
+            ? state.reasonCode
+            : "field_write_failed",
+        };
+      }
+      await wait(150);
     }
-    if (state?.status === "failed") {
-      return {
-        outcome: "failed",
-        reasonCode: SAFE_REASON_CODES.has(state.reasonCode)
-          ? state.reasonCode
-          : "field_write_failed",
-      };
+    if (!stepReached || Date.now() >= deadline) {
+      throw new SecretBrowserFillError(
+        `Exact browser step ${stepIndex + 1} не появился автоматически вовремя.`,
+        stepReached ? "field_not_found" : "timeout",
+      );
     }
-    await wait(150);
   }
-  throw new SecretBrowserFillError(
-    "Exact browser field не появился автоматически вовремя.",
-    "field_not_found",
-  );
+  return { outcome: "succeeded" };
 };
 
 export const runSecretBrowserFill = async ({
   secretValue,
+  secretValues,
   targetUrl,
   targetOrigin,
   targetUrlSha256,
   fieldSelector,
+  browserSteps,
   profileDirectory,
   ensurePrivateDirectory,
   resolveBrowserExecutable = resolveTrustedSecretBrowserExecutable,
@@ -682,7 +744,19 @@ export const runSecretBrowserFill = async ({
     targetOrigin,
     targetUrlSha256,
   );
-  const normalizedFieldSelector = normalizeSecretBrowserFieldSelector(fieldSelector);
+  const normalizedSteps = Array.isArray(browserSteps) && browserSteps.length > 0
+    ? browserSteps.map((step) => ({
+      targetOrigin: String(step.targetOrigin || ""),
+      targetUrlSha256: String(step.targetUrlSha256 || ""),
+      fields: step.fields.map((mapping) => ({
+        fieldKey: String(mapping.fieldKey || ""),
+        selector: normalizeSecretBrowserFieldSelector(mapping.selector),
+      })),
+    }))
+    : undefined;
+  const normalizedFieldSelector = normalizedSteps
+    ? undefined
+    : normalizeSecretBrowserFieldSelector(fieldSelector);
   await prepareSecretBrowserProfile({ profileDirectory, ensurePrivateDirectory });
   const args = buildSecretBrowserArguments({ profileDirectory });
 
@@ -698,10 +772,12 @@ export const runSecretBrowserFill = async ({
     return await controlBrowser({
       client,
       secretValue,
+      secretValues,
       targetUrl: normalizedTargetUrl,
       targetOrigin,
       targetUrlSha256,
       fieldSelector: normalizedFieldSelector,
+      browserSteps: normalizedSteps,
       fillTimeoutMs,
     });
   } catch (error) {

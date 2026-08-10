@@ -110,20 +110,25 @@ private temporary-file mode; Trelio does not execute the command. Never replace
 the executable with a shell, logger, `env`, `printenv`, `cat`, or another
 program intended to reveal it.
 
-When the exact destination is a browser field, do not pass the value to a
-literal-text Browser/Chrome/Computer Use action. Call
-`prepare_agent_secret_browser_fill` with the exact current Run, HTTPS target
-URL, and a precise CSS selector for exactly one visible supported top-level
-`input`/`textarea`, then execute the returned
-`trelio-workspace secret browser-fill --grant ... --target ...` command. It
-opens the dedicated local Trelio Secret Browser and fills automatically; do not
-ask the user to focus a field, press a shortcut, or confirm the fill. The
-trusted local adapter checks the grant-bound exact URL and selector and fills
-through an isolated browser context without MCP, argv, logs, workspace files,
-clipboard, or a broad extension permission. If the selector is absent,
-ambiguous, hidden, read-only, disabled, unsupported, inside a cross-origin
-iframe, or the page changes URL/origin, stop without retrying the value. Never
-read the field back or transfer the value to a universal browser tool.
+When the exact destination is a browser login, do not pass any named field to
+a literal-text Browser/Chrome/Computer Use action. Call
+`prepare_agent_secret_browser_fill` once with the exact current Run and ordered
+`steps`: put every field on the same page (for example `username` and
+`password`) in one step, and put a later page (for example `totp`) in the next
+step. Every step needs an exact HTTPS target URL and every field needs a precise
+CSS selector for exactly one visible supported top-level `input`/`textarea`.
+Then execute exactly one returned
+`trelio-workspace secret browser-fill --grant ... --target ...` command. The
+bridge opens one dedicated browser window/tab/profile for the whole flow and
+fills automatically in every bound step there. Never create separate grants or commands for login and
+password. Do not ask the user to focus a field, press a shortcut, or confirm
+the fill. The trusted local adapter checks every grant-bound exact URL and all
+selectors through an isolated browser context without MCP, secret values in
+argv/logs/workspace files, clipboard, or a broad extension permission. If any
+selector is absent, ambiguous, hidden, read-only, disabled, unsupported,
+inside a cross-origin iframe, or the page changes to an unbound URL/origin,
+stop the complete session without a fallback window or value retry. Never read
+a field back or transfer a value to a universal browser tool.
 
 When one selected secret becomes a durable dependency of the task, dossier or
 other writable workspace, record only this safe reference in

@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.7.0";
+export const BRIDGE_VERSION = "1.8.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -62,7 +62,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
   "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill.",
-  "- Для browser-поля не передавай Agent Secret в literal-text Browser/Chrome tool. Определи exact HTTPS target URL и точный CSS-selector одного видимого top-level input/textarea, вызови `prepare_agent_secret_browser_fill` для exact Run/URL/selector и выполни возвращённый `trelio-workspace secret browser-fill`. Bridge подставляет значение автоматически; не проси пользователя фокусировать поле или подтверждать подстановку, не читай значение обратно и не переноси его через clipboard.",
+  "- Для browser-входа не передавай поля Agent Secret в literal-text Browser/Chrome tool. Передай одному вызову `prepare_agent_secret_browser_fill` ordered steps: все поля одной страницы в одном step, следующие страницы – следующими steps с exact HTTPS URL и CSS-selector каждого поля. Выполни ровно одну возвращённую `trelio-workspace secret browser-fill`: bridge подставляет значение автоматически для каждого поля и открывает одно окно/вкладку/профиль на весь вход. Не создавай отдельный grant или browser-fill для логина и пароля, не проси пользователя фокусировать поле, не читай значения обратно и не переноси их через clipboard.",
   "",
   "## Работа и результат",
   "",
@@ -6520,7 +6520,14 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
   );
 });
 
-const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentVariable, secretValue }) => {
+const spawnSecretCommand = async ({
+  commandArguments,
+  deliveryMode,
+  environmentVariable,
+  environmentVariables,
+  secretValue,
+  secretValues,
+}) => {
   const [logicalExecutable, ...logicalArgs] = commandArguments;
   // Codex/Claude plugins ship the bridge as this module and do not promise a
   // global `trelio-workspace` binary in PATH. Keep the grant bound to the
@@ -6541,11 +6548,21 @@ const spawnSecretCommand = async ({ commandArguments, deliveryMode, environmentV
   let grantedStdin = null;
 
   if (deliveryMode === "env") {
-    if (!environmentVariable) {
-      throw new Error("Сервер не указал переменную окружения для env checkout.");
+    if (environmentVariables && secretValues) {
+      for (const [fieldKey, variableName] of Object.entries(environmentVariables)) {
+        if (typeof secretValues[fieldKey] !== "string") {
+          throw new Error("Сервер не вернул значение для одного из env-полей checkout.");
+        }
+        childEnvironment[variableName] = secretValues[fieldKey];
+        grantedEnvironment[variableName] = secretValues[fieldKey];
+      }
+    } else {
+      if (!environmentVariable || typeof secretValue !== "string") {
+        throw new Error("Сервер не указал переменную окружения для env checkout.");
+      }
+      childEnvironment[environmentVariable] = secretValue;
+      grantedEnvironment = { [environmentVariable]: secretValue };
     }
-    childEnvironment[environmentVariable] = secretValue;
-    grantedEnvironment = { [environmentVariable]: secretValue };
   } else if (deliveryMode === "stdin") {
     childStdin = "pipe";
     grantedStdin = secretValue;
@@ -6696,11 +6713,25 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
     throw new Error("Checkout grant принадлежит другому Trelio Agent Run.");
   }
 
+  const secretValues = payload.values && typeof payload.values === "object"
+    ? payload.values
+    : null;
+  const secretValue = typeof payload.value === "string"
+    ? payload.value
+    : secretValues
+      ? JSON.stringify(secretValues)
+      : null;
+  if (typeof secretValue !== "string") {
+    throw new Error("Trelio вернул некорректный набор полей Agent Secret.");
+  }
+
   await spawnSecretCommand({
     commandArguments,
     deliveryMode: payload.deliveryMode,
     environmentVariable: payload.environmentVariable,
-    secretValue: payload.value,
+    environmentVariables: payload.environmentVariables,
+    secretValue,
+    secretValues,
   });
 });
 
@@ -6779,9 +6810,12 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     || payload.executable !== "trelio-workspace"
     || typeof payload.targetOrigin !== "string"
     || !/^[0-9a-f]{64}$/u.test(payload.targetUrlSha256 || "")
-    || typeof payload.browserFieldSelector !== "string"
-    || !payload.browserFieldSelector
-    || typeof payload.value !== "string"
+    || (
+      (!Array.isArray(payload.browserSteps) || payload.browserSteps.length === 0)
+      && (typeof payload.browserFieldSelector !== "string" || !payload.browserFieldSelector)
+    )
+    || !payload.values
+    || typeof payload.values !== "object"
   ) {
     throw new Error("Trelio вернул некорректный browser-fill grant.");
   }
@@ -6792,11 +6826,12 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
   let outcomeReported = false;
   try {
     const result = await runSecretBrowserFill({
-      secretValue: payload.value,
+      secretValues: payload.values,
       targetUrl,
       targetOrigin: payload.targetOrigin,
       targetUrlSha256: payload.targetUrlSha256,
       fieldSelector: payload.browserFieldSelector,
+      browserSteps: payload.browserSteps,
       profileDirectory: SECRET_BROWSER_PROFILE_DIRECTORY,
       ensurePrivateDirectory,
     });
