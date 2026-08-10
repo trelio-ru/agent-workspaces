@@ -26,6 +26,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+from decimal import Decimal
 import email.utils
 import getpass
 import hashlib
@@ -59,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # The broad Vkus surface owns its connection and local credentials. There is
 # intentionally no lookup or migration from the former 1c-edo namespace.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
-RUNTIME_VERSION = "1.0.18"
+RUNTIME_VERSION = "1.1.5"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -244,12 +245,21 @@ DIAGNOSTIC_STAGES = frozenset(
                 "cash_flow_item",
                 "other_expense_item",
                 "expense_allocation_rule",
+                "budget_item",
+                "unit",
             )
             for action in ("search", "get")
         },
         *{
             f"general.document.{kind}.{action}"
-            for kind in ("purchase", "sale", "receipt", "return", "transfer")
+            for kind in (
+                "purchase",
+                "sale",
+                "receipt",
+                "return",
+                "transfer",
+                "internal_consumption",
+            )
             for action in ("search", "get", "links")
         },
         *{
@@ -264,6 +274,7 @@ DIAGNOSTIC_STAGES = frozenset(
                 "depreciation",
                 "tax_settlement",
                 "tax_penalty",
+                "budget",
             )
         },
         *{
@@ -293,7 +304,7 @@ DIAGNOSTIC_STAGES = frozenset(
 GENERAL_PROFILE_SCHEMA_DIGEST = (
     "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
 )
-GENERAL_REGISTRY_VERSION = 3
+GENERAL_REGISTRY_VERSION = 4
 GENERAL_MAX_PAGE_SIZE = 25
 GENERAL_MAX_PAGES = 3
 GENERAL_MAX_LINES = 100
@@ -507,6 +518,47 @@ GENERAL_REFERENCE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "searchFields": ("Description", "ПредставлениеПравила"),
         },
     ),
+    "budget_item": (
+        {
+            # The P&L drill-down labels these rows as articles, but live 1C
+            # stores the selected value in the expense-article chart rather
+            # than in Catalog_СтатьиБюджетов.  Preserve the public
+            # ``budget_item`` kind for command compatibility while freezing
+            # the actual reviewed source and its scalar fields here.
+            "entity": "ChartOfCharacteristicTypes_СтатьиРасходов",
+            "sourceType": "expense_item",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "Parent_Key": "Edm.Guid",
+                "IsFolder": "Edm.Boolean",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "unit": (
+        {
+            "entity": "Catalog_УпаковкиЕдиницыИзмерения",
+            "sourceType": "unit",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "НаименованиеПолное": "Edm.String",
+                "ЕдиницаИзмерения_Key": "Edm.Guid",
+                "МеждународноеСокращение": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": (
+                "Description",
+                "Code",
+                "НаименованиеПолное",
+                "МеждународноеСокращение",
+            ),
+        },
+    ),
 }
 
 GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
@@ -716,14 +768,103 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "filters": ("period", "organization", "business_unit", "number", "status"),
         },
     ),
+    "internal_consumption": (
+        {
+            "entity": "Document_ВнутреннееПотребление",
+            "sourceType": "internal_consumption",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Склад_Key": "Edm.Guid",
+                "ХозяйственнаяОперация": "Edm.String",
+                "Статус": "Edm.String",
+                "Товары": (
+                    "Collection(StandardODATA."
+                    "Document_ВнутреннееПотребление_Товары_RowType)"
+                ),
+            },
+            # The document itself does not expose line amounts. Release 1.1.0
+            # enriches these fixed goods rows only from the reviewed budget
+            # register records of this exact registrar; no caller-selected
+            # entity, join, field or expression is accepted.
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Номенклатура_Key": "Edm.Guid",
+                "Характеристика_Key": "Edm.Guid",
+                "Упаковка_Key": "Edm.Guid",
+                "Количество": "Edm.Double",
+                "СтатьяРасходов": "Edm.String",
+                "СтатьяРасходов_Type": "Edm.String",
+            },
+            "filters": (
+                "period",
+                "organization",
+                "business_unit",
+                "number",
+                "status",
+            ),
+        },
+    ),
 }
 
-# These virtual-table profiles expose source data, not a P&L calculation.
-# Every route, grouping dimension, output field and caller-visible semantic key
+# These finance profiles expose source data, not a P&L calculation. Most use
+# virtual tables; the budget profile uses a fixed read-only record table so
+# registrar identity is retained. Every route, grouping dimension, output
+# field and caller-visible semantic key
 # is frozen from the reviewed Vkus metadata digest above. The caller supplies
 # only a bounded period and validated UUID filters; it cannot choose a
 # register, function, dimension, field or OData expression.
 GENERAL_FINANCIAL_TURNOVER_SPECS: dict[str, dict[str, Any]] = {
+    "budget": {
+        "entity": "AccumulationRegister_ПрочиеРасходы_RecordType",
+        "transport": "record_table",
+        "sourceType": "expense_records_by_registrar",
+        # Live verification of the June acceptance example showed that the
+        # required article, amount and exact internal-consumption registrar
+        # live in ПрочиеРасходы_RecordType.  Its later month-end distribution
+        # row repeats the full amount, so the fixed registrar discriminator is
+        # part of the signed state predicate and prevents double counting.
+        "fields": {
+            "Recorder": "Edm.String",
+            "Recorder_Type": "Edm.String",
+            "Period": "Edm.DateTime",
+            "LineNumber": "Edm.Int64",
+            "Active": "Edm.Boolean",
+            "СтатьяРасходов_Key": "Edm.Guid",
+            "Подразделение_Key": "Edm.Guid",
+            "СуммаУпр": "Edm.Double",
+        },
+        "output": {
+            "Recorder": "registrarReference",
+            "Recorder_Type": "registrarType",
+            "Period": "period",
+            "LineNumber": "lineNumber",
+            "Active": "active",
+            "СтатьяРасходов_Key": "budgetItemReference",
+            "Подразделение_Key": "businessUnitId",
+            "СуммаУпр": "amount",
+        },
+        "metrics": ("СуммаУпр",),
+        "dateField": "Period",
+        "stateClauses": (
+            "Active eq true",
+            (
+                "Recorder_Type eq "
+                "'StandardODATA.Document_ВнутреннееПотребление'"
+            ),
+        ),
+        "filters": {
+            "business_unit": ("Подразделение_Key",),
+            "budget_item": ("СтатьяРасходов_Key",),
+        },
+        "filterSourceTypes": {"business_unit": "enterprise_structure"},
+        "requiredAny": ("business_unit",),
+    },
     "sales_cost": {
         "entity": "AccumulationRegister_ВыручкаИСебестоимостьПродаж",
         "function": "Turnovers",
@@ -1304,6 +1445,10 @@ GENERAL_ODATA_ENTITIES = frozenset(
 ) | frozenset(
     spec["entity"]
     for spec in GENERAL_FINANCIAL_RECORD_SPECS.values()
+) | frozenset(
+    spec["entity"]
+    for spec in GENERAL_FINANCIAL_TURNOVER_SPECS.values()
+    if spec.get("transport") == "record_table"
 )
 
 
@@ -3716,6 +3861,9 @@ def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
                 "filterSourceTypes": dict(
                     sorted(spec.get("filterSourceTypes", {}).items()),
                 ),
+                "filterTypes": dict(
+                    sorted(spec.get("filterTypes", {}).items()),
+                ),
                 "requiredAny": list(spec.get("requiredAny", ())),
                 "dateField": spec.get("dateField"),
                 "stateClauses": list(spec.get("stateClauses", ())),
@@ -3870,6 +4018,7 @@ def _general_reference_record(
             safe.get("ЕдиницаИзмерения_Key"),
             "unit id",
         ),
+        "unitSymbol": _general_text(safe.get("МеждународноеСокращение")),
         "itemType": _general_text(safe.get("ТипНоменклатуры")),
         "warehouseType": _general_text(safe.get("ТипСклада")),
         "isFolder": _normalized_boolean(safe.get("IsFolder")),
@@ -4086,6 +4235,18 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
             "financialTurnovers": financial_turnovers,
             "financialRecords": financial_records,
             "balances": balances,
+            "budgetDrilldowns": [
+                {
+                    "kind": "budget",
+                    "status": "supported",
+                    "filters": ["period", "business_unit", "budget_item"],
+                    "registrarTypes": ["internal_consumption"],
+                    "sensitiveConfirmationRequired": True,
+                    "capabilityDigest": schema["capabilityDigests"][
+                        "financial_turnover.budget"
+                    ],
+                },
+            ],
             "links": [
                 {
                     "kind": "business_unit",
@@ -4220,6 +4381,84 @@ def _general_reference_by_id(
                     "1С вернула постороннюю запись для exact reference id.",
                 )
             result.append(normalized)
+    return result
+
+
+def _general_reference_map_by_ids(
+    config: CompanyConfig,
+    credentials: Credentials,
+    kind: str,
+    references: Iterable[str | None],
+) -> dict[str, dict[str, Any]]:
+    """Resolve a bounded UUID set through one fixed catalog profile.
+
+    Document enrichment can contain up to ``GENERAL_MAX_LINES`` goods rows.
+    Querying one catalog row at a time would be unnecessarily expensive, so
+    the runtime builds small OR groups from already validated UUID literals.
+    The entity, selected fields and operators remain fixed by the registry.
+    """
+
+    normalized = sorted(
+        {
+            _uuid(reference, f"{kind} reference id")
+            for reference in references
+            if reference
+        },
+    )
+    if len(normalized) > GENERAL_MAX_LINES:
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            "Документ содержит слишком много уникальных ссылок для enrichment.",
+        )
+    specs = GENERAL_REFERENCE_SPECS[kind]
+    if len(specs) != 1:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Batch enrichment разрешён только для однозначного справочника.",
+        )
+    spec = specs[0]
+    result: dict[str, dict[str, Any]] = {}
+    # Twenty UUID clauses keep every fixed GET comfortably below ordinary URL
+    # limits while bounding the number of requests to five for a 100-line doc.
+    for offset in range(0, len(normalized), 20):
+        chunk = normalized[offset : offset + 20]
+        clauses = " or ".join(
+            f"Ref_Key eq guid'{reference}'"
+            for reference in chunk
+        )
+        rows = _odata_rows(
+            _request_odata(
+                config,
+                credentials,
+                spec["entity"],
+                (
+                    ("$select", _selected_fields(spec["fields"])),
+                    ("$filter", f"({clauses})"),
+                    ("$top", len(chunk) + 1),
+                ),
+                diagnostic_stage=f"general.reference.{kind}.get",
+            ),
+        )
+        if len(rows) > len(chunk):
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "1С вернула лишние записи для фиксированного набора UUID.",
+            )
+        expected = frozenset(chunk)
+        for row in rows:
+            item = _general_reference_record(
+                kind,
+                spec,
+                row,
+                matched_by=["id"],
+            )
+            reference = str(item["id"])
+            if reference not in expected or reference in result:
+                raise OneCEdoError(
+                    "source_contract_mismatch",
+                    "1С вернула постороннюю или повторную reference-запись.",
+                )
+            result[reference] = item
     return result
 
 
@@ -4387,6 +4626,16 @@ def _general_document_record(
             "price": _general_number(line.get("Цена")),
             "amount": _general_number(line.get("Сумма")),
             "vatAmount": _general_number(line.get("СуммаНДС")),
+            "unitId": _general_uuid_value(
+                line.get("Упаковка_Key"),
+                "line unit id",
+            ),
+            "expenseItemReference": _general_text(
+                line.get("СтатьяРасходов"),
+            ),
+            "expenseItemType": _general_text(
+                line.get("СтатьяРасходов_Type"),
+            ),
             "warehouseId": _general_uuid_value(
                 line.get("Склад_Key"),
                 "line warehouse id",
@@ -4599,6 +4848,16 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
             include_lines=bool(args.include_lines),
             line_limit=line_limit,
         )
+        if (
+            kind == "internal_consumption"
+            and bool(args.include_lines)
+            and matches
+        ):
+            matches[0] = _general_enrich_internal_consumption_document(
+                config,
+                credentials,
+                matches[0],
+            )
         save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
@@ -4698,6 +4957,7 @@ def _general_financial_filter(
         "account": str(getattr(args, "account_id", "") or ""),
         "warehouse": str(getattr(args, "warehouse_id", "") or ""),
         "item": str(getattr(args, "item_id", "") or ""),
+        "budget_item": str(getattr(args, "budget_item_id", "") or ""),
     }
     supported_filters = spec.get("filters", {})
     unsupported = [
@@ -4718,6 +4978,7 @@ def _general_financial_filter(
             "account": "account-id",
             "warehouse": "warehouse-id",
             "item": "item-id",
+            "budget_item": "budget-item-id",
         }
         choices = ", ".join(public_labels[name] for name in required_any)
         raise OneCEdoError(
@@ -4732,8 +4993,19 @@ def _general_financial_filter(
             continue
         fields = tuple(supported_filters[name])
         reference = _uuid(raw_value, f"{name} id")
+        expected_type = str(spec.get("filterTypes", {}).get(name, "Edm.Guid"))
+        if expected_type == "Edm.Guid":
+            literal = f"guid'{reference}'"
+        else:
+            # A registry edit cannot silently introduce a caller-controlled
+            # literal type.  New scalar types require an explicit reviewed
+            # branch and release-time tests here.
+            raise OneCEdoError(
+                "query_builder_error",
+                "Подписанный finance registry содержит неподдержанный filter type.",
+            )
         alternatives = " or ".join(
-            f"{field} eq guid'{reference}'"
+            f"{field} eq {literal}"
             for field in fields
         )
         clauses.append(f"({alternatives})")
@@ -4755,6 +5027,11 @@ def _general_virtual_url(
     encoded, preventing this helper from becoming a generic path escape hatch.
     """
 
+    if spec.get("transport") == "record_table":
+        raise OneCEdoError(
+            "query_builder_error",
+            "Record-table capability нельзя направить в virtual-table builder.",
+        )
     signature = (
         spec.get("entity"),
         spec.get("function"),
@@ -4770,6 +5047,7 @@ def _general_virtual_url(
             *GENERAL_FINANCIAL_TURNOVER_SPECS.values(),
             *GENERAL_BALANCE_SPECS.values(),
         )
+        if candidate.get("transport") != "record_table"
     }
     if signature not in allowed_signatures:
         raise OneCEdoError(
@@ -4971,23 +5249,41 @@ def command_general_get_financial_turnovers(
     ])
     schema = _general_signed_contract((("financial_turnover", kind),))
     try:
-        raw_rows = _odata_rows(
-            _request_general_virtual_table(
+        if spec.get("transport") == "record_table":
+            # Budget is deliberately the only turnover capability backed by
+            # a raw record table. The virtual table cannot retain registrar
+            # identity, so the helper owns the exact period/state/scope filter
+            # and preserves the same bounded page contract.
+            raw_rows = _general_budget_record_page(
                 config,
                 credentials,
-                spec,
-                start,
-                end_exclusive,
-                parameters,
-                diagnostic_stage=f"general.financial.turnover.{kind}.search",
-            ),
-        )
+                start=start,
+                end_exclusive=end_exclusive,
+                business_unit_id=str(args.business_unit_id),
+                budget_item_id=str(getattr(args, "budget_item_id", "") or ""),
+                skip=(page - 1) * limit,
+                top=limit + 1,
+            )
+            source_kind = "record_table"
+        else:
+            raw_rows = _odata_rows(
+                _request_general_virtual_table(
+                    config,
+                    credentials,
+                    spec,
+                    start,
+                    end_exclusive,
+                    parameters,
+                    diagnostic_stage=f"general.financial.turnover.{kind}.search",
+                ),
+            )
+            source_kind = "virtual_table"
         rows = [
             _general_financial_record(
                 kind,
                 spec,
                 raw,
-                source_kind="virtual_table",
+                source_kind=source_kind,
             )
             for raw in raw_rows[:limit + 1]
         ]
@@ -5006,6 +5302,489 @@ def command_general_get_financial_turnovers(
         schema=schema,
         config=config,
     )
+
+
+def _general_budget_record_page(
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    start: dt.date,
+    end_exclusive: dt.date,
+    business_unit_id: str = "",
+    budget_item_id: str = "",
+    registrar_id: str = "",
+    skip: int,
+    top: int,
+) -> list[dict[str, Any]]:
+    """Read one bounded page of active rows from the fixed budget register.
+
+    The caller can supply only validated UUIDs and a bounded period. Entity,
+    fields, state, reference types, operators and ordering remain signed
+    constants, so replacing the unsuitable virtual table does not create a
+    general raw-register query surface.
+    """
+
+    spec = GENERAL_FINANCIAL_TURNOVER_SPECS["budget"]
+    if not business_unit_id and not registrar_id:
+        raise OneCEdoError(
+            "scope_filter_required",
+            "Budget record table требует подразделение или exact registrar.",
+        )
+    scope_filter = ""
+    if business_unit_id:
+        filter_args = argparse.Namespace(
+            organization_id="",
+            business_unit_id=_uuid(business_unit_id, "business unit id"),
+            account_id="",
+            warehouse_id="",
+            item_id="",
+            budget_item_id=(
+                _uuid(budget_item_id, "budget item id")
+                if budget_item_id
+                else ""
+            ),
+        )
+        scope_filter, _matched = _general_financial_filter(filter_args, spec)
+    elif budget_item_id:
+        # Article-only access is never permitted. For exact-document
+        # enrichment, the registrar UUID is the stronger scope and the article
+        # is validated locally from the returned fixed row contract.
+        raise OneCEdoError(
+            "scope_filter_required",
+            "Budget article без подразделения допустима только внутри exact registrar.",
+        )
+    date_field = str(spec["dateField"])
+    clauses = [*spec["stateClauses"]]
+    if not registrar_id:
+        # Report queries remain period-bound. Exact-document enrichment uses
+        # the immutable registrar UUID instead: a budget record may carry an
+        # accounting period that differs from the document header date, and
+        # combining both conditions can incorrectly erase a valid exact match.
+        clauses.extend([
+            f"{date_field} ge datetime'{start.isoformat()}T00:00:00'",
+            f"{date_field} lt datetime'{end_exclusive.isoformat()}T00:00:00'",
+        ])
+    if scope_filter:
+        clauses.append(scope_filter)
+    if registrar_id:
+        registrar = _uuid(registrar_id, "registrar id")
+        clauses.append(
+            "Recorder eq "
+            f"cast(guid'{registrar}', 'Document_ВнутреннееПотребление')"
+        )
+    payload = _request_odata(
+        config,
+        credentials,
+        str(spec["entity"]),
+        (
+            ("$select", _selected_fields(spec["fields"])),
+            ("$filter", " and ".join(f"({item})" for item in clauses)),
+            ("$orderby", "Period asc,Recorder asc,LineNumber asc"),
+            ("$skip", skip),
+            ("$top", top),
+        ),
+        diagnostic_stage="general.financial.turnover.budget.search",
+    )
+    return _odata_rows(payload)
+
+
+def _general_budget_turnover_rows(
+    config: CompanyConfig,
+    credentials: Credentials,
+    *,
+    start: dt.date,
+    end_exclusive: dt.date,
+    business_unit_id: str = "",
+    budget_item_id: str = "",
+    registrar_id: str = "",
+) -> tuple[list[dict[str, Any]], bool]:
+    """Read a fixed, fully scoped budget-register drill-down.
+
+    The helper walks at most the company-configured three pages.  A lookahead
+    row on the final page makes incompleteness explicit; totals derived from a
+    truncated source are never presented as reconciled.
+    """
+
+    spec = GENERAL_FINANCIAL_TURNOVER_SPECS["budget"]
+    page_size = min(config.max_rows, GENERAL_MAX_FINANCIAL_PAGE_SIZE)
+    max_pages = min(config.max_pages, GENERAL_MAX_PAGES)
+    rows: list[dict[str, Any]] = []
+    truncated = False
+    for page in range(max_pages):
+        raw_page = _general_budget_record_page(
+            config,
+            credentials,
+            start=start,
+            end_exclusive=end_exclusive,
+            business_unit_id=business_unit_id,
+            budget_item_id=budget_item_id,
+            registrar_id=registrar_id,
+            skip=page * page_size,
+            top=page_size + 1,
+        )
+        visible_page = raw_page[:page_size]
+        rows.extend(
+            _general_financial_record(
+                "budget",
+                spec,
+                raw,
+                source_kind="record_table",
+            )
+            for raw in visible_page
+        )
+        has_more = len(raw_page) > page_size
+        if not has_more:
+            break
+        if page + 1 == max_pages:
+            truncated = True
+    return rows, truncated
+
+
+def _general_decimal_number(value: Decimal) -> int | float:
+    """Serialize an accumulated amount without binary-float drift in sums."""
+
+    integral = value.to_integral_value()
+    return int(integral) if value == integral else float(value)
+
+
+def _general_internal_consumption_recorder_type(value: str | None) -> bool:
+    """Recognize only reviewed type spellings for the one allowed registrar."""
+
+    return value in {
+        "Document_ВнутреннееПотребление",
+        "StandardODATA.Document_ВнутреннееПотребление",
+    }
+
+
+def _general_budget_item_reference(
+    dimensions: Mapping[str, Any],
+) -> str:
+    """Validate one direct expense-article UUID from the signed source."""
+
+    return _uuid(
+        str(dimensions.get("budgetItemReference") or ""),
+        "budget item id",
+    )
+
+
+def _general_enrich_internal_consumption_document(
+    config: CompanyConfig,
+    credentials: Credentials,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach safe item/unit names and budget amounts to fixed goods rows."""
+
+    lines = document.get("lines")
+    if not isinstance(lines, list) or not document.get("lineInfo", {}).get("included"):
+        return document
+    items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "item",
+        (line.get("itemId") for line in lines),
+    )
+    # Internal-consumption rows commonly leave the packaging UUID empty. The
+    # fixed item catalog already exposes the base measurement unit, so resolve
+    # that safe UUID as a fallback instead of returning a false unknown unit.
+    unit_ids: list[str | None] = []
+    for line in lines:
+        item = items.get(str(line.get("itemId") or "")) or {}
+        unit_ids.append(line.get("unitId") or item.get("unitId"))
+    units = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "unit",
+        unit_ids,
+    )
+    business_unit_id = document.get("businessUnitId")
+    document_date = document.get("date")
+    if not business_unit_id or not isinstance(document_date, str):
+        document["lineEnrichment"] = {
+            "status": "partial",
+            "reason": "document_scope_missing",
+            "budgetSourceTruncated": False,
+        }
+        budget_rows: list[dict[str, Any]] = []
+        budget_truncated = False
+    else:
+        try:
+            date_value = dt.date.fromisoformat(document_date[:10])
+        except ValueError as error:
+            raise OneCEdoError(
+                "capability_schema_changed",
+                "Документ 1С вернул дату, непригодную для budget enrichment.",
+            ) from error
+        month_start = date_value.replace(day=1)
+        month_end = (
+            dt.date(month_start.year + 1, 1, 1)
+            if month_start.month == 12
+            else dt.date(month_start.year, month_start.month + 1, 1)
+        )
+        budget_rows, budget_truncated = _general_budget_turnover_rows(
+            config,
+            credentials,
+            start=month_start,
+            end_exclusive=month_end,
+            # Exact registrar is already the narrowest safe scope and avoids
+            # assuming that the document header and budget register use the
+            # same business-unit UUID namespace.
+            business_unit_id="",
+            registrar_id=str(document["id"]),
+        )
+        document["lineEnrichment"] = {
+            "status": "complete" if not budget_truncated else "truncated",
+            "reason": None if not budget_truncated else "budget_source_limit",
+            "budgetSourceTruncated": budget_truncated,
+        }
+
+    amounts_by_line: dict[int, Decimal] = {}
+    articles_by_line: dict[int, set[str]] = {}
+    budget_item_ids: set[str] = set()
+    for row in budget_rows:
+        dimensions = row["dimensions"]
+        metrics = row["metrics"]
+        if _uuid(str(dimensions.get("registrarReference") or ""), "registrar id") != document["id"]:
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "Budget enrichment вернул посторонний registrar UUID.",
+            )
+        line_number = dimensions.get("lineNumber")
+        amount = metrics.get("amount")
+        article = _general_budget_item_reference(dimensions)
+        if not _general_internal_consumption_recorder_type(
+            str(dimensions.get("registrarType") or ""),
+        ):
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "Budget enrichment вернул неподдержанный registrar type.",
+            )
+        if not isinstance(line_number, int) or not isinstance(amount, (int, float)):
+            raise OneCEdoError(
+                "capability_schema_changed",
+                "Budget enrichment вернул неполные line dimensions.",
+            )
+        amounts_by_line[line_number] = amounts_by_line.get(
+            line_number,
+            Decimal(0),
+        ) + Decimal(str(amount))
+        articles_by_line.setdefault(line_number, set()).add(article)
+        budget_item_ids.add(article)
+
+    # The document's own expense article may remain useful even when the
+    # register has no turnover for a line, so resolve both fixed sources.
+    for line in lines:
+        expense_reference = line.get("expenseItemReference")
+        expense_type = line.get("expenseItemType")
+        if expense_reference and expense_type in {
+            "ChartOfCharacteristicTypes_СтатьиРасходов",
+            "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов",
+        }:
+            budget_item_ids.add(_uuid(str(expense_reference), "expense item id"))
+    budget_items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "budget_item",
+        budget_item_ids,
+    )
+
+    for line in lines:
+        item = items.get(str(line.get("itemId") or ""))
+        unit_id = line.get("unitId") or (item or {}).get("unitId")
+        unit = units.get(str(unit_id or ""))
+        line_number = line.get("lineNumber")
+        article_ids = sorted(articles_by_line.get(line_number, set()))
+        articles = [
+            {
+                "id": article_id,
+                "name": (budget_items.get(article_id) or {}).get("name"),
+            }
+            for article_id in article_ids
+        ]
+        line["itemName"] = (item or {}).get("name")
+        line["unit"] = (
+            {
+                "id": unit["id"],
+                "name": unit.get("name"),
+                "fullName": unit.get("fullName"),
+                "symbol": unit.get("unitSymbol"),
+            }
+            if unit
+            else None
+        )
+        line["amount"] = (
+            _general_decimal_number(amounts_by_line[line_number])
+            if line_number in amounts_by_line
+            else None
+        )
+        line["budgetItems"] = articles
+        expense_reference = line.get("expenseItemReference")
+        line["expenseItem"] = (
+            {
+                "id": expense_reference,
+                "type": line.get("expenseItemType"),
+                "name": (budget_items.get(str(expense_reference)) or {}).get("name"),
+            }
+            if expense_reference
+            else None
+        )
+    return document
+
+
+def command_general_get_budget_turnover_details(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Return one budget article total and its fixed registrar headers."""
+
+    _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
+    start, end_exclusive = _general_financial_period(args)
+    _page, limit = _general_financial_page(
+        argparse.Namespace(page=1, limit=args.limit),
+        config,
+    )
+    business_unit_id = _uuid(args.business_unit_id, "business unit id")
+    budget_item_id = _uuid(args.budget_item_id, "budget item id")
+    schema = _general_signed_contract(
+        (
+            ("financial_turnover", "budget"),
+            ("reference", "budget_item"),
+            ("document", "internal_consumption"),
+        ),
+    )
+    try:
+        budget_item_matches = _general_reference_by_id(
+            config,
+            credentials,
+            "budget_item",
+            budget_item_id,
+        )
+        if len(budget_item_matches) > 1:
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "1С вернула неоднозначную бюджетную статью.",
+            )
+        rows, source_truncated = _general_budget_turnover_rows(
+            config,
+            credentials,
+            start=start,
+            end_exclusive=end_exclusive,
+            business_unit_id=business_unit_id,
+            budget_item_id=budget_item_id,
+        )
+        grouped: dict[tuple[str, str], Decimal] = {}
+        for row in rows:
+            dimensions = row["dimensions"]
+            metrics = row["metrics"]
+            article = _general_budget_item_reference(dimensions)
+            unit = _uuid(
+                str(dimensions.get("businessUnitId") or ""),
+                "business unit id",
+            )
+            registrar = _uuid(
+                str(dimensions.get("registrarReference") or ""),
+                "registrar id",
+            )
+            registrar_type = str(dimensions.get("registrarType") or "")
+            amount = metrics.get("amount")
+            if article != budget_item_id or unit != business_unit_id:
+                raise OneCEdoError(
+                    "source_contract_mismatch",
+                    "Budget drill-down вернул запись вне exact scope.",
+                )
+            if not isinstance(amount, (int, float)) or not registrar_type:
+                raise OneCEdoError(
+                    "capability_schema_changed",
+                    "Budget drill-down вернул неполный registrar row.",
+                )
+            key = (registrar_type, registrar)
+            grouped[key] = grouped.get(key, Decimal(0)) + Decimal(str(amount))
+
+        registrars: list[dict[str, Any]] = []
+        for (registrar_type, registrar), amount in grouped.items():
+            is_internal_consumption = _general_internal_consumption_recorder_type(
+                registrar_type,
+            )
+            entry: dict[str, Any] = {
+                "type": (
+                    "internal_consumption"
+                    if is_internal_consumption
+                    else "unsupported"
+                ),
+                "sourceType": registrar_type,
+                "id": registrar,
+                "number": None,
+                "date": None,
+                "postingStatus": None,
+                "amount": _general_decimal_number(amount),
+                "resolutionStatus": "unsupported_registrar_type",
+            }
+            if is_internal_consumption:
+                matches = _general_documents_by_id(
+                    config,
+                    credentials,
+                    "internal_consumption",
+                    registrar,
+                    include_lines=False,
+                    line_limit=0,
+                )
+                if len(matches) > 1:
+                    raise OneCEdoError(
+                        "source_contract_mismatch",
+                        "1С вернула неоднозначный registrar document.",
+                    )
+                if matches:
+                    entry.update(
+                        {
+                            "number": matches[0].get("number"),
+                            "date": matches[0].get("date"),
+                            "postingStatus": matches[0].get("postingStatus"),
+                            "resolutionStatus": "resolved",
+                        },
+                    )
+                else:
+                    entry["resolutionStatus"] = "not_found"
+            registrars.append(entry)
+        registrars.sort(
+            key=lambda item: (
+                str(item.get("date") or ""),
+                str(item.get("number") or ""),
+                str(item["id"]),
+            ),
+        )
+        total = sum(grouped.values(), Decimal(0))
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    return {
+        "kind": "budget",
+        "period": {
+            "dateFrom": start.isoformat(),
+            "dateTo": (end_exclusive - dt.timedelta(days=1)).isoformat(),
+        },
+        "businessUnitId": business_unit_id,
+        "budgetItem": (
+            budget_item_matches[0]
+            if budget_item_matches
+            else {"id": budget_item_id, "kind": "budget_item", "name": None}
+        ),
+        "total": _general_decimal_number(total),
+        "registrars": registrars[:limit],
+        "count": min(len(registrars), limit),
+        "reconciliation": {
+            "complete": not source_truncated,
+            "registrarAmountSum": _general_decimal_number(total),
+            "sourceRows": len(rows),
+        },
+        "pagination": {
+            "limit": limit,
+            "truncated": source_truncated or len(registrars) > limit,
+            "sourceTruncated": source_truncated,
+        },
+        "matchedBy": ["period", "business_unit", "budget_item"],
+        "schema": schema,
+        "readOnly": True,
+    }
 
 
 def command_general_search_financial_records(
@@ -5575,6 +6354,7 @@ def build_general_parser() -> argparse.ArgumentParser:
         command.add_argument("--account-id", default="")
         command.add_argument("--warehouse-id", default="")
         command.add_argument("--item-id", default="")
+        command.add_argument("--budget-item-id", default="")
         command.add_argument("--page", type=int, default=1)
         command.add_argument("--limit", type=int, default=25)
         command.add_argument("--include-sensitive", action="store_true")
@@ -5586,6 +6366,17 @@ def build_general_parser() -> argparse.ArgumentParser:
     )
     financial_turnovers.set_defaults(
         handler=command_general_get_financial_turnovers,
+    )
+
+    budget_details = subparsers.add_parser("get-budget-turnover-details")
+    budget_details.add_argument("--date-from", required=True)
+    budget_details.add_argument("--date-to", required=True)
+    budget_details.add_argument("--business-unit-id", required=True)
+    budget_details.add_argument("--budget-item-id", required=True)
+    budget_details.add_argument("--limit", type=int, default=50)
+    budget_details.add_argument("--include-sensitive", action="store_true")
+    budget_details.set_defaults(
+        handler=command_general_get_budget_turnover_details,
     )
 
     financial_records = subparsers.add_parser("search-financial-records")

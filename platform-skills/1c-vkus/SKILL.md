@@ -66,11 +66,12 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 - `access-status reset`
 - `forget-credentials`
 - `get-capabilities`
-- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule [--query TEXT] [--page 1..3] [--limit 1..25]`
-- `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule --id UUID`
-- `search-documents --kind purchase|sale|receipt|return|transfer [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..3] [--limit 1..25]`
-- `get-document --kind purchase|sale|receipt|return|transfer --id UUID [--include-lines] [--line-limit 1..100]`
-- `get-financial-turnovers --kind sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit [--query TEXT] [--page 1..3] [--limit 1..25]`
+- `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit --id UUID`
+- `search-documents --kind purchase|sale|receipt|return|transfer|internal_consumption [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..3] [--limit 1..25]`
+- `get-document --kind purchase|sale|receipt|return|transfer|internal_consumption --id UUID [--include-lines] [--line-limit 1..100]`
+- `get-financial-turnovers --kind budget|sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--budget-item-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `get-budget-turnover-details --date-from YYYY-MM-DD --date-to YYYY-MM-DD --business-unit-id UUID --budget-item-id UUID [--limit 1..50] --include-sensitive`
 - `search-financial-records --kind account_entry|bank_receipt|bank_payment --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
 - `get-balance-and-turnovers --kind accounts|stock --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--warehouse-id UUID] [--item-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
 - `get-balances --kind stock` (deprecated compatibility response only)
@@ -124,6 +125,29 @@ it; the selected returned fields and UUID scope filters remain fixed.
 `sales_cost`, income/expense, payroll, contributions, depreciation and tax
 sources use fixed `Turnovers` virtual tables. The caller cannot select a
 register, function, dimension or raw field.
+
+`budget` reads active rows from the fixed read-only
+`ПрочиеРасходы_RecordType` route by period and confirmed
+`enterprise_structure` UUID. Live release review confirmed that this source
+retains the expense article, amount, registrar and line identity required for
+exact reconciliation. The fixed registrar-type predicate includes only
+`internal_consumption` rows and excludes the later month-end distribution row
+that repeats the complete article amount. The optional `--budget-item-id` is
+validated as a UUID and emitted only against the direct expense-article GUID
+field. The public argument name is retained for command compatibility; the
+fixed reference source is `СтатьиРасходов`. `get-budget-turnover-details`
+requires both scope UUIDs, sums the exact article rows and resolves the
+reviewed registrar type to document number/date. It reports source truncation
+explicitly and never treats a partial sum as reconciled.
+
+For `internal_consumption`, `search-documents` supports only period,
+organization, business unit, number and posting/deletion status. With
+`get-document --include-lines`, item and packaging-unit names are resolved
+from fixed catalogs (falling back to the item's base unit when the row has no
+packaging UUID), while line amounts and articles are enriched only from the
+same fixed record table scoped to the exact document registrar.
+Missing or changed line/register fields fail closed; no arbitrary join,
+document type, register, field or expression can be supplied by the caller.
 
 ## Output and trust rules
 

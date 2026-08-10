@@ -161,6 +161,14 @@ def _production_finance_probes() -> tuple[dict[str, Any], ...]:
         ("balance", provider.GENERAL_BALANCE_SPECS),
     ):
         for key, spec in specs.items():
+            if spec.get("transport") == "record_table":
+                probes.append({
+                    "key": f"{section}.{key}",
+                    "route": spec["entity"],
+                    "fields": dict(spec["fields"]),
+                    "periodField": spec["dateField"],
+                })
+                continue
             route_parameters = [
                 "StartPeriod={start}",
                 "EndPeriod={end}",

@@ -79,6 +79,7 @@ def finance_args(kind: str, **overrides: object) -> Namespace:
         "account_id": "",
         "warehouse_id": "",
         "item_id": "",
+        "budget_item_id": "",
         "page": 1,
         "limit": 25,
         "include_sensitive": True,
@@ -128,7 +129,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.0.18")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.1.5")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -288,6 +289,23 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             parser.parse_args(["access-status", "show"]).handler,
             runtime.command_access_show,
         )
+        self.assertIs(
+            parser.parse_args(
+                [
+                    "get-budget-turnover-details",
+                    "--date-from",
+                    "2026-06-01",
+                    "--date-to",
+                    "2026-06-30",
+                    "--business-unit-id",
+                    REFERENCE_ID,
+                    "--budget-item-id",
+                    ITEM_ID,
+                    "--include-sensitive",
+                ],
+            ).handler,
+            runtime.command_general_get_budget_turnover_details,
+        )
         with self.assertRaises(SystemExit):
             parser.parse_args(["developer-inventory-metadata"])
 
@@ -333,10 +351,10 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         ):
             result = runtime.command_general_get_capabilities(Namespace())
 
-        self.assertEqual(result["registryVersion"], 3)
+        self.assertEqual(result["registryVersion"], 4)
         self.assertEqual(
             result["schema"]["registryDigest"],
-            "sha256:ddfc68ca0bf1ee5d4816a5c4759eef70fbaed3970b3e86a86785b97380d7c46d",
+            "sha256:24e76957d2826ea6fa69379d415d19015f2282c94758280e80991b7b4911a438",
         )
         self.assertEqual(
             result["schema"]["profileSchemaDigest"],
@@ -361,11 +379,26 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                 "responseValidation": "fail_closed",
             },
         )
-        self.assertEqual(len(result["sections"]["references"]), 11)
-        self.assertEqual(len(result["sections"]["documents"]), 5)
-        self.assertEqual(len(result["sections"]["financialTurnovers"]), 9)
+        self.assertEqual(len(result["sections"]["references"]), 13)
+        self.assertEqual(len(result["sections"]["documents"]), 6)
+        self.assertEqual(len(result["sections"]["financialTurnovers"]), 10)
         self.assertEqual(len(result["sections"]["financialRecords"]), 3)
         self.assertEqual(len(result["sections"]["balances"]), 2)
+        self.assertEqual(
+            result["sections"]["budgetDrilldowns"],
+            [
+                {
+                    "kind": "budget",
+                    "status": "supported",
+                    "filters": ["period", "business_unit", "budget_item"],
+                    "registrarTypes": ["internal_consumption"],
+                    "sensitiveConfirmationRequired": True,
+                    "capabilityDigest": result["schema"]["capabilityDigests"][
+                        "financial_turnover.budget"
+                    ],
+                },
+            ],
+        )
         turnover_capabilities = {
             item["kind"]: item
             for item in result["sections"]["financialTurnovers"]
@@ -422,6 +455,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             "account_id": "",
             "warehouse_id": "",
             "item_id": "",
+            "budget_item_id": "",
             "page": 1,
             "limit": 3,
             "include_sensitive": True,
@@ -454,6 +488,16 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                         "kind": "sales_cost",
                         "business_unit_id": REFERENCE_ID,
                     },
+                ),
+            ),
+            lambda: runtime.command_general_get_budget_turnover_details(
+                Namespace(
+                    date_from="2026-07-01",
+                    date_to="2026-07-31",
+                    business_unit_id=REFERENCE_ID,
+                    budget_item_id=ITEM_ID,
+                    limit=3,
+                    include_sensitive=True,
                 ),
             ),
             lambda: runtime.command_general_search_financial_records(
@@ -668,6 +712,207 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "capability_schema_changed")
 
+    def test_internal_consumption_enrichment_joins_only_fixed_safe_fields(self) -> None:
+        """Item/unit labels and register amounts are merged by exact UUID/line."""
+
+        document = {
+            "id": DOCUMENT_ID,
+            "date": "2026-06-15T10:00:00",
+            "businessUnitId": REFERENCE_ID,
+            "lines": [
+                {
+                    "lineNumber": 1,
+                    "itemId": ITEM_ID,
+                    "unitId": None,
+                    "quantity": 4.0,
+                    "amount": None,
+                    "expenseItemReference": COMPANY_ID,
+                    "expenseItemType": (
+                        "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов"
+                    ),
+                },
+            ],
+            "lineInfo": {"included": True},
+        }
+        maps = {
+            "item": {
+                ITEM_ID: {
+                    "id": ITEM_ID,
+                    "name": "Защитное стекло для планшета (ГФУ 10.6)",
+                    "unitId": REFERENCE_ID,
+                },
+            },
+            "unit": {
+                REFERENCE_ID: {
+                    "id": REFERENCE_ID,
+                    "name": "Штука",
+                    "fullName": "штука",
+                    "unitSymbol": "шт",
+                },
+            },
+            "budget_item": {
+                COMPANY_ID: {
+                    "id": COMPANY_ID,
+                    "name": "66 Инвентарь и мелкое оборудование",
+                },
+            },
+        }
+        budget_rows = [
+            {
+                "dimensions": {
+                    "registrarReference": DOCUMENT_ID,
+                    "registrarType": (
+                        "StandardODATA.Document_ВнутреннееПотребление"
+                    ),
+                    "lineNumber": 1,
+                    "budgetItemReference": COMPANY_ID,
+                    "businessUnitId": REFERENCE_ID,
+                },
+                "metrics": {"amount": 1232.0},
+            },
+        ]
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_general_reference_map_by_ids",
+                side_effect=lambda _config, _credentials, kind, _ids: maps[kind],
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_budget_turnover_rows",
+                return_value=(budget_rows, False),
+            ) as budget_query,
+        ):
+            result = runtime._general_enrich_internal_consumption_document(
+                self.config,
+                self.credentials,
+                document,
+            )
+
+        line = result["lines"][0]
+        self.assertEqual(
+            line["itemName"],
+            "Защитное стекло для планшета (ГФУ 10.6)",
+        )
+        self.assertEqual(line["unit"]["symbol"], "шт")
+        self.assertEqual(line["quantity"], 4.0)
+        self.assertEqual(line["amount"], 1232)
+        self.assertEqual(
+            line["budgetItems"],
+            [{"id": COMPANY_ID, "name": "66 Инвентарь и мелкое оборудование"}],
+        )
+        self.assertEqual(line["expenseItem"]["id"], COMPANY_ID)
+        self.assertEqual(result["lineEnrichment"]["status"], "complete")
+        self.assertEqual(
+            budget_query.call_args.kwargs["registrar_id"],
+            DOCUMENT_ID,
+        )
+        self.assertEqual(
+            budget_query.call_args.kwargs["business_unit_id"],
+            "",
+        )
+
+    def test_budget_drilldown_aggregates_lines_and_resolves_fixed_registrars(self) -> None:
+        """Several register rows for one document become one reconciled header."""
+
+        registrar_type = "StandardODATA.Document_ВнутреннееПотребление"
+
+        def turnover_row(registrar: str, line: int, amount: float) -> dict[str, object]:
+            return {
+                "dimensions": {
+                    "budgetItemReference": ITEM_ID,
+                    "businessUnitId": REFERENCE_ID,
+                    "registrarReference": registrar,
+                    "registrarType": registrar_type,
+                    "lineNumber": line,
+                },
+                "metrics": {"amount": amount},
+            }
+
+        budget_rows = [
+            turnover_row(DOCUMENT_ID, 1, 1000.0),
+            turnover_row(DOCUMENT_ID, 2, 232.0),
+            turnover_row(COMPANY_ID, 1, 1036.0),
+        ]
+
+        def document_by_id(
+            _config: object,
+            _credentials: object,
+            _kind: str,
+            reference: str,
+            **_kwargs: object,
+        ) -> list[dict[str, object]]:
+            number = "ВККА-001511" if reference == DOCUMENT_ID else "ВККА-001421"
+            return [
+                {
+                    "id": reference,
+                    "number": number,
+                    "date": "2026-06-15T10:00:00",
+                    "postingStatus": "posted",
+                },
+            ]
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_reference_by_id",
+                return_value=[
+                    {
+                        "id": ITEM_ID,
+                        "kind": "budget_item",
+                        "name": "66 Инвентарь и мелкое оборудование",
+                    },
+                ],
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_budget_turnover_rows",
+                return_value=(budget_rows, False),
+            ),
+            mock.patch.object(
+                runtime,
+                "_general_documents_by_id",
+                side_effect=document_by_id,
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            result = runtime.command_general_get_budget_turnover_details(
+                Namespace(
+                    date_from="2026-06-01",
+                    date_to="2026-06-30",
+                    business_unit_id=REFERENCE_ID,
+                    budget_item_id=ITEM_ID,
+                    limit=50,
+                    include_sensitive=True,
+                ),
+            )
+
+        self.assertEqual(result["total"], 2268)
+        self.assertEqual(result["reconciliation"]["registrarAmountSum"], 2268)
+        self.assertTrue(result["reconciliation"]["complete"])
+        by_number = {item["number"]: item for item in result["registrars"]}
+        self.assertEqual(by_number["ВККА-001511"]["amount"], 1232)
+        self.assertEqual(by_number["ВККА-001421"]["amount"], 1036)
+        self.assertTrue(
+            all(item["type"] == "internal_consumption" for item in by_number.values()),
+        )
+        self.assertTrue(
+            all(item["sourceType"] == registrar_type for item in by_number.values()),
+        )
+        self.assertTrue(
+            all(item["resolutionStatus"] == "resolved" for item in by_number.values()),
+        )
+        self.assertEqual(
+            result["budgetItem"]["name"],
+            "66 Инвентарь и мелкое оборудование",
+        )
+
     def test_fixed_source_400_and_404_are_safe_contract_errors(self) -> None:
         for status in (400, 404):
             error = urllib.error.HTTPError(
@@ -834,6 +1079,50 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "scope_filter_required")
 
+    def test_budget_filter_uses_only_fixed_direct_guid_literals(self) -> None:
+        """The article filter accepts a UUID value, never an OData clause."""
+
+        spec = runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["budget"]
+        filter_value, matched = runtime._general_financial_filter(
+            finance_args(
+                "budget",
+                business_unit_id=REFERENCE_ID,
+                budget_item_id=ITEM_ID,
+            ),
+            spec,
+        )
+
+        self.assertIn(
+            f"Подразделение_Key eq guid'{REFERENCE_ID}'",
+            filter_value,
+        )
+        self.assertIn(
+            f"СтатьяРасходов_Key eq guid'{ITEM_ID}'",
+            filter_value,
+        )
+        self.assertEqual(matched, ["business_unit", "budget_item"])
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_filter(
+                finance_args(
+                    "budget",
+                    business_unit_id=REFERENCE_ID,
+                    budget_item_id="x' or true",
+                ),
+                spec,
+            )
+        self.assertEqual(caught.exception.code, "invalid_identity")
+
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_financial_filter(
+                finance_args(
+                    "sales_cost",
+                    business_unit_id=REFERENCE_ID,
+                    budget_item_id=ITEM_ID,
+                ),
+                runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["sales_cost"],
+            )
+        self.assertEqual(caught.exception.code, "filter_unsupported")
+
         with self.assertRaises(runtime.OneCEdoError) as caught:
             runtime._general_financial_filter(
                 finance_args(
@@ -870,6 +1159,145 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             "%D0%9D%D0%BE%D0%BC%D0%B5%D0%BD%D0%BA%D0%BB%D0%B0%D1%82%D1%83%D1%80%D0%B0",
             stock_url,
         )
+
+        budget_spec = runtime.GENERAL_FINANCIAL_TURNOVER_SPECS["budget"]
+        self.assertEqual(budget_spec["transport"], "record_table")
+        self.assertEqual(
+            budget_spec["entity"],
+            "AccumulationRegister_ПрочиеРасходы_RecordType",
+        )
+        self.assertIn("Recorder", budget_spec["fields"])
+        self.assertIn("LineNumber", budget_spec["fields"])
+        self.assertIn(budget_spec["entity"], runtime.GENERAL_ODATA_ENTITIES)
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_virtual_url(
+                self.config,
+                budget_spec,
+                runtime.dt.date(2026, 6, 1),
+                runtime.dt.date(2026, 7, 1),
+                (),
+            )
+        self.assertEqual(caught.exception.code, "query_builder_error")
+
+    def test_budget_record_page_uses_only_fixed_record_table_filters(self) -> None:
+        """Budget detail is bounded raw data, never a caller-built query."""
+
+        captured: dict[str, object] = {}
+
+        def record_source(
+            _config: object,
+            _credentials: object,
+            entity: str,
+            parameters: object,
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            captured.update(
+                entity=entity,
+                parameters=parameters,
+                diagnostic_stage=diagnostic_stage,
+            )
+            return {"value": []}
+
+        with mock.patch.object(
+            runtime,
+            "_request_odata",
+            side_effect=record_source,
+        ), mock.patch.object(
+            runtime,
+            "_request_general_virtual_table",
+            side_effect=AssertionError("budget must not use Turnovers"),
+        ):
+            rows = runtime._general_budget_record_page(
+                self.config,
+                self.credentials,
+                start=runtime.dt.date(2026, 6, 1),
+                end_exclusive=runtime.dt.date(2026, 7, 1),
+                business_unit_id=REFERENCE_ID,
+                budget_item_id=ITEM_ID,
+                registrar_id=DOCUMENT_ID,
+                skip=0,
+                top=51,
+            )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(
+            captured["entity"],
+            "AccumulationRegister_ПрочиеРасходы_RecordType",
+        )
+        parameters = dict(captured["parameters"])
+        filter_value = str(parameters["$filter"])
+        self.assertIn("Active eq true", filter_value)
+        self.assertIn(
+            "Recorder_Type eq 'StandardODATA.Document_ВнутреннееПотребление'",
+            filter_value,
+        )
+        self.assertIn(f"Подразделение_Key eq guid'{REFERENCE_ID}'", filter_value)
+        self.assertIn(
+            f"СтатьяРасходов_Key eq guid'{ITEM_ID}'",
+            filter_value,
+        )
+        self.assertIn(
+            f"Recorder eq cast(guid'{DOCUMENT_ID}', 'Document_ВнутреннееПотребление')",
+            filter_value,
+        )
+        self.assertEqual(parameters["$top"], 51)
+        self.assertNotIn("Dimensions", str(captured))
+        self.assertNotIn("Turnovers", str(captured))
+
+    def test_budget_record_page_accepts_exact_registrar_without_unit_scope(self) -> None:
+        """Document enrichment must not assume two UUID namespaces coincide."""
+
+        captured_parameters: list[tuple[str, object]] = []
+
+        def record_source(
+            _config: object,
+            _credentials: object,
+            _entity: str,
+            parameters: object,
+            *,
+            diagnostic_stage: str,
+        ) -> dict[str, object]:
+            self.assertEqual(
+                diagnostic_stage,
+                "general.financial.turnover.budget.search",
+            )
+            captured_parameters.extend(parameters)
+            return {"value": []}
+
+        with mock.patch.object(
+            runtime,
+            "_request_odata",
+            side_effect=record_source,
+        ):
+            runtime._general_budget_record_page(
+                self.config,
+                self.credentials,
+                start=runtime.dt.date(2026, 6, 1),
+                end_exclusive=runtime.dt.date(2026, 7, 1),
+                registrar_id=DOCUMENT_ID,
+                skip=0,
+                top=51,
+            )
+
+        filter_value = str(dict(captured_parameters)["$filter"])
+        self.assertIn(
+            f"Recorder eq cast(guid'{DOCUMENT_ID}', 'Document_ВнутреннееПотребление')",
+            filter_value,
+        )
+        self.assertNotIn("Подразделение_Key", filter_value)
+        self.assertNotIn("Period ge", filter_value)
+        self.assertNotIn("Period lt", filter_value)
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_budget_record_page(
+                self.config,
+                self.credentials,
+                start=runtime.dt.date(2026, 6, 1),
+                end_exclusive=runtime.dt.date(2026, 7, 1),
+                skip=0,
+                top=51,
+            )
+        self.assertEqual(caught.exception.code, "scope_filter_required")
 
         unregistered = dict(runtime.GENERAL_BALANCE_SPECS["stock"])
         unregistered["entity"] = "Catalog_Пользователи"
