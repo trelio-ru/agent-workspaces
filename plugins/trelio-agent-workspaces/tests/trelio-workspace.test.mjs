@@ -1328,12 +1328,15 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
   const firstLeaseId = "55555555-5555-4555-8555-555555555555";
   const secondLeaseId = "66666666-6666-4666-8666-666666666666";
   const checkpointId = "77777777-7777-4777-8777-777777777777";
+  const draftCheckpointId = "88888888-8888-4888-8888-888888888888";
   const baseExport = await createExportBundle(path.join(temporaryDirectory, "base"), {
     "WORKSPACE_CONTEXT.md": "# Task context\n",
   });
   let draftHead = null;
+  let firstDraftHead = null;
   let draftBundle = null;
-  let checkpointPayload = null;
+  let draftCheckpointPayload = null;
+  let blockerCheckpointPayload = null;
   let currentStatus = "running";
   let fencingToken = 1;
   let serverError = null;
@@ -1417,6 +1420,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         ]);
         draftHead = (await runGit(draftRepository, ["rev-parse", "refs/heads/draft"])).stdout.trim();
         assert.notEqual(draftHead, baseExport.head);
+        firstDraftHead ||= draftHead;
         await runGit(draftRepository, [
           "update-ref",
           `refs/trelio/exports/${runId}`,
@@ -1444,20 +1448,33 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         request.method === "POST"
         && request.url === `/api/agent-workspaces/runs/${runId}/checkpoints`
       ) {
-        checkpointPayload = JSON.parse(body.toString("utf8"));
-        assert.equal(checkpointPayload.checkpointType, "blocker");
+        const checkpointPayload = JSON.parse(body.toString("utf8"));
         assert.equal(checkpointPayload.draftHead, draftHead);
-        assert.deepEqual(checkpointPayload.openQuestions, ["Какой вариант согласовать?"]);
-        assert.equal(
-          checkpointPayload.nextAction.instruction,
-          "Выберите вариант, затем продолжите этот Run.",
-        );
-        currentStatus = "waiting_for_human";
+        const isBlocker = checkpointPayload.checkpointType === "blocker";
+
+        if (isBlocker) {
+          blockerCheckpointPayload = checkpointPayload;
+          assert.deepEqual(checkpointPayload.openQuestions, ["Какой вариант согласовать?"]);
+          assert.equal(
+            checkpointPayload.nextAction.instruction,
+            "Выберите вариант, затем продолжите этот Run.",
+          );
+          currentStatus = "waiting_for_human";
+        } else {
+          assert.equal(checkpointPayload.checkpointType, "draft");
+          assert.deepEqual(checkpointPayload.openQuestions, undefined);
+          // Git reports an untracked directory as one changed path until the
+          // draft snapshot commits it; the uploaded tree below proves the
+          // exact file bytes are nevertheless preserved.
+          assert.deepEqual(checkpointPayload.filesChanged, ["artifacts/"]);
+          draftCheckpointPayload = checkpointPayload;
+          assert.equal(currentStatus, "running");
+        }
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
-          id: checkpointId,
+          id: isBlocker ? checkpointId : draftCheckpointId,
           runId,
-          checkpointType: "blocker",
+          checkpointType: checkpointPayload.checkpointType,
           candidateHead: draftHead,
           summary: checkpointPayload.summary,
           evidenceJson: [],
@@ -1477,19 +1494,30 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         response.end(JSON.stringify({
           workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
           runs: [serializeRun()],
-          checkpoints: checkpointPayload
+          checkpoints: blockerCheckpointPayload
             ? [{
                 id: checkpointId,
                 runId,
                 checkpointType: "blocker",
                 candidateHead: draftHead,
-                summary: checkpointPayload.summary,
+                summary: blockerCheckpointPayload.summary,
                 evidenceJson: [],
-                filesChangedJson: checkpointPayload.filesChanged || [],
-                openQuestionsJson: checkpointPayload.openQuestions,
-                nextActionJson: checkpointPayload.nextAction,
+                filesChangedJson: blockerCheckpointPayload.filesChanged || [],
+                openQuestionsJson: blockerCheckpointPayload.openQuestions,
+                nextActionJson: blockerCheckpointPayload.nextAction,
                 createdAt: new Date().toISOString(),
-              }]
+              }, ...(draftCheckpointPayload ? [{
+                id: draftCheckpointId,
+                runId,
+                checkpointType: "draft",
+                candidateHead: firstDraftHead,
+                summary: draftCheckpointPayload.summary,
+                evidenceJson: [],
+                filesChangedJson: draftCheckpointPayload.filesChanged || [],
+                openQuestionsJson: [],
+                nextActionJson: null,
+                createdAt: new Date(Date.now() - 1_000).toISOString(),
+              }] : [])]
             : [],
         }));
         return;
@@ -1568,6 +1596,53 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
       "utf8",
     );
 
+    const portableCheckpoint = await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "checkpoint",
+        "--type",
+        "draft",
+        "--summary",
+        "Подготовлен первый переносимый вариант для продолжения другим агентом.",
+      ],
+      {
+        cwd: firstWorkspaceDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, HOME: firstHomeDirectory },
+      },
+    );
+    assert.match(portableCheckpoint.stdout, /Draft snapshot сохранён/u);
+    assert.match(portableCheckpoint.stdout, /Checkpoint сохранён/u);
+    assert.equal(currentStatus, "running");
+    assert.ok(firstDraftHead);
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          bridgePath,
+          "checkpoint",
+          "--type",
+          "draft",
+          "--summary",
+          "Повторный checkpoint без новой дельты не должен создаваться.",
+        ],
+        {
+          cwd: firstWorkspaceDirectory,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: { ...process.env, HOME: firstHomeDirectory },
+        },
+      ),
+      /нет новых изменений/u,
+    );
+    await writeFile(
+      path.join(firstWorkspaceDirectory, "artifacts", "decision.md"),
+      "# Варианты решения\n\nDraft с первого компьютера.\n\nДобавлен вопрос для согласования.\n",
+      "utf8",
+    );
+
     const checkpointed = await execFileAsync(
       process.execPath,
       [
@@ -1592,6 +1667,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
     assert.match(checkpointed.stdout, /Проверены изменённые пути/u);
     assert.equal(currentStatus, "waiting_for_human");
     assert.ok(draftHead);
+    assert.notEqual(draftHead, firstDraftHead);
 
     await execFileAsync(
       process.execPath,
@@ -1620,7 +1696,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         path.join(secondRootDirectory, "workspace", "artifacts", "decision.md"),
         "utf8",
       ),
-      "# Варианты решения\n\nDraft с первого компьютера.\n",
+      "# Варианты решения\n\nDraft с первого компьютера.\n\nДобавлен вопрос для согласования.\n",
     );
     const transferredCheckpoint = JSON.parse(
       await readFile(
@@ -1994,7 +2070,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.8.1");
+  assert.equal(BRIDGE_VERSION, "1.8.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2079,6 +2155,8 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /дата не уведомляет/u,
     /не расширяй personal в shared без полномочия/u,
     /только полезными `filePaths`/u,
+    /После каждого завершённого смыслового изменения файлов сразу выполни `trelio-workspace checkpoint --type draft/u,
+    /границы реплики\/сессии, compaction или передачи работы другому агенту/u,
     /Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause`/u,
     /Заверши Run одной командой `trelio-workspace finish`/u,
     /Trelio примет его при актуальном base head/u,
@@ -2104,6 +2182,13 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
 
   assert.match(mainSkill, /Read every matching reference below\s+completely before its first related tool call/u);
   assert.match(mainSkill, /If the scenario changes during\s+the task, pause and read the newly relevant reference/u);
+  const agentRunReference = await readFile(
+    path.join(workerDirectory, "references", "agent-run.md"),
+    "utf8",
+  );
+  assert.match(agentRunReference, /latest portable draft on\s+the current accepted head/u);
+  assert.match(agentRunReference, /checkpoint --type draft/u);
+  assert.match(agentRunReference, /startNewRun=true/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");

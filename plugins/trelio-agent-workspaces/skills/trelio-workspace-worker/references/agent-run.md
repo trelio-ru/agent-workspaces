@@ -26,9 +26,12 @@ submit, or final reporting.
 3. Call `prepare_agent_workspace_run` once with the exact writable scope and
    optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
    cross-task subject uses dossier scope; project/company scope requires a
-   genuinely broad result. The tool ensures the workspace, rechecks write ACL,
-   pins rules/profile/runtime policy, validates every related context before
-   creating the Run, then starts one fully prepared Run. Do not separately call
+   genuinely broad result. The tool ensures the workspace and rechecks write
+   ACL. By default it returns the initiating user's latest portable draft on
+   the current accepted head; otherwise it pins rules/profile/runtime policy,
+   validates every related context and starts one fully prepared Run. Use
+   `startNewRun=true` only for an intentional independent concurrent branch,
+   because ordinary continuation must not discard earlier partial work. Do not separately call
    `get_agent_instructions`, `ensure_agent_workspace`,
    `start_agent_workspace_run` or `attach_agent_workspace_context` on this
    compact path. The legacy tools remain only for continuation/recovery with an
@@ -88,8 +91,13 @@ submit, or final reporting.
    representations in `derived/`. Large/binary writable files remain locally
    materialized; submit streams them to private object storage and stages exact
    Git pointers.
-2. Run relevant validation. Use `trelio-workspace checkpoint` only when an
-   extra durable intermediate milestone materially helps continuation.
+2. Run relevant validation. After every coherent material file change, run
+   `trelio-workspace checkpoint --type draft --summary "<durable state and next
+   step>"`. The bridge validates and uploads the complete delta; this is what
+   lets `prepare_agent_workspace_run` in a later agent continue the same work.
+   Checkpoint before waiting, a turn/session boundary, context compaction or a
+   handoff to another agent. Do not checkpoint a half-written file or create an
+   empty checkpoint without a meaningful delta.
 3. Before a blocking question with meaningful local changes, run
    `trelio-workspace pause --summary "<durable state>" --question "<exact user
    decision>" --next-action "<after the answer>"`. It validates the delta,
@@ -125,6 +133,10 @@ submit, or final reporting.
   same waiting Run on another computer, materialize the server draft, and expose
   `run-checkpoint.json`. Chat history is not copied. A dirty/diverged older
   local tree is never overwritten; use a fresh directory or merge deliberately.
+- Normal `prepare_agent_workspace_run` also selects the latest own non-empty
+  server draft whose base is still current. Opening its returned command claims
+  that Run and fences the older lease. Use `startNewRun=true` only when an
+  independent concurrent branch is genuinely intended.
 - On `LEASE_EXPIRED` or stale fencing, never mutate with old identifiers. Claim
   your intentional existing Run again, or start a new Run from current accepted
   head and reapply only inspected changes.

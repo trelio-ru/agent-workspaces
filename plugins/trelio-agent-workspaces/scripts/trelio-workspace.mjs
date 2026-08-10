@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.8.1";
+export const BRIDGE_VERSION = "1.8.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -67,6 +67,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "## Работа и результат",
   "",
   "- Сохраняй источники в `sources/`, рабочие материалы в `work/`, долговечные результаты в `artifacts/`; следуй `WORKLOG.md` для журнала.",
+  "- После каждого завершённого смыслового изменения файлов сразу выполни `trelio-workspace checkpoint --type draft --summary \"<что уже сделано и что продолжать>\"`. Bridge проверяет и загружает полный delta в server draft; новый агент продолжит его через обычный `prepare_agent_workspace_run`. Делай это до ожидания, границы реплики/сессии, compaction или передачи работы другому агенту, но не фиксируй полузаписанный файл и не создавай checkpoint без содержательной дельты.",
   "- Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause` с exact `--summary`, `--question` и `--next-action`; чистый подготовительный вопрос задай напрямую без пустого Git draft.",
   "- После каждого содержательного accepted task Run вызови `propose_task_comment` один раз с коротким человеческим итогом и только полезными `filePaths`. System handoff — технический аудит и контекст для агентов, а обычный proposal — коммуникация для людей. Не публикуй автоматически и не используй `create_comment`; без MCP Apps вызывай `publish_task_comment_proposal` или `dismiss_task_comment_proposal` только по явной команде. Для сложной коррекции или нового mention сначала прочитай `get_task_comment_proposal_context` и вызови `render_task_comment_proposal` с exact snapshot hash.",
   "- `get_task` показывает shared и только твои personal controls. Это date-only проверки, не дедлайны: дата не уведомляет. Используй `create_task_control` / `update_task_control` / `clear_task_control` только при конкретной необходимости; не расширяй personal в shared без полномочия и не снимай контроль только из-за завершения Run или смены статуса. Shared changes видны в task audit, personal остаются приватными.",
@@ -5858,7 +5859,7 @@ const checkpoint = async (options) => withRun(async ({
   const explicitlyNamedFiles = getOptionValues(options, "file");
   const filesChanged = explicitlyNamedFiles.length > 0
     ? explicitlyNamedFiles
-    : checkpointType === "handoff" || checkpointType === "blocker"
+    : checkpointType === "handoff" || checkpointType === "blocker" || checkpointType === "draft"
       ? await getChangedPaths(metadata.workspaceDirectory, metadata.objects || [])
       : [];
   const openQuestions = getOptionValues(options, "question");
@@ -5901,13 +5902,21 @@ const checkpoint = async (options) => withRun(async ({
     }
   }
 
-  const draftSnapshot = checkpointType === "blocker"
+  // An ordinary draft checkpoint is the continuity boundary between agents,
+  // not metadata beside a private local tree. Upload the same validated delta
+  // as blocker pause, but keep the Run running and omit a fabricated question.
+  const draftSnapshot = checkpointType === "blocker" || checkpointType === "draft"
     ? await saveRunDraftSnapshot({
         metadata,
         metadataPath,
         origin,
         token,
-        message: String(options.message || "Сохранить draft перед ожиданием решения"),
+        requireChangedHead: checkpointType === "draft",
+        message: String(options.message || (
+          checkpointType === "blocker"
+            ? "Сохранить draft перед ожиданием решения"
+            : "Сохранить переносимый draft Agent Run"
+        )),
       })
     : null;
   const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/checkpoints`, {
@@ -5928,12 +5937,20 @@ const checkpoint = async (options) => withRun(async ({
   });
   const checkpointPayload = await response.json();
   if (draftSnapshot) {
-    await writeRunMetadata(metadataPath, {
+    const nextMetadata = {
       ...draftSnapshot.metadata,
       draftHead: draftSnapshot.draftHead,
-      waitingCheckpointId: checkpointPayload.id,
-      waitingForHumanAt: checkpointPayload.createdAt || new Date().toISOString(),
-    });
+      ...(checkpointType === "blocker"
+        ? {
+            waitingCheckpointId: checkpointPayload.id,
+            waitingForHumanAt: checkpointPayload.createdAt || new Date().toISOString(),
+          }
+        : {
+            latestDraftCheckpointId: checkpointPayload.id,
+            latestDraftCheckpointAt: checkpointPayload.createdAt || new Date().toISOString(),
+          }),
+    };
+    await writeRunMetadata(metadataPath, nextMetadata);
     process.stdout.write(`Draft snapshot сохранён: ${draftSnapshot.draftHead.slice(0, 12)}.\n`);
   }
   process.stdout.write(`Checkpoint сохранён: ${checkpointPayload.id}.\n`);
@@ -6379,6 +6396,7 @@ const saveRunDraftSnapshot = async ({
   origin,
   token,
   message,
+  requireChangedHead = false,
 }) => {
   // Даже draft без файловых изменений должен получить свежую lease перед
   // blocker checkpoint. В этом случае baseHead уже является полным
@@ -6391,6 +6409,17 @@ const saveRunDraftSnapshot = async ({
     token,
     message,
   });
+
+  // Ordinary autosave checkpoints describe new coherent work, not another
+  // timestamp beside the same server tree. A blocker is different: it may
+  // legitimately refresh the lease and attach a human question to the exact
+  // draft that was already uploaded by the preceding autosave.
+  if (
+    requireChangedHead
+    && prepared.head === (metadata.draftHead || metadata.baseHead)
+  ) {
+    throw new Error("После предыдущего draft checkpoint нет новых изменений.");
+  }
 
   if (prepared.head === metadata.baseHead) {
     const draftMetadata = {

@@ -40,11 +40,15 @@ Model/effort policy закрепляется за Run и проверяется 
 ## Run, candidate и handoff
 
 Один Run имеет один writable workspace и pinned `baseHead`. Compact MCP tool
-`prepare_agent_workspace_run` последовательно выполняет прежние `ensure` и
-`start`, до создания Run проверяет и закрепляет optional related context и
-возвращает exact `open` и compact `pause` / `finish` commands. Низкоуровневые
-tools сохраняются для compatibility и recovery. Все шаги повторно проверяют
-ACL; Run другого пользователя не переиспользуется.
+`prepare_agent_workspace_run` сначала ищет последний собственный непустой
+portable draft на актуальном `acceptedHead`; его `open` claim-ит тот же Run и
+fence-ит прежнюю lease. `startNewRun=true` остаётся явным escape hatch для
+намеренной независимой параллельной ветки. Если продолжения нет, compact tool
+выполняет прежние `ensure` и `start`, до создания Run проверяет и закрепляет
+optional related context и возвращает exact `open`, draft checkpoint и compact
+`pause` / `finish` commands. Низкоуровневые tools сохраняются для compatibility
+и recovery. Все шаги повторно проверяют ACL; Run другого пользователя не
+переиспользуется.
 
 До submit обязателен handoff checkpoint с:
 
@@ -67,6 +71,13 @@ heartbeat, собирает только validated delta и принимает c
 checkpoint с exact draft head. Чистый подготовительный вопрос задаётся без
 пустого Git draft. Повторный `open --run` на другом устройстве claim-ит Run;
 dirty/diverged local tree не перезаписывается.
+
+Обычный `checkpoint --type draft` тоже переносим: bridge коммитит завершённую
+смысловую дельту, проверяет и загружает её через draft endpoint и закрепляет
+checkpoint за exact head, не переводя Run в `waiting_for_human`. Агент делает
+его после каждого содержательного изменения и до ожидания, границы
+реплики/сессии, compaction или передачи работы. Полузаписанное дерево не
+становится ни draft milestone, ни канонической accepted revision.
 
 ## Task-scoped communication
 
