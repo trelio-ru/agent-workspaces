@@ -36,9 +36,12 @@ workspace materialize-ятся как pinned read-only context. Каждый tar
 повторно проходят ACL.
 
 Agent может найти prior context через `search_agent_workspace_files`, прочитать
-точный hit и прикрепить workspace через `attach_agent_workspace_context`.
-Прямо связанные task/dossier scopes разрешаются отдельно. Контекст не
-подмешивается в writable tree.
+точный hit и передать до 20 materially relevant workspace IDs в
+`prepare_agent_workspace_run.relatedWorkspaceIds`. Tool проверяет все цели и
+закрепляет их до создания Run. Legacy `attach_agent_workspace_context` остаётся
+для продолжения уже открытого старым клиентом Run. Прямо связанные
+task/dossier scopes разрешаются отдельно. Контекст не подмешивается в writable
+tree.
 
 Крупные и binary файлы writable workspace materialize-ятся полностью. В
 read-only context они остаются пятистрочными object pointers до exact
@@ -55,17 +58,22 @@ read-only context они остаются пятистрочными object poin
 
 ## Agent Run
 
-1. Trelio создаёт Run с pinned base head, ACL, model policy и immutable
-   instruction snapshots.
+1. Агент вызывает `prepare_agent_workspace_run` один раз; Trelio обеспечивает
+   workspace и создаёт Run с pinned base head, ACL, model policy, immutable
+   instruction snapshots и related context. Native Trelio discovery не требует
+   `list_agent_skills`; каталог нужен перед подключённым внешним сервисом.
 2. Bridge открывает локальный Git root и защищённые runtime control files.
 3. Агент читает `agent-instructions.md`, `user-profile.md`, optional
    `run-checkpoint.json`, затем `WORKSPACE_CONTEXT.md` и `WORKLOG.md`.
-4. Значимый прогресс сохраняется checkpoint без chain-of-thought, raw tool
-   output и секретов.
-5. Перед submit агент проверяет каждый changed path и создаёт handoff с итогом,
-   evidence, материалами, вопросами и одним следующим действием.
-6. Bridge отправляет candidate delta. Trelio принимает его атомарно, только
-   пока current accepted head совпадает с pinned base head.
+4. Дополнительный checkpoint создаётся только для реально полезной точки
+   продолжения. Dirty blocker сохраняется одной `trelio-workspace pause`; чистый
+   подготовительный вопрос не создаёт пустой draft.
+5. Агент завершает работу одной `trelio-workspace finish`: bridge проверяет и
+   печатает changed paths, создаёт handoff с итогом, evidence, материалами,
+   вопросами и одним следующим действием, продлевает lease и отправляет
+   candidate.
+6. Trelio принимает candidate атомарно, только пока current accepted head
+   совпадает с pinned base head.
 
 `WORKSPACE_OUTDATED` не обходится force push: агент начинает новый Run от
 current head и осознанно переносит inspected changes. Restore создаёт новую
@@ -83,21 +91,26 @@ Task handoff содержит semantic outcome:
 - `no_status_change` – частичный/информационный результат, failed review или
   открытые вопросы.
 
-Accepted Run создаёт группируемый системный комментарий из immutable handoff.
-Manual task comment не является условием submit.
+Accepted Run создаёт группируемый системный комментарий из immutable handoff –
+это технический аудит и контекст для агентов. После каждого содержательного
+accepted task Run агент отдельно вызывает `propose_task_comment` один раз и
+готовит обычный комментарий для людей. Server сам читает свежий public-comments
+snapshot и optimistic proposal revision. Для сложной коррекции, сравнения с
+публичной дискуссией или нового mention сохраняется двухшаговый
+context/render-flow.
 
-Для смысловой дельты агент использует один revisioned proposal. MCP App даёт
-редактируемый текст и кнопку «Опубликовать»; text-only клиент публикует только
-после явной команды. После accepted можно предложить только важные итоговые и
-действительно полезные промежуточные файлы. Пользователь может убрать любой;
-attachments создаются при публикации, а не при render.
+MCP App даёт редактируемый текст и кнопку «Опубликовать»; text-only клиент
+публикует только после явной команды. В proposal включаются только важные
+итоговые и действительно полезные промежуточные файлы. Пользователь может
+убрать любой; attachments создаются при публикации, а не при подготовке.
 
 ## Blocker и продолжение
 
-Перед вопросом, без которого нельзя продолжить, bridge сначала готовит и
-загружает validated draft, включая external objects, затем создаёт blocker с
-exact summary/question/next action и `draftHead`. Только после успешной записи
-агент задаёт вопрос.
+Перед вопросом, без которого нельзя продолжить dirty Run, `pause` сначала
+готовит и загружает validated draft, включая external objects, затем создаёт
+blocker с exact summary/question/next action и `draftHead`. Только после
+успешной записи агент задаёт вопрос. Если изменений ещё нет, вопрос задаётся
+сразу без искусственного checkpoint.
 
 Другой компьютер может claim-нуть тот же Run и получить draft плюс read-only
 `context/run-checkpoint.json`. Полная переписка не переносится. Dirty или

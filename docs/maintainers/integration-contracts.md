@@ -21,8 +21,9 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
    connector. При нескольких компаниях нужно спросить exact company, а не
    сканировать чужие каталоги. При отсутствии подходящего навыка применяется
    обычный personal-connector fallback.
-1. В resolved company/project context перед corporate data/connected
-   service/external system вызвать `list_agent_skills`.
+1. В resolved company/project context перед connected service/external system
+   вызвать `list_agent_skills`. Native Trelio reads, task discovery и Agent
+   Workspace control plane не требуют catalog gate.
 2. Выбрать назначенный skill по purpose, не по hardcoded ID.
 3. Непосредственно перед действием вызвать `get_agent_skill`.
 4. Использовать exact `runtimeExecution` либо declared `remoteMcpExecution`.

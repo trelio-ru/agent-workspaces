@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.6.30";
+export const BRIDGE_VERSION = "1.6.31";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -57,7 +57,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   "## Навыки и инструменты",
   "",
-  "- Перед корпоративными данными или внешней системой вызови `list_agent_skills` для exact company/project, выбери назначенный навык по назначению и непосредственно перед действием вызови `get_agent_skill`. Отсутствие отдельного integration tool не означает отсутствие интеграции.",
+  "- Перед подключённым сервисом или внешней системой вызови `list_agent_skills` для exact company/project, выбери назначенный навык по назначению и непосредственно перед действием вызови `get_agent_skill`. Native Trelio reads/workspace operations этого gate не требуют; отсутствие отдельного integration tool не означает отсутствие интеграции.",
   "- Для Telegram следуй formal `integrationRouting`, а не порядку массива или названиям: если назначен один из `telegram-mtproto` / `telegram-web`, используй его; если назначены оба, сначала используй `telegram-mtproto` primary priority `100`, а `telegram-web` secondary priority `200` — только после exact `not_configured`, `no_access`, `needs_reconnect` или `unsupported_operation` primary. Недоступность catalog/control plane, timeout, transient/unknown error и неоднозначный результат mutation не разрешают переключение или автоматический повтор; сначала установи live-результат либо спроси пользователя.",
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
@@ -67,10 +67,10 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "## Работа и результат",
   "",
   "- Сохраняй источники в `sources/`, рабочие материалы в `work/`, долговечные результаты в `artifacts/`; следуй `WORKLOG.md` для журнала.",
-  "- Перед блокирующим вопросом успешно сохрани переносимый checkpoint `blocker` с exact `--question` и `--next-action`, затем спрашивай человека.",
-  "- Для смысловых task-изменений получи `get_task_comment_proposal_context`, перечитай `publicCommentsSnapshot` и передай его exact hash в `render_task_comment_proposal`. Сравнивай итог только с фактически опубликованными комментариями: `currentDraft` всегда private/unpublished, поэтому не исправляй и не опровергай его как публичный текст. Если пользователь явно сказал, что предложение не нужно, вызови `dismiss_task_comment_proposal`; при нулевой net public delta не создавай корректирующий draft. Не публикуй автоматически, не используй `create_comment` и не блокируй handoff/submit из-за manual comment; без MCP Apps вызывай `publish_task_comment_proposal` или `dismiss_task_comment_proposal` только по явной команде. После accepted передавай в `filePaths` только важные итоговые и полезные для продолжения файлы — не все workspace-файлы; attachments создаются только при публикации человеком.",
+  "- Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause` с exact `--summary`, `--question` и `--next-action`; чистый подготовительный вопрос задай напрямую без пустого Git draft.",
+  "- После каждого содержательного accepted task Run вызови `propose_task_comment` один раз с коротким человеческим итогом и только полезными `filePaths`. System handoff — технический аудит и контекст для агентов, а обычный proposal — коммуникация для людей. Не публикуй автоматически и не используй `create_comment`; без MCP Apps вызывай `publish_task_comment_proposal` или `dismiss_task_comment_proposal` только по явной команде. Для сложной коррекции или нового mention сначала прочитай `get_task_comment_proposal_context` и вызови `render_task_comment_proposal` с exact snapshot hash.",
   "- `get_task` показывает shared и только твои personal controls. Это date-only проверки, не дедлайны: дата не уведомляет. Используй `create_task_control` / `update_task_control` / `clear_task_control` только при конкретной необходимости; не расширяй personal в shared без полномочия и не снимай контроль только из-за завершения Run или смены статуса. Shared changes видны в task audit, personal остаются приватными.",
-  "- Перед submit создай checkpoint `handoff` с результатом, подтверждениями, материалами, вопросами и одним следующим шагом. Для task scope передай semantic `--task-outcome`, не выбирая по названию/code статуса: обычно `work_completed`; `review_passed` только для успешной проверки kind `review`; `direct_completion` только по явному разрешению/правилу или self-created task; при вопросах/частичном результате `no_status_change`.",
+  "- Заверши Run одной командой `trelio-workspace finish` с результатом, подтверждениями, материалами, вопросами и одним следующим шагом. Она сама проверяет delta, создаёт handoff, продлевает lease и отправляет candidate. Для task scope выбери semantic `--task-outcome` из options подготовленного Run: `work_completed`, `review_passed`, `direct_completion` или `no_status_change`; при вопросах используй `no_status_change`.",
   "- Сначала сообщай человеку итог и требуемое решение, не SHA/UUID/Run status. Отправляй candidate только через bridge: Trelio примет его при актуальном base head; при конфликте начни новый Run и перенеси изменения осознанно.",
   "",
 ].join("\n");
@@ -6003,6 +6003,43 @@ const status = async () => withRun(async ({ metadata }) => {
   }, null, 2)}\n`);
 });
 
+const assertRunHasMeaningfulChanges = async (commandName) => withRun(async ({ metadata }) => {
+  const changedPaths = await getChangedPaths(
+    metadata.workspaceDirectory,
+    metadata.objects || [],
+  );
+
+  if (changedPaths.length === 0) {
+    throw new Error(
+      commandName === "pause"
+        ? "В workspace нет изменений для переносимого pause. Задайте подготовительный вопрос напрямую."
+        : "В workspace нет изменений для finish.",
+    );
+  }
+
+  // Compact-команды не заставляют модель отдельно переносить `git status`
+  // между вызовами. Bridge сам вычисляет полный delta manifest и показывает
+  // его до checkpoint/submit; последующая candidate validation повторно
+  // проверяет те же пути, protected files, pointers, symlinks и secret paths.
+  process.stdout.write(`Проверены изменённые пути (${changedPaths.length}):\n`);
+  changedPaths.forEach((changedPath) => {
+    process.stdout.write(`- ${changedPath}\n`);
+  });
+});
+
+const pause = async (options) => {
+  await assertRunHasMeaningfulChanges("pause");
+  await checkpoint({ ...options, type: "blocker" });
+};
+
+const finish = async (options) => {
+  await assertRunHasMeaningfulChanges("finish");
+  await checkpoint({ ...options, type: "handoff" });
+  // `submit` сам продлевает lease до и после подготовки candidate. Отдельный
+  // model-facing heartbeat здесь не нужен и только создавал лишнее состояние.
+  await submit(options);
+};
+
 const registerWorkspaceObject = async ({
   metadata,
   origin,
@@ -7291,6 +7328,8 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace checkpoint --type draft --summary TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type blocker --summary TEXT --question TEXT --next-action TEXT\n");
   process.stdout.write("  trelio-workspace checkpoint --type handoff --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] --next-action TEXT [--task-outcome work_completed|review_passed|direct_completion|no_status_change]\n");
+  process.stdout.write("  trelio-workspace pause --summary TEXT --question TEXT --next-action TEXT\n");
+  process.stdout.write("  trelio-workspace finish --summary TEXT --evidence TEXT [--file PATH] [--question TEXT] --next-action TEXT [--task-outcome work_completed|review_passed|direct_completion|no_status_change]\n");
   process.stdout.write("  trelio-workspace submit [--message TEXT]\n");
   process.stdout.write("  trelio-workspace skill pack --skill ID --runtime-version X.Y.Z --source DIR --entry PATH --interpreter node|python|executable --output FILE [--capability VALUE]\n");
   process.stdout.write("  trelio-workspace skill run --company UUID [--project UUID] --skill ID --release UUID -- [ARGS...]\n");
@@ -7534,6 +7573,10 @@ const main = async () => {
     });
   } else if (command === "checkpoint") {
     await checkpoint(options);
+  } else if (command === "pause") {
+    await pause(options);
+  } else if (command === "finish") {
+    await finish(options);
   } else if (command === "submit") {
     await submit(options);
   } else if (command === "skill") {

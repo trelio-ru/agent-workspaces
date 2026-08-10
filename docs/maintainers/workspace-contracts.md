@@ -39,8 +39,12 @@ Model/effort policy закрепляется за Run и проверяется 
 
 ## Run, candidate и handoff
 
-Один Run имеет один writable workspace и pinned `baseHead`. `ensure` и `start`
-всегда повторно проверяют ACL; Run другого пользователя не переиспользуется.
+Один Run имеет один writable workspace и pinned `baseHead`. Compact MCP tool
+`prepare_agent_workspace_run` последовательно выполняет прежние `ensure` и
+`start`, до создания Run проверяет и закрепляет optional related context и
+возвращает exact `open` и compact `pause` / `finish` commands. Низкоуровневые
+tools сохраняются для compatibility и recovery. Все шаги повторно проверяют
+ACL; Run другого пользователя не переиспользуется.
 
 До submit обязателен handoff checkpoint с:
 
@@ -51,33 +55,29 @@ Model/effort policy закрепляется за Run и проверяется 
 - одним next action;
 - для task scope – exact semantic `taskOutcome`.
 
-Submit делает heartbeat, собирает только inspected delta и принимает candidate
-только при совпадении current accepted head с pinned base head.
+`trelio-workspace finish` вычисляет полный changed-path manifest, создаёт
+handoff и вызывает submit в одной model-facing операции. Submit сам делает
+heartbeat, собирает только validated delta и принимает candidate только при
+совпадении current accepted head с pinned base head.
 `WORKSPACE_OUTDATED` требует нового Run и осознанного merge/reapply. Restore
 создаёт новый accepted commit со старым деревом и current expected head.
 
-Перед блокирующим вопросом bridge сначала сохраняет и загружает полный draft,
-включая external objects, затем фиксирует checkpoint с exact draft head.
-Вопрос задаётся только после server success. Повторный `open --run` на другом
-устройстве claim-ит Run; dirty/diverged local tree не перезаписывается.
+Перед блокирующим вопросом с содержательной локальной дельтой `pause` сначала
+сохраняет и загружает полный draft, включая external objects, затем фиксирует
+checkpoint с exact draft head. Чистый подготовительный вопрос задаётся без
+пустого Git draft. Повторный `open --run` на другом устройстве claim-ит Run;
+dirty/diverged local tree не перезаписывается.
 
 ## Task-scoped communication
 
-Manual comment отделён от audit accepted Run. Для смысловой task-дельты агент:
-
-1. читает `get_task_comment_proposal_context`;
-2. получает bounded snapshot фактически опубликованных комментариев Trelio и
-   передаёт его exact hash при render;
-3. сравнивает net-result только с public snapshot: current draft всегда
-   unpublished и не может быть предметом публичного «исправления»;
-4. заменяет current draft через `render_task_comment_proposal`, только когда
-   после исключения отменённой внутренней работы остаётся смысловая дельта;
-5. по явному решению «комментарий не нужен» вызывает
-   `dismiss_task_comment_proposal`: task comment/attachment не создаётся, а
-   отдельная reviewed boundary не даёт rejected draft всплыть снова;
-6. не публикует автоматически и не блокирует Run;
-7. в text-only client вызывает `publish_task_comment_proposal` только после
-   явной команды.
+Manual comment отделён от audit accepted Run. System handoff остаётся
+техническим аудитом и agent-readable контекстом. После каждого содержательного
+accepted task Run агент один раз вызывает `propose_task_comment`: tool сам
+читает fresh public snapshot/state revision и сохраняет обычный человеческий
+first-person proposal. Для nuanced correction или нового mention сохраняется
+legacy read → render flow с exact hash. Proposal не публикуется автоматически
+и не блокирует durable acceptance; text-only publish/dismiss требует явной
+команды.
 
 `create_comment` не используется для proposal. После accepted `filePaths`
 содержит только важные final deliverables и полезные intermediate материалы,

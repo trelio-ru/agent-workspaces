@@ -1177,7 +1177,7 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Перед корпоративными данными или внешней системой вызови `list_agent_skills`/u,
+      /Перед подключённым сервисом или внешней системой вызови `list_agent_skills`/u,
     );
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-mtproto` primary priority `100`/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-web` secondary priority `200`/u);
@@ -1229,17 +1229,17 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /render_task_comment_proposal/u,
     );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /publicCommentsSnapshot/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /propose_task_comment/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /dismiss_task_comment_proposal/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /private\/unpublished/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /не блокируй handoff\/submit из-за manual comment/u,
+      /System handoff — технический аудит и контекст для агентов/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /обычный proposal — коммуникация для людей/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /filePaths/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /не все workspace-файлы/u,
+      /только полезными `filePaths`/u,
     );
     assert.equal(
       await getGitStatus(path.join(rootDirectory, "workspace")),
@@ -1547,9 +1547,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
       process.execPath,
       [
         bridgePath,
-        "checkpoint",
-        "--type",
-        "blocker",
+        "pause",
         "--summary",
         "Подготовлены варианты, нужен выбор человека.",
         "--question",
@@ -1566,6 +1564,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
     );
     assert.match(checkpointed.stdout, /Draft snapshot сохранён/u);
     assert.match(checkpointed.stdout, /Checkpoint сохранён/u);
+    assert.match(checkpointed.stdout, /Проверены изменённые пути/u);
     assert.equal(currentStatus, "waiting_for_human");
     assert.ok(draftHead);
 
@@ -1970,7 +1969,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.6.30");
+  assert.equal(BRIDGE_VERSION, "1.6.31");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2020,6 +2019,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     "list_agent_skills",
     "get_agent_skill",
     "AGENT_SKILL_RELEASE_CHANGED",
+    "propose_task_comment",
     "get_task_comment_proposal_context",
     "render_task_comment_proposal",
     "dismiss_task_comment_proposal",
@@ -2049,11 +2049,13 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /а не отказывайся из-за отсутствия или недоступности навыка/u,
     /ту же защищённую систему другим путём/u,
     /Недоступность каталога и transient network failure сами по себе не равны `no_access`/u,
-    /не блокируй handoff\/submit из-за manual comment/u,
+    /обычный proposal — коммуникация для людей/u,
+    /Не публикуй автоматически/u,
     /дата не уведомляет/u,
     /не расширяй personal в shared без полномочия/u,
-    /передавай в `filePaths` только важные итоговые/u,
-    /Перед блокирующим вопросом успешно сохрани переносимый checkpoint `blocker`/u,
+    /только полезными `filePaths`/u,
+    /Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause`/u,
+    /Заверши Run одной командой `trelio-workspace finish`/u,
     /Trelio примет его при актуальном base head/u,
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, invariant);
@@ -2294,26 +2296,27 @@ test("task handoff requires an explicit outcome and keeps unresolved work out of
   );
 });
 
-test("workspace skill keeps comment proposals non-blocking and handoff comment-free", async () => {
+test("workspace skill prepares a human proposal after every accepted task Run", async () => {
   const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 
   assert.match(skillMarkdown, /Do not publish automatically/u);
+  assert.match(skillMarkdown, /After every substantive accepted task Run/u);
+  assert.match(skillMarkdown, /Call `propose_task_comment` once/u);
+  assert.match(skillMarkdown, /system handoff is technical audit and agent-readable context/u);
+  assert.match(skillMarkdown, /ordinary comment for\s+people/u);
   assert.match(skillMarkdown, /get_task_comment_proposal_context/u);
   assert.match(skillMarkdown, /render_task_comment_proposal/u);
   assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
-  assert.match(skillMarkdown, /publicCommentsSnapshot/u);
-  assert.match(skillMarkdown, /visibility=unpublished/u);
-  assert.match(skillMarkdown, /snapshotSha256/u);
-  assert.match(skillMarkdown, /no public semantic delta/u);
-  assert.match(skillMarkdown, /Never use `create_comment` for this proposal/u);
-  assert.match(skillMarkdown, /or pause work because the proposal remains\s+unpublished/u);
+  assert.match(skillMarkdown, /server reads the fresh public-comment snapshot/u);
+  assert.match(skillMarkdown, /do not make separate context\/hash calls on the normal path/u);
+  assert.match(skillMarkdown, /Never use `create_comment` as a workaround/u);
+  assert.match(skillMarkdown, /not acceptance\s+of the durable workspace result/u);
   assert.match(skillMarkdown, /After acceptance/u);
-  assert.match(skillMarkdown, /Include exact `filePaths`/u);
+  assert.match(skillMarkdown, /only useful final\/intermediate `filePaths`/u);
   assert.match(skillMarkdown, /Do not\s+attach all workspace files/u);
-  assert.match(skillMarkdown, /Ordinary task attachments\s+are created only when the operator publishes/u);
-  assert.match(skillMarkdown, /A meaningful handoff is required;\s+a manual task comment is not/u);
+  assert.match(skillMarkdown, /ordinary task attachments\s+are created only when\s+the operator publishes/iu);
   assert.match(skillMarkdown, /work_completed/u);
   assert.match(skillMarkdown, /review_passed/u);
   assert.match(skillMarkdown, /direct_completion/u);
@@ -2885,31 +2888,29 @@ test("macOS bridge softly migrates an existing device-session out of Keychain", 
   }
 });
 
-test("workspace worker discovers the live skill catalog before substantive work", async () => {
+test("workspace worker gates external services but not native Trelio work", async () => {
   const workerSkill = await readSkillBundle("trelio-workspace-worker");
   const catalogSkill = await readFile(
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
     "utf8",
   );
 
-  assert.match(workerSkill, /call `list_agent_skills` once\s+for the exact context/);
-  assert.match(workerSkill, /do not\s+load every instruction/u);
-  assert.match(workerSkill, /Immediately before using a relevant skill, call\s+`get_agent_skill`/);
-  assert.match(workerSkill, /Use only exact\s+`runtimeExecution\.command`/);
-  assert.match(workerSkill, /declared `remoteMcpExecution`\s+identity\/release/);
-  assert.match(workerSkill, /Never bypass a matching usable skill through browser, Computer Use, direct\s+HTTP, another MCP, or a script/);
-  assert.match(workerSkill, /Fallback is allowed only when no relevant\s+skill exists/);
+  assert.match(workerSkill, /Before a connected service or external system/u);
+  assert.match(workerSkill, /call\s+`list_agent_skills`/u);
+  assert.match(workerSkill, /call `get_agent_skill` immediately\s+before acting/u);
+  assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
+  assert.match(workerSkill, /do not bypass it while it is usable/u);
+  assert.match(workerSkill, /A confirmed missing\s+or unusable skill.*permits an independent fallback/su);
   assert.match(workerSkill, /explicit runtime `no_access` or\s+`needs_reconnect`/);
-  assert.match(workerSkill, /MTProto primary priority `100` before Web secondary\s+priority `200`/u);
-  assert.match(workerSkill, /exact\s+`not_configured`, `no_access`, `needs_reconnect`, or\s+`unsupported_operation`/u);
-  assert.match(workerSkill, /ambiguous mutation\s+outcome do not permit switching transports or automatically repeating/u);
-  assert.match(workerSkill, /not a reason to refuse requested work/);
-  assert.match(workerSkill, /same protected system through another route/);
-  assert.match(workerSkill, /Native Trelio\s+MCP\/workspace operations remain the primary workflow/);
-  assert.match(workerSkill, /do not require a\s+separate catalog skill/);
-  assert.match(workerSkill, /state that reason/);
+  assert.match(workerSkill, /MTProto primary priority `100` first and Telegram Web secondary\s+priority `200`/u);
+  assert.match(workerSkill, /only after exact `not_configured`, `no_access`,\s+`needs_reconnect`, or `unsupported_operation`/u);
+  assert.match(workerSkill, /ambiguous mutation outcome never\s+permit transport fallback or an automatic retry/u);
+  assert.match(workerSkill, /permits an independent fallback when needed to complete the\s+request/u);
+  assert.match(workerSkill, /another route into the same protected system/u);
+  assert.match(workerSkill, /Native Trelio reads, task discovery and Agent Workspace control-plane\s+operations are the primary workflow/u);
+  assert.match(workerSkill, /do not require a catalog or separate\s+skill lookup/u);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
-  assert.match(workerSkill, /On\s+`AGENT_SKILL_RELEASE_CHANGED`, read the skill again once/);
+  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill again once/u);
   assert.match(workerSkill, /durable rule identified by\s+the agent/);
   assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
@@ -2919,8 +2920,8 @@ test("workspace worker discovers the live skill catalog before substantive work"
   assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
   assert.match(workerSkill, /read each matching\s+reference completely/u);
   assert.match(workerSkill, /must preserve the `task-run\.md` limit/u);
-  assert.match(workerSkill, /perform the catalog gate in step 2 before the first `get_task`/u);
-  assert.match(workerSkill, /minimum\s+native read-only Trelio discovery needed to resolve it/u);
+  assert.match(workerSkill, /Native Trelio discovery does not require `list_agent_skills`/u);
+  assert.match(workerSkill, /Call `prepare_agent_workspace_run` once/u);
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
   assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
   assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
@@ -3887,7 +3888,7 @@ test("bridge self-revokes an exchanged server session when private-file persiste
   }
 });
 
-test("bridge submit external object writes the pointer through stdin without hanging", {
+test("bridge finish checkpoints and submits an external object without hanging", {
   timeout: 15_000,
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-submit-test-"));
@@ -3907,6 +3908,7 @@ test("bridge submit external object writes the pointer through stdin without han
   const seenRequests = [];
   let registerAttempts = 0;
   let uploadAttempts = 0;
+  let handoffPayload = null;
   let serverError = null;
 
   const server = createServer(async (request, response) => {
@@ -3919,6 +3921,25 @@ test("bridge submit external object writes the pointer through stdin without han
       if (request.url?.endsWith("/heartbeat")) {
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }));
+        return;
+      }
+
+      if (request.url?.endsWith("/checkpoints")) {
+        handoffPayload = JSON.parse(body.toString("utf8"));
+        assert.equal(handoffPayload.checkpointType, "handoff");
+        assert.match(handoffPayload.summary, /external object/u);
+        assert.deepEqual(handoffPayload.evidence, ["Проверена передача binary pointer."]);
+        assert.deepEqual(handoffPayload.filesChanged, ["sources/archive.bin"]);
+        assert.equal(
+          handoffPayload.nextAction.instruction,
+          "Проверьте принятый материал.",
+        );
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          id: "99999999-9999-4999-8999-999999999999",
+          checkpointType: "handoff",
+          createdAt: new Date().toISOString(),
+        }));
         return;
       }
 
@@ -4018,6 +4039,7 @@ test("bridge submit external object writes the pointer through stdin without han
         schemaVersion: 3,
         origin,
         pluginVersion: BRIDGE_VERSION,
+        scopeType: "project",
         workspaceId: "44444444-4444-4444-8444-444444444444",
         runId,
         leaseId: "55555555-5555-4555-8555-555555555555",
@@ -4033,7 +4055,18 @@ test("bridge submit external object writes the pointer through stdin without han
 
     const submitted = await execFileAsync(
       process.execPath,
-      [bridgePath, "submit", "--message", "Проверить external object"],
+      [
+        bridgePath,
+        "finish",
+        "--summary",
+        "Подготовлен и проверен external object для приёмки.",
+        "--evidence",
+        "Проверена передача binary pointer.",
+        "--file",
+        "sources/archive.bin",
+        "--next-action",
+        "Проверьте принятый материал.",
+      ],
       {
         cwd: workspaceDirectory,
         encoding: "utf8",
@@ -4046,6 +4079,9 @@ test("bridge submit external object writes the pointer through stdin without han
     );
 
     assert.match(submitted.stdout, /Статус: принят автоматически/);
+    assert.match(submitted.stdout, /Проверены изменённые пути/u);
+    assert.match(submitted.stdout, /Checkpoint сохранён/u);
+    assert.ok(handoffPayload);
     assert.ifError(serverError);
     assert.equal(
       seenRequests.filter((request) => request.url?.endsWith("/heartbeat")).length,

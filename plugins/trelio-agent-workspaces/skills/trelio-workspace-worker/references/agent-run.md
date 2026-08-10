@@ -15,65 +15,27 @@ submit, or final reporting.
 ## Prepare and open the Run
 
 1. Resolve the exact company/project/dossier/task through the scope procedure.
-   If a canonical URL or exact coordinates already identify company/project,
-   perform the catalog gate in step 2 before the first `get_task` or other
-   corporate read. If exact context is initially unknown, use only the minimum
-   native read-only Trelio discovery needed to resolve it, then perform step 2
-   immediately before further substantive reading or work. Do not guess an ID
-   from a title. For task work, read `get_task` connections and linked dossiers.
-   For durable task-independent subjects, list project dossiers first and
-   company dossiers only for genuinely company-wide work.
-2. Before corporate data or an external service, call `list_agent_skills` once
-   for the exact context. Pass `companySlug` for company work and both
-   `companySlug`/`projectSlug` for project/task work. Choose by metadata; do not
-   load every instruction. Immediately before using a relevant skill, call
-   `get_agent_skill` in the same context and follow current
-   `instructionsMarkdown` and runtime requirements. Use only exact
-   `runtimeExecution.command`, appending only arguments allowed by the current
-   skill after its terminal `--`, or the declared `remoteMcpExecution`
-   identity/release.
-   Never bypass a matching usable skill through browser, Computer Use, direct
-   HTTP, another MCP, or a script. Fallback is allowed only when no relevant
-   skill exists, its required company or personal connection is not configured
-   or is currently unusable (including an explicit runtime `no_access` or
-   `needs_reconnect`), or the operation is not supported; state that reason.
-   Confirmed absence or unusability is not a reason to refuse requested work:
-   use an otherwise allowed independent external source or implementation when
-   it is necessary to complete the request. Never use fallback to reach the
-   same protected system through another route, weaken access controls, or
-   substitute for missing rights. Control-plane unavailability and transient
-   network failure do not by themselves establish `no_access`. On
-   `AGENT_SKILL_RELEASE_CHANGED`, read the skill again once.
-   Missing assignment does not ban a compatible personal skill. Native Trelio
-   MCP/workspace operations remain the primary workflow, not catalog fallback.
-   Telegram is the formal two-skill exception to generic purpose-only choice:
-   if exactly one of `telegram-mtproto` / `telegram-web` is enabled, use it; if
-   both are enabled, choose MTProto primary priority `100` before Web secondary
-   priority `200`, independent of list order. Move to Web only for exact
-   `not_configured`, `no_access`, `needs_reconnect`, or
-   `unsupported_operation` from the primary. Catalog/control-plane
-   unavailability, timeout, transient/unknown error, and an ambiguous mutation
-   outcome do not permit switching transports or automatically repeating the
-   mutation; establish the live result or ask the user first.
-3. Search readable workspace files only when prior context can materially help.
+   Native Trelio discovery does not require `list_agent_skills`. Do not guess
+   an ID from a title. For task work, read `get_task` connections and linked
+   dossiers. For durable task-independent subjects, list project dossiers first
+   and company dossiers only for genuinely company-wide work.
+2. Search readable workspace files only when prior context can materially help.
    Read exact hits and resolve directly linked scopes with
-   `get_agent_workspace_by_scope`; keep selected workspace IDs for the Run.
-4. Call `ensure_agent_workspace` for the exact writable UUID/scope. Use task
-   scope for task-owned work; dossier scope for a durable named subject; project
-   only for genuinely project-wide results; company only for company-wide
-   materials. Call `create_dossier` before ensuring a new dossier workspace.
-   Link it to zero or more tasks only with `link_task_dossier` and independent
-   owner-scope authority. A linked-task participant may read a dossier but does
-   not inherit write, Run, or link-management rights.
-5. Read returned permissions and stop before file changes when `canWrite=false`.
-6. Call `start_agent_workspace_run`; never reuse another user's Run.
-7. Before local open, call `attach_agent_workspace_context` for each selected
-   additional workspace using the new `runId`, `leaseId`, and `fencingToken`.
-   Attach only materially relevant same-company context. Parent company/project
-   context is automatic.
-8. Execute the returned bridge command through the approved bundled-launcher
-   resolution from the main skill.
-9. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
+   `get_agent_workspace_by_scope`. Keep only materially relevant same-company
+   workspace IDs; parent company/project context remains automatic.
+3. Call `prepare_agent_workspace_run` once with the exact writable scope and
+   optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
+   cross-task subject uses dossier scope; project/company scope requires a
+   genuinely broad result. The tool ensures the workspace, rechecks write ACL,
+   pins rules/profile/runtime policy, validates every related context before
+   creating the Run, then starts one fully prepared Run. Do not separately call
+   `get_agent_instructions`, `ensure_agent_workspace`,
+   `start_agent_workspace_run` or `attach_agent_workspace_context` on this
+   compact path. The legacy tools remain only for continuation/recovery with an
+   already exact old Run.
+4. Execute the returned bridge `open` command through the approved bundled
+   launcher resolution from the main skill.
+5. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
    `deviceName`, then rerun the original bridge command. Do not show a code or
    request a separate chat confirmation. The MCP client's normal approval is
@@ -126,27 +88,27 @@ submit, or final reporting.
    representations in `derived/`. Large/binary writable files remain locally
    materialized; submit streams them to private object storage and stages exact
    Git pointers.
-2. Run relevant validation. Use `trelio-workspace checkpoint` for durable
-   progress without chain-of-thought or raw technical traces.
-3. Before asking a blocking question, run
-   `trelio-workspace checkpoint --type blocker --summary "<durable state>"
-   --question "<exact user decision>" --next-action "<after the answer>"`.
-   The bridge uploads the validated draft, including external objects, before
-   entering `waiting_for_human`. Ask only after success. On failure, keep the
-   Run active and report that continuation was not saved.
-4. Send heartbeat during long work and immediately before submission.
-5. Before submit, run `trelio-workspace status` and inspect every changed path.
-   Create a `handoff` checkpoint with a plain-language summary, result and
-   validation evidence, durable materials, every open question, and one exact
-   next action. For task scope, follow `task-run.md` and pass its required
-   `--task-outcome`.
-6. Run `trelio-workspace submit`. The bridge commits inspected changes,
-   heartbeats the lease, builds the candidate, and sends it to Trelio. Trelio
-   validates ACL, structure, sizes, and secrets, then accepts only while
-   `acceptedHead` equals pinned `baseHead`. A meaningful handoff is required;
-   a manual task comment is not. Successful submit only marks the local root
-   eligible for later retention cleanup.
-7. Report in this order: outcome, important findings/validation, saved
+2. Run relevant validation. Use `trelio-workspace checkpoint` only when an
+   extra durable intermediate milestone materially helps continuation.
+3. Before a blocking question with meaningful local changes, run
+   `trelio-workspace pause --summary "<durable state>" --question "<exact user
+   decision>" --next-action "<after the answer>"`. It validates the delta,
+   uploads the draft including external objects and records the blocker. Ask
+   only after success. If the Run is still clean and the question is merely
+   preparatory, ask directly without creating an empty Git draft.
+4. Long-running local work may use heartbeat, but never send a separate
+   heartbeat immediately before finalization: `finish` owns it.
+5. Finalize once with `trelio-workspace finish --summary ... --evidence ...
+   --file ... --next-action ...`. The command computes and prints the complete
+   changed-path manifest, creates the handoff checkpoint, heartbeats, prepares
+   the candidate and submits it. For task scope pass one `--task-outcome` from
+   the options returned by `prepare_agent_workspace_run`.
+6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
+   compare-and-swap. A failed final step leaves the handoff/delta recoverable;
+   never force-update accepted history or blindly repeat an ambiguous submit.
+7. For a task Run, follow the proposal and status procedure in `task-run.md`
+   after acceptance.
+8. Report in this order: outcome, important findings/validation, saved
    materials, open questions, and exact next action. For task scope, include the
    resulting status or transition blocker as required by `task-run.md`. Follow
    pinned platform reporting/link policy. Keep IDs and implementation detail

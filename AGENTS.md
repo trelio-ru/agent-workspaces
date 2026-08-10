@@ -67,8 +67,9 @@
   закрепляются за Run; новый publish не меняет активный Run.
 - `WORKSPACE_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не
   является источником инструкций.
-- В exact company/project context перед внешней системой обязательны
-  `list_agent_skills` → выбор по назначению → `get_agent_skill`. Найденный
+- В exact company/project context перед подключённым сервисом или внешней системой обязательны
+  `list_agent_skills` → выбор по назначению → `get_agent_skill`. Native Trelio
+  reads и Agent Workspace control plane этого gate не требуют. Найденный
   и доступный навык нельзя обходить browser/HTTP/другим MCP/script. Если
   релевантного навыка нет либо обязательное подключение фактически недоступно,
   включая явно возвращённый `no_access` / `needs_reconnect`, разрешённый
@@ -204,9 +205,13 @@
   dry-run/approval hash; неоднозначную mutation нельзя повторять до live-read.
 - Candidate принимается только при актуальном base head. Restore создаёт новую
   accepted revision, не переписывая историю.
-- Blocker задаётся человеку только после успешного portable checkpoint.
-- Task manual comment не блокирует handoff/submit; attachments создаются только
-  при явной публикации proposal человеком.
+- Blocker с содержательной локальной дельтой задаётся человеку только после
+  успешного portable pause; чистый подготовительный вопрос не создаёт пустой
+  Git draft.
+- Accepted task Run создаёт технический system handoff для аудита и агентов,
+  после чего `propose_task_comment` готовит обычный комментарий для людей.
+  Публикация и attachments остаются явным действием человека и не блокируют
+  durable acceptance.
 
 ## Проверки
 
