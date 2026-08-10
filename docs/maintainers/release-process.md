@@ -6,8 +6,10 @@ Release нужен для bundled MCP/bootstrap skills/bridge/host/manifest. Bac
 managed Markdown, Remote MCP declaration или immutable internal runtime release
 могут публиковаться отдельно, пока bundled plugin contract не меняется.
 
-Не перезаписывать опубликованный immutable runtime/version. Новый behavior –
-новый patch.
+Не перезаписывать опубликованный immutable runtime/version. Версию выбирать по
+SemVer: backward-compatible новая публичная команда или orchestration contract
+требуют minor, совместимое исправление существующего поведения – patch,
+несовместимый контракт – major.
 
 ## Version synchronization
 
