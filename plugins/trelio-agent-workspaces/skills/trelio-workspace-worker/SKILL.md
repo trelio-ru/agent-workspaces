@@ -100,7 +100,14 @@ or private key into chat. Create a record only with
 Trelio's protected browser form, or, when a value already exists in a local
 producer/file, write it directly inside the current Run with
 `PRODUCER | trelio-workspace secret set --secret UUID` or
-`trelio-workspace secret set --secret UUID --file PATH`.
+`trelio-workspace secret set --secret UUID --file PATH` for a one-field secret.
+For a multi-field secret, pass one JSON object with exact field keys and
+string/null values through
+`JSON_PRODUCER | trelio-workspace secret set --secret UUID --format fields-json`
+or add `--format fields-json` to the file form. The format flag is mandatory:
+without it JSON-looking bytes remain one scalar value for compatibility. Never
+split one logical multi-field credential into separate Agent Secrets merely to
+use a local producer/file.
 
 When an authorized local executable needs a secret, call
 `prepare_agent_secret_checkout` for the exact current Run and executable, then

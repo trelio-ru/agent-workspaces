@@ -6658,6 +6658,69 @@ const readSecretInput = async (fileOption) => {
   return value;
 };
 
+const AGENT_SECRET_FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
+const AGENT_SECRET_MAX_FIELD_COUNT = 50;
+const AGENT_SECRET_FIELDS_JSON_FORMAT = "fields-json";
+
+/**
+ * Convert protected stdin/file bytes into the exact server payload for
+ * `secret set` without guessing from their contents.
+ *
+ * JSON auto-detection is intentionally forbidden: an ordinary one-field
+ * secret may itself be a JSON document, and silently reinterpreting it as a
+ * named-field bundle would rotate a different logical value. The explicit
+ * format flag keeps legacy scalar writes byte-for-byte compatible while still
+ * allowing one atomic multi-field write.
+ */
+export const parseAgentSecretSetInput = (input, formatOption) => {
+  if (formatOption === undefined) {
+    return { value: input };
+  }
+
+  if (Array.isArray(formatOption) || formatOption !== AGENT_SECRET_FIELDS_JSON_FORMAT) {
+    throw new Error(
+      "Параметр --format поддерживает только `fields-json`; без параметра ввод сохраняется как одно строковое значение.",
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    // Не включаем parser message или исходные bytes: оба могут содержать
+    // фрагмент plaintext секрета и не должны попасть в stderr/tool log.
+    throw new Error("Ввод Agent Secret в формате `fields-json` должен быть корректным JSON-объектом.");
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Ввод Agent Secret в формате `fields-json` должен быть JSON-объектом именованных полей.");
+  }
+
+  const entries = Object.entries(parsed);
+  if (entries.length < 1 || entries.length > AGENT_SECRET_MAX_FIELD_COUNT) {
+    throw new Error("JSON-объект Agent Secret должен содержать от 1 до 50 именованных полей.");
+  }
+
+  // Null-prototype не позволяет специальному ключу вроде `__proto__`
+  // изменить локальный объект до server-side schema validation.
+  const values = Object.create(null);
+  for (const [rawKey, fieldValue] of entries) {
+    const key = rawKey.trim().toLowerCase();
+    if (!AGENT_SECRET_FIELD_KEY_PATTERN.test(key)) {
+      throw new Error("JSON-объект Agent Secret содержит некорректный ключ поля.");
+    }
+    if (Object.hasOwn(values, key)) {
+      throw new Error("JSON-объект Agent Secret содержит повторяющийся ключ поля.");
+    }
+    if (fieldValue !== null && typeof fieldValue !== "string") {
+      throw new Error("Значение каждого поля Agent Secret должно быть строкой или null.");
+    }
+    values[key] = fieldValue;
+  }
+
+  return { values };
+};
+
 const setSecretValue = async (options, positional) => withRun(async ({ metadata, origin, token }) => {
   if (positional[0] !== "set") {
     throw new Error("Поддерживаются `secret set` и `secret exec`.");
@@ -6668,11 +6731,12 @@ const setSecretValue = async (options, positional) => withRun(async ({ metadata,
   // может передать ещё не потреблённый pipe exact новому bridge в той же
   // задаче, не сохраняя secret value на диск или в process arguments.
   await ensureBridgeCompatibility(origin, token);
-  const value = await readSecretInput(options.file);
+  const input = await readSecretInput(options.file);
+  const valuePayload = parseAgentSecretSetInput(input, options.format);
   const response = await request(origin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ runId: metadata.runId, value }),
+    body: JSON.stringify({ runId: metadata.runId, ...valuePayload }),
   });
   await response.json();
   process.stdout.write("Значение секрета зашифровано и сохранено новой версией.\n");
@@ -7372,6 +7436,8 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace secret browser-fill --grant UUID --target HTTPS_URL\n");
   process.stdout.write("  COMMAND | trelio-workspace secret set --secret UUID\n");
   process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH\n");
+  process.stdout.write("  JSON_PRODUCER | trelio-workspace secret set --secret UUID --format fields-json\n");
+  process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH --format fields-json\n");
 };
 
 const runUpdatedBridgeEntrypoint = async (

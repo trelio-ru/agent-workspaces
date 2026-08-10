@@ -55,6 +55,7 @@ import {
   normalizeResolvedSkillRuntimeArtifact,
   openBrowser,
   parseAndValidateAgentSkillPackage,
+  parseAgentSecretSetInput,
   parseWorkspaceObjectPointer,
   recoverBridgePluginUpgrade,
   restoreRetainedCodexPluginInstallations,
@@ -82,6 +83,30 @@ const companyWorkspaceId = "22222222-2222-4222-8222-222222222222";
 const relatedWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const companyHead = "a".repeat(40);
 const relatedHead = "b".repeat(40);
+
+/**
+ * Execute the real bridge entrypoint while supplying protected stdin bytes.
+ * `execFile` does not have an `input` option, so tests must close the pipe
+ * explicitly just like a real producer would.
+ */
+const execBridgeWithInput = (argumentsList, input, options) => new Promise((resolve, reject) => {
+  const child = execFile(
+    process.execPath,
+    [bridgePath, ...argumentsList],
+    options,
+    (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    },
+  );
+
+  child.stdin.end(input);
+});
 
 /**
  * Read a skill together with its one-level Markdown references.
@@ -2424,6 +2449,8 @@ test("workspace instructions keep a canonical safe Agent Secret reference and us
     assert.match(instructions, /clipboard/u);
   }
   assert.match(workspaceSkill, /merely\s+discovered but unused secrets/u);
+  assert.match(workspaceSkill, /--format fields-json/u);
+  assert.match(workspaceSkill, /Never\s+split one logical multi-field credential/u);
   assert.match(bridgeSource, /неиспользованных найденных секретов/u);
 });
 
@@ -2627,6 +2654,159 @@ test("Trelio Secret Browser fills login and password in one browser window and k
   assert.match(applyExpressions[0], /agent-password/u);
   assert.doesNotMatch(applyExpressions[0], /123456/u);
   assert.match(applyExpressions[1], /123456/u);
+});
+
+test("secret set requires an explicit fields-json format and keeps scalar JSON compatible", () => {
+  const scalarJson = '{"username":"synthetic-scalar-value"}';
+  assert.deepEqual(parseAgentSecretSetInput(scalarJson, undefined), {
+    value: scalarJson,
+  });
+
+  const structured = parseAgentSecretSetInput(JSON.stringify({
+    Username: "synthetic-login-value",
+    password: "synthetic-password-value",
+    totp: null,
+  }), "fields-json");
+  assert.deepEqual({ ...structured.values }, {
+    username: "synthetic-login-value",
+    password: "synthetic-password-value",
+    totp: null,
+  });
+  assert.equal(Object.getPrototypeOf(structured.values), null);
+
+  assert.throws(
+    () => parseAgentSecretSetInput("{}", "fields-json"),
+    /от 1 до 50/u,
+  );
+  assert.throws(
+    () => parseAgentSecretSetInput('["synthetic-password-value"]', "fields-json"),
+    /JSON-объектом именованных полей/u,
+  );
+  assert.throws(
+    () => parseAgentSecretSetInput('{"username":42}', "fields-json"),
+    /строкой или null/u,
+  );
+  assert.throws(
+    () => parseAgentSecretSetInput(
+      '{"Username":"synthetic-first-value","username":"synthetic-second-value"}',
+      "fields-json",
+    ),
+    /повторяющийся ключ/u,
+  );
+
+  const invalidPlaintext = "synthetic-value-that-must-not-reach-errors";
+  assert.throws(
+    () => parseAgentSecretSetInput(`{"password":"${invalidPlaintext}"`, "fields-json"),
+    (error) => {
+      assert.match(error.message, /корректным JSON-объектом/u);
+      assert.equal(error.message.includes(invalidPlaintext), false);
+      return true;
+    },
+  );
+});
+
+test("secret set sends one atomic named-field bundle from protected stdin", {
+  timeout: 10_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-set-fields-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const rootDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(rootDirectory, "workspace");
+  const secretId = "77777777-7777-4777-8777-777777777777";
+  const values = {
+    username: "synthetic-login-value",
+    password: "synthetic-password-value",
+  };
+  let compatibilityCount = 0;
+  const writes = [];
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+
+      if (
+        request.method === "GET"
+        && request.url === "/api/agent-workspaces/bridge-compatibility"
+      ) {
+        compatibilityCount += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        return;
+      }
+
+      if (
+        request.method === "PUT"
+        && request.url === `/api/agent-secrets/secrets/${secretId}/value-from-bridge`
+      ) {
+        writes.push(JSON.parse((await readRequestBody(request)).toString("utf8")));
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ status: "active" }));
+        return;
+      }
+
+      throw new Error(`Unexpected Agent Secret request: ${request.method} ${request.url}`);
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end("Synthetic Agent Secret test failure");
+    }
+  });
+
+  try {
+    await Promise.all([
+      mkdir(homeDirectory, { recursive: true }),
+      mkdir(workspaceDirectory, { recursive: true }),
+    ]);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    await writeFile(
+      path.join(rootDirectory, ".trelio-run.json"),
+      `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = await execBridgeWithInput(
+      [
+        "secret",
+        "set",
+        "--secret",
+        secretId,
+        "--format",
+        "fields-json",
+      ],
+      JSON.stringify(values),
+      {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 8_000,
+        env: {
+          ...process.env,
+          HOME: homeDirectory,
+          TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
+          TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+        },
+      },
+    );
+
+    assert.match(result.stdout, /Значение секрета зашифровано/u);
+    assert.equal(result.stdout.includes(values.username), false);
+    assert.equal(result.stdout.includes(values.password), false);
+    assert.equal(result.stderr, "");
+    assert.equal(compatibilityCount, 1);
+    assert.deepEqual(writes, [{ runId, values }]);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("secret checkout self-dispatches trelio-workspace without resolving PATH", {
@@ -4591,6 +4771,7 @@ test("bridge help advertises the related context sync command", async () => {
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);
   assert.match(result.stdout, /trelio-workspace clean --dry-run/);
+  assert.match(result.stdout, /--format fields-json/);
 });
 
 test("bridge recognizes exact object pointers and classifies binary bytes", async () => {

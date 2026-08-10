@@ -156,6 +156,15 @@ version содержит атомарный JSON bundle именованных �
 получает JSON, env требует exact mapping, а TOTP delivery получает derived code,
 не seed. Нельзя использовать shell/logger/env/printenv/cat для раскрытия.
 
+Bridge `secret set` без format-флага остаётся legacy scalar transport и не
+пытается распознать JSON по содержимому. Атомарная локальная запись нескольких
+именованных полей требует exact `--format fields-json`: stdin/file содержит
+один JSON-объект с 1–50 нормализуемыми field keys и только string/null values,
+а bridge отправляет backend-у `values`, не `value`. Ошибки парсинга не включают
+исходные bytes. Нельзя автоматически трактовать JSON-подобный scalar как bundle
+или разносить одну связанную учётную запись по отдельным secret records ради
+обхода transport.
+
 Browser fill имеет только автоматический режим. MCP закрепляет grant за exact
 Run, bundled bridge и ordered steps с exact URL hash/origin и bounded mapping
 каждого fieldKey к selector; plaintext path/query в БД и audit не хранится.

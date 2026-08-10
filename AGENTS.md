@@ -140,6 +140,11 @@
   Codex/Claude/OS lanes live-tested.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
+  `secret set` без format-флага сохраняет legacy scalar semantics, включая
+  JSON-подобные bytes. Атомарный локальный import нескольких полей использует
+  только explicit `--format fields-json`, передаёт backend-у `values` и не
+  раскрывает parse input в ошибках; автоопределение JSON и разбиение одной
+  учётной записи на отдельные secrets запрещены.
   Узкое исключение по времени жизни – company-scoped Telegram MTProto
   `api_hash`: первый checkout exact runtime атомарно сохраняет его локально в
   private `skill/company/member/connection` namespace рядом с более
