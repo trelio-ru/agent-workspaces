@@ -110,6 +110,14 @@ private temporary-file mode; Trelio does not execute the command. Never replace
 the executable with a shell, logger, `env`, `printenv`, `cat`, or another
 program intended to reveal it.
 
+The current Telegram MTProto runtime is a narrow persistence exception: run
+its exact unwrapped `doctor` first and reuse `apiHashCached=true` without a new
+secret checkout. Only a missing local `api_hash` cache permits the ordinary
+one-use checkout above; that exact runtime atomically stores the delivered
+value in its private local connection namespace. The cache does not remove the
+required fresh catalog/get/runtime resolve and must never be inspected or
+edited through a workspace or shell command.
+
 When the exact destination is a browser login, do not pass any named field to
 a literal-text Browser/Chrome/Computer Use action. Call
 `prepare_agent_secret_browser_fill` once with the exact current Run and ordered

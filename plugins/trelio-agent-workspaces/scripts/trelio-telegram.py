@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Private local Telegram MTProto runtime for the Trelio skill catalog.
 
-The company-wide ``api_hash`` is accepted only through a short-lived
-environment variable delivered by an Agent Secret checkout grant. Personal
-authorization state is stored outside workspaces in a stable
-skill/company/member/connection namespace.
+The company-wide ``api_hash`` is initially accepted through a short-lived
+environment variable delivered by an Agent Secret checkout grant, then cached
+as a private local credential beside the personal MTProto session. Both remain
+outside workspaces in a stable skill/company/member/connection namespace.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import threading
@@ -36,6 +37,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 SKILL_ID = "telegram-mtproto"
 API_HASH_ENV = "TRELIO_TELEGRAM_API_HASH"
+API_HASH_FILE_NAME = "api_hash"
 RUNTIME_VERSION = "1"
 POLICY_MODES = ("confirm", "autonomous", "read-only")
 MAX_MESSAGE_CHARS = 4096
@@ -147,25 +149,66 @@ def runtime_python() -> Path:
 
 def ensure_private_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    file_stat = path.lstat()
+    if not stat.S_ISDIR(file_stat.st_mode):
+        raise TelegramRuntimeError(f"Unsafe local directory {path}: expected a real directory.")
     if os.name == "posix":
+        if file_stat.st_uid != os.getuid():
+            raise TelegramRuntimeError(f"Unsafe owner for local directory {path}.")
         path.chmod(0o700)
 
 
 def ensure_private_file(path: Path) -> None:
-    if not path.exists() or os.name != "posix":
+    if not path.exists():
         return
-    mode = path.stat().st_mode & 0o777
+    file_stat = path.lstat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise TelegramRuntimeError(f"Unsafe local file {path}: expected a regular file.")
+    if os.name != "posix":
+        return
+    if file_stat.st_uid != os.getuid():
+        raise TelegramRuntimeError(f"Unsafe owner for local file {path}.")
+    mode = file_stat.st_mode & 0o777
     if mode & 0o077:
         raise TelegramRuntimeError(f"Unsafe permissions on {path}: expected 600, got {mode:o}.")
 
 
-def write_private_json(path: Path, value: dict[str, Any]) -> None:
+def write_private_text(path: Path, value: str) -> None:
+    """Atomically write one local credential or config without following links.
+
+    The MTProto session already makes this per-user directory a machine trust
+    root. The extra regular-file, owner and mode checks still prevent an
+    accidental group/world-readable copy or a pre-created symlink from turning
+    a local credential write into disclosure outside that namespace.
+    """
+
     ensure_private_directory(path.parent)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if os.name == "posix":
-        temporary.chmod(0o600)
-    temporary.replace(path)
+    ensure_private_file(path)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(temporary, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            descriptor = None
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        if os.name == "posix":
+            path.chmod(0o600)
+        ensure_private_file(path)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def write_private_json(path: Path, value: dict[str, Any]) -> None:
+    write_private_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
 
 
 def policy_path(identity: Identity) -> Path:
@@ -942,13 +985,56 @@ def session_path(identity: Identity) -> Path:
     return state_dir / "telegram"
 
 
-def require_api_hash() -> str:
-    value = os.environ.get(API_HASH_ENV, "").strip()
-    if not re.fullmatch(r"[a-f0-9]{32}", value, flags=re.IGNORECASE):
+def api_hash_path(identity: Identity) -> Path:
+    credentials_dir = connection_root(identity) / "credentials"
+    ensure_private_directory(credentials_dir)
+    return credentials_dir / API_HASH_FILE_NAME
+
+
+def normalize_api_hash(value: str, *, source: str) -> str:
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[a-f0-9]{32}", normalized):
+        raise TelegramRuntimeError(f"Telegram api_hash from {source} is invalid.")
+    return normalized
+
+
+def load_cached_api_hash(identity: Identity) -> str | None:
+    path = api_hash_path(identity)
+    if not path.exists():
+        return None
+    ensure_private_file(path)
+    # A valid hash plus one line ending is tiny. Bound the read before parsing
+    # so a damaged or replaced local file cannot become unbounded input.
+    if path.stat().st_size > 128:
         raise TelegramRuntimeError(
-            "Telegram api_hash was not delivered. Use an Agent Secret checkout grant; do not pass it in chat or argv."
+            "Cached Telegram api_hash is invalid. Deliver it once through an Agent Secret checkout to replace the local copy."
         )
-    return value
+    try:
+        return normalize_api_hash(path.read_text(encoding="utf-8"), source="the local cache")
+    except (OSError, UnicodeError) as error:
+        raise TelegramRuntimeError(f"Cannot read cached Telegram api_hash: {error}") from error
+
+
+def cache_api_hash(identity: Identity, value: str) -> str:
+    normalized = normalize_api_hash(value, source="Agent Secret checkout")
+    write_private_text(api_hash_path(identity), normalized + "\n")
+    return normalized
+
+
+def require_api_hash(identity: Identity) -> str:
+    # The checkout environment is consumed first so an explicitly delivered
+    # current company value can initialize or replace a stale local cache. It
+    # is removed from the process environment immediately after capture; the
+    # Telethon client receives the normalized value only as a Python argument.
+    delivered = os.environ.pop(API_HASH_ENV, "").strip()
+    if delivered:
+        return cache_api_hash(identity, delivered)
+    cached = load_cached_api_hash(identity)
+    if cached is None:
+        raise TelegramRuntimeError(
+            "Telegram api_hash is not cached on this device. Deliver it once through an Agent Secret checkout grant; do not pass it in chat or argv."
+        )
+    return cached
 
 
 def build_client(args: argparse.Namespace, identity: Identity):
@@ -956,7 +1042,7 @@ def build_client(args: argparse.Namespace, identity: Identity):
     return TelegramClient(
         str(session_path(identity)),
         int(args.api_id),
-        require_api_hash(),
+        require_api_hash(identity),
         device_model="Trelio Agent",
         system_version=sys.platform,
         app_version="1.0",
@@ -1951,10 +2037,19 @@ def command_doctor(args: argparse.Namespace) -> dict[str, Any]:
     session_file = session_path(identity).with_suffix(".session")
     if session_file.exists():
         ensure_private_file(session_file)
+    api_hash_delivered = bool(os.environ.get(API_HASH_ENV, "").strip())
+    if api_hash_delivered:
+        # Existing callers wrap doctor in the one-use checkout command. Cache
+        # that value here so the very next Telegram invocation no longer needs
+        # another server-side secret delivery.
+        require_api_hash(identity)
+    api_hash_cached = load_cached_api_hash(identity) is not None
     return {
         "runtimeReady": runtime_python().exists(),
         "apiIdConfigured": isinstance(args.api_id, int) and args.api_id > 0,
-        "apiHashDelivered": bool(os.environ.get(API_HASH_ENV)),
+        "apiHashDelivered": api_hash_delivered,
+        "apiHashCached": api_hash_cached,
+        "apiHashAvailable": api_hash_cached,
         "sessionPresent": session_file.exists(),
         "policy": load_policy(identity),
         "localRoot": str(root),

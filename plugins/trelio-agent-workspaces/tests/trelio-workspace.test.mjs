@@ -2975,6 +2975,9 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /another route into the same protected system/u);
   assert.match(workerSkill, /Native Trelio reads, task discovery and Agent Workspace control-plane\s+operations are the primary workflow/u);
   assert.match(workerSkill, /do not require a catalog or separate\s+skill lookup/u);
+  assert.match(workerSkill, /Telegram MTProto runtime is a narrow persistence exception/u);
+  assert.match(workerSkill, /reuse `apiHashCached=true` without a new\s+secret checkout/u);
+  assert.match(workerSkill, /Only a missing local `api_hash` cache permits/u);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
   assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill again once/u);
   assert.match(workerSkill, /durable rule identified by\s+the agent/);
@@ -3002,6 +3005,9 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(catalogSkill, /`telegram-web` is secondary with priority `200`/u);
   assert.match(catalogSkill, /`not_configured`, `no_access`, `needs_reconnect`, or\s+`unsupported_operation`/u);
   assert.match(catalogSkill, /ambiguous mutation outcome are not fallback reasons/u);
+  assert.match(catalogSkill, /first run its exact `doctor`\s+command without a secret wrapper/u);
+  assert.match(catalogSkill, /`apiHashCached=true`.*do not request another checkout/su);
+  assert.match(catalogSkill, /successful delivery initializes the private local cache/u);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {

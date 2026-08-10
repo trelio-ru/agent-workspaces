@@ -137,6 +137,19 @@ skill/company/member/connection namespace. Credential fingerprint меняетс
 endpoint/auth/config change. Forget удаляет local copy, но не отзывает provider
 credential.
 
+Telegram MTProto `api_hash` остаётся company Agent Secret в Trelio, но не
+checkout-ится перед каждой командой. Первый exact runtime invocation с
+`TRELIO_TELEGRAM_API_HASH` атомарно сохраняет нормализованное значение в
+`credentials/api_hash` внутри того же private
+skill/company/member/connection namespace; каталог и runtime никогда не
+возвращают его модели. При наличии валидного regular файла текущего OS owner с
+mode `0600` runtime использует local copy без нового checkout. При отсутствии
+файла `doctor` показывает `apiHashCached=false`, после чего разрешён ровно один
+обычный checkout текущего Agent Run; явно доставленное новое значение заменяет
+старую копию. Каталожный `get_agent_skill` и live runtime resolve остаются
+обязательными: cache убирает повторную secret delivery, но не проверку текущих
+assignment, connection и release.
+
 Agent Secret server-side Vault: safe schema отдельно, encrypted immutable
 version содержит атомарный JSON bundle именованных полей. One-use grant связан
 с exact version/field set/Run/executable; multi-field stdin/private temp
@@ -204,7 +217,9 @@ Email – TLS IMAP/SMTP. Gmail app password link официальный, visual 
 / `read-only`; company может запретить autonomous, но не включить его.
 
 Telegram login – browser-first code или in-memory QR; phone/code/2FA/session/
-api_hash не попадают в MCP/argv/workspace/log. 2FA hint bounded и HTML-escaped.
+api_hash не попадают в MCP/argv/workspace/log. `api_hash` после первого
+one-use checkout хранится локально private рядом с MTProto session и повторно
+не запрашивается, пока cache-файл существует. 2FA hint bounded и HTML-escaped.
 Read/search возвращают bounded author/date/link entities, model-bound
 attachment metadata и one-level reply context без `inputPeer`, `access_hash`,
 file reference и другого capability-bearing peer material. Нормализованный

@@ -2,6 +2,7 @@ import asyncio
 import http.client
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -110,16 +111,125 @@ class TrelioTelegramTests(unittest.TestCase):
         self.assertIn(self.identity().company_id, str(root))
         self.assertNotIn(".trelio", str(root))
 
-    def test_api_hash_is_accepted_only_from_environment(self):
-        with mock.patch.dict(MODULE.os.environ, {}, clear=True):
-            with self.assertRaisesRegex(MODULE.TelegramRuntimeError, "Agent Secret checkout"):
-                MODULE.require_api_hash()
-        with mock.patch.dict(
-            MODULE.os.environ,
-            {MODULE.API_HASH_ENV: "a" * 32},
-            clear=True,
-        ):
-            self.assertEqual(MODULE.require_api_hash(), "a" * 32)
+    def test_api_hash_checkout_initializes_private_local_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    MODULE.API_HASH_ENV: "A" * 32,
+                },
+                clear=True,
+            ):
+                self.assertEqual(MODULE.require_api_hash(self.identity()), "a" * 32)
+                self.assertNotIn(MODULE.API_HASH_ENV, MODULE.os.environ)
+                path = MODULE.api_hash_path(self.identity())
+                self.assertEqual(path.read_text(encoding="utf-8"), ("a" * 32) + "\n")
+                if os.name == "posix":
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
+
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {"TRELIO_CONFIG_HOME": temporary},
+                clear=True,
+            ):
+                self.assertEqual(MODULE.require_api_hash(self.identity()), "a" * 32)
+
+    def test_api_hash_checkout_replaces_cached_company_value(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    MODULE.API_HASH_ENV: "a" * 32,
+                },
+                clear=True,
+            ):
+                MODULE.require_api_hash(self.identity())
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    MODULE.API_HASH_ENV: "b" * 32,
+                },
+                clear=True,
+            ):
+                self.assertEqual(MODULE.require_api_hash(self.identity()), "b" * 32)
+                self.assertEqual(
+                    MODULE.api_hash_path(self.identity()).read_text(encoding="utf-8"),
+                    ("b" * 32) + "\n",
+                )
+
+    def test_api_hash_requires_one_checkout_when_cache_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {"TRELIO_CONFIG_HOME": temporary},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(MODULE.TelegramRuntimeError, "not cached"):
+                    MODULE.require_api_hash(self.identity())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission regression")
+    def test_api_hash_cache_rejects_group_or_world_access(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    MODULE.API_HASH_ENV: "a" * 32,
+                },
+                clear=True,
+            ):
+                MODULE.require_api_hash(self.identity())
+                MODULE.api_hash_path(self.identity()).chmod(0o644)
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {"TRELIO_CONFIG_HOME": temporary},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(MODULE.TelegramRuntimeError, "expected 600"):
+                    MODULE.require_api_hash(self.identity())
+
+    def test_doctor_reports_and_initializes_api_hash_cache_without_revealing_value(self):
+        args = MODULE.build_parser().parse_args(
+            [
+                "--company-id",
+                self.identity().company_id,
+                "--member-id",
+                self.identity().member_id,
+                "--connection-id",
+                self.identity().connection_id,
+                "--api-id",
+                "12345",
+                "doctor",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    MODULE.API_HASH_ENV: "a" * 32,
+                },
+                clear=True,
+            ):
+                result = MODULE.command_doctor(args)
+                self.assertTrue(result["apiHashDelivered"])
+                self.assertTrue(result["apiHashCached"])
+                self.assertTrue(result["apiHashAvailable"])
+                self.assertNotIn("a" * 32, json.dumps(result))
+
+            with mock.patch.dict(
+                MODULE.os.environ,
+                {"TRELIO_CONFIG_HOME": temporary},
+                clear=True,
+            ):
+                result = MODULE.command_doctor(args)
+                self.assertFalse(result["apiHashDelivered"])
+                self.assertTrue(result["apiHashCached"])
+                self.assertTrue(result["apiHashAvailable"])
 
     def test_login_defaults_to_browser_method_choice(self):
         args = MODULE.build_parser().parse_args(

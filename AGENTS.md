@@ -140,6 +140,12 @@
   Codex/Claude/OS lanes live-tested.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   личные external credentials хранятся локально вне Git/workspace/Trelio.
+  Узкое исключение по времени жизни – company-scoped Telegram MTProto
+  `api_hash`: первый checkout exact runtime атомарно сохраняет его локально в
+  private `skill/company/member/connection` namespace рядом с более
+  чувствительной персональной session. Следующие команды используют эту копию
+  и не запрашивают новый checkout, пока файл существует; значение по-прежнему
+  не попадает в model/MCP/argv/stdout/workspace/log.
 - ConsultantPlus показывает browser только для входа, CAPTCHA и другого exact
   действия пользователя. После подтверждённой авторизации Codex side panel
   сразу скрывается либо внешний browser перестаёт выводиться на передний план;

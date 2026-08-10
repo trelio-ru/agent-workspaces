@@ -93,6 +93,16 @@ An enabled skill and a configured connection are separate. When `companyConnecti
 - deliver an Agent Secret only through `prepare_agent_secret_checkout` and the exact executable described by the current skill;
 - keep personal sessions and `policy.json` in the runtime-resolved local integration directory, never in a workspace or plugin checkout.
 
+For the current `telegram-mtproto` runtime, first run its exact `doctor`
+command without a secret wrapper. When it reports `apiHashCached=true`, invoke
+subsequent Telegram commands directly and do not request another checkout. If
+it reports `apiHashCached=false` or the runtime returns the exact local-cache
+missing error, use `prepare_agent_secret_checkout` once from the current active
+Run with the binding, delivery mode, environment variable and executable from
+the current Telegram instruction, then run the returned exact command. A
+successful delivery initializes the private local cache for later invocations.
+Never read, print, copy, edit or delete that credential file directly.
+
 For declarative Remote MCP skills:
 
 - `credentialHelp` is a public hint, not a credential. Give its exact HTTPS link when the user asks where to obtain a token or when the local host reports `REMOTE_MCP_PERSONAL_TOKEN_REQUIRED`;
