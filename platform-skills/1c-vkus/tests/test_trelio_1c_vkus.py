@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+import datetime as dt
 import http.client
 import importlib.util
 import json
@@ -129,7 +131,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.1.5")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.0")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -351,11 +353,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         ):
             result = runtime.command_general_get_capabilities(Namespace())
 
-        self.assertEqual(result["registryVersion"], 4)
-        self.assertEqual(
-            result["schema"]["registryDigest"],
-            "sha256:24e76957d2826ea6fa69379d415d19015f2282c94758280e80991b7b4911a438",
-        )
+        self.assertEqual(result["registryVersion"], 5)
         self.assertEqual(
             result["schema"]["profileSchemaDigest"],
             runtime.GENERAL_PROFILE_SCHEMA_DIGEST,
@@ -380,7 +378,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             },
         )
         self.assertEqual(len(result["sections"]["references"]), 13)
-        self.assertEqual(len(result["sections"]["documents"]), 6)
+        self.assertEqual(len(result["sections"]["documents"]), 8)
         self.assertEqual(len(result["sections"]["financialTurnovers"]), 10)
         self.assertEqual(len(result["sections"]["financialRecords"]), 3)
         self.assertEqual(len(result["sections"]["balances"]), 2)
@@ -391,7 +389,14 @@ class OneCVkusRuntimeTest(unittest.TestCase):
                     "kind": "budget",
                     "status": "supported",
                     "filters": ["period", "business_unit", "budget_item"],
-                    "registrarTypes": ["internal_consumption"],
+                    "registrarTypes": [
+                        "internal_consumption",
+                        "purchase",
+                        "service_purchase",
+                        "expense_report",
+                    ],
+                    "controlRegistrarTypes": ["expense_distribution"],
+                    "coverage": "fail_closed_all_active_registrars",
                     "sensitiveConfirmationRequired": True,
                     "capabilityDigest": result["schema"]["capabilityDigests"][
                         "financial_turnover.budget"
@@ -415,7 +420,46 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             result["reporting"],
             {"pnlAssembly": False, "sourceDataOnly": True},
         )
+        self.assertEqual(
+            result["limits"],
+            {
+                "maxPageSize": 50,
+                "maxFinancialPageSize": 50,
+                # The test connection remains tightened to three pages.  The
+                # signed package ceiling is asserted separately below.
+                "maxPages": 3,
+                "maxLines": 500,
+                "maxFinancialPeriodDays": 366,
+                "requestTimeoutSeconds": 20,
+                "responseBytes": runtime.MAX_ODATA_RESPONSE_BYTES,
+            },
+        )
         self.assertNotIn("metadataBytes", result["limits"])
+
+    def test_expanded_read_limits_remain_bounded_by_connection_policy(self) -> None:
+        """The package can cover a year, while live policy may stay stricter."""
+
+        permissive = dataclasses.replace(self.config, max_pages=10, max_rows=50)
+        self.assertEqual(
+            runtime._general_page(Namespace(page=10, limit=50), permissive),
+            (10, 50),
+        )
+        self.assertEqual(
+            runtime._general_financial_page(
+                Namespace(page=10, limit=50),
+                permissive,
+            ),
+            (10, 50),
+        )
+        self.assertEqual(
+            runtime._general_financial_period(
+                Namespace(date_from="2024-01-01", date_to="2024-12-31"),
+            ),
+            (dt.date(2024, 1, 1), dt.date(2025, 1, 1)),
+        )
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_page(Namespace(page=4, limit=50), self.config)
+        self.assertEqual(caught.exception.code, "page_out_of_range")
 
     def test_every_production_command_has_no_schema_discovery_request(self) -> None:
         """Exercise every broad handler while recording all transport sources."""
@@ -813,12 +857,136 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             "",
         )
 
+    def test_service_and_expense_report_lines_use_fixed_collections(self) -> None:
+        """New document adapters normalize business text and stable row ids."""
+
+        service_spec = runtime.GENERAL_DOCUMENT_SPECS["service_purchase"][0]
+        service_raw = source_record(service_spec["fields"], record_id=DOCUMENT_ID)
+        service_line = source_record(service_spec["lineFields"])
+        service_line.update({
+            "LineNumber": "1",
+            "Содержание": "Обработка анкет соискателей, стандартное интервью",
+            "Количество": 1.0,
+            "Цена": 1270.87,
+            "Сумма": 1270.87,
+            "СуммаНДС": 0.0,
+            "СуммаСНДС": 1270.87,
+            "СтатьяРасходов": ITEM_ID,
+            "СтатьяРасходов_Type": (
+                "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов"
+            ),
+            "ИдентификаторСтроки": "service-line-1",
+        })
+        service_raw["Расходы"] = [service_line]
+        service = runtime._general_document_record(
+            "service_purchase",
+            service_spec,
+            service_raw,
+            matched_by=["id"],
+            include_lines=True,
+            line_limit=10,
+        )
+        self.assertEqual(service["lines"][0]["content"], service_line["Содержание"])
+        self.assertEqual(service["lines"][0]["expenseItemReference"], ITEM_ID)
+        self.assertEqual(service["lines"][0]["sourceLineId"], "service-line-1")
+
+        report_spec = runtime.GENERAL_DOCUMENT_SPECS["expense_report"][0]
+        report_raw = source_record(report_spec["fields"], record_id=DOCUMENT_ID)
+        report_raw.update({
+            "СуммаИзрасходовано": 37968.79,
+            "НазначениеАванса": "Хозяйственные расходы",
+            "ДатаУтверждения": "2026-06-30T12:00:00",
+        })
+        report_line = source_record(report_spec["lineFields"])
+        report_line.update({
+            "LineNumber": "1",
+            "Сумма": 20000.0,
+            "Содержание": "Расход, признанный в мае",
+            "Комментарий": "Не повторять в июне",
+            "СтатьяРасходов": ITEM_ID,
+            "СтатьяРасходов_Type": (
+                "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов"
+            ),
+            "ИдентификаторСтроки": "advance-line-1",
+            "Отменено": False,
+        })
+        report_raw["ПрочиеРасходы"] = [report_line]
+        report = runtime._general_document_record(
+            "expense_report",
+            report_spec,
+            report_raw,
+            matched_by=["id"],
+            include_lines=True,
+            line_limit=10,
+        )
+        self.assertEqual(report["amount"], 37968.79)
+        self.assertEqual(report["advancePurpose"], "Хозяйственные расходы")
+        self.assertEqual(report["lines"][0]["sourceLineId"], "advance-line-1")
+
+    def test_line_reference_enrichment_builds_cross_period_deduplication_key(self) -> None:
+        document = {
+            "id": DOCUMENT_ID,
+            "kind": "expense_report",
+            "type": "expense_report",
+            "lines": [
+                {
+                    "lineNumber": 1,
+                    "sourceLineId": "advance-line-1",
+                    "itemId": None,
+                    "unitId": None,
+                    "expenseItemId": ITEM_ID,
+                },
+            ],
+            "lineInfo": {"included": True},
+        }
+
+        def reference_map(
+            _config: object,
+            _credentials: object,
+            kind: str,
+            _references: object,
+        ) -> dict[str, dict[str, object]]:
+            return (
+                {
+                    ITEM_ID: {
+                        "id": ITEM_ID,
+                        "name": "Прочие",
+                    },
+                }
+                if kind == "budget_item"
+                else {}
+            )
+
+        with mock.patch.object(
+            runtime,
+            "_general_reference_map_by_ids",
+            side_effect=reference_map,
+        ):
+            result = runtime._general_enrich_document_line_references(
+                self.config,
+                self.credentials,
+                document,
+            )
+
+        line = result["lines"][0]
+        self.assertEqual(
+            line["sourceLineKey"],
+            f"expense_report:{DOCUMENT_ID}:advance-line-1",
+        )
+        self.assertEqual(line["expenseItem"]["name"], "Прочие")
+
     def test_budget_drilldown_aggregates_lines_and_resolves_fixed_registrars(self) -> None:
         """Several register rows for one document become one reconciled header."""
 
-        registrar_type = "StandardODATA.Document_ВнутреннееПотребление"
+        internal_type = "StandardODATA.Document_ВнутреннееПотребление"
+        distribution_type = "StandardODATA.Document_РаспределениеПрочихЗатрат"
 
-        def turnover_row(registrar: str, line: int, amount: float) -> dict[str, object]:
+        def turnover_row(
+            registrar: str,
+            line: int,
+            amount: float,
+            registrar_type: str = internal_type,
+        ) -> dict[str, object]:
             return {
                 "dimensions": {
                     "budgetItemReference": ITEM_ID,
@@ -834,6 +1002,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             turnover_row(DOCUMENT_ID, 1, 1000.0),
             turnover_row(DOCUMENT_ID, 2, 232.0),
             turnover_row(COMPANY_ID, 1, 1036.0),
+            turnover_row(REFERENCE_ID, 1, 2268.0, distribution_type),
         ]
 
         def document_by_id(
@@ -895,15 +1064,20 @@ class OneCVkusRuntimeTest(unittest.TestCase):
 
         self.assertEqual(result["total"], 2268)
         self.assertEqual(result["reconciliation"]["registrarAmountSum"], 2268)
+        self.assertEqual(result["reconciliation"]["controlAmountSum"], 2268)
+        self.assertTrue(result["reconciliation"]["controlMatches"])
         self.assertTrue(result["reconciliation"]["complete"])
-        by_number = {item["number"]: item for item in result["registrars"]}
+        source_registrars = [
+            item for item in result["registrars"] if item["role"] == "source"
+        ]
+        by_number = {item["number"]: item for item in source_registrars}
         self.assertEqual(by_number["ВККА-001511"]["amount"], 1232)
         self.assertEqual(by_number["ВККА-001421"]["amount"], 1036)
         self.assertTrue(
             all(item["type"] == "internal_consumption" for item in by_number.values()),
         )
         self.assertTrue(
-            all(item["sourceType"] == registrar_type for item in by_number.values()),
+            all(item["sourceType"] == internal_type for item in by_number.values()),
         )
         self.assertTrue(
             all(item["resolutionStatus"] == "resolved" for item in by_number.values()),
@@ -911,6 +1085,54 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertEqual(
             result["budgetItem"]["name"],
             "66 Инвентарь и мелкое оборудование",
+        )
+
+    def test_budget_drilldown_unknown_registrar_blocks_completeness(self) -> None:
+        """A zero-result adapter cannot hide an unreviewed active source type."""
+
+        budget_rows = [
+            {
+                "dimensions": {
+                    "budgetItemReference": ITEM_ID,
+                    "businessUnitId": REFERENCE_ID,
+                    "registrarReference": DOCUMENT_ID,
+                    "registrarType": "StandardODATA.Document_НовыйТипРасхода",
+                    "lineNumber": 1,
+                },
+                "metrics": {"amount": 500.0},
+            },
+        ]
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(runtime, "_general_reference_by_id", return_value=[]),
+            mock.patch.object(
+                runtime,
+                "_general_budget_turnover_rows",
+                return_value=(budget_rows, False),
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            result = runtime.command_general_get_budget_turnover_details(
+                Namespace(
+                    date_from="2026-06-01",
+                    date_to="2026-06-30",
+                    business_unit_id=REFERENCE_ID,
+                    budget_item_id=ITEM_ID,
+                    limit=50,
+                    include_sensitive=True,
+                ),
+            )
+
+        self.assertEqual(result["total"], 0)
+        self.assertFalse(result["reconciliation"]["complete"])
+        self.assertEqual(result["reconciliation"]["unknownAmountSum"], 500)
+        self.assertEqual(
+            result["reconciliation"]["unknownRegistrarTypes"],
+            ["StandardODATA.Document_НовыйТипРасхода"],
         )
 
     def test_fixed_source_400_and_404_are_safe_contract_errors(self) -> None:
@@ -1061,7 +1283,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             ),
             finance_args(
                 "sales_cost",
-                date_from="2026-01-01",
+                date_from="2025-01-01",
                 date_to="2026-07-01",
                 business_unit_id=REFERENCE_ID,
             ),
@@ -1228,10 +1450,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         parameters = dict(captured["parameters"])
         filter_value = str(parameters["$filter"])
         self.assertIn("Active eq true", filter_value)
-        self.assertIn(
-            "Recorder_Type eq 'StandardODATA.Document_ВнутреннееПотребление'",
-            filter_value,
-        )
+        self.assertNotIn("Recorder_Type", filter_value)
         self.assertIn(f"Подразделение_Key eq guid'{REFERENCE_ID}'", filter_value)
         self.assertIn(
             f"СтатьяРасходов_Key eq guid'{ITEM_ID}'",

@@ -66,14 +66,14 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 - `access-status reset`
 - `forget-credentials`
 - `get-capabilities`
-- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit [--query TEXT] [--page 1..3] [--limit 1..25]`
+- `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit [--query TEXT] [--page 1..10] [--limit 1..50]`
 - `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit --id UUID`
-- `search-documents --kind purchase|sale|receipt|return|transfer|internal_consumption [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..3] [--limit 1..25]`
-- `get-document --kind purchase|sale|receipt|return|transfer|internal_consumption --id UUID [--include-lines] [--line-limit 1..100]`
-- `get-financial-turnovers --kind budget|sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--budget-item-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `search-documents --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..10] [--limit 1..50]`
+- `get-document --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report --id UUID [--include-lines] [--line-limit 1..500]`
+- `get-financial-turnovers --kind budget|sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--budget-item-id UUID] [--page 1..10] [--limit 1..50] --include-sensitive`
 - `get-budget-turnover-details --date-from YYYY-MM-DD --date-to YYYY-MM-DD --business-unit-id UUID --budget-item-id UUID [--limit 1..50] --include-sensitive`
-- `search-financial-records --kind account_entry|bank_receipt|bank_payment --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
-- `get-balance-and-turnovers --kind accounts|stock --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--warehouse-id UUID] [--item-id UUID] [--page 1..3] [--limit 1..50] --include-sensitive`
+- `search-financial-records --kind account_entry|bank_receipt|bank_payment --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..10] [--limit 1..50] --include-sensitive`
+- `get-balance-and-turnovers --kind accounts|stock --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--warehouse-id UUID] [--item-id UUID] [--page 1..10] [--limit 1..50] --include-sensitive`
 - `get-balances --kind stock` (deprecated compatibility response only)
 - `get-links --kind business_unit|contract|document --id UUID`
 
@@ -92,15 +92,17 @@ against those fixed entities and fails closed if it is ambiguous.
 
 ## Financial source-data rules
 
-These commands provide bounded source data only. They do not assemble,
-classify or calculate a P&L, do not apply allocation rules and do not decide
-which accounting treatment is correct. A future governed P&L workflow must
-define those steps separately.
+These commands provide normalized, reconciled source data for P&L preparation.
+They do not own the economic policy: classification into final P&L lines,
+allocation methods, signs and business exceptions remain governed outside 1C
+and must be approved by the economist. The runtime supplies stable source-line
+keys so a downstream recognition journal can prevent repeated recognition
+across periods without writing anything back to 1C.
 
 Use `--include-sensitive` only when the current user request explicitly needs
 financial, payroll, tax, bank, accounting or inventory figures. The flag is
 required on every such command and is never persisted. The period is required,
-inclusive, limited to 93 calendar days, and every request must also contain at
+inclusive, limited to 366 calendar days, and every request must also contain at
 least one source-supported scope filter. Follow the `filters` and
 `requiredAny` contract returned by `get-capabilities`; do not broaden a
 rejected request. Also follow `filterSourceTypes`: payroll uses the
@@ -130,15 +132,19 @@ register, function, dimension or raw field.
 `ПрочиеРасходы_RecordType` route by period and confirmed
 `enterprise_structure` UUID. Live release review confirmed that this source
 retains the expense article, amount, registrar and line identity required for
-exact reconciliation. The fixed registrar-type predicate includes only
-`internal_consumption` rows and excludes the later month-end distribution row
-that repeats the complete article amount. The optional `--budget-item-id` is
+exact reconciliation. The fixed read-only adapter classifies every active row
+as one of `internal_consumption`, `purchase`, `service_purchase`,
+`expense_report` or the control-only `expense_distribution`; an unknown type
+makes coverage incomplete. The distribution rows repeat the direct source
+amount, so they are used as an independent control and are never added to the
+P&L source total. The optional `--budget-item-id` is
 validated as a UUID and emitted only against the direct expense-article GUID
 field. The public argument name is retained for command compatibility; the
 fixed reference source is `СтатьиРасходов`. `get-budget-turnover-details`
-requires both scope UUIDs, sums the exact article rows and resolves the
-reviewed registrar type to document number/date. It reports source truncation
-explicitly and never treats a partial sum as reconciled.
+requires both scope UUIDs, sums direct rows, resolves each source document and
+compares their sum with the distribution control. Source truncation, unknown
+types, missing documents or a control mismatch make `reconciliation.complete`
+false; a zero result from one adapter never proves absence of the article.
 
 For `internal_consumption`, `search-documents` supports only period,
 organization, business unit, number and posting/deletion status. With
@@ -148,6 +154,15 @@ packaging UUID), while line amounts and articles are enriched only from the
 same fixed record table scoped to the exact document registrar.
 Missing or changed line/register fields fail closed; no arbitrary join,
 document type, register, field or expression can be supplied by the caller.
+
+`purchase` lines include the fixed expense-article UUID, direct-expense flag,
+source-row id and incoming-document label. `service_purchase` exposes service
+content, quantity, price, amount, VAT, allocation comment and expense article.
+`expense_report` exposes advance purpose, approval date and fixed other-expense
+rows with content, incoming-document details, amount, article, counterparty and
+cancellation state. The normalized `sourceLineKey` combines the reviewed
+document type, exact document UUID and stable 1C row id (or line number only
+when the source has no row id).
 
 ## Output and trust rules
 

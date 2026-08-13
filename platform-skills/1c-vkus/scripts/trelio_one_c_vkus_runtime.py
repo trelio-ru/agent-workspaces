@@ -60,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # The broad Vkus surface owns its connection and local credentials. There is
 # intentionally no lookup or migration from the former 1c-edo namespace.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
-RUNTIME_VERSION = "1.1.5"
+RUNTIME_VERSION = "1.2.0"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -259,6 +259,8 @@ DIAGNOSTIC_STAGES = frozenset(
                 "return",
                 "transfer",
                 "internal_consumption",
+                "service_purchase",
+                "expense_report",
             )
             for action in ("search", "get", "links")
         },
@@ -304,12 +306,18 @@ DIAGNOSTIC_STAGES = frozenset(
 GENERAL_PROFILE_SCHEMA_DIGEST = (
     "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
 )
-GENERAL_REGISTRY_VERSION = 4
-GENERAL_MAX_PAGE_SIZE = 25
-GENERAL_MAX_PAGES = 3
-GENERAL_MAX_LINES = 100
+GENERAL_REGISTRY_VERSION = 5
+# These ceilings still bound every read-only command, but allow a full annual
+# management-accounting pass without forcing the economist to split one
+# logical request into quarters or manually stitch tiny document pages.  The
+# effective page size/page count remains the lower of these signed limits and
+# the live company connection policy, so an administrator can tighten the
+# deployment without publishing another runtime.
+GENERAL_MAX_PAGE_SIZE = 50
+GENERAL_MAX_PAGES = 10
+GENERAL_MAX_LINES = 500
 GENERAL_MAX_FINANCIAL_PAGE_SIZE = 50
-GENERAL_MAX_FINANCIAL_PERIOD_DAYS = 93
+GENERAL_MAX_FINANCIAL_PERIOD_DAYS = 366
 GENERAL_MAX_LINK_CONTRACTS = 20
 GENERAL_MAX_LINK_DOCUMENTS = 25
 GENERAL_MAX_LINK_EDO_DOCUMENTS = 25
@@ -593,6 +601,11 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                 "Цена": "Edm.Double",
                 "Сумма": "Edm.Double",
                 "СуммаНДС": "Edm.Double",
+                "СуммаСНДС": "Edm.Double",
+                "СтатьяРасходов_Key": "Edm.Guid",
+                "СписатьНаРасходы": "Edm.Boolean",
+                "ИдентификаторСтроки": "Edm.String",
+                "НаименованиеВходящегоДокумента": "Edm.String",
                 "Склад_Key": "Edm.Guid",
                 "Подразделение_Key": "Edm.Guid",
             },
@@ -768,6 +781,105 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
             "filters": ("period", "organization", "business_unit", "number", "status"),
         },
     ),
+    "service_purchase": (
+        {
+            "entity": "Document_ПриобретениеУслугПрочихАктивов",
+            "sourceType": "service_purchase",
+            "lineCollection": "Расходы",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "Договор_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Комментарий": "Edm.String",
+                "Расходы": (
+                    "Collection(StandardODATA."
+                    "Document_ПриобретениеУслугПрочихАктивов_Расходы_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "Содержание": "Edm.String",
+                "Количество": "Edm.Double",
+                "Цена": "Edm.Double",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "СуммаСНДС": "Edm.Double",
+                "СтатьяРасходов": "Edm.String",
+                "СтатьяРасходов_Type": "Edm.String",
+                "Подразделение_Key": "Edm.Guid",
+                "КомментарийРаспределения": "Edm.String",
+                "ИдентификаторСтроки": "Edm.String",
+            },
+            "filters": (
+                "period",
+                "organization",
+                "business_unit",
+                "counterparty",
+                "contract",
+                "number",
+                "status",
+            ),
+        },
+    ),
+    "expense_report": (
+        {
+            "entity": "Document_АвансовыйОтчет",
+            "sourceType": "expense_report",
+            "lineCollection": "ПрочиеРасходы",
+            "amountField": "СуммаИзрасходовано",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "СуммаИзрасходовано": "Edm.Double",
+                "НазначениеАванса": "Edm.String",
+                "Статус": "Edm.String",
+                "Комментарий": "Edm.String",
+                "ДатаУтверждения": "Edm.DateTime",
+                "ПрочиеРасходы": (
+                    "Collection(StandardODATA."
+                    "Document_АвансовыйОтчет_ПрочиеРасходы_RowType)"
+                ),
+            },
+            "lineFields": {
+                "LineNumber": "Edm.Int64",
+                "НаименованиеВходящегоДокумента": "Edm.String",
+                "НомерВходящегоДокумента": "Edm.String",
+                "ДатаВходящегоДокумента": "Edm.DateTime",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "СуммаСНДС": "Edm.Double",
+                "СтатьяРасходов": "Edm.String",
+                "СтатьяРасходов_Type": "Edm.String",
+                "Комментарий": "Edm.String",
+                "Содержание": "Edm.String",
+                "ИдентификаторСтроки": "Edm.String",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Отменено": "Edm.Boolean",
+                "ПричинаОтмены": "Edm.String",
+            },
+            "filters": (
+                "period",
+                "organization",
+                "business_unit",
+                "number",
+                "status",
+            ),
+        },
+    ),
     "internal_consumption": (
         {
             "entity": "Document_ВнутреннееПотребление",
@@ -788,7 +900,7 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                     "Document_ВнутреннееПотребление_Товары_RowType)"
                 ),
             },
-            # The document itself does not expose line amounts. Release 1.1.0
+            # The document itself does not expose line amounts. The runtime
             # enriches these fixed goods rows only from the reviewed budget
             # register records of this exact registrar; no caller-selected
             # entity, join, field or expression is accepted.
@@ -800,6 +912,7 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                 "Количество": "Edm.Double",
                 "СтатьяРасходов": "Edm.String",
                 "СтатьяРасходов_Type": "Edm.String",
+                "ИдентификаторСтроки": "Edm.String",
             },
             "filters": (
                 "period",
@@ -824,11 +937,11 @@ GENERAL_FINANCIAL_TURNOVER_SPECS: dict[str, dict[str, Any]] = {
         "entity": "AccumulationRegister_ПрочиеРасходы_RecordType",
         "transport": "record_table",
         "sourceType": "expense_records_by_registrar",
-        # Live verification of the June acceptance example showed that the
-        # required article, amount and exact internal-consumption registrar
-        # live in ПрочиеРасходы_RecordType.  Its later month-end distribution
-        # row repeats the full amount, so the fixed registrar discriminator is
-        # part of the signed state predicate and prevents double counting.
+        # Direct source documents and the later month-end distribution both
+        # write this register. Keep all active registrar types in the signed
+        # source, classify them below and reconcile direct rows against the
+        # independent distribution control. Filtering to one document type
+        # would make missing expenses look like a complete article.
         "fields": {
             "Recorder": "Edm.String",
             "Recorder_Type": "Edm.String",
@@ -837,7 +950,11 @@ GENERAL_FINANCIAL_TURNOVER_SPECS: dict[str, dict[str, Any]] = {
             "Active": "Edm.Boolean",
             "СтатьяРасходов_Key": "Edm.Guid",
             "Подразделение_Key": "Edm.Guid",
+            "АналитикаУчетаНоменклатуры_Key": "Edm.Guid",
+            "Сумма": "Edm.Double",
+            "СуммаБезНДС": "Edm.Double",
             "СуммаУпр": "Edm.Double",
+            "СуммаРегл": "Edm.Double",
         },
         "output": {
             "Recorder": "registrarReference",
@@ -847,17 +964,20 @@ GENERAL_FINANCIAL_TURNOVER_SPECS: dict[str, dict[str, Any]] = {
             "Active": "active",
             "СтатьяРасходов_Key": "budgetItemReference",
             "Подразделение_Key": "businessUnitId",
+            "АналитикаУчетаНоменклатуры_Key": "itemAccountingAnalyticsId",
+            "Сумма": "amountSource",
+            "СуммаБезНДС": "amountWithoutVat",
             "СуммаУпр": "amount",
+            "СуммаРегл": "amountRegulated",
         },
-        "metrics": ("СуммаУпр",),
-        "dateField": "Period",
-        "stateClauses": (
-            "Active eq true",
-            (
-                "Recorder_Type eq "
-                "'StandardODATA.Document_ВнутреннееПотребление'"
-            ),
+        "metrics": (
+            "Сумма",
+            "СуммаБезНДС",
+            "СуммаУпр",
+            "СуммаРегл",
         ),
+        "dateField": "Period",
+        "stateClauses": ("Active eq true",),
         "filters": {
             "business_unit": ("Подразделение_Key",),
             "budget_item": ("СтатьяРасходов_Key",),
@@ -4240,7 +4360,14 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
                     "kind": "budget",
                     "status": "supported",
                     "filters": ["period", "business_unit", "budget_item"],
-                    "registrarTypes": ["internal_consumption"],
+                    "registrarTypes": [
+                        "internal_consumption",
+                        "purchase",
+                        "service_purchase",
+                        "expense_report",
+                    ],
+                    "controlRegistrarTypes": ["expense_distribution"],
+                    "coverage": "fail_closed_all_active_registrars",
                     "sensitiveConfirmationRequired": True,
                     "capabilityDigest": schema["capabilityDigests"][
                         "financial_turnover.budget"
@@ -4585,10 +4712,11 @@ def _general_document_record(
     include_lines: bool,
     line_limit: int,
 ) -> dict[str, Any]:
+    line_collection = str(spec.get("lineCollection") or "Товары")
     selected_fields = tuple(
         field
         for field in spec["fields"]
-        if include_lines or field != "Товары"
+        if include_lines or field != line_collection
     )
     _validate_general_source_record(
         raw,
@@ -4603,7 +4731,7 @@ def _general_document_record(
             "Фиксированный документ 1С вернул пустой идентификатор.",
         )
     source_type = str(spec["sourceType"])
-    raw_lines = raw.get("Товары") if include_lines else []
+    raw_lines = raw.get(line_collection) if include_lines else []
     if raw_lines is None:
         raw_lines = []
     if not isinstance(raw_lines, list):
@@ -4626,6 +4754,7 @@ def _general_document_record(
             "price": _general_number(line.get("Цена")),
             "amount": _general_number(line.get("Сумма")),
             "vatAmount": _general_number(line.get("СуммаНДС")),
+            "amountWithVat": _general_number(line.get("СуммаСНДС")),
             "unitId": _general_uuid_value(
                 line.get("Упаковка_Key"),
                 "line unit id",
@@ -4636,6 +4765,37 @@ def _general_document_record(
             "expenseItemType": _general_text(
                 line.get("СтатьяРасходов_Type"),
             ),
+            "expenseItemId": _general_uuid_value(
+                line.get("СтатьяРасходов_Key"),
+                "line expense item id",
+            ),
+            "writeOffToExpenses": _normalized_boolean(
+                line.get("СписатьНаРасходы"),
+            ),
+            "content": _general_text(line.get("Содержание")),
+            "comment": _general_text(line.get("Комментарий")),
+            "allocationComment": _general_text(
+                line.get("КомментарийРаспределения"),
+            ),
+            "sourceLineId": _general_text(
+                line.get("ИдентификаторСтроки"),
+            ),
+            "sourceDocumentName": _general_text(
+                line.get("НаименованиеВходящегоДокумента"),
+            ),
+            "sourceDocumentNumber": _general_text(
+                line.get("НомерВходящегоДокумента"),
+            ),
+            "sourceDocumentDate": _normalized_1c_datetime(
+                line.get("ДатаВходящегоДокумента"),
+                field_label="source document date",
+            ),
+            "counterpartyId": _general_uuid_value(
+                line.get("Контрагент_Key"),
+                "line counterparty id",
+            ),
+            "isCancelled": _normalized_boolean(line.get("Отменено")),
+            "cancellationReason": _general_text(line.get("ПричинаОтмены")),
             "warehouseId": _general_uuid_value(
                 line.get("Склад_Key"),
                 "line warehouse id",
@@ -4685,8 +4845,15 @@ def _general_document_record(
             safe.get("СкладПолучатель_Key"),
             "destination warehouse id",
         ),
-        "amount": _general_number(safe.get("СуммаДокумента")),
+        "amount": _general_number(
+            safe.get(str(spec.get("amountField") or "СуммаДокумента")),
+        ),
         "comment": _general_text(safe.get("Комментарий")),
+        "advancePurpose": _general_text(safe.get("НазначениеАванса")),
+        "approvedAt": _normalized_1c_datetime(
+            safe.get("ДатаУтверждения"),
+            field_label="approval date",
+        ),
         "sourceStatus": _general_text(safe.get("Статус")),
         "matchedBy": matched_by,
         "lines": normalized_lines,
@@ -4706,10 +4873,11 @@ def _general_document_record(
 
 
 def _general_document_select(spec: dict[str, Any], include_lines: bool) -> str:
+    line_collection = str(spec.get("lineCollection") or "Товары")
     fields = [
         field
         for field in spec["fields"]
-        if include_lines or field != "Товары"
+        if include_lines or field != line_collection
     ]
     return _selected_fields(fields)
 
@@ -4851,9 +5019,15 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
         if (
             kind == "internal_consumption"
             and bool(args.include_lines)
-            and matches
+            and len(matches) == 1
         ):
             matches[0] = _general_enrich_internal_consumption_document(
+                config,
+                credentials,
+                matches[0],
+            )
+        if bool(args.include_lines) and len(matches) == 1:
+            matches[0] = _general_enrich_document_line_references(
                 config,
                 credentials,
                 matches[0],
@@ -5456,6 +5630,47 @@ def _general_internal_consumption_recorder_type(value: str | None) -> bool:
     }
 
 
+GENERAL_BUDGET_REGISTRAR_TYPES: dict[str, dict[str, str | None]] = {
+    "Document_ВнутреннееПотребление": {
+        "type": "internal_consumption",
+        "documentKind": "internal_consumption",
+        "role": "source",
+    },
+    "Document_ПриобретениеТоваровУслуг": {
+        "type": "purchase",
+        "documentKind": "purchase",
+        "role": "source",
+    },
+    "Document_ПриобретениеУслугПрочихАктивов": {
+        "type": "service_purchase",
+        "documentKind": "service_purchase",
+        "role": "source",
+    },
+    "Document_АвансовыйОтчет": {
+        "type": "expense_report",
+        "documentKind": "expense_report",
+        "role": "source",
+    },
+    # This document is the independent month-end control. Live June checks
+    # confirmed that it repeats the full direct amount by article. It must be
+    # retained for reconciliation but never added to the source P&L total.
+    "Document_РаспределениеПрочихЗатрат": {
+        "type": "expense_distribution",
+        "documentKind": None,
+        "role": "control",
+    },
+}
+
+
+def _general_budget_registrar_descriptor(
+    value: str | None,
+) -> dict[str, str | None] | None:
+    """Map only reviewed bare or StandardODATA registrar type spellings."""
+
+    normalized = str(value or "").removeprefix("StandardODATA.")
+    return GENERAL_BUDGET_REGISTRAR_TYPES.get(normalized)
+
+
 def _general_budget_item_reference(
     dimensions: Mapping[str, Any],
 ) -> str:
@@ -5630,6 +5845,97 @@ def _general_enrich_internal_consumption_document(
     return document
 
 
+def _general_document_line_expense_item_id(
+    line: Mapping[str, Any],
+) -> str | None:
+    """Resolve the one reviewed expense-article reference shape on a line."""
+
+    direct = line.get("expenseItemId")
+    if direct:
+        return _uuid(str(direct), "line expense item id")
+    reference = line.get("expenseItemReference")
+    reference_type = line.get("expenseItemType")
+    if reference and reference_type in {
+        "ChartOfCharacteristicTypes_СтатьиРасходов",
+        "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов",
+    }:
+        return _uuid(str(reference), "line expense item id")
+    return None
+
+
+def _general_enrich_document_line_references(
+    config: CompanyConfig,
+    credentials: Credentials,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach safe names and stable source keys to fixed document lines.
+
+    The helper resolves only the already allowlisted item, unit and expense
+    article catalogs. A source-line key is deterministic from the immutable
+    document identity and the 1C row identifier (falling back to line number),
+    so a downstream recognition journal can prevent cross-period duplicates
+    without storing or writing anything back to 1C.
+    """
+
+    lines = document.get("lines")
+    if not isinstance(lines, list) or not document.get("lineInfo", {}).get("included"):
+        return document
+    items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "item",
+        (line.get("itemId") for line in lines),
+    )
+    unit_ids: list[str | None] = []
+    expense_item_ids: set[str] = set()
+    for line in lines:
+        item = items.get(str(line.get("itemId") or "")) or {}
+        unit_ids.append(line.get("unitId") or item.get("unitId"))
+        expense_item_id = _general_document_line_expense_item_id(line)
+        if expense_item_id:
+            expense_item_ids.add(expense_item_id)
+    units = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "unit",
+        unit_ids,
+    )
+    expense_items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "budget_item",
+        expense_item_ids,
+    )
+    document_type = str(document.get("type") or document.get("kind") or "document")
+    document_id = _uuid(str(document.get("id") or ""), "document id")
+    for line in lines:
+        item = items.get(str(line.get("itemId") or "")) or {}
+        unit_id = line.get("unitId") or item.get("unitId")
+        unit = units.get(str(unit_id or "")) or {}
+        expense_item_id = _general_document_line_expense_item_id(line)
+        line["itemName"] = line.get("itemName") or item.get("name")
+        if line.get("unit") is None and unit:
+            line["unit"] = {
+                "id": unit["id"],
+                "name": unit.get("name"),
+                "fullName": unit.get("fullName"),
+                "symbol": unit.get("unitSymbol"),
+            }
+        if expense_item_id:
+            line["expenseItem"] = {
+                "id": expense_item_id,
+                "type": "expense_item",
+                "name": (expense_items.get(expense_item_id) or {}).get("name"),
+            }
+        stable_line_id = line.get("sourceLineId") or line.get("lineNumber")
+        line["sourceLineKey"] = (
+            f"{document_type}:{document_id}:{stable_line_id}"
+            if stable_line_id is not None
+            else None
+        )
+    return document
+
+
 def command_general_get_budget_turnover_details(
     args: argparse.Namespace,
 ) -> dict[str, Any]:
@@ -5649,6 +5955,9 @@ def command_general_get_budget_turnover_details(
             ("financial_turnover", "budget"),
             ("reference", "budget_item"),
             ("document", "internal_consumption"),
+            ("document", "purchase"),
+            ("document", "service_purchase"),
+            ("document", "expense_report"),
         ),
     )
     try:
@@ -5672,6 +5981,7 @@ def command_general_get_budget_turnover_details(
             budget_item_id=budget_item_id,
         )
         grouped: dict[tuple[str, str], Decimal] = {}
+        grouped_rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for row in rows:
             dimensions = row["dimensions"]
             metrics = row["metrics"]
@@ -5698,18 +6008,16 @@ def command_general_get_budget_turnover_details(
                 )
             key = (registrar_type, registrar)
             grouped[key] = grouped.get(key, Decimal(0)) + Decimal(str(amount))
+            grouped_rows.setdefault(key, []).append(row)
 
         registrars: list[dict[str, Any]] = []
         for (registrar_type, registrar), amount in grouped.items():
-            is_internal_consumption = _general_internal_consumption_recorder_type(
+            descriptor = _general_budget_registrar_descriptor(
                 registrar_type,
             )
             entry: dict[str, Any] = {
-                "type": (
-                    "internal_consumption"
-                    if is_internal_consumption
-                    else "unsupported"
-                ),
+                "type": descriptor["type"] if descriptor else "unsupported",
+                "role": descriptor["role"] if descriptor else "unknown",
                 "sourceType": registrar_type,
                 "id": registrar,
                 "number": None,
@@ -5718,11 +6026,12 @@ def command_general_get_budget_turnover_details(
                 "amount": _general_decimal_number(amount),
                 "resolutionStatus": "unsupported_registrar_type",
             }
-            if is_internal_consumption:
+            document_kind = descriptor.get("documentKind") if descriptor else None
+            if document_kind:
                 matches = _general_documents_by_id(
                     config,
                     credentials,
-                    "internal_consumption",
+                    str(document_kind),
                     registrar,
                     include_lines=False,
                     line_limit=0,
@@ -5743,6 +6052,8 @@ def command_general_get_budget_turnover_details(
                     )
                 else:
                     entry["resolutionStatus"] = "not_found"
+            elif descriptor and descriptor["role"] == "control":
+                entry["resolutionStatus"] = "control_only"
             registrars.append(entry)
         registrars.sort(
             key=lambda item: (
@@ -5751,7 +6062,52 @@ def command_general_get_budget_turnover_details(
                 str(item["id"]),
             ),
         )
-        total = sum(grouped.values(), Decimal(0))
+        source_total = sum(
+            (
+                amount
+                for (registrar_type, _registrar), amount in grouped.items()
+                if (
+                    (_general_budget_registrar_descriptor(registrar_type) or {}).get(
+                        "role",
+                    )
+                    == "source"
+                )
+            ),
+            Decimal(0),
+        )
+        control_total = sum(
+            (
+                amount
+                for (registrar_type, _registrar), amount in grouped.items()
+                if (
+                    (_general_budget_registrar_descriptor(registrar_type) or {}).get(
+                        "role",
+                    )
+                    == "control"
+                )
+            ),
+            Decimal(0),
+        )
+        unknown_total = sum(
+            (
+                amount
+                for (registrar_type, _registrar), amount in grouped.items()
+                if _general_budget_registrar_descriptor(registrar_type) is None
+            ),
+            Decimal(0),
+        )
+        unresolved_sources = [
+            item
+            for item in registrars
+            if item["role"] == "source" and item["resolutionStatus"] != "resolved"
+        ]
+        control_matches = source_total == control_total
+        coverage_complete = (
+            not source_truncated
+            and unknown_total == 0
+            and not unresolved_sources
+            and control_matches
+        )
         save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
@@ -5768,13 +6124,25 @@ def command_general_get_budget_turnover_details(
             if budget_item_matches
             else {"id": budget_item_id, "kind": "budget_item", "name": None}
         ),
-        "total": _general_decimal_number(total),
+        "total": _general_decimal_number(source_total),
         "registrars": registrars[:limit],
         "count": min(len(registrars), limit),
         "reconciliation": {
-            "complete": not source_truncated,
-            "registrarAmountSum": _general_decimal_number(total),
+            "complete": coverage_complete,
+            "sourceAmountSum": _general_decimal_number(source_total),
+            "controlAmountSum": _general_decimal_number(control_total),
+            "controlMatches": control_matches,
+            "unknownAmountSum": _general_decimal_number(unknown_total),
+            # Kept for compatible consumers; it now means the direct source
+            # registrar sum, never source + month-end distribution.
+            "registrarAmountSum": _general_decimal_number(source_total),
             "sourceRows": len(rows),
+            "unknownRegistrarTypes": sorted({
+                str(item["sourceType"])
+                for item in registrars
+                if item["role"] == "unknown"
+            }),
+            "unresolvedSourceRegistrars": len(unresolved_sources),
         },
         "pagination": {
             "limit": limit,
