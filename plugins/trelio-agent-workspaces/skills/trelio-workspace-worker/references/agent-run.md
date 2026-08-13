@@ -97,7 +97,9 @@ submit, or final reporting.
    lets `prepare_agent_workspace_run` in a later agent continue the same work.
    Checkpoint before waiting, a turn/session boundary, context compaction or a
    handoff to another agent. Do not checkpoint a half-written file or create an
-   empty checkpoint without a meaningful delta.
+   empty checkpoint without a meaningful delta. A clean working tree after a
+   successful draft checkpoint is normal: `finish` uses the saved candidate
+   delta and must not manufacture another file edit solely to finalize the Run.
 3. Before a blocking question with meaningful local changes, run
    `trelio-workspace pause --summary "<durable state>" --question "<exact user
    decision>" --next-action "<after the answer>"`. It validates the delta,
@@ -108,9 +110,11 @@ submit, or final reporting.
    heartbeat immediately before finalization: `finish` owns it.
 5. Finalize once with `trelio-workspace finish --summary ... --evidence ...
    --file ... --next-action ...`. The command computes and prints the complete
-   changed-path manifest, creates the handoff checkpoint, heartbeats, prepares
-   the candidate and submits it. For task scope pass one `--task-outcome` from
-   the options returned by `prepare_agent_workspace_run`.
+   candidate changed-path manifest relative to the pinned base, including an
+   already saved draft checkpoint, creates the handoff checkpoint, heartbeats,
+   prepares the candidate and submits it. A truly empty Run still fails. For
+   task scope pass one `--task-outcome` from the options returned by
+   `prepare_agent_workspace_run`.
 6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
    compare-and-swap. A failed final step leaves the handoff/delta recoverable;
    never force-update accepted history or blindly repeat an ambiguous submit.

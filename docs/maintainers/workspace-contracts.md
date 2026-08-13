@@ -59,8 +59,11 @@ optional related context и возвращает exact `open`, draft checkpoint 
 - одним next action;
 - для task scope – exact semantic `taskOutcome`.
 
-`trelio-workspace finish` вычисляет полный changed-path manifest, создаёт
-handoff и вызывает submit в одной model-facing операции. Submit сам делает
+`trelio-workspace finish` вычисляет полный changed-path manifest candidate
+относительно pinned base, включая уже закоммиченный и загруженный draft
+checkpoint, создаёт handoff и вызывает submit в одной model-facing операции.
+Чистый, но непустой saved draft можно завершить без искусственной финальной
+правки; candidate head exact base остаётся запрещён. Submit сам делает
 heartbeat, собирает только validated delta и принимает candidate только при
 совпадении current accepted head с pinned base head.
 `WORKSPACE_OUTDATED` требует нового Run и осознанного merge/reapply. Restore
@@ -77,7 +80,9 @@ dirty/diverged local tree не перезаписывается.
 checkpoint за exact head, не переводя Run в `waiting_for_human`. Агент делает
 его после каждого содержательного изменения и до ожидания, границы
 реплики/сессии, compaction или передачи работы. Полузаписанное дерево не
-становится ни draft milestone, ни канонической accepted revision.
+становится ни draft milestone, ни канонической accepted revision. Если
+сохранённый checkpoint уже содержит готовый итог, `finish` использует его
+candidate delta и не требует ещё одного изменения только ради dirty status.
 
 ## Task-scoped communication
 

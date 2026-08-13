@@ -99,7 +99,8 @@ OAuth каждый пользователь подтверждает лично.
 4. Bridge materialize-ит единственный writable workspace и выбранный
    read-only контекст.
 5. Dirty blocker сохраняется одной `pause`, а финальный результат – одной
-   `finish`, которая проверяет delta, создаёт handoff и отправляет candidate.
+   `finish`, которая проверяет полный candidate delta вместе с уже сохранённым
+   draft checkpoint, создаёт handoff и отправляет candidate без фиктивной правки.
 6. Candidate принимается атомарно, только пока base head актуален.
 
 При первом `open` bridge создаёт короткую pairing-заявку. Агент передаёт её

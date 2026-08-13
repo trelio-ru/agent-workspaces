@@ -1729,6 +1729,189 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
   }
 });
 
+test("bridge finish accepts a clean non-empty candidate saved by draft checkpoint", {
+  timeout: 15_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-finish-saved-draft-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const runDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  let handoffPayload = null;
+  let candidateAttempts = 0;
+  let heartbeatAttempts = 0;
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      const body = await readRequestBody(request);
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url?.endsWith("/heartbeat")) {
+        heartbeatAttempts += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() }));
+        return;
+      }
+
+      if (request.url?.endsWith("/checkpoints")) {
+        handoffPayload = JSON.parse(body.toString("utf8"));
+        assert.equal(handoffPayload.checkpointType, "handoff");
+        assert.deepEqual(handoffPayload.filesChanged, ["artifacts/result.md"]);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          id: "99999999-9999-4999-8999-999999999999",
+          checkpointType: "handoff",
+          createdAt: new Date().toISOString(),
+        }));
+        return;
+      }
+
+      if (request.url?.endsWith("/candidate")) {
+        candidateAttempts += 1;
+        assert.ok(body.byteLength > 0, "saved draft candidate bundle must reach the server");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: { status: "accepted" },
+          projection: { status: "projected" },
+        }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await Promise.all([
+      mkdir(homeDirectory, { recursive: true }),
+      mkdir(workspaceDirectory, { recursive: true }),
+    ]);
+    await runGit(workspaceDirectory, ["init", "--initial-branch=trelio-candidate"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Bridge Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "bridge-test@trelio.local"]);
+    await writeFile(path.join(workspaceDirectory, "README.md"), "# Base\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "README.md"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Base"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const serverAddress = server.address();
+    assert.ok(serverAddress && typeof serverAddress === "object");
+    const origin = `http://127.0.0.1:${serverAddress.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    const metadataPath = path.join(runDirectory, ".trelio-run.json");
+    const baseMetadata = {
+      schemaVersion: 3,
+      origin,
+      pluginVersion: BRIDGE_VERSION,
+      scopeType: "project",
+      workspaceId: "44444444-4444-4444-8444-444444444444",
+      runId,
+      leaseId: "55555555-5555-4555-8555-555555555555",
+      fencingToken: 7,
+      baseHead,
+      workspaceDirectory,
+      contextHeads: {},
+      contexts: [],
+      objects: [],
+    };
+    await writeFile(metadataPath, `${JSON.stringify(baseMetadata, null, 2)}\n`, "utf8");
+
+    // Пустой Run остаётся запрещён: сохранённый draft является допустимым
+    // основанием для finish только когда candidate head отличается от pinned
+    // base, а не просто из-за наличия metadata/checkpoint.
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          bridgePath,
+          "finish",
+          "--summary",
+          "Пустой Run не должен быть принят как результат.",
+          "--evidence",
+          "Проверено отсутствие изменений.",
+          "--next-action",
+          "Продолжите работу до появления результата.",
+        ],
+        {
+          cwd: workspaceDirectory,
+          encoding: "utf8",
+          timeout: 8_000,
+          env: { ...process.env, HOME: homeDirectory },
+        },
+      ),
+      /В workspace нет изменений для finish/u,
+    );
+    assert.equal(heartbeatAttempts, 0);
+
+    await mkdir(path.join(workspaceDirectory, "artifacts"), { recursive: true });
+    await writeFile(
+      path.join(workspaceDirectory, "artifacts", "result.md"),
+      "# Итог\n\nМатериал сохранён переносимым draft checkpoint.\n",
+      "utf8",
+    );
+    await runGit(workspaceDirectory, ["add", "artifacts/result.md"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Сохранить draft checkpoint"]);
+    const draftHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+    assert.notEqual(draftHead, baseHead);
+    assert.equal(
+      (await runGit(workspaceDirectory, ["status", "--short"])).stdout,
+      "",
+      "regression requires the clean tree produced by draft checkpoint",
+    );
+    await writeFile(
+      metadataPath,
+      `${JSON.stringify({
+        ...baseMetadata,
+        draftHead,
+        candidateHead: draftHead,
+        materializedHead: draftHead,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const finished = await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "finish",
+        "--summary",
+        "Завершён уже сохранённый переносимый draft без искусственной правки.",
+        "--evidence",
+        "Проверен полный candidate delta относительно pinned base.",
+        "--next-action",
+        "Используйте принятый итоговый материал.",
+      ],
+      {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 8_000,
+        env: { ...process.env, HOME: homeDirectory },
+      },
+    );
+
+    assert.match(finished.stdout, /Проверены изменённые пути \(1\):/u);
+    assert.match(finished.stdout, /- artifacts\/result\.md/u);
+    assert.match(finished.stdout, /Статус: принят автоматически/u);
+    assert.deepEqual(handoffPayload?.filesChanged, ["artifacts/result.md"]);
+    assert.equal(candidateAttempts, 1);
+    assert.equal(heartbeatAttempts, 2);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("context fetch downloads one exact path, reuses verified cache and rejects tampered cache", {
   timeout: 15_000,
 }, async () => {

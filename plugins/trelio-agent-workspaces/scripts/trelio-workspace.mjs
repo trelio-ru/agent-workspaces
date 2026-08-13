@@ -71,7 +71,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause` с exact `--summary`, `--question` и `--next-action`; чистый подготовительный вопрос задай напрямую без пустого Git draft.",
   "- После каждого содержательного accepted task Run вызови `propose_task_comment` один раз с коротким человеческим итогом и только полезными `filePaths`. System handoff — технический аудит и контекст для агентов, а обычный proposal — коммуникация для людей. Не публикуй автоматически и не используй `create_comment`; без MCP Apps вызывай `publish_task_comment_proposal` или `dismiss_task_comment_proposal` только по явной команде. Для сложной коррекции или нового mention сначала прочитай `get_task_comment_proposal_context` и вызови `render_task_comment_proposal` с exact snapshot hash.",
   "- `get_task` показывает shared и только твои personal controls. Это date-only проверки, не дедлайны: дата не уведомляет. Используй `create_task_control` / `update_task_control` / `clear_task_control` только при конкретной необходимости; не расширяй personal в shared без полномочия и не снимай контроль только из-за завершения Run или смены статуса. Shared changes видны в task audit, personal остаются приватными.",
-  "- Заверши Run одной командой `trelio-workspace finish` с результатом, подтверждениями, материалами, вопросами и одним следующим шагом. Она сама проверяет delta, создаёт handoff, продлевает lease и отправляет candidate. Для task scope выбери semantic `--task-outcome` из options подготовленного Run: `work_completed`, `review_passed`, `direct_completion` или `no_status_change`; при вопросах используй `no_status_change`.",
+  "- Заверши Run одной командой `trelio-workspace finish` с результатом, подтверждениями, материалами, вопросами и одним следующим шагом. Она сама проверяет полный candidate delta, включая уже сохранённый draft checkpoint, создаёт handoff, продлевает lease и отправляет candidate; не делай искусственную финальную правку только ради dirty status. Для task scope выбери semantic `--task-outcome` из options подготовленного Run: `work_completed`, `review_passed`, `direct_completion` или `no_status_change`; при вопросах используй `no_status_change`.",
   "- Сначала сообщай человеку итог и требуемое решение, не SHA/UUID/Run status. Отправляй candidate только через bridge: Trelio примет его при актуальном base head; при конфликте начни новый Run и перенеси изменения осознанно.",
   "",
 ].join("\n");
@@ -5794,6 +5794,27 @@ const getChangedPaths = async (workspaceDirectory, knownObjects = []) => {
     .filter(Boolean);
 };
 
+const getCandidateChangedPaths = async (metadata) => {
+  const [committedResult, localPaths] = await Promise.all([
+    run(
+      "git",
+      ["diff", "--name-only", "-z", metadata.baseHead, "HEAD", "--"],
+      { cwd: metadata.workspaceDirectory },
+    ),
+    getChangedPaths(metadata.workspaceDirectory, metadata.objects || []),
+  ]);
+  const committedPaths = committedResult.stdout
+    .split("\0")
+    .filter((filePath) => filePath.length > 0);
+
+  // Draft checkpoint коммитит и загружает завершённую дельту, поэтому чистый
+  // git status после checkpoint не означает пустой Run. Для handoff/finish
+  // объединяем net-diff уже сохранённого candidate относительно pinned base с
+  // новыми локальными правками. Set сохраняет порядок и не дублирует путь,
+  // который менялся и до, и после последнего checkpoint.
+  return [...new Set([...committedPaths, ...localPaths])];
+};
+
 const TASK_OUTCOMES = new Set([
   "work_completed",
   "review_passed",
@@ -5859,9 +5880,11 @@ const checkpoint = async (options) => withRun(async ({
   const explicitlyNamedFiles = getOptionValues(options, "file");
   const filesChanged = explicitlyNamedFiles.length > 0
     ? explicitlyNamedFiles
-    : checkpointType === "handoff" || checkpointType === "blocker" || checkpointType === "draft"
-      ? await getChangedPaths(metadata.workspaceDirectory, metadata.objects || [])
-      : [];
+    : checkpointType === "handoff"
+      ? await getCandidateChangedPaths(metadata)
+      : checkpointType === "blocker" || checkpointType === "draft"
+        ? await getChangedPaths(metadata.workspaceDirectory, metadata.objects || [])
+        : [];
   const openQuestions = getOptionValues(options, "question");
   const nextActionInstruction = getOptionValues(options, "next-action")[0] || "";
   const taskOutcome = String(options["task-outcome"] || "").trim();
@@ -6021,10 +6044,9 @@ const status = async () => withRun(async ({ metadata }) => {
 });
 
 const assertRunHasMeaningfulChanges = async (commandName) => withRun(async ({ metadata }) => {
-  const changedPaths = await getChangedPaths(
-    metadata.workspaceDirectory,
-    metadata.objects || [],
-  );
+  const changedPaths = commandName === "finish"
+    ? await getCandidateChangedPaths(metadata)
+    : await getChangedPaths(metadata.workspaceDirectory, metadata.objects || []);
 
   if (changedPaths.length === 0) {
     throw new Error(
@@ -6034,10 +6056,10 @@ const assertRunHasMeaningfulChanges = async (commandName) => withRun(async ({ me
     );
   }
 
-  // Compact-команды не заставляют модель отдельно переносить `git status`
-  // между вызовами. Bridge сам вычисляет полный delta manifest и показывает
-  // его до checkpoint/submit; последующая candidate validation повторно
-  // проверяет те же пути, protected files, pointers, symlinks и secret paths.
+  // Compact-команды не заставляют модель отдельно переносить Git-состояние
+  // между вызовами. Для pause это новые локальные изменения, а для finish —
+  // полный candidate delta, включая уже сохранённые draft checkpoint. Backend
+  // затем повторно проверяет paths, protected files, pointers и secret paths.
   process.stdout.write(`Проверены изменённые пути (${changedPaths.length}):\n`);
   changedPaths.forEach((changedPath) => {
     process.stdout.write(`- ${changedPath}\n`);
