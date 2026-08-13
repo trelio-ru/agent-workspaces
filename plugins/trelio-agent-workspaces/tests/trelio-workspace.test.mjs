@@ -2451,6 +2451,19 @@ test("workspace skill recovers stale OAuth grants without discarding existing sc
   assert.match(workspaceSkill, /retry the exact low-risk read once/u);
 });
 
+test("workspace skill follows the company Agent Secret storage policy before creation", async () => {
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+
+  assert.match(workspaceSkill, /call `list_agent_secrets`\s+for the exact target scope/u);
+  assert.match(workspaceSkill, /read its company-level `storagePolicy`/u);
+  assert.match(workspaceSkill, /`prefer_trelio`/u);
+  assert.match(workspaceSkill, /`contextual`/u);
+  assert.match(workspaceSkill, /`local_only`/u);
+  assert.match(workspaceSkill, /Ask the user before creating the immutable record when the\s+context is ambiguous/u);
+  assert.match(workspaceSkill, /cannot override company `local_only`/u);
+  assert.match(workspaceSkill, /policy change never migrates an\s+existing record/u);
+});
+
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 

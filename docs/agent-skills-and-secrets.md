@@ -160,6 +160,16 @@ checkpoint/handoff. Новая запись создаётся placeholder-ом,
 в защищённой Trelio форме либо подаётся из уже существующего локального
 producer/file напрямую в bridge.
 
+Перед созданием placeholder агент вызывает `list_agent_secrets` для exact
+scope и читает company-level `storagePolicy`. `prefer_trelio` означает Trelio,
+если пользователь прямо не попросил local; `contextual` означает local только
+для личного интерактивного single-device сценария, Trelio для shared,
+multi-device или unattended исполнения и обязательный вопрос при
+неоднозначности; `local_only` допускает только local и принудительно
+проверяется backend. Прямое указание пользователя уточняет первые два режима,
+но не обходит `local_only`. Изменение политики не мигрирует существующие
+карточки.
+
 `secret set` сначала получает безопасный write context и только затем читает
 stdin/file. В local mode двухфазные idempotent prepare/confirm передают серверу
 только attestation id, version и field keys; private container проверяется как

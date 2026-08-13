@@ -160,6 +160,14 @@ workspace/Git. One-use grant связан с exact version/field set/Run/executa
 JSON, env требует exact mapping, а TOTP delivery получает derived code, не
 seed. Нельзя использовать shell/logger/env/printenv/cat для раскрытия.
 
+Company-level `storagePolicy` управляет только созданием новых карточек и
+возвращается `list_agent_secrets` для exact scope. MCP creation всегда требует
+явный `storageMode`: `prefer_trelio` выбирает Trelio без прямого local-запроса,
+`contextual` выбирает local только для personal/interactive/single-device,
+Trelio для shared/multi-device/unattended и спрашивает при неоднозначности,
+`local_only` разрешает только local и проверяется backend. Политика не меняет
+immutable mode существующих карточек.
+
 Local write делает безопасный preflight до чтения input, затем idempotent
 prepare, atomic private-file replace и idempotent confirm. Значение и digest не
 отправляются Trelio. На новый компьютер переносится только подкаталог

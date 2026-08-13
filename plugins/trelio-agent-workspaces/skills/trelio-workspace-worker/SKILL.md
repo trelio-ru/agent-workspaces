@@ -95,8 +95,23 @@ ask the user first.
 
 Use `list_agent_secrets` only for safe metadata. If access is missing, call
 `request_agent_secret_access`; never ask the user to paste a password, token,
-or private key into chat. Create a record only with
-`create_agent_secret_placeholder`. Let the user configure its value in
+or private key into chat. Before creating a record, call `list_agent_secrets`
+for the exact target scope and read its company-level `storagePolicy`. Pass an
+explicit `storageMode` to `create_agent_secret_placeholder` according to it:
+
+- `prefer_trelio`: choose `trelio` unless the user explicitly asks for local
+  storage.
+- `contextual`: choose `local_device` only when the credential is personal to
+  the requester, will be used interactively on one paired device, and no team,
+  multi-device, or unattended need is indicated. Choose `trelio` for shared
+  ACL, multiple devices, background automation, or durable device-independent
+  availability. Ask the user before creating the immutable record when the
+  context is ambiguous.
+- `local_only`: choose only `local_device`; Trelio enforces this restriction.
+
+A direct user instruction may specialize `prefer_trelio` or `contextual`, but
+cannot override company `local_only`. A policy change never migrates an
+existing record. Let the user configure a `trelio` value in
 Trelio's protected browser form, or, when a value already exists in a local
 producer/file, write it directly inside the current Run with
 `PRODUCER | trelio-workspace secret set --secret UUID` or

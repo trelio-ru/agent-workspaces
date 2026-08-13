@@ -140,6 +140,12 @@
   Codex/Claude/OS lanes live-tested.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   каждый контейнер неизменно выбирает `trelio` либо личный `local_device`.
+  Перед созданием MCP читает company `storagePolicy` через
+  `list_agent_secrets`: `prefer_trelio` выбирает Trelio без прямого local-
+  запроса, `contextual` выбирает local только для личного интерактивного
+  single-device сценария, Trelio для shared/multi-device/unattended и
+  спрашивает при неоднозначности, `local_only` принудительно допускает только
+  local. Изменение политики не меняет существующие карточки.
   Local mode хранит structured JSON только в private bridge config вне
   Git/workspace/Trelio; сервер получает safe schema/version/field keys и exact
   paired-session attestation, не value/hash. `secret set` делает preflight до
