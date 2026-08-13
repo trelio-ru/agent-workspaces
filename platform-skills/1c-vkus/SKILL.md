@@ -28,6 +28,10 @@ Personal Basic Auth credentials are stored only under:
 Do not inspect another 1C namespace or migrate old credential files. Start
 with `access-status show`; when the state is `unknown` or `needs_reconnect`,
 offer this skill's own `connect` flow. Run `connect` only at the user's request.
+Changing only bounded connection limits does not require a new login: runtime
+1.2.1 migrates the reviewed former three-page policy to an endpoint-only local
+credential binding. Changing either configured endpoint still invalidates the
+personal session and requires reconnection.
 It opens a protected one-time page in the default browser on `127.0.0.1`.
 `autocomplete=off` is only a best-effort hint, so the page says:
 `Сохранять данные в браузере не нужно – подключение будет сохранено отдельно

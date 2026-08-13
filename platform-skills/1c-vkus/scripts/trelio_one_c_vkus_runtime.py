@@ -60,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # The broad Vkus surface owns its connection and local credentials. There is
 # intentionally no lookup or migration from the former 1c-edo namespace.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
-RUNTIME_VERSION = "1.2.0"
+RUNTIME_VERSION = "1.2.1"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -1627,7 +1627,13 @@ class CompanyConfig:
     request_timeout_seconds: float
     access_help_url: str | None
     access_instructions: str | None
+    # The complete fingerprint invalidates caches and other state when any
+    # connection policy changes. Credentials use the narrower target
+    # fingerprint below: pagination and timeouts cannot redirect a password,
+    # whereas changing either allowed endpoint must require a fresh login.
     fingerprint: str
+    credential_target_fingerprint: str
+    legacy_credential_fingerprints: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -1774,6 +1780,32 @@ def load_company_config() -> CompanyConfig:
     fingerprint = hashlib.sha256(
         _canonical_json(normalized_for_fingerprint).encode("utf-8"),
     ).hexdigest()
+    credential_target_fingerprint = hashlib.sha256(
+        _canonical_json(
+            {
+                "schemaVersion": 1,
+                "odataBaseUrl": normalized_for_fingerprint["odataBaseUrl"],
+                "filesBaseUrl": normalized_for_fingerprint["filesBaseUrl"],
+            },
+        ).encode("utf-8"),
+    ).hexdigest()
+
+    # Runtime <= 1.2.0 stored only the complete policy fingerprint beside
+    # credentials.  Release 1.2.1 is published while the previous production
+    # policy is known to be maxPages=3, then the company raises it to 10.  This
+    # exact compatibility hash lets every user's untouched local session prove
+    # that both endpoints and every other setting still match. It does not
+    # accept a credential created for another URL and is removed naturally
+    # once the local file is rewritten with credentialTargetFingerprint.
+    legacy_configs = [normalized_for_fingerprint]
+    if normalized_for_fingerprint["maxPages"] != 3:
+        legacy_configs.append({**normalized_for_fingerprint, "maxPages": 3})
+    legacy_credential_fingerprints = tuple(
+        dict.fromkeys(
+            hashlib.sha256(_canonical_json(item).encode("utf-8")).hexdigest()
+            for item in legacy_configs
+        ),
+    )
     return CompanyConfig(
         odata_base_url=normalized_for_fingerprint["odataBaseUrl"],
         files_base_url=normalized_for_fingerprint["filesBaseUrl"],
@@ -1784,6 +1816,8 @@ def load_company_config() -> CompanyConfig:
         access_help_url=normalized_for_fingerprint["accessHelpUrl"],
         access_instructions=normalized_for_fingerprint["accessInstructions"],
         fingerprint=fingerprint,
+        credential_target_fingerprint=credential_target_fingerprint,
+        legacy_credential_fingerprints=legacy_credential_fingerprints,
     )
 
 
@@ -1924,15 +1958,39 @@ def _delete_private_file(path: Path) -> bool:
     return True
 
 
+def _local_state_matches_credential_target(
+    value: Mapping[str, Any],
+    config: CompanyConfig,
+) -> tuple[bool, bool]:
+    """Return whether local state is safe for this target and needs migration.
+
+    New state binds directly to the endpoint-only fingerprint. Legacy state is
+    accepted only when its full old policy hash is one of the exact compatible
+    hashes constructed from the current endpoints and the former page limit.
+    """
+
+    target = value.get("credentialTargetFingerprint")
+    if target is not None:
+        return target == config.credential_target_fingerprint, False
+    legacy_matches = value.get("fingerprint") in config.legacy_credential_fingerprints
+    return legacy_matches, legacy_matches
+
+
 def load_access_state(identity: Identity, config: CompanyConfig) -> dict[str, Any]:
     value = _read_private_json(access_state_path(identity))
-    if not value or value.get("fingerprint") != config.fingerprint:
-        # A user choice of "no access" is meaningful only for the exact
-        # company connection. Changing host, path or safety limits resets the
-        # decision to unknown and prevents old credentials from being reused.
+    matches_target, needs_migration = (
+        _local_state_matches_credential_target(value, config)
+        if value
+        else (False, False)
+    )
+    if not value or not matches_target:
+        # A user choice of "no access" is meaningful only for the same fixed
+        # credential destination. Changing either endpoint resets the decision
+        # to unknown and prevents old credentials from being reused. Bounded
+        # pagination and timeout changes deliberately do not force a login.
         return {
             "status": "unknown",
-            "fingerprint": config.fingerprint,
+            "fingerprint": config.credential_target_fingerprint,
             "connectionChanged": bool(value),
         }
     status_value = value.get("status")
@@ -1940,15 +1998,22 @@ def load_access_state(identity: Identity, config: CompanyConfig) -> dict[str, An
         raise OneCEdoError("invalid_local_state", "Локальный access status повреждён.")
     if status_value == "connected":
         credentials = _read_private_json(credentials_path(identity))
-        if not credentials or credentials.get("fingerprint") != config.fingerprint:
+        credentials_match = (
+            _local_state_matches_credential_target(credentials, config)[0]
+            if credentials
+            else False
+        )
+        if not credentials or not credentials_match:
             return {
                 "status": "needs_reconnect",
-                "fingerprint": config.fingerprint,
+                "fingerprint": config.credential_target_fingerprint,
                 "connectionChanged": False,
             }
+    if needs_migration:
+        save_access_state(identity, config, str(status_value))
     return {
         "status": status_value,
-        "fingerprint": config.fingerprint,
+        "fingerprint": config.credential_target_fingerprint,
         "connectionChanged": False,
     }
 
@@ -1959,8 +2024,9 @@ def save_access_state(identity: Identity, config: CompanyConfig, status_value: s
     _write_private_json(
         access_state_path(identity),
         {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "fingerprint": config.fingerprint,
+            "credentialTargetFingerprint": config.credential_target_fingerprint,
             "status": status_value,
             "updatedAt": _utc_now(),
         },
@@ -1969,7 +2035,12 @@ def save_access_state(identity: Identity, config: CompanyConfig, status_value: s
 
 def load_credentials(identity: Identity, config: CompanyConfig) -> Credentials:
     value = _read_private_json(credentials_path(identity))
-    if not value or value.get("fingerprint") != config.fingerprint:
+    matches_target, needs_migration = (
+        _local_state_matches_credential_target(value, config)
+        if value
+        else (False, False)
+    )
+    if not value or not matches_target:
         raise OneCEdoError(
             "credentials_missing",
             "Личные данные 1С не подключены для текущей company connection.",
@@ -1978,7 +2049,10 @@ def load_credentials(identity: Identity, config: CompanyConfig) -> Credentials:
     password = value.get("password")
     if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
         raise OneCEdoError("invalid_local_state", "Локальный credential-файл повреждён.")
-    return Credentials(username=username, password=password)
+    credentials = Credentials(username=username, password=password)
+    if needs_migration:
+        save_credentials(identity, config, credentials)
+    return credentials
 
 
 def save_credentials(
@@ -1989,8 +2063,9 @@ def save_credentials(
     _write_private_json(
         credentials_path(identity),
         {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "fingerprint": config.fingerprint,
+            "credentialTargetFingerprint": config.credential_target_fingerprint,
             "username": credentials.username,
             "password": credentials.password,
             "updatedAt": _utc_now(),

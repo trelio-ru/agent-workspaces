@@ -131,7 +131,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.0")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.1")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -143,6 +143,81 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertNotIn("Accept-Encoding", source)
         self.assertNotIn("osascript", source)
         self.assertNotIn("System.Windows.Forms", source)
+
+    def test_page_limit_change_migrates_legacy_session_without_relogin(self) -> None:
+        """The reviewed 3 -> 10 page change cannot redirect credentials."""
+
+        # Runtime 1.2.0 stored only the complete connection-policy hash. Keep
+        # that exact legacy shape to prove an untouched employee device can be
+        # migrated on its first command after the administrative limit change.
+        runtime._write_private_json(
+            runtime.credentials_path(self.identity),
+            {
+                "schemaVersion": 1,
+                "fingerprint": self.config.fingerprint,
+                "username": self.credentials.username,
+                "password": self.credentials.password,
+            },
+        )
+        runtime._write_private_json(
+            runtime.access_state_path(self.identity),
+            {
+                "schemaVersion": 1,
+                "fingerprint": self.config.fingerprint,
+                "status": "connected",
+            },
+        )
+        expanded_raw = json.loads(os.environ[runtime.CONNECTION_CONFIG_ENV])
+        expanded_raw["maxPages"] = 10
+        with mock.patch.dict(
+            os.environ,
+            {runtime.CONNECTION_CONFIG_ENV: json.dumps(expanded_raw)},
+        ):
+            expanded = runtime.load_company_config()
+            loaded = runtime.load_credentials(self.identity, expanded)
+            state = runtime.load_access_state(self.identity, expanded)
+
+        self.assertEqual(loaded, self.credentials)
+        self.assertEqual(state["status"], "connected")
+        self.assertFalse(state["connectionChanged"])
+        migrated_credentials = runtime._read_private_json(
+            runtime.credentials_path(self.identity),
+        )
+        migrated_state = runtime._read_private_json(
+            runtime.access_state_path(self.identity),
+        )
+        self.assertEqual(
+            migrated_credentials["credentialTargetFingerprint"],
+            expanded.credential_target_fingerprint,
+        )
+        self.assertEqual(
+            migrated_state["credentialTargetFingerprint"],
+            expanded.credential_target_fingerprint,
+        )
+
+    def test_endpoint_change_still_rejects_legacy_credentials(self) -> None:
+        """Operational compatibility must never cross a credential destination."""
+
+        runtime._write_private_json(
+            runtime.credentials_path(self.identity),
+            {
+                "schemaVersion": 1,
+                "fingerprint": self.config.fingerprint,
+                "username": self.credentials.username,
+                "password": self.credentials.password,
+            },
+        )
+        changed_raw = json.loads(os.environ[runtime.CONNECTION_CONFIG_ENV])
+        changed_raw["odataBaseUrl"] = "https://changed.example.test/odata/"
+        with mock.patch.dict(
+            os.environ,
+            {runtime.CONNECTION_CONFIG_ENV: json.dumps(changed_raw)},
+        ):
+            changed = runtime.load_company_config()
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime.load_credentials(self.identity, changed)
+
+        self.assertEqual(caught.exception.code, "credentials_missing")
 
     def test_connect_uses_protected_browser_without_autocomplete(self) -> None:
         page = runtime.browser_prompt_app_page().decode("utf-8")
