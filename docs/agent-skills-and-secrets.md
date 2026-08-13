@@ -121,14 +121,16 @@ Runtime поддерживает structured bounded history, passive unread poll
 
 ## Agent Secrets
 
-Agent Secrets хранятся в Trelio Vault как контейнеры именованных полей: один
-контейнер может содержать `username`, `password`, `totp` и другие связанные
-значения. MCP видит только safe schema/status и создаёт одноразовый grant для
-exact версии, набора полей, Run и executable. Bridge получает выбранные поля
-один раз и передаёт локально через разрешённый JSON `stdin`/private temp file
-либо явное соответствие `fieldKey -> ENV_NAME`. TOTP seed не выдаётся: backend
-передаёт только код текущего короткого временного окна. Trelio команду не
-исполняет.
+Agent Secrets являются контейнерами именованных полей: один контейнер может
+содержать `username`, `password`, `totp` и другие связанные значения. При
+создании каждого контейнера пользователь выбирает неизменяемый режим `trelio`
+либо `local_device`. В первом случае Trelio Vault хранит encrypted bundle; во
+втором Trelio видит только safe schema/status и последнее device attestation,
+а значения лежат в private JSON bridge вне workspace и Git. MCP создаёт
+одноразовый grant для exact версии, набора полей, Run и executable. Bridge
+передаёт выбранные поля локально через разрешённый JSON `stdin`/private temp
+file либо exact `fieldKey -> ENV_NAME`. TOTP seed не выдаётся: код вычисляет
+backend или, в local mode, сам bridge. Trelio команду не исполняет.
 
 Для browser-поля используется отдельный
 `prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
@@ -157,6 +159,24 @@ literal-text API для этого flow не применяется и не по
 checkpoint/handoff. Новая запись создаётся placeholder-ом, а значение вводится
 в защищённой Trelio форме либо подаётся из уже существующего локального
 producer/file напрямую в bridge.
+
+`secret set` сначала получает безопасный write context и только затем читает
+stdin/file. В local mode двухфазные idempotent prepare/confirm передают серверу
+только attestation id, version и field keys; private container проверяется как
+owner-only `0700/0600` (либо эквивалентный Windows ACL). UI показывает
+последнее подтверждение устройства, а не live-доступность компьютера.
+
+При смене компьютера обычной миграцией профиля или из backup переносится только
+подкаталог `agent-secrets/` из private config. `credentials.json`, device-session
+и другие pairing-данные копировать нельзя: новый bridge привязывается отдельно.
+После pairing команда внутри активного Run `trelio-workspace secret adopt
+--secret UUID` сверяет exact origin/company/member/secret/version и по явному
+действию пользователя считает скопированный контейнер той же логической
+версией, не отправляя значение либо digest в Trelio. Без digest сервер не может
+побайтно проверить локальную копию: её целостность обеспечивает локальная
+миграция/backup. Новая attestation заменяет старую и отзывает прежние grants,
+но не удаляет физический файл со старого устройства. Отзыв server-card также
+не является remote wipe.
 
 Однополевый `secret set` по умолчанию сохраняет входные bytes как одно
 строковое значение, даже если они похожи на JSON. Для атомарной записи

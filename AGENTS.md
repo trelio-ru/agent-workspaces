@@ -139,7 +139,16 @@
   real Chrome/account qualification и не даёт права называть непроверенные
   Codex/Claude/OS lanes live-tested.
 - Agent Secrets передаются только exact executable через одноразовый grant;
-  личные external credentials хранятся локально вне Git/workspace/Trelio.
+  каждый контейнер неизменно выбирает `trelio` либо личный `local_device`.
+  Local mode хранит structured JSON только в private bridge config вне
+  Git/workspace/Trelio; сервер получает safe schema/version/field keys и exact
+  paired-session attestation, не value/hash. `secret set` делает preflight до
+  чтения input и двухфазный prepare/write/confirm. На новый компьютер копируется
+  только подкаталог `agent-secrets/`, без credentials/device-session; после
+  отдельного pairing он переподтверждает current version только через активный
+  Run командой `secret adopt`. Это заменяет server attestation и отзывает grants,
+  но не обещает remote wipe старого offline-файла.
+  Личные external credentials также хранятся локально вне Git/workspace/Trelio.
   `secret set` без format-флага сохраняет legacy scalar semantics, включая
   JSON-подобные bytes. Атомарный локальный import нескольких полей использует
   только explicit `--format fields-json`, передаёт backend-у `values` и не

@@ -109,6 +109,18 @@ without it JSON-looking bytes remain one scalar value for compatibility. Never
 split one logical multi-field credential into separate Agent Secrets merely to
 use a local producer/file.
 
+When safe metadata says `storageMode=local_device`, the same `secret set`
+command stores the complete structured container only in the paired bridge's
+private config directory; Trelio receives version/field/attestation metadata,
+not a value or digest. Do not use the setup page as if it could launch the
+bridge: it only shows the last server-recorded device confirmation. To move a
+secret, copy only the `agent-secrets/` subtree from private config; never copy
+credentials or device-session data. Pair the replacement computer separately,
+open an active Run and execute
+`trelio-workspace secret adopt --secret UUID`. This reattests the exact current
+local version without uploading its values. It replaces the old server-side
+device confirmation but cannot delete the offline file on the old computer.
+
 When an authorized local executable needs a secret, call
 `prepare_agent_secret_checkout` for the exact current Run and executable, then
 execute the returned `trelio-workspace secret exec --grant ... -- COMMAND`.

@@ -3005,6 +3005,25 @@ test("secret set sends one atomic named-field bundle from protected stdin", {
       }
 
       if (
+        request.method === "GET"
+        && request.url === `/api/agent-secrets/secrets/${secretId}/bridge-write-context?runId=${runId}`
+      ) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          storageMode: "trelio",
+          secretId,
+          companyId: "88888888-8888-4888-8888-888888888888",
+          companyMemberId: "99999999-9999-4999-8999-999999999999",
+          currentVersion: 0,
+          fields: [
+            { key: "username", label: "Логин", type: "username", required: true },
+            { key: "password", label: "Пароль", type: "password", required: true },
+          ],
+        }));
+        return;
+      }
+
+      if (
         request.method === "PUT"
         && request.url === `/api/agent-secrets/secrets/${secretId}/value-from-bridge`
       ) {
@@ -3070,6 +3089,212 @@ test("secret set sends one atomic named-field bundle from protected stdin", {
     assert.equal(result.stderr, "");
     assert.equal(compatibilityCount, 1);
     assert.deepEqual(writes, [{ runId, values }]);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("local-device secret set persists values only in private config and sends attestation metadata", {
+  timeout: 10_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-set-local-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const rootDirectory = path.join(temporaryDirectory, "run");
+  const workspaceDirectory = path.join(rootDirectory, "workspace");
+  const secretId = "77777777-7777-4777-8777-777777777771";
+  const grantId = "66666666-6666-4666-8666-666666666661";
+  const companyId = "88888888-8888-4888-8888-888888888888";
+  const companyMemberId = "99999999-9999-4999-8999-999999999999";
+  const values = {
+    username: "synthetic-local-login",
+    password: "synthetic-local-password",
+  };
+  const mutations = [];
+  let confirmedAttestationId = null;
+  let consumeCount = 0;
+  let serverError = null;
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      if (request.method === "GET" && request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        return;
+      }
+      if (
+        request.method === "GET"
+        && request.url === `/api/agent-secrets/secrets/${secretId}/bridge-write-context?runId=${runId}`
+      ) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          storageMode: "local_device",
+          secretId,
+          companyId,
+          companyMemberId,
+          currentVersion: 0,
+          fields: [
+            { key: "username", label: "Логин", type: "username", required: true },
+            { key: "password", label: "Пароль", type: "password", required: true },
+          ],
+        }));
+        return;
+      }
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-secrets/secrets/${secretId}/local-writes/prepare`
+      ) {
+        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
+        mutations.push({ type: "prepare", body });
+        confirmedAttestationId = body.attestationId;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          attestationId: body.attestationId,
+          secretId,
+          companyId,
+          companyMemberId,
+          secretVersion: 1,
+        }));
+        return;
+      }
+      if (request.method === "POST" && request.url?.startsWith("/api/agent-secrets/local-writes/")) {
+        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
+        mutations.push({ type: "confirm", body });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ status: "active" }));
+        return;
+      }
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-secrets/checkout-grants/${grantId}/consume`
+      ) {
+        assert.deepEqual(
+          JSON.parse((await readRequestBody(request)).toString("utf8")),
+          { runId },
+        );
+        consumeCount += 1;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          storageMode: "local_device",
+          grantId,
+          secretId,
+          runId,
+          companyId,
+          companyMemberId,
+          localAttestationId: confirmedAttestationId,
+          secretVersion: 1,
+          fieldKeys: ["username", "password"],
+          fields: [
+            { key: "username", label: "Логин", type: "username", required: true },
+            { key: "password", label: "Пароль", type: "password", required: true },
+          ],
+          executable: process.execPath,
+          deliveryMode: "env",
+          environmentVariables: {
+            username: "LOCAL_USERNAME",
+            password: "LOCAL_PASSWORD",
+          },
+        }));
+        return;
+      }
+      throw new Error(`Unexpected local Agent Secret request: ${request.method} ${request.url}`);
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end("Synthetic local Agent Secret test failure");
+    }
+  });
+
+  try {
+    await Promise.all([
+      mkdir(homeDirectory, { recursive: true }),
+      mkdir(workspaceDirectory, { recursive: true }),
+    ]);
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    await writeFile(
+      path.join(rootDirectory, ".trelio-run.json"),
+      `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
+      "utf8",
+    );
+    const result = await execBridgeWithInput([
+      "secret",
+      "set",
+      "--secret",
+      secretId,
+      "--format",
+      "fields-json",
+    ], JSON.stringify(values), {
+      cwd: workspaceDirectory,
+      encoding: "utf8",
+      timeout: 8_000,
+      env: {
+        ...process.env,
+        HOME: homeDirectory,
+        TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
+        TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+      },
+    });
+    assert.match(result.stdout, /сохранено только на этом компьютере/u);
+    assert.equal(JSON.stringify(mutations).includes(values.username), false);
+    assert.equal(JSON.stringify(mutations).includes(values.password), false);
+    assert.deepEqual(mutations.map((item) => item.type), ["prepare", "confirm"]);
+    assert.deepEqual(mutations[0].body.fieldKeys, ["username", "password"]);
+    const originKey = createHash("sha256").update(origin).digest("hex");
+    const localFile = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "agent-secrets",
+      originKey,
+      companyMemberId,
+      secretId,
+      "secret.json",
+    );
+    const localStat = await stat(localFile);
+    if (process.platform !== "win32") assert.equal(localStat.mode & 0o777, 0o600);
+    const localRecord = JSON.parse(await readFile(localFile, "utf8"));
+    assert.deepEqual(localRecord.values, values);
+    assert.equal(localRecord.secretVersion, 1);
+    assert.match(localRecord.attestationId, /^[0-9a-f-]{36}$/u);
+
+    // Consume-ответ намеренно не содержит values/value. Bridge должен взять
+    // exact подтверждённый контейнер из private storage и передать его только
+    // закреплённому executable через заявленные имена переменных окружения.
+    const checkout = await execFileAsync(process.execPath, [
+      bridgePath,
+      "secret",
+      "exec",
+      "--grant",
+      grantId,
+      "--",
+      process.execPath,
+      "-e",
+      "if (!process.env.LOCAL_USERNAME || !process.env.LOCAL_PASSWORD) process.exit(2); process.stdout.write('local-ok')",
+    ], {
+      cwd: workspaceDirectory,
+      encoding: "utf8",
+      timeout: 8_000,
+      env: {
+        ...process.env,
+        HOME: homeDirectory,
+        TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
+        TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+      },
+    });
+    assert.equal(checkout.stdout, "local-ok");
+    assert.equal(checkout.stderr, "");
+    assert.equal(consumeCount, 1);
     assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));

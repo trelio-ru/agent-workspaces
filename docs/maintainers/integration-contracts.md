@@ -150,11 +150,24 @@ mode `0600` runtime использует local copy без нового checkout
 обязательными: cache убирает повторную secret delivery, но не проверку текущих
 assignment, connection и release.
 
-Agent Secret server-side Vault: safe schema отдельно, encrypted immutable
-version содержит атомарный JSON bundle именованных полей. One-use grant связан
-с exact version/field set/Run/executable; multi-field stdin/private temp
-получает JSON, env требует exact mapping, а TOTP delivery получает derived code,
-не seed. Нельзя использовать shell/logger/env/printenv/cat для раскрытия.
+Agent Secret поддерживает per-container immutable storage mode. `trelio`
+хранит safe schema отдельно от encrypted immutable JSON bundle;
+`local_device` хранит на сервере только schema/version/field keys и attestation
+exact paired session, а private JSON остаётся в
+`workspace-bridge/agent-secrets/<origin-hash>/<member>/<secret>/` вне
+workspace/Git. One-use grant связан с exact version/field set/Run/executable и,
+для local mode, attestation/session; multi-field stdin/private temp получает
+JSON, env требует exact mapping, а TOTP delivery получает derived code, не
+seed. Нельзя использовать shell/logger/env/printenv/cat для раскрытия.
+
+Local write делает безопасный preflight до чтения input, затем idempotent
+prepare, atomic private-file replace и idempotent confirm. Значение и digest не
+отправляются Trelio. На новый компьютер переносится только подкаталог
+`agent-secrets/`, без credentials/device-session; после отдельного pairing он
+переподтверждается только внутри активного Run через `secret adopt`. Source
+attestation должна соответствовать current origin/member/secret/version. Новое
+подтверждение заменяет старое, но remote revoke/delete не обещает удалить
+offline bytes.
 
 Bridge `secret set` без format-флага остаётся legacy scalar transport и не
 пытается распознать JSON по содержимому. Атомарная локальная запись нескольких
