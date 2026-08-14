@@ -41,6 +41,29 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
    network failure сами по себе не доказывают `no_access`.
 9. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 
+### Maintainer/development route
+
+Skill-first routing выше управляет operational use подключённого сервиса от
+имени компании. Он не должен блокировать явную работу над каноническим
+исходником Trelio или самого Agent Skill.
+
+Maintainer route применяется только когда пользователь прямо просит
+разработать, отладить, аудитировать, выпустить или live-проверить Trelio/skill
+в exact canonical repository checkout, а действие проверяет source, tests,
+development inventory, release tooling либо unpublished runtime. В этом
+контуре current signed release и catalog execution path не являются authority
+для кода под разработкой: можно запускать repository-owned development tools
+и создавать узкий проверяемый helper, а также выполнять явно запрошенные
+bounded read-only diagnostics против уже разрешённого подключения.
+
+Это отдельный development route, а не non-Trelio fallback. Он не разрешает
+расширять connection scope или ACL, читать/логировать credentials, выполнять
+массовую сырую выгрузку либо делать external mutation без отдельного прямого
+поручения и обычных safeguards. Maintainer mode нельзя выводить только из
+наличия checkout, доступа к исходникам или роли пользователя в компании. Как
+только цель снова становится обычным бизнес-действием через integration,
+применяется стандартный catalog → get → runtime flow.
+
 Telegram имеет формальный двухтранспортный routing поверх общего purpose
 выбора. Если назначен только один из `telegram-mtproto` / `telegram-web`,
 используется он. Если назначены оба, lower numeric priority выбирает
@@ -333,3 +356,9 @@ P&L и не раскрывает запрещённые банковские/pay
 exact attachment bytes только через fixed files service route; direct OData
 `ФайлХранилище` запрещён. Basic Auth files request не содержит X-OData; PDF,
 size, SHA-256 и quarantine rules проверяются fail-closed.
+
+При явной maintainer-задаче отдельные development inventory/probe tools могут
+обращаться к reviewed `$metadata` или exact source, даже если production
+runtime намеренно не публикует такую команду. Такой probe остаётся bounded,
+read-only и secret-safe, не становится production capability и перед
+публикацией требует обычного review нового fixed registry/release.

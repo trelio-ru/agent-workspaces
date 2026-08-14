@@ -1213,6 +1213,12 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом/u,
     );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /как maintainer route/u);
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Repository-owned development tools, unpublished runtime и узкие bounded read-only probes разрешены/u,
+    );
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Наличие checkout само по себе не включает этот режим/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Fallback допустим, когда релевантного навыка нет/u,

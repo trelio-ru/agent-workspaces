@@ -77,6 +77,17 @@
   запрос. Это не разрешает входить в ту же защищённую систему другим путём или
   ослаблять ACL. Native Trelio MCP/workspace operations остаются штатным
   workflow.
+- Отдельно различай operational use и работу maintainer-а над каноническим
+  исходником Trelio или Agent Skill. Если пользователь прямо поручил
+  разработать, отладить, аудитировать, выпустить или live-проверить код в
+  названном каноническом repository checkout, текущий published skill не
+  является исполняющей authority для кода под разработкой: разрешены
+  repository-owned development tools и узкие bounded read-only probes без
+  обязательного запуска current signed release. Это не integration fallback и
+  не отменяет scope/ACL подключения, защищённую доставку секретов, запрет их
+  вывода и отдельное подтверждение внешних mutations. Наличие checkout само по
+  себе не включает maintainer mode; обычное действие от имени компании снова
+  проходит catalog/get/runtime routing.
 - Generic-запрос на подключение внешней интеграции сначала разрешает Trelio
   company context и проверяет `list_agent_skills`. До этой проверки нельзя
   устанавливать, авторизовывать или вызывать пересекающийся native/plugin

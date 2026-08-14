@@ -1325,6 +1325,9 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
+  assert.match(instructions, /separate maintainer route/u);
+  assert.match(instructions, /Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes/u);
+  assert.match(instructions, /A checkout alone never enables maintainer mode/u);
   assert.match(instructions, /state that exact reason/u);
   assert.match(instructions, /explicitly reports `no_access` or `needs_reconnect`/u);
   assert.match(instructions, /`telegram-mtproto` as primary priority `100`/u);

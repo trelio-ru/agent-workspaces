@@ -7,6 +7,27 @@ description: Discover and load current agent skills enabled by Trelio companies 
 
 Trelio skills are live, additive instructions supplied by a company or a project. They coexist with personal skills already installed by the user. A missing or disabled Trelio assignment means only that Trelio does not provide the skill in that context; it is not a company prohibition.
 
+## Separate operational use from source maintenance
+
+The catalog gate governs operational use of a connected service on behalf of a
+Trelio company. It does not make the current published release authoritative
+for an explicit maintainer task whose target is the canonical Trelio or Agent
+Skill source itself.
+
+Use the maintainer/development route only when the user explicitly asks to
+develop, debug, audit, release, or live-verify source in an identified
+canonical repository checkout. In that route, repository-owned development
+inventory, tests, release tooling, unpublished runtime code, and narrowly
+scoped helpers may run without forcing execution through the current signed
+release. An explicitly requested live diagnostic may make bounded read-only
+requests through an already authorized connection.
+
+This route is not an integration fallback. Preserve the connection's scope and
+ACL, protected secret delivery, no-logging rules, bounded output, and separate
+authorization for any external mutation. Do not infer maintainer mode merely
+because a checkout exists or source is visible. Return to the catalog → get →
+runtime flow as soon as the requested action is an ordinary company operation.
+
 ## Discover current skills
 
 1. Resolve the exact relevant company after Trelio OAuth authorization. Call `list_companies` only when the current Trelio task or user request does not already identify it; do not silently scan unrelated companies. For a generic request to connect or use an integration that Trelio may provide, perform this Trelio context check before requesting installation or authorization of an overlapping native/plugin integration. If several companies are available and the request does not identify one, ask which Trelio company applies instead of scanning every catalog or silently choosing the non-Trelio integration.
