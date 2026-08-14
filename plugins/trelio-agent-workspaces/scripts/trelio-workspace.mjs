@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.8.2";
+export const BRIDGE_VERSION = "1.8.3";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
