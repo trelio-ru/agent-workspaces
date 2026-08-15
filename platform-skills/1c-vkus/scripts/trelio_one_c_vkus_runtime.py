@@ -60,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # The broad Vkus surface owns its connection and local credentials. There is
 # intentionally no lookup or migration from the former 1c-edo namespace.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
-RUNTIME_VERSION = "1.2.1"
+RUNTIME_VERSION = "1.2.2"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")

@@ -132,7 +132,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.1")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.2")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
