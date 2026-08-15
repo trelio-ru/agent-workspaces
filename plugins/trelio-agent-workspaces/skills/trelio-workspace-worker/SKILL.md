@@ -5,10 +5,11 @@ description: >-
   Agent Workspaces with MCP and the local Git bridge. Use when the user supplies
   a meeting transcript; asks Codex to take, continue, analyze, prepare materials
   for, complete, restore, or preserve OCR/vision output for work tied to Trelio;
-  needs durable dossier context, a dossier transfer, or task controls; requests
-  personal/company/project agent-rule changes; or needs recovery from missing
-  MCP tools, stale OAuth scopes, plugin-version gates, blockers, or concurrent
-  Agent Runs.
+  asks for an editable task-comment proposal or reply with or without an Agent
+  Run; needs durable dossier context, a dossier transfer, or task controls;
+  requests personal/company/project agent-rule changes; or needs recovery from
+  missing MCP tools, stale OAuth scopes, plugin-version gates, blockers, or
+  concurrent Agent Runs.
 ---
 
 # Trelio Workspace Worker
@@ -24,10 +25,12 @@ it does not permit copying the value anywhere else.
 
 ## Route the current scenario
 
-Classify the current step before acting. Read every matching reference below
+Classify every user addition independently before acting.
+Read every matching reference below
 completely before its first related tool call. If the scenario changes during
-the task, pause and read the newly relevant reference before continuing. These
-references are additive; do not read unrelated files speculatively.
+the task, pause and read the newly relevant reference before continuing. An
+active maintainer, integration, or Run route does not absorb a later request.
+These references are additive; do not read unrelated files speculatively.
 
 - **MCP tools are absent, an OAuth scope is missing, or the installed plugin is
   rejected as old:** read
@@ -47,13 +50,19 @@ references are additive; do not read unrelated files speculatively.
 - **A task control must be created, updated, changed between personal/shared,
   or cleared:** read
   [`references/task-controls.md`](references/task-controls.md).
+- **The user explicitly asks to propose, draft, or prepare a Trelio task
+  comment or reply, or an accepted task Run needs its human update:** read
+  [`references/task-comment-proposals.md`](references/task-comment-proposals.md).
+  Treat a follow-up as its own native Trelio route even during maintainer work,
+  after context compaction, or while another operation is already in progress.
+  Also read the scope reference when the exact task target is not already known.
 - **An Agent Workspace Run must be started, opened, continued, checkpointed,
   submitted, restored, cancelled, or recovered from concurrency:** read
   [`references/agent-run.md`](references/agent-run.md). Also read the scope
   reference unless the exact workspace and Run are already known.
 - **The writable Run is task-scoped:** additionally read
-  [`references/task-run.md`](references/task-run.md) before preparing a task
-  comment proposal, handoff, task outcome, submit, or final report.
+  [`references/task-run.md`](references/task-run.md) before handoff, task
+  outcome, submit, or final report.
 - **OCR or vision output will be stored in a workspace:** additionally read
   [`references/ocr-and-vision.md`](references/ocr-and-vision.md) before writing
   the extracted artifact or manifest.

@@ -84,16 +84,26 @@ checkpoint за exact head, не переводя Run в `waiting_for_human`. А
 сохранённый checkpoint уже содержит готовый итог, `finish` использует его
 candidate delta и не требует ещё одного изменения только ради dirty status.
 
-## Task-scoped communication
+## Task communication
+
+Явная просьба предложить, подготовить или сделать черновик комментария к exact
+задаче является самостоятельным native Trelio flow. Она не наследует текущий
+maintainer/integration/Run route, в том числе когда приходит дополнительной
+репликой во время работы или после compaction. Direct proposal использует exact
+`companySlug + projectSlug + taskNumber` и не требует Agent Run. До финального
+ответа запрос должен завершиться proposal tool result либо точным blocker;
+цитата или обычный текст в ответе не являются proposal.
 
 Manual comment отделён от audit accepted Run. System handoff остаётся
 техническим аудитом и agent-readable контекстом. После каждого содержательного
 accepted task Run агент один раз вызывает `propose_task_comment`: tool сам
 читает fresh public snapshot/state revision и сохраняет обычный человеческий
-first-person proposal. Для nuanced correction или нового mention сохраняется
-legacy read → render flow с exact hash. Proposal не публикуется автоматически
-и не блокирует durable acceptance; text-only publish/dismiss требует явной
-команды.
+first-person proposal. Тот же one-call tool работает напрямую по exact task.
+Для nuanced correction или нового mention сохраняется legacy read → render
+flow с exact hash. Proposal не публикуется автоматически и не блокирует durable
+acceptance; text-only publish/dismiss требует явной команды. Указание «только
+предложи, не публикуй» подтверждает proposal route, а не разрешает заменить его
+обычным copywriting-блоком.
 
 `create_comment` не используется для proposal. После accepted `filePaths`
 содержит только важные final deliverables и полезные intermediate материалы,

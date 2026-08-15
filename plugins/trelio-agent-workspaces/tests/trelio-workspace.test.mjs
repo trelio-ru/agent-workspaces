@@ -2364,6 +2364,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "scope-and-context.md",
     "dossier-transfer.md",
     "task-controls.md",
+    "task-comment-proposals.md",
     "agent-run.md",
     "task-run.md",
     "ocr-and-vision.md",
@@ -2371,6 +2372,8 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
 
   assert.match(mainSkill, /Read every matching reference below\s+completely before its first related tool call/u);
   assert.match(mainSkill, /If the scenario changes during\s+the task, pause and read the newly relevant reference/u);
+  assert.match(mainSkill, /Classify every user addition independently/u);
+  assert.match(mainSkill, /active maintainer, integration, or Run route does not absorb a\s+later request/u);
   const agentRunReference = await readFile(
     path.join(workerDirectory, "references", "agent-run.md"),
     "utf8",
@@ -2615,7 +2618,35 @@ test("task handoff requires an explicit outcome and keeps unresolved work out of
   );
 });
 
-test("workspace skill prepares a human proposal after every accepted task Run", async () => {
+test("workspace skill routes direct proposals independently of maintainer work and compaction", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const mainSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const proposalReference = await readFile(
+    path.join(workerDirectory, "references", "task-comment-proposals.md"),
+    "utf8",
+  );
+  const taskRunReference = await readFile(
+    path.join(workerDirectory, "references", "task-run.md"),
+    "utf8",
+  );
+
+  assert.match(mainSkill, /editable task-comment proposal or reply with or without an Agent\s+Run/u);
+  assert.match(mainSkill, /explicitly asks to propose, draft, or prepare a Trelio task\s+comment or reply/u);
+  assert.match(mainSkill, /even during maintainer work,\s+after context compaction/u);
+  assert.match(proposalReference, /its own native Trelio operation with or\s+without an Agent Workspace Run/u);
+  assert.match(proposalReference, /follow-up during maintainer work, after context compaction/u);
+  assert.match(proposalReference, /Preserve it as a pending deliverable and\s+complete it before the final response/u);
+  assert.match(proposalReference, /direct exact-task proposal\s+uses `companySlug`, `projectSlug`, and `taskNumber`/u);
+  assert.match(proposalReference, /Do not start an\s+Agent Workspace Run solely to prepare a proposal/u);
+  assert.match(proposalReference, /A request to “only propose” reinforces the draft\s+route/u);
+  assert.match(proposalReference, /A quotation, prose block, or promise to suggest text in the final response does\s+not satisfy the request/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /отдельный native Trelio flow/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не подменяй редактируемую карточку цитатой/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /proposal должен вернуть draft либо точный blocker/u);
+  assert.doesNotMatch(taskRunReference, /get_task_comment_proposal_context|publish_task_comment_proposal/u);
+});
+
+test("workspace skill prepares a human proposal for direct tasks and accepted task Runs", async () => {
   const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 

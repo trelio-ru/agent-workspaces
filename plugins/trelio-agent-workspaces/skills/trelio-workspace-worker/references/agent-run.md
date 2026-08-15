@@ -2,8 +2,8 @@
 
 Read this file completely before starting, opening, continuing, checkpointing,
 submitting, restoring, cancelling, or recovering an Agent Workspace Run. For a
-task-scoped Run, also read `task-run.md` before task communication, handoff,
-submit, or final reporting.
+task-scoped Run, also read `task-run.md` and `task-comment-proposals.md` before
+task communication, handoff, submit, or final reporting.
 
 ## Contents
 
@@ -118,8 +118,9 @@ submit, or final reporting.
 6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
    compare-and-swap. A failed final step leaves the handoff/delta recoverable;
    never force-update accepted history or blindly repeat an ambiguous submit.
-7. For a task Run, follow the proposal and status procedure in `task-run.md`
-   after acceptance.
+7. For a task Run, follow the status procedure in `task-run.md` and the
+   separately routed proposal procedure in `task-comment-proposals.md` after
+   acceptance.
 8. Report in this order: outcome, important findings/validation, saved
    materials, open questions, and exact next action. For task scope, include the
    resulting status or transition blocker as required by `task-run.md`. Follow

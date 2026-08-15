@@ -266,6 +266,12 @@
   после чего `propose_task_comment` готовит обычный комментарий для людей.
   Публикация и attachments остаются явным действием человека и не блокируют
   durable acceptance.
+- Явная просьба предложить или подготовить комментарий к exact задаче всегда
+  является отдельным native Trelio flow, включая follow-up во время maintainer
+  work, другого сценария или после compaction. Direct proposal использует exact
+  task locator без обязательного Agent Run. До финального ответа должен быть
+  получен proposal tool result либо назван точный blocker; цитата или обычный
+  текст не заменяют редактируемую proposal-карточку.
 
 ## Проверки
 

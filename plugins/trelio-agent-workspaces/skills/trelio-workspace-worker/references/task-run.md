@@ -1,31 +1,9 @@
 # Task-scoped Run
 
 Read this file completely whenever the writable Agent Workspace Run is scoped
-to a task. It supplements `agent-run.md` and governs proposals, handoff,
-status outcome, task attachments, submit behavior, and reporting.
-
-## Prepare the human update
-
-The accepted system handoff is technical audit and agent-readable context.
-After every substantive accepted task Run, prepare the ordinary comment for
-people:
-
-1. Call `propose_task_comment` once with the accepted `runId`, one concise
-   first-person result and only useful final/intermediate `filePaths`. The
-   server reads the fresh public-comment snapshot and optimistic proposal state
-   internally, so do not make separate context/hash calls on the normal path.
-   Do not attach all workspace files.
-2. Do not publish automatically. In a text-only client call
-   `publish_task_comment_proposal` only after explicit approval of that exact
-   text and selected files. After an explicit decision not to publish, call
-   `dismiss_task_comment_proposal`.
-3. Use the legacy two-step `get_task_comment_proposal_context` →
-   `render_task_comment_proposal` only for a nuanced correction, comparison
-   with earlier public discussion, or a new member mention whose exact
-   `@username` is not already known. `currentDraft` is private/unpublished and
-   must never be described as a prior public statement.
-4. Missing `mcp:comments:create` blocks only the human proposal, not acceptance
-   of the durable workspace result. Never use `create_comment` as a workaround.
+to a task. It supplements `agent-run.md` and governs handoff, status outcome,
+submit behavior, and reporting. The main skill separately requires
+`task-comment-proposals.md` for the human update.
 
 ## Choose the handoff outcome
 
@@ -66,10 +44,9 @@ the exact blocker rather than forcing `done`. Consecutive accepted Runs by the
 same user are grouped within the company calendar day, while individual Run
 details remain available.
 
-After acceptance, follow `Prepare the human update` above. Let the MCP App show
-exact removable file cards; ordinary task attachments are created only when
-the operator publishes. In a text-only client, show proposed files and publish
-only after explicit approval of the exact text and file selection.
+After acceptance, follow the separately routed task-comment proposal procedure
+before final reporting. The accepted workspace result remains valid even when
+the proposal is blocked by missing comment scope or permissions.
 
 Report outcome first, then resulting task status or exact transition blocker,
 important validation, saved materials, open questions, and next action. Do not
