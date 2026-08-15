@@ -171,6 +171,16 @@
   только explicit `--format fields-json`, передаёт backend-у `values` и не
   раскрывает parse input в ошибках; автоопределение JSON и разбиение одной
   учётной записи на отдельные secrets запрещены.
+  Отдельный default-false company opt-in `allowAgentSaveChatSecrets` разрешает
+  `save_known_agent_secret` только для exact значения, уже присланного в
+  текущем conversation, после отдельной прямой команды пользователя сохранить
+  именно его. Mere sharing/use не даёт storage consent. Tool допускает только
+  `trelio`, `manage`, active applicable Run, exact version, stable idempotency
+  key и literal confirmation; response/audit не возвращают value/digest, а
+  request fingerprint хранится как keyed HMAC. Исходный chat и возможная tool
+  history считаются exposed. Агент никогда не просит новое значение ради этого
+  пути; `local_device`, argv, workspace, comments, checkpoint, handoff и logs
+  исключения не получают.
   Узкое исключение по времени жизни – company-scoped Telegram MTProto
   `api_hash`: первый checkout exact runtime атомарно сохраняет его локально в
   private `skill/company/member/connection` namespace рядом с более

@@ -16,8 +16,11 @@ description: >-
 Use Trelio MCP as the control plane and the bundled
 `scripts/trelio-workspace.mjs` bridge as the local Git data plane. Keep OAuth
 credentials, bridge device-session tokens, pairing verifiers, Agent Secrets,
-personal sessions, and external credentials out of prompts, argv, shell
-variables, workspace files, Git, comments, checkpoints, handoffs, and logs.
+personal sessions, and external credentials out of argv, shell variables,
+workspace files, Git, comments, checkpoints, handoffs, and logs. Never ask for
+a credential in a prompt. The only prompt/MCP exception is the exact
+already-shared value and explicit company/user opt-in flow documented below;
+it does not permit copying the value anywhere else.
 
 ## Route the current scenario
 
@@ -106,9 +109,11 @@ ask the user first.
 
 Use `list_agent_secrets` only for safe metadata. If access is missing, call
 `request_agent_secret_access`; never ask the user to paste a password, token,
-or private key into chat. Before creating a record, call `list_agent_secrets`
-for the exact target scope and read its company-level `storagePolicy`. Pass an
-explicit `storageMode` to `create_agent_secret_placeholder` according to it:
+or private key into chat. Before creating a record or saving an already-known
+value, call `list_agent_secrets` for the exact target scope and read its
+company-level `storagePolicy` and `allowAgentSaveChatSecrets`. Pass an explicit
+`storageMode` to `create_agent_secret_placeholder` according to the storage
+policy:
 
 - `prefer_trelio`: choose `trelio` unless the user explicitly asks for local
   storage.
@@ -134,6 +139,30 @@ or add `--format fields-json` to the file form. The format flag is mandatory:
 without it JSON-looking bytes remain one scalar value for compatibility. Never
 split one logical multi-field credential into separate Agent Secrets merely to
 use a local producer/file.
+
+If and only if all of the following are true, an exact value already supplied
+in the current conversation may instead be persisted with
+`save_known_agent_secret`:
+
+- `list_agent_secrets` for the exact scope returned
+  `allowAgentSaveChatSecrets=true`;
+- the user separately and directly asked to save that exact already-shared
+  credential durably; merely sharing it, asking to sign in, or asking to use
+  it is not storage consent;
+- the target is an existing `trelio` secret for which the user has `manage`,
+  and an applicable Agent Run is active;
+- the call supplies exact `expectedCurrentVersion`, a stable
+  `clientRequestId`, and literal
+  `userExplicitlyRequestedPersistentStorage=true`.
+
+Tell the user that the original plaintext remains in the chat and may remain
+in the AI client's tool history. Send it only in this one sensitive tool
+input; never echo it in commentary/final output and never copy it into audit,
+workspace, comments, checkpoint, handoff, argv, or logs. Do not use this path
+for `local_device`, do not infer consent from the company flag, and do not ask
+the user to provide a new value so the exception becomes available. If any
+condition is false, use the protected setup form or existing-local-source
+bridge flow above.
 
 When safe metadata says `storageMode=local_device`, the same `secret set`
 command stores the complete structured container only in the paired bridge's

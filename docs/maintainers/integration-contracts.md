@@ -191,6 +191,19 @@ Trelio для shared/multi-device/unattended и спрашивает при не
 `local_only` разрешает только local и проверяется backend. Политика не меняет
 immutable mode существующих карточек.
 
+Отдельный company flag `allowAgentSaveChatSecrets` возвращается тем же safe
+list response и по умолчанию равен `false`. Только при `true` и отдельной
+прямой команде пользователя сохранить exact credential, уже присутствующий в
+текущем conversation, MCP `save_known_agent_secret` может передать plaintext
+один раз в sensitive input. Mere sharing/use не является consent. Backend
+принимает только `trelio`, `manage` ACL, active applicable Run, exact
+`expectedCurrentVersion`, stable `clientRequestId` и literal confirmation;
+idempotency fingerprint является keyed HMAC на Agent Secret keyring. Response
+и audit не содержат value/digest, но контракт честно считает исходный chat и
+возможную tool history уже exposed. Флаг не разрешает просить новое значение,
+не применяется к `local_device` и не ослабляет запрет для argv, workspace,
+comments, checkpoint, handoff или logs.
+
 Local write делает безопасный preflight до чтения input, затем idempotent
 prepare, atomic private-file replace и idempotent confirm. Значение и digest не
 отправляются Trelio. На новый компьютер переносится только подкаталог

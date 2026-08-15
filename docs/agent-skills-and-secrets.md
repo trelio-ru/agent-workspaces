@@ -158,10 +158,13 @@ literal-text API для этого flow не применяется и не по
 заменять executable на shell/logger/`env`/`cat` или сохранять plaintext в
 checkpoint/handoff. Новая запись создаётся placeholder-ом, а значение вводится
 в защищённой Trelio форме либо подаётся из уже существующего локального
-producer/file напрямую в bridge.
+producer/file напрямую в bridge. Единственное исключение для prompt/MCP –
+описанный ниже opt-in перенос точного значения, которое уже оказалось в
+текущем чате; агент не просит прислать новое значение ради этого пути.
 
 Перед созданием placeholder агент вызывает `list_agent_secrets` для exact
-scope и читает company-level `storagePolicy`. `prefer_trelio` означает Trelio,
+scope и читает company-level `storagePolicy` и
+`allowAgentSaveChatSecrets`. `prefer_trelio` означает Trelio,
 если пользователь прямо не попросил local; `contextual` означает local только
 для личного интерактивного single-device сценария, Trelio для shared,
 multi-device или unattended исполнения и обязательный вопрос при
@@ -169,6 +172,19 @@ multi-device или unattended исполнения и обязательный 
 проверяется backend. Прямое указание пользователя уточняет первые два режима,
 но не обходит `local_only`. Изменение политики не мигрирует существующие
 карточки.
+
+`allowAgentSaveChatSecrets` по умолчанию выключен и не является общим
+разрешением на сохранение. Когда он равен `true`, пользователь уже прислал
+точное значение в текущем диалоге и отдельной прямой командой попросил
+сохранить именно его, агент может вызвать `save_known_agent_secret`. Mere
+sharing, просьба войти или использовать credential не считаются storage
+consent. Tool допускает только `trelio`, `manage` ACL и active applicable Run;
+требует exact `expectedCurrentVersion`, stable `clientRequestId` и literal
+`userExplicitlyRequestedPersistentStorage=true`. Plaintext проходит один раз
+в sensitive MCP input, остаётся в исходном чате и может остаться в tool
+history, но не возвращается в response/audit. Для `local_device`, argv,
+workspace, comments, checkpoint и handoff исключения нет; защищённая форма и
+bridge из существующего локального источника остаются предпочтительными.
 
 `secret set` сначала получает безопасный write context и только затем читает
 stdin/file. В local mode двухфазные idempotent prepare/confirm передают серверу
