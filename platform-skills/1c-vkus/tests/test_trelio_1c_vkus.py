@@ -4,6 +4,7 @@ import dataclasses
 import datetime as dt
 import http.client
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -143,6 +144,35 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertNotIn("Accept-Encoding", source)
         self.assertNotIn("osascript", source)
         self.assertNotIn("System.Windows.Forms", source)
+
+    def test_main_emits_utf8_when_windows_stdout_uses_cp1251(self) -> None:
+        """The JSON wire format must not inherit the Windows ANSI code page."""
+
+        raw_stdout = io.BytesIO()
+        cp1251_stdout = io.TextIOWrapper(raw_stdout, encoding="cp1251")
+        parser = mock.Mock()
+        parser.parse_args.return_value = Namespace(
+            handler=lambda _args: {"message": "Проверка UTF-8"},
+        )
+
+        with (
+            mock.patch.object(runtime, "build_parser", return_value=parser),
+            mock.patch.object(sys, "stdout", cp1251_stdout),
+        ):
+            exit_code = runtime.main(expected_skill_id=runtime.VKUS_SKILL_ID)
+
+        # Detach the wrapper so its finalizer cannot close the BytesIO before
+        # the byte-level assertion. The runtime itself has already flushed the
+        # protocol line through the binary stream.
+        cp1251_stdout.detach()
+        output = raw_stdout.getvalue()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            output,
+            '{"ok":true,"message":"Проверка UTF-8"}\n'.encode("utf-8"),
+        )
+        self.assertEqual(json.loads(output.decode("utf-8"))["message"], "Проверка UTF-8")
 
     def test_page_limit_change_migrates_legacy_session_without_relogin(self) -> None:
         """The reviewed 3 -> 10 page change cannot redirect credentials."""

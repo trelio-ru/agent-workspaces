@@ -6879,6 +6879,31 @@ def _safe_error_payload(error: OneCEdoError) -> dict[str, Any]:
     return payload
 
 
+def _write_json_stdout(payload: Mapping[str, Any]) -> None:
+    """Emit one machine-readable JSON line as UTF-8 on every platform.
+
+    On a redirected Windows stdout, Python normally chooses the active ANSI
+    code page (for example, cp1251) for ``print``. The Trelio host consumes the
+    runtime protocol as UTF-8, so relying on that locale silently corrupts
+    Cyrillic business fields before the host can parse them. Writing through
+    the underlying binary stream makes the wire encoding explicit and leaves
+    no locale-dependent conversion in the protocol path.
+
+    ``StringIO`` and other text-only streams have no ``buffer`` attribute.
+    They are used by tests and embedders that already exchange Unicode text,
+    so retain a small text fallback for those non-process streams.
+    """
+
+    line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    if binary_stdout is not None:
+        binary_stdout.write(line.encode("utf-8"))
+        binary_stdout.flush()
+        return
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -6894,7 +6919,7 @@ def main(
         parser = build_parser(skill_id)
         args = parser.parse_args(argv)
         result = args.handler(args)
-        print(json.dumps({"ok": True, **result}, ensure_ascii=False, separators=(",", ":")))
+        _write_json_stdout({"ok": True, **result})
         return 0
     except OneCEdoError as error:
         if BROWSER_PROMPT_SESSION is not None:
@@ -6902,15 +6927,11 @@ def main(
                 title="Подключение не завершено",
                 message="Вернитесь в Codex, проверьте сообщение об ошибке и запустите connect заново.",
             )
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": _safe_error_payload(error),
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+        _write_json_stdout(
+            {
+                "ok": False,
+                "error": _safe_error_payload(error),
+            },
         )
         return error.exit_code
     except KeyboardInterrupt:
@@ -6919,15 +6940,11 @@ def main(
                 title="Подключение отменено",
                 message="Можно закрыть вкладку и вернуться в Codex.",
             )
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": {"code": "cancelled", "message": "Операция отменена."},
-                },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+        _write_json_stdout(
+            {
+                "ok": False,
+                "error": {"code": "cancelled", "message": "Операция отменена."},
+            },
         )
         return 130
     except Exception:
@@ -6939,18 +6956,14 @@ def main(
         # Unexpected library/platform failures must not emit a traceback that
         # could contain a local path, URL or credential-bearing header. The
         # detailed exception remains deliberately outside agent-visible output.
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": "internal_error",
-                        "message": "Runtime завершился с безопасной внутренней ошибкой.",
-                    },
+        _write_json_stdout(
+            {
+                "ok": False,
+                "error": {
+                    "code": "internal_error",
+                    "message": "Runtime завершился с безопасной внутренней ошибкой.",
                 },
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+            },
         )
         return 1
     finally:

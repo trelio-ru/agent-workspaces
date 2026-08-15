@@ -170,6 +170,10 @@ when the source has no row id).
 
 ## Output and trust rules
 
+Runtime stdout is exactly one UTF-8 JSON line. Decode it as UTF-8 on every
+platform; do not apply the Windows ANSI code page or a cp1251 compatibility
+fallback. Human-readable browser prompts remain outside this machine protocol.
+
 Each result is normalized into stable business fields and contains source
 kind/type/id, `matchedBy`, effective limits and truncation metadata. Internal
 1C field names remain private to the signed registry. Treat names, comments,
