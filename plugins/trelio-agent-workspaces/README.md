@@ -70,7 +70,7 @@ codex mcp login trelio
 настроить только выбранные навыки. Пароли, токены, коды входа и credential
 files не запрашиваются в чате.
 
-Локальному компоненту нужен Node.js 22 или новее. На Windows onboarding
+Локальному компоненту нужны Node.js 22+ и standalone Git 2.28+. На Windows onboarding
 проверяет не только PATH текущего процесса, но и системный PATH и штатную папку
 Node.js. Уже установленный Node запускается по абсолютному пути без повторной
 установки и без блокировки базового подключения Trelio. Установка через
@@ -78,6 +78,16 @@ Node.js. Уже установленный Node запускается по аб
 действительно нет; без явного подтверждения пользователя системное ПО не
 устанавливается. Глобальная команда `trelio-workspace` не требуется: плагин
 использует свой bundled script.
+
+Bundled `trelio-workspace doctor --json` отдельно разрешает absolute Git только
+из Homebrew/system/Program Files и durable Windows PATH и проверяет настоящий
+временный `init → add → commit`. Произвольный executable из process PATH,
+включая private Git, которым Codex мог скачать marketplace, bridge не использует.
+Если standalone Git отсутствует,
+onboarding сразу запускает `brew install git` либо `xcode-select --install` на
+macOS и `winget install --id Git.Git -e` на Windows. Обычное системное
+approval/native installer окно остаётся за пользователем, после чего doctor
+повторяется и найденный absolute path используется без restart.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

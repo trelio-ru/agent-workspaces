@@ -20,6 +20,10 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import {
+  GitPrerequisiteError,
+  verifyGitRuntime,
+} from "./trelio-git.mjs";
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
 import {
   SecretBrowserFillError,
@@ -431,6 +435,88 @@ const run = async (executable, args, options = {}) => {
     const detail = String(error.stderr || error.stdout || error.message).trim();
     throw new Error(`${executable} завершился с ошибкой: ${detail}`);
   }
+};
+
+let resolvedGitPromise = null;
+
+const requireGitRuntime = async () => {
+  // Every bridge process resolves Git once and then uses the same verified
+  // absolute executable for the complete operation. This avoids a PATH race
+  // halfway through candidate creation and never falls back to a host-private
+  // Git binary that only happened to work for marketplace installation.
+  resolvedGitPromise ||= verifyGitRuntime();
+  const resolvedGit = await resolvedGitPromise;
+
+  if (resolvedGit.status !== "ready") {
+    throw new GitPrerequisiteError(resolvedGit);
+  }
+  return resolvedGit;
+};
+
+const runGit = async (args, options = {}) => {
+  const resolvedGit = await requireGitRuntime();
+
+  // Agent Workspace Git must be deterministic across macOS and Windows. User
+  // templates, hooks, signing config and pagers are not part of the workspace
+  // contract, so every invocation gets an isolated config boundary without a
+  // shell. Local repository config remains available for bridge-owned values.
+  return run(
+    resolvedGit.gitPath,
+    [
+      "-c",
+      `core.hooksPath=${os.devNull}`,
+      "-c",
+      "init.templateDir=",
+      // Git for Windows often receives this from system config. Because the
+      // bridge intentionally ignores ambient system config, preserve long
+      // workspace support explicitly and deterministically on every platform.
+      "-c",
+      "core.longpaths=true",
+      ...args,
+    ],
+    {
+      ...options,
+      env: {
+        GIT_CONFIG_GLOBAL: os.devNull,
+        GIT_CONFIG_NOSYSTEM: "1",
+        ...options.env,
+      },
+    },
+  );
+};
+
+export const diagnoseLocalPrerequisites = async (options = {}) => {
+  const git = await verifyGitRuntime(options);
+
+  return {
+    status: git.status === "ready" ? "ready" : "action_required",
+    platform: options.platform || process.platform,
+    node: {
+      status: "ready",
+      nodePath: process.execPath,
+      version: process.version,
+    },
+    git,
+  };
+};
+
+const doctor = async (options) => {
+  const report = await diagnoseLocalPrerequisites();
+
+  if (options.json === true) {
+    process.stdout.write(`${JSON.stringify(report)}\n`);
+    return report;
+  }
+
+  if (report.status !== "ready") {
+    throw new GitPrerequisiteError(report.git);
+  }
+
+  process.stdout.write(
+    `Локальный компонент готов: Node.js ${report.node.version}, `
+      + `Git ${report.git.version} (${report.git.gitPath}).\n`,
+  );
+  return report;
 };
 
 export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
@@ -4111,7 +4197,7 @@ export const inspectWorkspaceFile = async (filePath) => {
 };
 
 const listTrackedWorkspacePaths = async (workspaceDirectory) => {
-  const result = await run("git", ["ls-files", "-z"], { cwd: workspaceDirectory });
+  const result = await runGit(["ls-files", "-z"], { cwd: workspaceDirectory });
   return result.stdout.split("\0").filter(Boolean);
 };
 
@@ -4141,8 +4227,7 @@ const setSkipWorktree = async (workspaceDirectory, filePaths, enabled) => {
     const chunk = filePaths.slice(index, index + 100);
 
     if (chunk.length > 0) {
-      await run(
-        "git",
+      await runGit(
         ["update-index", enabled ? "--skip-worktree" : "--no-skip-worktree", "--", ...chunk],
         { cwd: workspaceDirectory },
       );
@@ -4211,16 +4296,16 @@ const materializeBundle = async ({ bundlePath, directory, head, branch }) => {
   }
 
   await fs.mkdir(directory, { recursive: true });
-  await run("git", ["-c", "init.templateDir=", "init", "--initial-branch=main"], { cwd: directory });
+  await runGit(["init", "--initial-branch=main"], { cwd: directory });
   // Ни checkout, ни последующие commit не должны исполнять hooks, которые
   // могли попасть из пользовательского Git template/config на этой машине.
-  await run("git", ["config", "core.hooksPath", "/dev/null"], { cwd: directory });
-  await run("git", ["config", "fetch.fsckObjects", "true"], { cwd: directory });
-  await run("git", ["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"], { cwd: directory });
-  await run("git", ["cat-file", "-e", `${head}^{commit}`], { cwd: directory });
-  await run("git", ["checkout", "-B", branch, head], { cwd: directory });
-  await run("git", ["config", "user.name", "Trelio Agent Workspace"], { cwd: directory });
-  await run("git", ["config", "user.email", "agent-workspaces@trelio.local"], { cwd: directory });
+  await runGit(["config", "core.hooksPath", os.devNull], { cwd: directory });
+  await runGit(["config", "fetch.fsckObjects", "true"], { cwd: directory });
+  await runGit(["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"], { cwd: directory });
+  await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: directory });
+  await runGit(["checkout", "-B", branch, head], { cwd: directory });
+  await runGit(["config", "user.name", "Trelio Agent Workspace"], { cwd: directory });
+  await runGit(["config", "user.email", "agent-workspaces@trelio.local"], { cwd: directory });
 };
 
 const fastForwardMaterializedBundle = async ({
@@ -4229,7 +4314,7 @@ const fastForwardMaterializedBundle = async ({
   head,
   knownObjects,
 }) => {
-  const localHead = (await run("git", ["rev-parse", "HEAD"], {
+  const localHead = (await runGit(["rev-parse", "HEAD"], {
     cwd: workspaceDirectory,
   })).stdout.trim();
 
@@ -4246,13 +4331,12 @@ const fastForwardMaterializedBundle = async ({
     );
   }
 
-  await run(
-    "git",
+  await runGit(
     ["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"],
     { cwd: workspaceDirectory },
   );
-  await run("git", ["cat-file", "-e", `${head}^{commit}`], { cwd: workspaceDirectory });
-  const mergeBase = (await run("git", ["merge-base", localHead, head], {
+  await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: workspaceDirectory });
+  const mergeBase = (await runGit(["merge-base", localHead, head], {
     cwd: workspaceDirectory,
   })).stdout.trim();
 
@@ -4276,7 +4360,7 @@ const fastForwardMaterializedBundle = async ({
   // сохранить тот же путь, и Git иначе справедливо откажется перекрывать
   // untracked-файл. Пользовательскую или изменённую версию не трогаем.
   await removeGeneratedUntrackedWorklog(workspaceDirectory);
-  await run("git", ["checkout", "-B", "trelio-candidate", head], {
+  await runGit(["checkout", "-B", "trelio-candidate", head], {
     cwd: workspaceDirectory,
   });
   return true;
@@ -4608,8 +4692,8 @@ const readMaterializedContextHead = async (directory) => {
     }
 
     const [headResult, statusResult] = await Promise.all([
-      run("git", ["rev-parse", "HEAD"], { cwd: directory }),
-      run("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: directory }),
+      runGit(["rev-parse", "HEAD"], { cwd: directory }),
+      runGit(["status", "--porcelain", "--untracked-files=all"], { cwd: directory }),
     ]);
 
     // Даже при неизменном HEAD локально испорченный read-only snapshot нельзя
@@ -5338,7 +5422,7 @@ const openWorkspace = async (origin, options) => {
       if (!gitDirectoryStat.isDirectory()) {
         throw new Error("Каталог Run повреждён: локальный Git workspace отсутствует.");
       }
-      const localHead = (await run("git", ["rev-parse", "HEAD"], {
+      const localHead = (await runGit(["rev-parse", "HEAD"], {
         cwd: workspaceDirectory,
       })).stdout.trim();
 
@@ -5803,8 +5887,7 @@ const getChangedPaths = async (workspaceDirectory, knownObjects = []) => {
 
 const getCandidateChangedPaths = async (metadata) => {
   const [committedResult, localPaths] = await Promise.all([
-    run(
-      "git",
+    runGit(
       ["diff", "--name-only", "-z", metadata.baseHead, "HEAD", "--"],
       { cwd: metadata.workspaceDirectory },
     ),
@@ -5987,7 +6070,7 @@ const checkpoint = async (options) => withRun(async ({
 });
 
 export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
-  const result = await run("git", ["status", "--short"], { cwd: workspaceDirectory });
+  const result = await runGit(["status", "--short"], { cwd: workspaceDirectory });
   let statusLines = result.stdout.trim() ? result.stdout.trim().split("\n") : [];
 
   if (statusLines.includes(`?? ${WORKLOG_FILE_NAME}`)) {
@@ -6183,7 +6266,7 @@ const prepareCandidateIndex = async ({ metadata, metadataPath, origin, token }) 
   const workspaceDirectory = metadata.workspaceDirectory;
   const knownObjectPaths = (metadata.objects || []).map((object) => object.filePath);
   await setSkipWorktree(workspaceDirectory, knownObjectPaths, false);
-  await run("git", ["add", "--all"], { cwd: workspaceDirectory });
+  await runGit(["add", "--all"], { cwd: workspaceDirectory });
   const candidateObjects = [];
   const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
   const inspections = new Map();
@@ -6306,17 +6389,16 @@ const prepareCandidateIndex = async ({ metadata, metadataPath, origin, token }) 
       });
     }
 
-    const hashResult = await run("git", ["hash-object", "-w", "--stdin"], {
+    const hashResult = await runGit(["hash-object", "-w", "--stdin"], {
       cwd: workspaceDirectory,
       input: object.pointer,
     });
     const pointerObjectId = hashResult.stdout.trim();
-    const indexResult = await run("git", ["ls-files", "-s", "--", filePath], {
+    const indexResult = await runGit(["ls-files", "-s", "--", filePath], {
       cwd: workspaceDirectory,
     });
     const mode = indexResult.stdout.match(/^([0-7]{6})\s/)?.[1] || "100644";
-    await run(
-      "git",
+    await runGit(
       ["update-index", "--add", "--cacheinfo", mode, pointerObjectId, filePath],
       { cwd: workspaceDirectory },
     );
@@ -6332,7 +6414,7 @@ const prepareCandidateIndex = async ({ metadata, metadataPath, origin, token }) 
 };
 
 const hasStagedChanges = async (workspaceDirectory) => {
-  const result = await run("git", ["diff", "--cached", "--name-only", "-z"], {
+  const result = await runGit(["diff", "--cached", "--name-only", "-z"], {
     cwd: workspaceDirectory,
   });
   return Boolean(result.stdout);
@@ -6347,7 +6429,7 @@ const prepareLocalCandidateSnapshot = async ({
 }) => {
   const workspaceDirectory = metadata.workspaceDirectory;
   const gitStatus = await getGitStatus(workspaceDirectory, metadata.objects || []);
-  const initialHeadResult = await run("git", ["rev-parse", "HEAD"], { cwd: workspaceDirectory });
+  const initialHeadResult = await runGit(["rev-parse", "HEAD"], { cwd: workspaceDirectory });
   const hasCommittedCandidate = initialHeadResult.stdout.trim() !== metadata.baseHead;
   let candidateObjects = metadata.objects || [];
 
@@ -6363,11 +6445,11 @@ const prepareLocalCandidateSnapshot = async ({
     });
 
     if (await hasStagedChanges(workspaceDirectory)) {
-      await run("git", ["commit", "-m", message], { cwd: workspaceDirectory });
+      await runGit(["commit", "-m", message], { cwd: workspaceDirectory });
     }
   }
 
-  const headResult = await run("git", ["rev-parse", "HEAD"], { cwd: workspaceDirectory });
+  const headResult = await runGit(["rev-parse", "HEAD"], { cwd: workspaceDirectory });
   const head = headResult.stdout.trim();
   await setSkipWorktree(
     workspaceDirectory,
@@ -6402,8 +6484,7 @@ const withLocalCandidateBundle = async (
   try {
     // Bundle остаётся delta относительно pinned base даже когда новый
     // компьютер materialize-ил последний draft head.
-    await run(
-      "git",
+    await runGit(
       [
         "bundle",
         "create",
@@ -7457,8 +7538,7 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
 
 const isWritableWorkspaceDirty = async (root) => {
   try {
-    const result = await run(
-      "git",
+    const result = await runGit(
       ["status", "--porcelain", "--untracked-files=all"],
       { cwd: root.metadata.workspaceDirectory },
     );
@@ -7809,6 +7889,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
 const printHelp = () => {
   process.stdout.write(`Trelio Agent Workspace Bridge ${BRIDGE_VERSION}\n\n`);
   process.stdout.write("Команды:\n");
+  process.stdout.write("  trelio-workspace doctor [--json]\n");
   process.stdout.write("  trelio-workspace login [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace login --legacy-oauth [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace open --workspace UUID [--run UUID] [--dir PATH]\n");
@@ -8046,6 +8127,8 @@ const main = async () => {
       throw new Error("Внутренняя команда updater недоступна напрямую.");
     }
     await runBackgroundCodexPluginUpdate();
+  } else if (command === "doctor") {
+    await doctor(options);
   } else if (command === "login") {
     if (options["legacy-oauth"] === true) {
       await legacyOAuthLogin(origin);
@@ -8099,7 +8182,7 @@ const runEntrypoint = async () => {
   try {
     await main();
 
-    if (process.argv[2] !== "__plugin-update") {
+    if (!["__plugin-update", "doctor"].includes(process.argv[2])) {
       // Успешную workspace-команду не задерживаем сетью: отдельный скрытый
       // процесс обновит официальный marketplace и новую immutable plugin cache.
       await startQuietCodexPluginUpdate().catch(() => undefined);

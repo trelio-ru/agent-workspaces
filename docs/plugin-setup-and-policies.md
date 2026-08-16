@@ -4,6 +4,7 @@
 
 - Codex marketplace
 - OAuth и новый контекст
+- Локальные Node.js и Git
 - Pairing локального bridge
 - Claude Code и Claude Cowork
 - Политика моделей
@@ -79,6 +80,41 @@ ChatGPT/Codex workspace может импортировать marketplace и н�
 Нельзя подменять Trelio MCP browser-доступом. После настройки сначала повторно
 проверьте tools в текущей задаче; новая нужна только если они не появились,
 restart – только если проблема сохраняется и там.
+
+## Локальные Node.js и Git
+
+Bundled bridge запускается через Node.js 22+ и использует standalone Git 2.28+.
+Это локальные prerequisites, независимые от remote Trelio OAuth. Успех
+`marketplace add` не доказывает наличие Git: Codex plugin manager может
+использовать собственный undocumented executable, который не наследует Node
+bridge.
+
+После разрешения Node onboarding выполняет:
+
+```text
+trelio-workspace doctor --json
+```
+
+Команда проверяет стандартные Homebrew/system/Program Files пути, durable
+Windows machine/user PATH, exact version и временный `init → add → commit`.
+Произвольный executable из process PATH, включая внутренний Git Codex, не
+принимается; PATH сообщает только, виден ли уже выбранный standalone Git
+текущему процессу. Все дальнейшие workspace-команды используют один проверенный
+absolute Git path без shell. Найденный после установки Git не требует restart.
+
+При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
+
+- macOS – `brew install git`, если Homebrew уже установлен, иначе
+  `xcode-select --install`;
+- Windows – `winget install --id Git.Git -e --source winget
+  --accept-source-agreements --accept-package-agreements`; если App Installer
+  отсутствует, открывается официальный Git for Windows installer.
+
+Отдельного вопроса в чате нет. Обычное command approval, administrator prompt
+или native installer окно ОС остаётся за пользователем. После завершения
+onboarding повторяет doctor в той же задаче и только затем повторяет исходную
+workspace-команду; неоднозначный результат installer-а не повторяется до этой
+проверки.
 
 ## Pairing локального bridge
 

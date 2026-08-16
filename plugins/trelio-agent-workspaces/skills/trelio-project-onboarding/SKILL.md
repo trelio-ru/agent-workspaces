@@ -1,6 +1,6 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in the current Codex project, create or safely extend its durable AGENTS.md company/project binding, verify OAuth and local bridge pairing, discover the live Trelio skill catalog, and guide selected company or personal connections without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio for a project, when a project needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in the current Codex project, create or safely extend its durable AGENTS.md company/project binding, verify OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog, and guide selected company or personal connections without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio for a project, when a project needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
 ---
 
 # Trelio Project Onboarding
@@ -30,6 +30,14 @@ read the current skill catalog and connection state from Trelio.
      older than 22, follow the installation-offer flow under **Connect the
      local component**. A local Node.js problem does not prove that Trelio
      OAuth is invalid.
+   - After resolving compatible Node.js, run this loaded plugin's bundled
+     `../../scripts/trelio-workspace.mjs doctor --json` through that exact
+     executable. Doctor resolves a standalone Git 2.28+ only from standard
+     macOS/Windows locations and durable Windows PATH; arbitrary process-PATH
+     executables, including Codex's private runtime, are not candidates. It then
+     proves `init → add → commit` in a temporary repository. If Git needs installation
+     or upgrade, follow **Connect the local component** immediately. A Git
+     problem does not prove that Trelio OAuth is invalid.
    - If the remote `trelio` server needs authentication and the ON_INSTALL
      OAuth window is already open, let the user finish that one window. If it
      is not open, immediately run `codex mcp login trelio` and wait for it.
@@ -116,7 +124,8 @@ state and may change after this file is created.
 
 ## Connect the local component
 
-The bundled local component requires Node.js 22 or newer. Resolve `node`
+The bundled local component requires Node.js 22 or newer and a standalone Git
+2.28 or newer. Resolve `node`
 without a deliberate failing probe and read its version only when an exact
 executable exists. On native Windows use the bundled
 `../../scripts/resolve-node.ps1` diagnostic. If it returns `ready` with
@@ -138,8 +147,8 @@ instead of merely reporting a missing `PATH` entry:
 - On other systems, use the platform's normal package manager or the official
   Node.js LTS installer, but require a resulting version of at least 22.
 
-Installing or upgrading system software is a separate side effect. Ask one
-concise explicit confirmation before running the package manager command and
+Installing or upgrading Node.js is a separate side effect. Ask one
+concise explicit confirmation before running its package manager command and
 let the client apply its normal command approval. Never install Node.js
 silently. Afterward, rerun the resolver and verify the exact version. Use the
 absolute executable immediately for the bundled bridge. Ask for one full app
@@ -148,6 +157,36 @@ local MCP server and that server still cannot start. If the user says they
 already restarted, do not repeat the same advice: compare the process PATH with
 the durable machine/user PATH and report one exact environment repair or a
 bounded unsupported-client blocker.
+
+After compatible Node.js is available, run the bundled
+`trelio-workspace.mjs doctor --json` before pairing. When it returns `ready`,
+continue through the bundled bridge; the bridge will use `git.gitPath` by
+absolute path. `processPathReady=false` is not a reason to restart Codex.
+Doctor validates a real external Git executable and a temporary
+`init → add → commit`, not the private Git that Codex may use to download a
+marketplace.
+
+When doctor returns `TRELIO_GIT_REQUIRED`, `not_found`, `upgrade_required`, or
+`unusable`, immediately execute its exact installation plan. Do not stop at an
+offer and do not ask for a separate confirmation in chat. The client and OS may
+still show their ordinary command approval, administrator prompt, or signed
+installer window; never bypass or click that approval for the user.
+
+- On macOS with Homebrew, run the returned `brew install git`. Without
+  Homebrew, run `xcode-select --install` immediately, let the user finish the
+  native Apple installer window, and then rerun doctor without asking them to
+  report completion in chat.
+- On native Windows with App Installer, run the returned
+  `winget install --id Git.Git -e --source winget --accept-source-agreements
+  --accept-package-agreements`. If `winget` is genuinely unavailable, open the
+  returned official `https://git-scm.com/download/win` installer page
+  immediately, let the user finish the signed installer, and rerun doctor.
+
+After installation, rerun doctor in the same task and continue as soon as it
+returns `ready`. A newly installed Git found in Program Files, Homebrew, or
+durable Windows PATH is used by absolute path immediately; do not require an
+app restart. Do not retry an installer whose result is ambiguous until doctor
+has checked whether Git is already ready.
 
 Run `trelio-workspace login` through the logical launcher of this installed
 plugin. Resolve it without executing a failing probe: use the PATH command when

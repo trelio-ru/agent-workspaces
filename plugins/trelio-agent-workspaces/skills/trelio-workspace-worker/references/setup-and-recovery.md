@@ -1,7 +1,8 @@
 # Setup and recovery
 
 Read this file completely when Trelio MCP tools are absent, an OAuth scope is
-missing, or Trelio rejects the installed plugin version.
+missing, the local bridge reports `TRELIO_GIT_REQUIRED`, or Trelio rejects the
+installed plugin version.
 
 ## Missing MCP tools
 
@@ -54,6 +55,35 @@ verified compatible absolute executable has been found.
 
 Do not claim readiness because skill text is visible. Confirm it with a
 successful low-risk MCP read such as `get_my_context` or `get_task`.
+
+## Missing or unusable local Git
+
+Git is a local bridge prerequisite, not proof about Trelio OAuth, MCP ACL, or
+plugin installation. On `TRELIO_GIT_REQUIRED`, run this loaded plugin's bundled
+`../../scripts/trelio-workspace.mjs doctor --json` through an exact Node.js 22+
+executable. Doctor resolves standalone Git 2.28+ only from standard macOS/
+Windows locations and durable Windows PATH and proves a temporary
+`init → add → commit`. Arbitrary process-PATH executables are not candidates;
+never reuse an undocumented Git private to Codex's marketplace manager.
+
+If doctor reports `not_found`, `upgrade_required`, or `unusable`, immediately
+run its exact installation plan without another confirmation question in chat:
+
+- macOS uses `brew install git` when Homebrew is already installed; otherwise
+  start `xcode-select --install` and let the user complete Apple's native
+  installer window;
+- native Windows uses
+  `winget install --id Git.Git -e --source winget --accept-source-agreements
+  --accept-package-agreements`; without `winget`, immediately open the returned
+  official Git for Windows installer URL and let the user complete it.
+
+The client or OS still owns its normal command approval, administrator prompt,
+and signed installer UI; do not bypass or approve it for the user. After the
+installer finishes, rerun doctor in the same task before repeating the failed
+workspace command. Use a newly found absolute Git path immediately even when
+the parent Codex process PATH is stale; no app restart is required. If the
+installer outcome is ambiguous, check doctor before any retry with side
+effects.
 
 ## Missing OAuth scopes
 

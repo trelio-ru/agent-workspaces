@@ -252,6 +252,22 @@
   Полный restart нужен только после failure там. Глобальный
   `trelio-workspace` в `PATH` не требуется: используется bundled script exact
   загруженной версии плагина.
+- Standalone Git 2.28+ остаётся предпосылкой только локального Workspace data
+  plane и не выводится из того, что Codex сумел клонировать marketplace своим
+  private runtime. Bridge всегда разрешает и проверяет один absolute executable
+  только из стандартных Homebrew/system/Program Files roots либо durable Windows
+  machine/user PATH; произвольный Git из process PATH не является кандидатом, а
+  PATH используется лишь для диагностического `processPathReady`. Все Git-команды
+  идут через проверенный path без shell.
+  `trelio-workspace doctor --json` обязан сделать настоящий временный
+  `init → add → commit`, а не только прочитать version string. При
+  `TRELIO_GIT_REQUIRED` onboarding сразу запускает возвращённый штатный
+  installer: `brew install git` либо `xcode-select --install` на macOS,
+  `winget install --id Git.Git -e` на Windows. Отдельного вопроса в чате перед
+  этим нет, но обычные approval/admin/native installer окна клиента и ОС не
+  обходятся и не подтверждаются агентом. После установки doctor повторяется в
+  той же задаче, новый absolute path используется без restart; ambiguous
+  installer result сначала проверяется doctor, а не повторяется вслепую.
 - Codex `SessionStart` с `source=startup` один раз добавляет в первый model call
   короткое напоминание проверить название текущего основного чата после сбора
   исходного контекста. Это non-blocking reminder, а не проверка результата:

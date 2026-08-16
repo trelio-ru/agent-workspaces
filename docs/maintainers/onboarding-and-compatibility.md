@@ -46,6 +46,27 @@ stdio server; после уже выполненного restart одинако�
 Отсутствие глобального `trelio-workspace` штатно: агент использует bundled
 script текущей версии плагина.
 
+После Node onboarding запускает bundled `trelio-workspace doctor --json`.
+Standalone Git 2.28+ разрешается только из стандартных Homebrew/system/
+Program Files roots и durable Windows machine/user PATH; произвольный executable
+из process PATH, включая внутренний runtime Codex, кандидатом не является. PATH
+нужен лишь для диагностического `processPathReady`. Git принимается только по
+absolute path после `--version` и реального временного `init → add → commit`.
+Успешный marketplace clone внутренним Git Codex не является readiness proof для
+bridge. Найденный вне process PATH Git сразу используется без restart.
+
+При `TRELIO_GIT_REQUIRED` onboarding не останавливается на предложении и не
+задаёт отдельный вопрос в чате: сразу запускает exact installer plan doctor-а.
+На macOS это `brew install git` при имеющемся Homebrew, иначе
+`xcode-select --install`; на Windows –
+`winget install --id Git.Git -e --source winget --accept-source-agreements
+--accept-package-agreements`, а при отсутствии winget открывается официальный
+Git for Windows installer URL. Системное approval/admin/native installer окно
+остаётся за человеком и не обходится агентом. После завершения doctor
+повторяется в той же задаче; ambiguous result проверяется до повторной
+installation mutation. Git failure не блокирует remote OAuth и не считается
+его ошибкой.
+
 Managed workspace admin может назначить plugin ролям, но OAuth проходит каждый
 user и workspace policy не обходится.
 
@@ -142,8 +163,9 @@ Workspace. Он:
 2. читает `get_agent_instructions` до substantive setup;
 3. безопасно создаёт/обновляет только marked Trelio block в project-root
    `AGENTS.md`/override, не заменяя unrelated instructions;
-4. отдельно диагностирует Trelio OAuth и Node.js 22+, а отсутствующий runtime
-   только предлагает установить после явного подтверждения;
+4. отдельно диагностирует Trelio OAuth, Node.js 22+ и standalone Git 2.28+;
+   отсутствующий Node предлагает установить после явного подтверждения, а
+   exact Git installer запускает сразу с обычным client/OS approval;
 5. выполняет `trelio-workspace login` без disposable Run;
 6. читает live `list_agent_skills` exact scope;
 7. в company-wide scope сразу предлагает и company assignments, и возвращённые

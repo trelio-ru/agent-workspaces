@@ -2454,6 +2454,17 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /processPathReady=false/u);
   assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
   assert.match(onboardingSkill, /do not repeat the same advice/u);
+  assert.match(onboardingSkill, /trelio-workspace\.mjs doctor --json/u);
+  assert.match(onboardingSkill, /standalone Git\s+2\.28/u);
+  assert.match(onboardingSkill, /temporary\s+`init → add → commit`/u);
+  assert.match(onboardingSkill, /private Git that Codex may use to\s+download a\s+marketplace/u);
+  assert.match(onboardingSkill, /Do not stop at an\s+offer/u);
+  assert.match(onboardingSkill, /do not ask for a separate confirmation in chat/u);
+  assert.match(onboardingSkill, /brew install git/u);
+  assert.match(onboardingSkill, /xcode-select --install/u);
+  assert.match(onboardingSkill, /winget install --id Git\.Git -e/u);
+  assert.match(onboardingSkill, /rerun doctor in the same task/u);
+  assert.match(onboardingSkill, /do not require an\s+app restart/u);
   assert.match(onboardingSkill, /winget install --id OpenJS\.NodeJS\.LTS -e/u);
   assert.match(onboardingSkill, /brew install node/u);
   assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
@@ -2519,6 +2530,23 @@ test("workspace setup keeps initial OAuth in one browser flow and retries the cu
   assert.match(workspaceSkill, /retry the\s+original low-risk Trelio read once in the current task/u);
   assert.match(workspaceSkill, /Start a new task only when this live retry proves/u);
   assert.match(workspaceSkill, /Failure of only `trelio-remote-skills` is not failed Trelio OAuth/u);
+});
+
+test("workspace recovery installs missing Git through the native macOS or Windows flow", async () => {
+  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+
+  assert.match(workspaceSkill, /`TRELIO_GIT_REQUIRED`/u);
+  assert.match(workspaceSkill, /standalone Git 2\.28\+/u);
+  assert.match(workspaceSkill, /temporary\s+`init → add → commit`/u);
+  assert.match(workspaceSkill, /Arbitrary process-PATH executables are not candidates/u);
+  assert.match(workspaceSkill, /never reuse an undocumented Git private to Codex/u);
+  assert.match(workspaceSkill, /immediately\s+run its exact installation plan without another confirmation question/u);
+  assert.match(workspaceSkill, /brew install git/u);
+  assert.match(workspaceSkill, /xcode-select --install/u);
+  assert.match(workspaceSkill, /winget install --id Git\.Git -e/u);
+  assert.match(workspaceSkill, /normal command approval, administrator prompt/u);
+  assert.match(workspaceSkill, /rerun doctor in the same task/u);
+  assert.match(workspaceSkill, /no app restart is required/u);
 });
 
 test("workspace OAuth recovery distinguishes configured OAuth from a missing process bearer", async () => {
@@ -5347,6 +5375,7 @@ test("bridge resumes external object registration from durable per-file progress
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
   assert.match(result.stdout, new RegExp(`Bridge ${BRIDGE_VERSION.replaceAll(".", "\\.")}`));
+  assert.match(result.stdout, /trelio-workspace doctor \[--json\]/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);

@@ -8,8 +8,8 @@ description: >-
   asks for an editable task-comment proposal or reply with or without an Agent
   Run; needs durable dossier context, a dossier transfer, or task controls;
   requests personal/company/project agent-rule changes; or needs recovery from
-  missing MCP tools, stale OAuth scopes, plugin-version gates, blockers, or
-  concurrent Agent Runs.
+  missing MCP tools, stale OAuth scopes, local Git prerequisites,
+  plugin-version gates, blockers, or concurrent Agent Runs.
 ---
 
 # Trelio Workspace Worker
@@ -32,8 +32,8 @@ the task, pause and read the newly relevant reference before continuing. An
 active maintainer, integration, or Run route does not absorb a later request.
 These references are additive; do not read unrelated files speculatively.
 
-- **MCP tools are absent, an OAuth scope is missing, or the installed plugin is
-  rejected as old:** read
+- **MCP tools are absent, an OAuth scope is missing, the local bridge reports
+  `TRELIO_GIT_REQUIRED`, or the installed plugin is rejected as old:** read
   [`references/setup-and-recovery.md`](references/setup-and-recovery.md).
 - **The user requests a personal profile, company rule, or project rule change,
   or a durable instruction is discovered:** read

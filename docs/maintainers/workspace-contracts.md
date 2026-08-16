@@ -37,6 +37,16 @@ Runs. Нельзя редактировать protected files или скрыв�
 Model/effort policy закрепляется за Run и проверяется до действий. Никогда не
 редактировать `.trelio-run.json`, hook или attestation для обхода.
 
+Локальный Git data plane не полагается на bare `git` из process PATH и не
+заимствует undocumented executable Codex plugin manager. Bridge разрешает
+standalone Git 2.28+ только в стандартных macOS/Windows roots и durable Windows
+PATH; произвольный executable из process PATH кандидатом не является. Bridge
+проверяет exact absolute path/version и использует его для всех операций без
+shell. `doctor --json` дополнительно доказывает временный
+`init → add → commit`; `open`, checkpoint и finish при отсутствующем или
+неработающем Git fail-closed возвращают `TRELIO_GIT_REQUIRED`, не создавая
+частичный candidate.
+
 ## Run, candidate и handoff
 
 Один Run имеет один writable task/dossier Workspace и pinned `baseHead`.

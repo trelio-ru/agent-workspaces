@@ -41,6 +41,7 @@ jobs:
       - name: Run plugin and platform runtime Node tests
         run: >-
           node --test
+          plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-messaging.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
@@ -81,6 +82,14 @@ jobs:
           node --test
           --test-name-pattern="Windows ACL command|Windows bridge applies|Windows Node resolver"
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
+
+      # Git discovery is deliberately platform-aware even when Codex inherited
+      # a stale PATH. Run both pure Windows-path cases and one real Git
+      # init/add/commit smoke test on the Windows runner.
+      - name: Run Windows Git prerequisite regressions
+        run: >-
+          node --test
+          plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
 
       # GitHub's Windows runner account is an administrator. Re-run the real
       # bridge guard as a disposable standard user so an accidental dependency
