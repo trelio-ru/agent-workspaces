@@ -27,7 +27,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.9.1";
+export const BRIDGE_VERSION = "1.9.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -46,6 +46,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   "- Соблюдай Trelio ACL, закреплённые правила и прямые указания пользователя. Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши.",
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
+  "- Новый Run может записывать только в task или dossier Workspace. Если открыт уже существовавший до миграции legacy company/project Run, разрешено завершить только этот exact pinned Run через обычные checkpoint/finish; не начинай новый Run такой области. Company/project задают ACL и immutable правила, но не являются новыми material Workspace; дополнительный контекст приходит только через явно закреплённые related task/dossier heads. Не считай наличие legacy `context/company` или `context/project` отдельным разрешением на запись.",
   `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
   "- Не обходи закреплённую policy модели/effort. При блокировке выбери разрешённые значения и заново открой или claim-ни Run; не меняй attestation, hook или `.trelio-run.json`.",
   "",
@@ -62,7 +63,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Используй только exact `runtimeExecution` command или объявленный `remoteMcpExecution` host/identity/release при обычном operational use. Начальный `trelio-workspace` — логический launcher текущего плагина: используй PATH либо bundled bridge этой версии через Node.js 22+, не сканируй cache, не сообщай о штатно отсутствующем PATH и не запускай пробный failure. Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом при обычном действии от имени компании.",
   "- Явную задачу разработать, отладить, аудитировать, выпустить или live-проверить Trelio/Agent Skill в названном каноническом repository checkout веди как maintainer route. Repository-owned development tools, unpublished runtime и узкие bounded read-only probes разрешены без принудительного запуска current signed release; это не отменяет scope/ACL подключения, защищённую доставку и запрет вывода секретов, лимиты результата и отдельное разрешение external mutations. Наличие checkout само по себе не включает этот режим; для обычной company operation вернись к catalog/get/runtime routing.",
   "- Fallback допустим, когда релевантного навыка нет, обязательное company/personal подключение не настроено или фактически недоступно (включая явно возвращённый `no_access` / `needs_reconnect`) либо операция не поддерживается; назови причину. Если без внешнего источника или другой реализации запрос не выполнить, используй разрешённый независимый fallback, а не отказывайся из-за отсутствия или недоступности навыка. Не применяй fallback для входа в ту же защищённую систему другим путём, ослабления ACL или подмены отсутствующих прав. Недоступность каталога и transient network failure сами по себе не равны `no_access`. На `AGENT_SKILL_RELEASE_CHANGED` перечитай навык. Совместимые личные навыки не запрещены.",
-  "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill.",
+  "- Trelio MCP и bundled bridge остаются штатным workflow поиска задач, Workspace/Run, context, checkpoint, submit и restore; не ищи для этих операций отдельный catalog skill. Для контекста сначала используй явные task/dossier связи, затем один глобальный ACL-aware workspace search с несколькими запросами без project-фильтра; не вызывай list_dossiers только ради discovery.",
   "- Для browser-входа не передавай поля Agent Secret в literal-text Browser/Chrome tool. Передай одному вызову `prepare_agent_secret_browser_fill` ordered steps: все поля одной страницы в одном step, следующие страницы – следующими steps с exact HTTPS URL и CSS-selector каждого поля. Выполни ровно одну возвращённую `trelio-workspace secret browser-fill`: bridge подставляет значение автоматически для каждого поля и открывает одно окно/вкладку/профиль на весь вход. Не создавай отдельный grant или browser-fill для логина и пароля, не проси пользователя фокусировать поле, не читай значения обратно и не переноси их через clipboard.",
   "",
   "## Работа и результат",

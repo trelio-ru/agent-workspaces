@@ -11,14 +11,17 @@
 
 ## Выбор scope
 
-Локальный Trelio-блок `AGENTS.md` задаёт границы поиска, но не выбирает
-writable workspace автоматически.
+Локальный Trelio-блок `AGENTS.md` задаёт company/control-plane binding, но не
+выбирает writable Workspace автоматически. Workspace-контекст ищется без
+project-фильтра, потому что полезные связи могут быть межпроектными.
 
 - `task` – результат принадлежит одной задаче;
 - `dossier` – долговременный именованный предмет без одной owning task;
-- `project` – материал относится ко всему проекту, а не к одному предмету;
-- `company` – действительно межпроектный контекст, безопасный для всех
-  участников компании.
+
+Project/company не являются material Workspace: это scope правил, ACL и owner
+досье. Project-wide материал сохраняется в project dossier, а действительно
+межпроектный и безопасный для всех участников – в явно подтверждённый company
+dossier.
 
 Если дана canonical task URL или exact coordinates, агент читает задачу
 напрямую. Иначе он отправляет одним `search_tasks` 5–12 отдельных лексических
@@ -31,12 +34,14 @@ write/Run/link-management права owner scope.
 
 ## Контекст и файлы
 
-У Run один writable workspace. Parent company/project и выбранные related
-workspace materialize-ятся как pinned read-only context. Каждый target и файл
-повторно проходят ACL.
+У Run один writable task/dossier Workspace. Только явно выбранные related
+task/dossier Workspace materialize-ятся как pinned read-only context. Каждый
+target и файл повторно проходят ACL. Старый Run может сохранять immutable
+legacy parent company/project snapshots, но новый Run их не наследует.
 
-Agent может найти prior context через `search_agent_workspace_files`, прочитать
-точный hit и передать до 20 materially relevant workspace IDs в
+Agent сначала читает явные task/dossier связи, затем при необходимости одним
+`search_agent_workspace_files` с несколькими формулировками ищет prior context
+во всех доступных проектах, читает точный hit и передаёт до 20 materially relevant workspace IDs в
 `prepare_agent_workspace_run.relatedWorkspaceIds`. Tool проверяет все цели и
 закрепляет их до создания Run. Legacy `attach_agent_workspace_context` остаётся
 для продолжения уже открытого старым клиентом Run. Прямо связанные
@@ -58,8 +63,8 @@ read-only context они остаются пятистрочными object poin
 
 ## Agent Run
 
-1. Агент вызывает `prepare_agent_workspace_run` один раз; Trelio обеспечивает
-   workspace и создаёт Run с pinned base head, ACL, model policy, immutable
+1. Агент вызывает `prepare_agent_workspace_run` один раз для exact task или
+   dossier; Trelio обеспечивает Workspace и создаёт Run с pinned base head, ACL, model policy, immutable
    instruction snapshots и related context. Native Trelio discovery не требует
    `list_agent_skills`; каталог нужен перед подключённым внешним сервисом.
 2. Bridge открывает локальный Git root и защищённые runtime control files.

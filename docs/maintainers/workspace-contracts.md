@@ -39,7 +39,9 @@ Model/effort policy закрепляется за Run и проверяется 
 
 ## Run, candidate и handoff
 
-Один Run имеет один writable workspace и pinned `baseHead`. Compact MCP tool
+Один Run имеет один writable task/dossier Workspace и pinned `baseHead`.
+Company/project остаются instruction/ACL/owner scopes и не принимаются как
+новые material Workspace. Compact MCP tool
 `prepare_agent_workspace_run` сначала ищет последний собственный непустой
 portable draft на актуальном `acceptedHead`; его `open` claim-ит тот же Run и
 fence-ит прежнюю lease. `startNewRun=true` остаётся явным escape hatch для
@@ -131,22 +133,28 @@ external objects, сохраняет exact per-file progress и восстана
 `Retry-After`, каждый retry открывает новый stream. Даже clean tree повторно
 готовит candidate, если HEAD отличается от pinned base.
 
-Parent/related context pointer-first: `open` не скачивает object bytes. Exact
+Related context и immutable parent context уже существующего legacy Run
+pointer-first: `open` не скачивает object bytes. Exact
 `context fetch --path` reauthorizes Run, dependency workspace, pinned head и
 path. Cache проверяется SHA-256; materialization использует
 clonefile/reflink/copy, но не mutable hardlink. Mixed/lone-CR pointer невалиден;
 полный LF и CRLF допустимы.
 
-Search/attach разрешён только для доступных accepted text files той же
+Attach разрешён только для доступных active task/dossier Workspace той же
 компании. Дополнительный context – pinned read-only и не смешивается с writable
-tree. Search использует отдельные 5–12 лексических запросов, exact candidates
-проверяются через `get_task`.
+tree. Workspace discovery сначала использует явные task/dossier связи, затем
+один глобальный ACL-aware search без project-фильтра с максимум пятью
+независимыми формулировками и exact file reads. `list_dossiers` не является
+обязательным discovery-шагом. Task discovery сохраняет отдельный
+`search_tasks` flow с 5–12 запросами и проверкой exact candidates через
+`get_task`.
 
 ## Dossier и meeting
 
 Dossier – agent-only durable subject уровня project/company. Linked task даёт
 read-only, но не owner write/Run/link права. Company dossier всегда требует
-обоснования и подтверждения широкой видимости.
+обоснования и подтверждения широкой видимости. Dossier Workspace не имеет
+material parent Workspace; owner metadata отдельно задаёт ACL.
 
 Transfer существующего dossier использует actor-bound
 `plan_dossier_transfer` → `apply_dossier_transfer`. Actor независимо управляет
@@ -157,7 +165,9 @@ source и target; unfinished/claimable Run блокирует transfer; company 
 Meeting – отдельная private agent-only сущность с transcript/result ACL, не
 workspace scope. Сначала фиксируется result revision, затем target-grouped
 `plan_meeting_context_updates`, exact approved/skipped IDs и только после
-confirmation обычные workspace/task flows. Mention/provenance/comment не
+confirmation обычные task/dossier Workspace flows. Project допустим только как
+цель `create_task`; project/company context update сначала получает exact
+досье. Mention/provenance/comment не
 раскрывает meeting task participants. Correction создаёт новую result revision
 и новый distribution plan.
 

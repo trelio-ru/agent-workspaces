@@ -4,10 +4,12 @@ Read this file completely before discovering or selecting a Trelio task,
 dossier, project, company, writable workspace, relation, work case, or related
 read-only context.
 
-Treat company/project mappings in local `AGENTS.md` as search boundaries, not
-automatic writable scopes. A Codex project may allow one or several companies
-or projects. Keep those boundaries and ask only when ambiguity remains after
-read-only discovery.
+Treat company/project mappings in local `AGENTS.md` as control-plane bindings,
+not writable Workspace scopes. A Codex project may allow one or several
+companies or projects. Keep explicit company boundaries, but never narrow
+Workspace context discovery to the current project: relevant material may be
+linked across projects. Ask only when ambiguity remains after read-only
+discovery.
 
 ## Resolve the work item
 
@@ -30,18 +32,22 @@ Otherwise:
 5. If several remain, show their direct URLs and differences and ask before a
    mutation or workspace Run.
 
-If no task matches and durable context is still needed, list dossiers before
-choosing a generic workspace. Prefer an existing project dossier for a
-continuing subject, or create one when a project is the narrowest owner. Use a
-company dossier only for genuinely cross-project context safe for every
-company member, or after an explicit company-wide request. Absence of a task
-never justifies company scope by itself. Company dossier creation requires a
-concrete `companyScopeReason` and explicit `confirmCompanyWideAccess`. Do not
-create a task without authority.
+If no task matches and durable context is still needed, search readable
+Workspace files and metadata for the subject. Do not call `list_dossiers`
+merely to discover context: global search already covers accessible task and
+dossier Workspace across projects. Use `list_dossiers` only when the user asks
+to browse/manage a known collection or when exact owner-scope enumeration is
+itself required. Prefer an existing project dossier for a continuing subject,
+or create one when a project is the narrowest owner. Use a company dossier only
+for genuinely cross-project context safe for every company member, or after an
+explicit company-wide request. Absence of a task never justifies company scope
+by itself. Company dossier creation requires a concrete `companyScopeReason`
+and explicit `confirmCompanyWideAccess`. Do not create a task without authority.
 
 Use task scope for task-owned work and dossier scope for a durable subject not
-owned by one task. The mapped company/project remains parent read-only context
-unless the result genuinely belongs at that broader level.
+owned by one task. Company/project rules remain pinned instruction snapshots,
+not material Workspace. If a broad result is durable, store it in a project
+dossier by default or an explicitly justified company dossier.
 
 ## Discover related context
 
@@ -49,16 +55,19 @@ Discover context when it can materially improve the result; do not crawl every
 workspace.
 
 - `get_task` returns accessible linked dossiers, task links, and work-case
-  members. `list_dossiers` lists an exact project/company collection.
+  members. Read those explicit relations first; they are the cheapest and most
+  reliable context signal.
 - A dossier is agent-only and has no standalone browser page. `task_full` from
   a linked task grants only read access; it never exposes the owner project or
   grants dossier write, Run, approval, or link-management rights.
 - Creating/removing a task–dossier link requires independent dossier
   owner-scope management plus task edit access. Access inherited from another
   link is insufficient.
-- Use `search_agent_workspace_files` for concepts, names, decisions, or prior
-  materials across readable workspaces, then read exact hits with
-  `get_agent_workspace_file`.
+- Use one `search_agent_workspace_files` call with up to five independent
+  `queries` for concepts, names, decisions, old names, or prior materials
+  across every readable Workspace. Do not pass a project filter. Search is
+  ACL-aware and can find cross-project relations; read only exact material hits
+  with `get_agent_workspace_file`.
 - Use `get_dossier` for metadata and visible task links, and
   `get_agent_workspace_by_scope` when an exact linked UUID is already known.
   Every read reapplies ACL.

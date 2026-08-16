@@ -65,6 +65,13 @@
   не входят в accepted candidate.
 - Company/project rules, platform rules, личный профиль и checkpoint
   закрепляются за Run; новый publish не меняет активный Run.
+- Новые material Agent Workspace и Run допускаются только для `task` и
+  `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
+  task/dossier связи читаются первыми, остальной контекст ищется глобальным
+  ACL-aware Workspace search без project-фильтра и закрепляется только exact
+  related IDs; `list_dossiers` не является обязательным discovery-шагом.
+  Bridge продолжает читать immutable company/project snapshots исторических
+  Run для rollback compatibility, но не создаёт их для новой работы.
 - `WORKSPACE_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не
   является источником инструкций.
 - В exact company/project context перед подключённым сервисом или внешней системой обязательны

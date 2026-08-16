@@ -1,8 +1,8 @@
 ---
 name: trelio-workspace-worker
 description: >-
-  Work through private Trelio meetings and company, project, dossier, or task
-  Agent Workspaces with MCP and the local Git bridge. Use when the user supplies
+  Work through private Trelio meetings, company/project agent rules, and
+  dossier or task Agent Workspaces with MCP and the local Git bridge. Use when the user supplies
   a meeting transcript; asks Codex to take, continue, analyze, prepare materials
   for, complete, restore, or preserve OCR/vision output for work tied to Trelio;
   asks for an editable task-comment proposal or reply with or without an Agent
@@ -41,7 +41,7 @@ These references are additive; do not read unrelated files speculatively.
 - **The input is a transcript, meeting notes, call, sync, or meeting-result
   correction/distribution:** read
   [`references/meetings.md`](references/meetings.md).
-- **A task, dossier, project, company, writable scope, related context, task
+- **A task, dossier, project/company binding, writable scope, related context, task
   relation, or work case must be discovered or selected:** read
   [`references/scope-and-context.md`](references/scope-and-context.md).
 - **An existing dossier must move between project/company owners:** read

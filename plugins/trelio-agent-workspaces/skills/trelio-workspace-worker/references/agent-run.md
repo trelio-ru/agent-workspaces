@@ -14,19 +14,24 @@ task communication, handoff, submit, or final reporting.
 
 ## Prepare and open the Run
 
-1. Resolve the exact company/project/dossier/task through the scope procedure.
+1. Resolve the exact task or dossier writable target through the scope
+   procedure. Company/project may identify rules, ACL and dossier ownership,
+   but are not writable material Workspace.
    Native Trelio discovery does not require `list_agent_skills`. Do not guess
    an ID from a title. For task work, read `get_task` connections and linked
-   dossiers. For durable task-independent subjects, list project dossiers first
-   and company dossiers only for genuinely company-wide work.
-2. Search readable workspace files only when prior context can materially help.
-   Read exact hits and resolve directly linked scopes with
-   `get_agent_workspace_by_scope`. Keep only materially relevant same-company
-   workspace IDs; parent company/project context remains automatic.
+   dossiers. For durable task-independent subjects, search existing Workspace
+   metadata/files; do not list dossiers merely for discovery. Prefer a project
+   dossier and use a company dossier only for genuinely company-wide work.
+2. Read explicit task/dossier relations first. When more prior context can
+   materially help, call `search_agent_workspace_files` once with several
+   independent queries and no project filter. Read exact hits and resolve exact
+   linked scopes with `get_agent_workspace_by_scope`. Keep only materially
+   relevant same-company task/dossier Workspace IDs; no company/project
+   Workspace context is inherited automatically.
 3. Call `prepare_agent_workspace_run` once with the exact writable scope and
    optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
-   cross-task subject uses dossier scope; project/company scope requires a
-   genuinely broad result. The tool ensures the workspace and rechecks write
+   cross-task subject uses dossier scope. The tool rejects company/project
+   Workspace scope, ensures the exact task/dossier Workspace and rechecks write
    ACL. By default it returns the initiating user's latest portable draft on
    the current accepted head; otherwise it pins rules/profile/runtime policy,
    validates every related context and starts one fully prepared Run. Use
@@ -35,7 +40,10 @@ task communication, handoff, submit, or final reporting.
    `get_agent_instructions`, `ensure_agent_workspace`,
    `start_agent_workspace_run` or `attach_agent_workspace_context` on this
    compact path. The legacy tools remain only for continuation/recovery with an
-   already exact old Run.
+   already exact old Run. An exact company/project Run created before the
+   dossier-only migration may still be claimed, checkpointed and finished by
+   its existing Run ID; this compatibility never permits preparing or starting
+   another legacy-scope Run.
 4. Execute the returned bridge `open` command through the approved bundled
    launcher resolution from the main skill.
 5. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
@@ -73,12 +81,14 @@ task communication, handoff, submit, or final reporting.
    the form `Agent Secret: <name> (secretId: <UUID>) — <purpose>`. Never store
    value, version, grant, setup URL, runtime arguments, or unused discovery
    results.
-6. Read `../context/index.json`, parent snapshots under `../context/company`
-   and `../context/project`, and selected snapshots under
-   `../context/related/<workspace-uuid>` as read-only pinned context. For context
-   selected after `open`, use `trelio-workspace context attach --workspace
-   <uuid>`; for an MCP-attached workspace use `context sync`.
-7. Parent/related context is pointer-first. Inspect an exact file before use.
+6. Read `../context/index.json` and selected snapshots under
+   `../context/related/<workspace-uuid>` as read-only pinned context. A legacy
+   Run may also contain immutable `../context/company` or
+   `../context/project`; preserve and read those only for that already-existing
+   Run, but never expect or create them for new work. For context selected after
+   `open`, use `trelio-workspace context attach --workspace <uuid>`; for an
+   MCP-attached workspace use `context sync`.
+7. Related and legacy context is pointer-first. Inspect an exact file before use.
    If it is the five-line `https://trelio.ru/spec/workspace-object/v1` pointer,
    run `trelio-workspace context fetch --path <exact-path>` before reading it.
    Fetch only needed files; never bulk hydrate. Backend reauthorizes Run,

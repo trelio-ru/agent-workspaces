@@ -2259,7 +2259,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.9.1");
+  assert.equal(BRIDGE_VERSION, "1.9.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2329,6 +2329,9 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
 
   for (const invariant of [
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
+    /Run может записывать только в task или dossier Workspace/u,
+    /глобальный ACL-aware workspace search.*без project-фильтра/u,
+    /не вызывай list_dossiers только ради discovery/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
     /Fallback допустим, когда релевантного навыка нет/u,
@@ -2381,6 +2384,14 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(agentRunReference, /latest portable draft on\s+the current accepted head/u);
   assert.match(agentRunReference, /checkpoint --type draft/u);
   assert.match(agentRunReference, /startNewRun=true/u);
+  assert.match(agentRunReference, /rejects company\/project\s+Workspace scope/u);
+  assert.match(agentRunReference, /no company\/project\s+Workspace context is inherited automatically/u);
+  const scopeReference = await readFile(
+    path.join(workerDirectory, "references", "scope-and-context.md"),
+    "utf8",
+  );
+  assert.match(scopeReference, /Do not call `list_dossiers`\s+merely to discover context/u);
+  assert.match(scopeReference, /Do not pass a project filter/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");

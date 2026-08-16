@@ -30,5 +30,5 @@ create another dossier.
    with another actor or target. On `DOSSIER_TRANSFER_OUTDATED`, prepare and
    reassess a fresh plan rather than retry stale state.
 8. Verify the returned owner. Dossier UUID, accepted Git history, revisions,
-   and task links must remain unchanged; only owner scope and parent context
-   change.
+   and task links must remain unchanged. The Workspace must still have no
+   implicit material parent; only owner metadata and its ACL change.
