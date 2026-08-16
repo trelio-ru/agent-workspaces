@@ -48,10 +48,14 @@ read the current skill catalog and connection state from Trelio.
      fresh task/process and preserve the successful authorization.
    Require a full Codex restart only when a live current-task retry and then a
    new task still lack the tools or report the old plugin version. If the
-   marketplace itself is
-   missing, use `codex plugin marketplace add trelio-ru/agent-workspaces`; its
-   `INSTALLED_BY_DEFAULT` policy makes a separate plugin-add command
-   unnecessary.
+   marketplace itself is missing, run
+   `codex plugin marketplace add trelio-ru/agent-workspaces`. Then inspect
+   `codex plugin list --json`: a listed marketplace is not proof that its
+   plugin is installed. If `trelio-agent-workspaces@trelio-plugins` is not
+   installed and enabled, run
+   `codex plugin add trelio-agent-workspaces@trelio-plugins`. Treat
+   `INSTALLED_BY_DEFAULT` only as a host optimization, never as a reason to
+   skip this live installation check.
 2. Resolve the current local project root from the active workspace. Prefer
    the Git root when the project is a repository. Do not place this binding
    inside a materialized Trelio Agent Workspace: a nearby `.trelio-run.json`

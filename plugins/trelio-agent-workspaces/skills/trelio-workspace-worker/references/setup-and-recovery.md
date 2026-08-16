@@ -22,11 +22,15 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
    Never ask the user to log in on the site first, report «я вошёл» in chat, or
    let Computer Use enter credentials. If the OAuth window is already open, do
    not start a duplicate flow; let the user finish it.
-3. If the `Trelio` marketplace or plugin is missing, give the exact command
+3. If the `Trelio` marketplace is missing, run the exact command
    `codex plugin marketplace add trelio-ru/agent-workspaces`. It tracks the
    official default branch; refresh an existing snapshot with
-   `codex plugin marketplace upgrade`. `INSTALLED_BY_DEFAULT` installs the
-   plugin, so do not add a redundant `codex plugin add` step.
+   `codex plugin marketplace upgrade`. Then inspect `codex plugin list --json`.
+   A registered marketplace is not proof that the plugin is installed. If
+   `trelio-agent-workspaces@trelio-plugins` is not installed and enabled, run
+   `codex plugin add trelio-agent-workspaces@trelio-plugins` even though the
+   marketplace declares `INSTALLED_BY_DEFAULT`; that policy is a host
+   optimization, not a CLI readiness check.
 4. If a managed ChatGPT/Codex workspace marks the plugin or connection
    unavailable, explain that a workspace admin must enable it for the user's
    role. Do not suggest resetting Trelio credentials before resolving policy.

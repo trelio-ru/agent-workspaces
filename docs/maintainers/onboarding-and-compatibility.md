@@ -10,16 +10,24 @@
 
 ## Codex onboarding
 
-Marketplace добавляется без `--ref`; `INSTALLED_BY_DEFAULT` исключает отдельную
-`codex plugin add`. `authentication=ON_INSTALL` просит Codex открыть browser
-OAuth автоматически. `Plugins` – только fallback, если страница не появилась.
+Marketplace добавляется без `--ref`, после чего clean-install flow всегда
+выполняет `codex plugin add trelio-agent-workspaces@trelio-plugins`. Codex CLI
+регистрирует marketplace и устанавливает plugin разными операциями, поэтому
+успешный `marketplace add` не является readiness proof. `INSTALLED_BY_DEFAULT`
+остаётся host optimization, а установленный plugin проверяется через
+`codex plugin list --json`. `authentication=ON_INSTALL` просит Codex открыть
+browser OAuth автоматически; если страница не появилась, агент запускает
+`codex mcp login trelio`. Ручной переход в `Plugins` не является основным
+fallback.
 
 После install/OAuth onboarding сначала обновляет status и повторяет безопасный
 read `get_my_context`/`get_task` в текущей задаче. Если tools уже callable,
 работа продолжается там же. Новая задача нужна только после доказанного live
-failure текущей; полный restart – только если и новая задача сохраняет старую
-версию или не видит tools. Skill без tools не доказывает readiness, но и
-статичный список заранее не предполагается. Browser не подменяет MCP.
+failure текущей; в ней пользователь выбирает manifest starter prompt `Настрой
+Trelio и доступные навыки для текущего проекта`, который Codex предлагает после
+установки. Полный restart – только если и новая задача сохраняет старую версию
+или не видит tools. Skill без tools не доказывает readiness, но и статичный
+список заранее не предполагается. Browser не подменяет MCP.
 
 Node.js 22+ остаётся локальной предпосылкой bundled bridge и
 `trelio-remote-skills`, но не удалённого Trelio OAuth. При отсутствующих tools

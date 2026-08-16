@@ -2440,6 +2440,10 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
+  assert.match(onboardingSkill, /codex plugin list --json/u);
+  assert.match(onboardingSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
+  assert.match(onboardingSkill, /a listed marketplace is not proof that its\s+plugin is installed/u);
+  assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
   assert.match(onboardingSkill, /resolve-node\.ps1/u);
   assert.match(onboardingSkill, /durable\s+machine\/user PATH values/u);
   assert.match(onboardingSkill, /immediately run `codex mcp login trelio`/u);
@@ -2506,6 +2510,9 @@ test("workspace skill follows the company Agent Secret storage policy before cre
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
+  assert.match(workspaceSkill, /inspect `codex plugin list --json`/u);
+  assert.match(workspaceSkill, /registered marketplace is not proof that the plugin is installed/u);
+  assert.match(workspaceSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
   assert.match(workspaceSkill, /run\s+`codex mcp login trelio` immediately/u);
   assert.match(workspaceSkill, /single\s+browser flow includes Trelio login/u);
   assert.match(workspaceSkill, /report «я вошёл» in chat/u);

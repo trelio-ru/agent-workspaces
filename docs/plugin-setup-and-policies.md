@@ -11,16 +11,22 @@
 
 ## Codex marketplace
 
-Официальный источник подключается без `--ref`:
+Официальный источник подключается без `--ref`, после чего плагин устанавливается
+явно:
 
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
+codex plugin add trelio-agent-workspaces@trelio-plugins
 ```
 
-`INSTALLED_BY_DEFAULT` устанавливает плагин сразу. `authentication=ON_INSTALL`
-просит Codex автоматически открыть browser OAuth Trelio. Ручной переход в
-`Plugins -> Trelio Agent Workspaces` нужен только когда эта страница не
-появилась.
+Codex CLI добавляет marketplace и устанавливает plugin разными операциями.
+`INSTALLED_BY_DEFAULT` может ускорить установку в host UI, но сообщение только
+о добавленном marketplace не подтверждает её: основной CLI-flow всегда
+выполняет `codex plugin add` и проверяет `codex plugin list --json`.
+`authentication=ON_INSTALL` просит Codex автоматически открыть browser OAuth
+Trelio. Если окно не появилось, агент в той же задаче запускает
+`codex mcp login trelio`; ручной переход в `Plugins` не является основным
+fallback.
 
 Вход в Trelio и подтверждение доступа проходят в одном окне OAuth. Если
 пользователь ещё не авторизован на сайте, это окно само проводит вход и
@@ -29,8 +35,10 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 
 После OAuth агент сначала повторно проверяет инструменты в текущей задаче и
 продолжает в ней, если они уже появились. Новая задача нужна только после
-фактического неуспеха этой проверки. Полный restart нужен только если новая
-задача всё ещё не видит tools или использует старую plugin-version.
+фактического неуспеха этой проверки; в ней пользователь выбирает предложенный
+manifest-ом starter prompt `Настрой Trelio и доступные навыки для текущего
+проекта`, а не перепечатывает его. Полный restart нужен только если новая задача
+всё ещё не видит tools или использует старую plugin-version.
 
 Источник, добавленный с `--ref`, остаётся на tag и перестанет проходить
 обязательный version gate после следующего релиза. Переподключите его:
