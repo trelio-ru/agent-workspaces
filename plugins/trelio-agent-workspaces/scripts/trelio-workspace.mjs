@@ -21,6 +21,8 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
+  GIT_DISABLED_GLOBAL_CONFIG_PATH,
+  GIT_DISABLED_HOOKS_PATH,
   GitPrerequisiteError,
   verifyGitRuntime,
 } from "./trelio-git.mjs";
@@ -464,7 +466,7 @@ const runGit = async (args, options = {}) => {
     resolvedGit.gitPath,
     [
       "-c",
-      `core.hooksPath=${os.devNull}`,
+      `core.hooksPath=${GIT_DISABLED_HOOKS_PATH}`,
       "-c",
       "init.templateDir=",
       // Git for Windows often receives this from system config. Because the
@@ -477,7 +479,7 @@ const runGit = async (args, options = {}) => {
     {
       ...options,
       env: {
-        GIT_CONFIG_GLOBAL: os.devNull,
+        GIT_CONFIG_GLOBAL: GIT_DISABLED_GLOBAL_CONFIG_PATH,
         GIT_CONFIG_NOSYSTEM: "1",
         ...options.env,
       },
@@ -4299,7 +4301,10 @@ const materializeBundle = async ({ bundlePath, directory, head, branch }) => {
   await runGit(["init", "--initial-branch=main"], { cwd: directory });
   // Ни checkout, ни последующие commit не должны исполнять hooks, которые
   // могли попасть из пользовательского Git template/config на этой машине.
-  await runGit(["config", "core.hooksPath", os.devNull], { cwd: directory });
+  await runGit(
+    ["config", "core.hooksPath", GIT_DISABLED_HOOKS_PATH],
+    { cwd: directory },
+  );
   await runGit(["config", "fetch.fsckObjects", "true"], { cwd: directory });
   await runGit(["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"], { cwd: directory });
   await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: directory });

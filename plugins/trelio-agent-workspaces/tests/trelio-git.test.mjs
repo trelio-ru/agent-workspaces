@@ -259,7 +259,7 @@ test("Git candidate collection ignores ambient process PATH on both platforms", 
 test("real Git runtime completes init, add and commit on the current OS", async () => {
   const result = await verifyGitRuntime();
 
-  assert.equal(result.status, "ready");
+  assert.equal(result.status, "ready", JSON.stringify(result));
   assert.equal(result.smokeTest, "ready");
   assert.equal(path.isAbsolute(result.gitPath), true);
 });
@@ -272,7 +272,7 @@ test("bridge doctor exposes machine-readable local prerequisite status", async (
   );
   const report = JSON.parse(stdout.trim());
 
-  assert.equal(report.status, "ready");
+  assert.equal(report.status, "ready", JSON.stringify(report));
   assert.equal(report.node.status, "ready");
   assert.equal(report.git.status, "ready");
   assert.equal(report.git.smokeTest, "ready");
@@ -283,6 +283,7 @@ test("workspace bridge never invokes a bare Git command", async () => {
 
   assert.doesNotMatch(source, /run\(\s*["']git["']/u);
   assert.match(source, /verifyGitRuntime/u);
-  assert.match(source, /core\.hooksPath=\$\{os\.devNull\}/u);
+  assert.match(source, /core\.hooksPath=\$\{GIT_DISABLED_HOOKS_PATH\}/u);
+  assert.match(source, /GIT_CONFIG_GLOBAL: GIT_DISABLED_GLOBAL_CONFIG_PATH/u);
   assert.match(source, /core\.longpaths=true/u);
 });

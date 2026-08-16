@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,25 @@ const MINIMUM_GIT_VERSION_TEXT = [
   MINIMUM_GIT_VERSION.minor,
   MINIMUM_GIT_VERSION.patch,
 ].join(".");
+
+const toGitCompatiblePath = (filePath) => (
+  process.platform === "win32" ? filePath.replaceAll("\\", "/") : filePath
+);
+
+// Git for Windows does not consistently interpret Node's `os.devNull`
+// (`\\.\nul`) as a configuration file or hooks directory. Unique absolute
+// paths that intentionally do not exist isolate ambient config and hooks on
+// every platform without creating persistent files or relying on shell path
+// translation.
+const gitIsolationRoot = toGitCompatiblePath(
+  path.join(
+    os.tmpdir(),
+    `trelio-git-isolation-${process.pid}-${randomUUID()}`,
+  ),
+);
+
+export const GIT_DISABLED_GLOBAL_CONFIG_PATH = `${gitIsolationRoot}/global-config`;
+export const GIT_DISABLED_HOOKS_PATH = `${gitIsolationRoot}/hooks`;
 
 const normalizeComparablePath = (filePath, platform) => (
   platform === "win32" ? filePath.toLowerCase() : filePath
@@ -563,7 +583,7 @@ const executeGit = async (gitPath, args, options, execFileCommand) => (
     gitPath,
     [
       "-c",
-      `core.hooksPath=${os.devNull}`,
+      `core.hooksPath=${GIT_DISABLED_HOOKS_PATH}`,
       "-c",
       "init.templateDir=",
       "-c",
@@ -579,7 +599,7 @@ const executeGit = async (gitPath, args, options, execFileCommand) => (
       windowsHide: true,
       env: {
         ...process.env,
-        GIT_CONFIG_GLOBAL: os.devNull,
+        GIT_CONFIG_GLOBAL: GIT_DISABLED_GLOBAL_CONFIG_PATH,
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_PAGER: "cat",
         GIT_TERMINAL_PROMPT: "0",
