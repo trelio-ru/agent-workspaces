@@ -23,11 +23,14 @@ task communication, handoff, submit, or final reporting.
    metadata/files; do not list dossiers merely for discovery. Prefer a project
    dossier and use a company dossier only for genuinely company-wide work.
 2. Read explicit task/dossier relations first. When more prior context can
-   materially help, call `search_agent_workspace_files` once with several
-   independent queries and no project filter. Read exact hits and resolve exact
-   linked scopes with `get_agent_workspace_by_scope`. Keep only materially
-   relevant same-company task/dossier Workspace IDs; no company/project
-   Workspace context is inherited automatically.
+   materially help and the scope procedure has not already produced sufficient
+   context, call unified `search` once with several independent queries and the
+   exact company scope. Read exact Workspace hits and resolve exact linked
+   scopes with `get_agent_workspace_by_scope`. Use
+   `search_agent_workspace_files` only for a remaining Workspace-only
+   ambiguity, not as a required second search. Keep only materially relevant
+   same-company task/dossier Workspace IDs; no company/project Workspace
+   context is inherited automatically.
 3. Call `prepare_agent_workspace_run` once with the exact writable scope and
    optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
    cross-task subject uses dossier scope. The tool rejects company/project

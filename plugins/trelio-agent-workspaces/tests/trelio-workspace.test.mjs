@@ -2330,7 +2330,10 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
   for (const invariant of [
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
     /Run может записывать только в task или dossier Workspace/u,
-    /глобальный ACL-aware workspace search.*без project-фильтра/u,
+    /канонический ACL-aware `search`.*несколькими запросами.*exact company scope/u,
+    /вместе возвращает проекты, задачи и accepted task\/dossier Workspace files/u,
+    /`search_tasks` и `search_agent_workspace_files` используй только для узкого уточнения/u,
+    /Company\/project rules.*отдельным pinned instruction snapshot.*не являются поисковыми документами/u,
     /не вызывай list_dossiers только ради discovery/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
@@ -2385,13 +2388,18 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(agentRunReference, /checkpoint --type draft/u);
   assert.match(agentRunReference, /startNewRun=true/u);
   assert.match(agentRunReference, /rejects company\/project\s+Workspace scope/u);
-  assert.match(agentRunReference, /no company\/project\s+Workspace context is inherited automatically/u);
+  assert.match(agentRunReference, /no company\/project Workspace\s+context is inherited automatically/u);
+  assert.match(agentRunReference, /call unified `search` once with several independent queries/u);
+  assert.match(agentRunReference, /not as a required second search/u);
   const scopeReference = await readFile(
     path.join(workerDirectory, "references", "scope-and-context.md"),
     "utf8",
   );
-  assert.match(scopeReference, /Do not call `list_dossiers`\s+merely to discover context/u);
-  assert.match(scopeReference, /Do not pass a project filter/u);
+  assert.match(scopeReference, /Do not call `list_dossiers` merely to\s+discover context/u);
+  assert.match(scopeReference, /Call the canonical unified `search` once/u);
+  assert.match(scopeReference, /same call searches\s+projects, active and archived tasks/u);
+  assert.match(scopeReference, /not consecutive mandatory procedures/u);
+  assert.match(scopeReference, /without a\s+project filter/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");

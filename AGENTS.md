@@ -67,9 +67,15 @@
   закрепляются за Run; новый publish не меняет активный Run.
 - Новые material Agent Workspace и Run допускаются только для `task` и
   `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
-  task/dossier связи читаются первыми, остальной контекст ищется глобальным
-  ACL-aware Workspace search без project-фильтра и закрепляется только exact
-  related IDs; `list_dossiers` не является обязательным discovery-шагом.
+  task/dossier связи читаются первыми, остальной контекст ищется каноническим
+  ACL-aware `search` с несколькими независимыми формулировками и exact company
+  scope: один ответ объединяет проекты, задачи, task comments и accepted
+  task/dossier Workspace files. `search_tasks` и
+  `search_agent_workspace_files` остаются task-only/Workspace-only refinement,
+  а не обязательными последовательными шагами; `list_dossiers` не является
+  discovery-шагом. Company/project rules не становятся поисковыми документами:
+  они применяются отдельным effective-instruction snapshot после выбора scope.
+  Закрепляются только exact related Workspace IDs.
   Bridge продолжает читать immutable company/project snapshots исторических
   Run для rollback compatibility, но не создаёт их для новой работы.
 - `WORKSPACE_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не

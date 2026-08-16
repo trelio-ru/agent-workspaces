@@ -143,11 +143,15 @@ clonefile/reflink/copy, но не mutable hardlink. Mixed/lone-CR pointer нев
 Attach разрешён только для доступных active task/dossier Workspace той же
 компании. Дополнительный context – pinned read-only и не смешивается с writable
 tree. Workspace discovery сначала использует явные task/dossier связи, затем
-один глобальный ACL-aware search без project-фильтра с максимум пятью
-независимыми формулировками и exact file reads. `list_dossiers` не является
-обязательным discovery-шагом. Task discovery сохраняет отдельный
-`search_tasks` flow с 5–12 запросами и проверкой exact candidates через
-`get_task`.
+один канонический ACL-aware `search` с максимум пятью независимыми
+формулировками и exact company scope. Он одним результатом объединяет проекты,
+задачи, task comments и accepted task/dossier Workspace files; exact scope
+metadata позволяет перейти к dossier/workspace без `list_dossiers`.
+Специализированные `search_tasks` и `search_agent_workspace_files` остаются
+refinement/compatibility tools для task-only или Workspace-only
+неоднозначности, а не последовательными обязательными этапами. Exact task
+candidate по-прежнему проверяется через `get_task`; project filter не
+применяется к общему context discovery.
 
 ## Dossier и meeting
 

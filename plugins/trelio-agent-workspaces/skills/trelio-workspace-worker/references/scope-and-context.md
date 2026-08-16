@@ -13,30 +13,41 @@ discovery.
 
 ## Resolve the work item
 
-Trelio task search is lexical, not semantic. If the user supplied a canonical
-task URL or exact company/project/task coordinates, call `get_task` directly.
-Otherwise:
+Trelio context search is lexical, not semantic. If the user supplied a
+canonical task URL or exact company/project/task coordinates, call `get_task`
+directly. Otherwise:
 
-1. Build 5–12 short independent queries: important nouns, synonyms,
+1. Build up to five short independent queries: important nouns, synonyms,
    abbreviations, alternate spellings, old names, object/city, counterparty,
    document type, and expected result.
-2. Call `search_tasks` once with separate `queries` and every permitted
-   `companySlugs`; pass `projectSlugs` only when the request or local rules
-   actually restrict them. Never concatenate synonyms into one query.
-3. Prefer matches found by several variants, but verify up to three material
-   candidates with `get_task`. Read activity or attachments only as needed to
-   distinguish them.
-4. Treat a candidate as probable only when at least two independent identifiers
+2. Call the canonical unified `search` once with separate `queries` and every
+   exact permitted `companySlugs`. Omit company scope only when discovery is
+   genuinely cross-company. Never concatenate synonyms into one query.
+3. Inspect the mixed result set as one context decision. The same call searches
+   projects, active and archived tasks, task descriptions/comments, and
+   accepted task/dossier Workspace files. A plausible task must not suppress a
+   procedure or prior decision found in a dossier or task Workspace.
+4. Prefer results found by several variants. Use returned exact scope metadata
+   and `fetch` to inspect up to three material documents or task candidates;
+   call `get_task` for the probable task before a mutation or Run. Read activity
+   or attachments only as needed to distinguish candidates.
+5. Treat a candidate as probable only when at least two independent identifiers
    agree. A similar title alone is insufficient. A supplied canonical URL or
    exact coordinates count after successful readback.
-5. If several remain, show their direct URLs and differences and ask before a
+6. If several remain, show their direct URLs and differences and ask before a
    mutation or workspace Run.
 
-If no task matches and durable context is still needed, search readable
-Workspace files and metadata for the subject. Do not call `list_dossiers`
-merely to discover context: global search already covers accessible task and
-dossier Workspace across projects. Use `list_dossiers` only when the user asks
-to browse/manage a known collection or when exact owner-scope enumeration is
+`search_tasks` and `search_agent_workspace_files` remain optional refinement
+tools, not consecutive mandatory procedures. Use `search_tasks` when ambiguity
+is specifically task-only and needs more formulations or project filters. Use
+`search_agent_workspace_files` when ambiguity is specifically Workspace-only
+and needs more file hits. Do not repeat both after a sufficient unified result.
+
+If no task matches, use relevant dossier/task Workspace hits from the same
+unified result before creating anything. Do not call `list_dossiers` merely to
+discover context: unified search already covers accessible task and dossier
+Workspace across projects. Use `list_dossiers` only when the user asks to
+browse/manage a known collection or when exact owner-scope enumeration is
 itself required. Prefer an existing project dossier for a continuing subject,
 or create one when a project is the narrowest owner. Use a company dossier only
 for genuinely cross-project context safe for every company member, or after an
@@ -63,11 +74,12 @@ workspace.
 - Creating/removing a task–dossier link requires independent dossier
   owner-scope management plus task edit access. Access inherited from another
   link is insufficient.
-- Use one `search_agent_workspace_files` call with up to five independent
-  `queries` for concepts, names, decisions, old names, or prior materials
-  across every readable Workspace. Do not pass a project filter. Search is
-  ACL-aware and can find cross-project relations; read only exact material hits
-  with `get_agent_workspace_file`.
+- If the exact task was opened directly and more context can materially help,
+  call unified `search` once with up to five independent `queries` and the exact
+  company scope. It can find cross-project task/dossier material without a
+  project filter. Read only material hits that affect the result. Use
+  `search_agent_workspace_files` only when the remaining ambiguity is confined
+  to Workspace files.
 - Use `get_dossier` for metadata and visible task links, and
   `get_agent_workspace_by_scope` when an exact linked UUID is already known.
   Every read reapplies ACL.

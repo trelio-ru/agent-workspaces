@@ -24,9 +24,13 @@ Project/company не являются material Workspace: это scope прав�
 dossier.
 
 Если дана canonical task URL или exact coordinates, агент читает задачу
-напрямую. Иначе он отправляет одним `search_tasks` 5–12 отдельных лексических
-вариантов, проверяет до трёх кандидатов через `get_task` и не выбирает по одному
-похожему заголовку.
+напрямую. Иначе он отправляет одним каноническим `search` до пяти отдельных
+лексических вариантов в exact company scope. Один ответ объединяет проекты,
+активные и архивные задачи, task comments и accepted task/dossier Workspace
+files с exact scope metadata. Агент читает relevant документы, проверяет
+вероятную задачу через `get_task` и не выбирает по одному похожему заголовку.
+`search_tasks` и `search_agent_workspace_files` нужны только для task-only или
+Workspace-only уточнения, а не как обязательная последовательность.
 
 Company dossier требует конкретной причины и явного подтверждения широкой
 видимости. Связанный участник задачи может читать dossier, но не получает
@@ -40,9 +44,11 @@ target и файл повторно проходят ACL. Старый Run мо�
 legacy parent company/project snapshots, но новый Run их не наследует.
 
 Agent сначала читает явные task/dossier связи, затем при необходимости одним
-`search_agent_workspace_files` с несколькими формулировками ищет prior context
-во всех доступных проектах, читает точный hit и передаёт до 20 materially relevant workspace IDs в
-`prepare_agent_workspace_run.relatedWorkspaceIds`. Tool проверяет все цели и
+unified `search` с несколькими формулировками ищет prior context во всех
+доступных проектах exact компании. Он читает точные Workspace hits и передаёт
+до 20 materially relevant workspace IDs в
+`prepare_agent_workspace_run.relatedWorkspaceIds`. Workspace-only уточнение
+может использовать `search_agent_workspace_files`. Tool проверяет все цели и
 закрепляет их до создания Run. Legacy `attach_agent_workspace_context` остаётся
 для продолжения уже открытого старым клиентом Run. Прямо связанные
 task/dossier scopes разрешаются отдельно. Контекст не подмешивается в writable
