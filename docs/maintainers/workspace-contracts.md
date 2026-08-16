@@ -153,6 +153,18 @@ refinement/compatibility tools для task-only или Workspace-only
 candidate по-прежнему проверяется через `get_task`; project filter не
 применяется к общему context discovery.
 
+Company/project rules не индексируются и не занимают места в mixed ranking.
+После выбора exact scope `fetch`, `get_task`, `get_dossier`,
+`get_project_meta` и `get_task_create_meta` первыми возвращают единый
+`effectiveInstructions` с текущими company/project rules и optional личным
+профилем. Статус `loaded` применяется без отдельного запроса; `requires_scope`
+не раскрывает текст и переводит старый OAuth grant в штатный
+`get_agent_instructions`/consent recovery. Это сохраняет один discovery-вызов,
+но не позволяет содержимому задачи или досье опередить управляющие правила.
+Исключение – уже подготовленный Agent Workspace Run: его pinned
+`agent-instructions.md` и `user-profile.md` остаются неизменяемым авторитетом,
+а текущие revisions из последующего exact read не заменяют snapshot.
+
 ## Dossier и meeting
 
 Dossier – agent-only durable subject уровня project/company. Linked task даёт

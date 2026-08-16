@@ -13,9 +13,11 @@ discovery.
 
 ## Resolve the work item
 
-Trelio context search is lexical, not semantic. If the user supplied a
-canonical task URL or exact company/project/task coordinates, call `get_task`
-directly. Otherwise:
+Trelio context search is lexical, not semantic. Company/project rules are not
+search documents and never compete with tasks or dossiers in ranking. If the
+user supplied a canonical task URL or exact company/project/task coordinates,
+call `get_task` directly and apply its leading `effectiveInstructions` before
+the task content. Otherwise:
 
 1. Build up to five short independent queries: important nouns, synonyms,
    abbreviations, alternate spellings, old names, object/city, counterparty,
@@ -29,7 +31,17 @@ directly. Otherwise:
    procedure or prior decision found in a dossier or task Workspace.
 4. Prefer results found by several variants. Use returned exact scope metadata
    and `fetch` to inspect up to three material documents or task candidates;
-   call `get_task` for the probable task before a mutation or Run. Read activity
+   call `get_task` for the probable task before a mutation or Run. Exact
+   `fetch`, `get_task`, `get_dossier`, `get_project_meta`, and
+   `get_task_create_meta` return `effectiveInstructions` first. Apply a
+   `loaded` envelope before the object content outside a prepared Agent
+   Workspace Run. Inside a prepared Run, its pinned `agent-instructions.md`
+   and `user-profile.md` remain authoritative; current revisions from a later
+   exact read must not replace that immutable snapshot. If an ordinary exact
+   read says `requires_scope`, use the standard `get_agent_instructions`
+   consent/recovery flow. Do not call `get_agent_instructions` again after a
+   loaded envelope unless the user is managing rules, the scope changes
+   without another exact read, or the server asks for refresh. Read activity
    or attachments only as needed to distinguish candidates.
 5. Treat a candidate as probable only when at least two independent identifiers
    agree. A similar title alone is insufficient. A supplied canonical URL or

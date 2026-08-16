@@ -32,6 +32,15 @@ files с exact scope metadata. Агент читает relevant документ
 `search_tasks` и `search_agent_workspace_files` нужны только для task-only или
 Workspace-only уточнения, а не как обязательная последовательность.
 
+Правила компании и проекта не входят в поисковый ranking. После выбора exact
+scope обычные `fetch`, `get_task`, `get_dossier`, `get_project_meta` и
+`get_task_create_meta` возвращают их первым блоком `effectiveInstructions`
+перед содержимым. Статус `loaded` применяется сразу, без отдельного
+`get_agent_instructions`; `requires_scope` запускает стандартный consent и
+повторное чтение правил. Внутри уже подготовленного Run более новая revision из
+exact read не заменяет pinned `agent-instructions.md` и `user-profile.md` этого
+Run.
+
 Company dossier требует конкретной причины и явного подтверждения широкой
 видимости. Связанный участник задачи может читать dossier, но не получает
 write/Run/link-management права owner scope.

@@ -74,7 +74,13 @@
   `search_agent_workspace_files` остаются task-only/Workspace-only refinement,
   а не обязательными последовательными шагами; `list_dossiers` не является
   discovery-шагом. Company/project rules не становятся поисковыми документами:
-  они применяются отдельным effective-instruction snapshot после выбора scope.
+  exact `fetch`, `get_task`, `get_dossier`, `get_project_meta` и
+  `get_task_create_meta` автоматически возвращают их первым блоком
+  `effectiveInstructions` после выбора scope. Если блок уже имеет статус
+  `loaded`, вне подготовленного Run отдельный `get_agent_instructions` не
+  вызывается; внутри Run live envelope не заменяет pinned instruction/profile
+  snapshot. Статус `requires_scope` направляет в стандартный consent/recovery
+  flow.
   Закрепляются только exact related Workspace IDs.
   Bridge продолжает читать immutable company/project snapshots исторических
   Run для rollback compatibility, но не создаёт их для новой работы.

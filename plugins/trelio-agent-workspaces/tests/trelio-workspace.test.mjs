@@ -2259,7 +2259,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.9.2");
+  assert.equal(BRIDGE_VERSION, "1.10.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2333,7 +2333,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /канонический ACL-aware `search`.*несколькими запросами.*exact company scope/u,
     /вместе возвращает проекты, задачи и accepted task\/dossier Workspace files/u,
     /`search_tasks` и `search_agent_workspace_files` используй только для узкого уточнения/u,
-    /Company\/project rules.*отдельным pinned instruction snapshot.*не являются поисковыми документами/u,
+    /Company\/project rules не являются поисковыми документами.*exact `fetch`\/`get_task`\/`get_dossier`.*первым `effectiveInstructions`.*внутри Run используй pinned instruction\/profile snapshot/u,
     /не вызывай list_dossiers только ради discovery/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
     /не меняй attestation, hook или `\.trelio-run\.json`/u,
@@ -2400,6 +2400,10 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /same call searches\s+projects, active and archived tasks/u);
   assert.match(scopeReference, /not consecutive mandatory procedures/u);
   assert.match(scopeReference, /without a\s+project filter/u);
+  assert.match(scopeReference, /Company\/project rules are not\s+search documents/u);
+  assert.match(scopeReference, /return `effectiveInstructions` first/u);
+  assert.match(scopeReference, /Inside a prepared Run, its pinned `agent-instructions\.md`\s+and `user-profile\.md` remain authoritative/u);
+  assert.match(scopeReference, /Do not call `get_agent_instructions` again after a\s+loaded envelope/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");
