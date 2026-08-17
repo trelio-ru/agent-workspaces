@@ -413,7 +413,7 @@ test("ordinary Trelio-bound Codex task pins policy once and rechecks switched ef
     assert.equal(request.method, "POST");
     assert.equal(request.url, "/api/agent-workspaces/runtime-policy/admissions");
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.1");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.2");
     const chunks = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -579,7 +579,7 @@ test("ordinary scoped Trelio tool is guarded even outside a bound project", asyn
   }
 });
 
-test("unreleased bridge stays compatible with a backend that has no admission route yet", async () => {
+test("released bridge fails closed when backend has no admission route", async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-old-backend-"));
   const projectDirectory = path.join(temporaryDirectory, "project");
   const transcriptPath = path.join(temporaryDirectory, "rollout.jsonl");
@@ -589,7 +589,8 @@ test("unreleased bridge stays compatible with a backend that has no admission ro
     : path.join(temporaryDirectory, ".config", "trelio", "workspace-bridge");
   const server = createServer(async (request, response) => {
     for await (const _chunk of request) {
-      // Старый backend принимает соединение, но route ещё не существует.
+      // Сломанный либо не обновлённый backend принимает соединение, но stable
+      // plugin не должен маскировать отсутствие обязательного route.
     }
     response.writeHead(404, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: "Not Found" }));
@@ -634,7 +635,8 @@ test("unreleased bridge stays compatible with a backend that has no admission ro
       CODEX_THREAD_ID: "049f9fcd-899a-72b3-91f6-fdf3134381bb",
       TRELIO_WORKSPACE_ORIGIN: origin,
     });
-    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /Trelio API 404: Not Found/u);
   } finally {
     if (server.listening) {
       await new Promise((resolve) => server.close(resolve));

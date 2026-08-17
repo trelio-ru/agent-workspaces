@@ -34,7 +34,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.10.1";
+export const BRIDGE_VERSION = "1.10.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -2381,30 +2381,17 @@ export const resolveOrdinaryRuntimePolicyAdmission = async ({
     };
   }
 
-  let admission;
-  try {
-    admission = await fetchRuntimePolicyAdmission({
-      origin,
-      token,
-      target,
-      runtimeAttestation,
-      requestCommand,
-      waitForRetry,
-    });
-  } catch (error) {
-    // Main может содержать клиентский код следующего patch до coordinated
-    // backend deploy. Только ещё не выпущенный bridge 1.10.1 принимает exact
-    // authoritative 404 как отсутствие нового admission-контракта; начиная с
-    // 1.10.2 тот же ответ снова fail-closed и не маскирует сломанный deploy.
-    if (
-      error instanceof TrelioApiError
-      && error.statusCode === 404
-      && !isStableVersionAtLeast(BRIDGE_VERSION, "1.10.2")
-    ) {
-      return { status: "backend_unsupported" };
-    }
-    throw error;
-  }
+  // Stable 1.10.2 выпускается только после backend admission endpoint.
+  // Поэтому authoritative 404 здесь снова является ошибкой deployment-а и не
+  // должен превращать защищённое действие в незаметный allow.
+  const admission = await fetchRuntimePolicyAdmission({
+    origin,
+    token,
+    target,
+    runtimeAttestation,
+    requestCommand,
+    waitForRetry,
+  });
 
   if (session && sessionKey) {
     const admissionEntries = Object.entries(session.admissions || {})
