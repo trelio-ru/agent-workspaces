@@ -263,6 +263,9 @@ const parseArguments = (argv) => {
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 5_000) {
     throw new Error("--timeout-ms must be at least 5000.");
   }
+  if (!Number.isFinite(options.holdMs) || options.holdMs < 5_000 || options.holdMs > 600_000) {
+    throw new Error("--hold-ms must be from 5000 to 600000.");
+  }
   return options;
 };
 
@@ -1270,6 +1273,13 @@ const withBrowser = async (options, callback) => withProfileLock(options, async 
       "--disable-blink-features=AutomationControlled",
     ],
   });
+  // The owner is explicitly instructed to close the visible login window.
+  // Track provider-initiated/user-initiated context shutdown so cleanup does
+  // not turn that expected handoff signal into a second close error.
+  let contextClosed = false;
+  context.once("close", () => {
+    contextClosed = true;
+  });
   try {
     // Install the guard before the first intentional navigation. All commands,
     // including probes and dialog discovery, default to passive mode. Only a
@@ -1278,9 +1288,38 @@ const withBrowser = async (options, callback) => withProfileLock(options, async 
     const page = context.pages()[0] || await context.newPage();
     return await callback(page, readGuard);
   } finally {
-    await context.close();
+    if (!contextClosed) await context.close();
   }
 });
+
+const waitForLoginHandoff = async (page, holdMs) => {
+  // `login` must not claim that it detected authentication: the durable proof
+  // belongs to a new browser process started by the following `probe`. Closing
+  // this window is only an owner signal that credential entry has finished.
+  if (typeof page.isClosed === "function" && page.isClosed()) return "window_closed";
+
+  let holdTimer = null;
+  // The handoff may legitimately last longer than Playwright's ordinary page
+  // timeout. `holdMs` is the only clock for this wait, so disable the implicit
+  // event timeout and keep the result deterministic for slower sign-ins.
+  const windowClosed = page.waitForEvent("close", { timeout: 0 })
+    .then(() => "window_closed")
+    .catch((error) => {
+      // A close can race with waitForEvent registration. Normalize only an
+      // actually closed page; unrelated provider/runtime failures stay errors.
+      if (typeof page.isClosed === "function" && page.isClosed()) return "window_closed";
+      throw error;
+    });
+  const holdExpired = new Promise((resolve) => {
+    holdTimer = setTimeout(() => resolve("hold_expired"), holdMs);
+  });
+
+  try {
+    return await Promise.race([windowClosed, holdExpired]);
+  } finally {
+    if (holdTimer !== null) clearTimeout(holdTimer);
+  }
+};
 
 const safeUiFingerprint = async (page) => page.evaluate(() => {
   const visible = (element) => {
@@ -1857,18 +1896,29 @@ const runBrowserCommand = async (options) => withBrowser(options, async (page, r
   if (options.command === "login") {
     await openHome(page, options, true);
     if (!options.headed) throw new Error("MAX login requires --headed.");
-    await page.waitForTimeout(options.holdMs);
-    return { opened: true, profile: profilePath(options), heldMs: options.holdMs };
+    const handoffStartedAt = Date.now();
+    const handoffCompletion = await waitForLoginHandoff(page, options.holdMs);
+    return {
+      opened: true,
+      profile: profilePath(options),
+      handoffCompletion,
+      heldMs: Math.max(0, Date.now() - handoffStartedAt),
+      holdLimitMs: options.holdMs,
+      sessionVerified: false,
+      nextAction: "Run one fresh probe. Do not repeat login before that probe.",
+    };
   }
   if (options.command === "probe") {
     await openHome(page, options);
-    const searchReady = await findSearchInput(page, options.timeoutMs)
-      .then(() => true)
-      .catch(() => false);
+    // A generic interactive shell is not enough to prove an authenticated
+    // session. The home dialog search is the bounded structural proof used by
+    // this adapter; selector drift must fail closed instead of returning a
+    // contradictory `authenticated: true, searchReady: false` result.
+    await findSearchInput(page, options.timeoutMs);
     return {
       adapterVersion: ADAPTER_VERSION,
       authenticated: true,
-      searchReady,
+      searchReady: true,
       fingerprint: await safeUiFingerprint(page),
       passiveReadProtection: passiveReadSummary(readGuard),
       diagnosticPolicy: "No chat text, message text, cookies or credentials are included.",
@@ -2060,6 +2110,7 @@ export {
   selectExactDialogResult,
   selectExactContactResult,
   shouldBlockPassiveReadFrame,
+  waitForLoginHandoff,
   writePrivateJson,
 };
 

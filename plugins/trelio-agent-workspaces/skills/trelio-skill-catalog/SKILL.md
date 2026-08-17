@@ -146,6 +146,16 @@ must not silently download or execute a patch from skill Markdown. Executable
 fixes are published only as a new signed internal runtime release; changes to
 the stable package host itself still require a new plugin version.
 
+Treat MAX `login` as an owner handoff, not as authentication proof. Tell the
+owner exactly: `После входа в MAX закройте окно.` The visible-window close is
+an expected handoff completion signal. After `window_closed`, `hold_expired`,
+or a page/context-closed error from an older runtime, immediately run one fresh
+`probe` in a new browser process. Only that probe confirms the persisted local
+session. Do not say that the runtime sees a successful login and closes the
+window automatically, do not tell the owner to keep the window open after
+login, and do not repeat `login` before the fresh probe reports that login is
+still required.
+
 MAX reads are passive by default: dialog discovery, history, unread polling,
 downloads and non-reply mutations must not send message/reaction read receipts.
 The runtime may enable a receipt only after it has verified a successful

@@ -330,6 +330,15 @@ server-side unread-state. `send` и `reply` сначала выполняютс�
 Позднее `SET_AS_UNREAD` не используется как подмена, потому что оно не отменяет
 receipt, уже видимый собеседнику.
 
+MAX `login` – только visible owner handoff. Агент говорит пользователю exact
+фразу `После входа в MAX закройте окно.` и не обещает автоматическое
+распознавание входа. Runtime завершает handoff по закрытию окна либо bounded
+`holdMs`, не объявляя session verified; page/context-closed error прежней
+версии трактуется так же только как окончание handoff. После любого из этих
+исходов агент запускает ровно один fresh `probe` в новом browser process. До
+результата probe нельзя повторять login, а persisted session считается
+подтверждённой только при структурно доказанном authenticated MAX home.
+
 Read возвращает bounded structured history с provider message ID, author,
 timestamp, direction, reply context и attachment metadata, когда эти поля
 однозначно доступны в текущем DOM. Target mutation требует provider ID либо

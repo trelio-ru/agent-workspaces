@@ -21,6 +21,7 @@ import {
   selectExactContactResult,
   selectExactDialogResult,
   shouldBlockPassiveReadFrame,
+  waitForLoginHandoff,
   writePrivateJson,
 } from "../scripts/trelio-max.mjs";
 
@@ -58,6 +59,53 @@ test("MAX exposes a versioned, content-free live probe command", () => {
   const options = parseArguments([...identityArguments, "probe"]);
   assert.equal(options.command, "probe");
   assert.equal(ADAPTER_VERSION, "2");
+});
+
+test("MAX login handoff finishes as soon as the owner closes the visible window", async () => {
+  let closed = false;
+  let closeWindow = null;
+  const page = {
+    isClosed: () => closed,
+    waitForEvent: (event, options) => {
+      assert.equal(event, "close");
+      assert.deepEqual(options, { timeout: 0 });
+      return new Promise((resolve) => {
+        closeWindow = () => {
+          closed = true;
+          resolve();
+        };
+      });
+    },
+  };
+
+  const handoff = waitForLoginHandoff(page, 1_000);
+  assert.equal(typeof closeWindow, "function");
+  closeWindow();
+  assert.equal(await handoff, "window_closed");
+});
+
+test("MAX login handoff keeps a bounded timeout when the window is not closed", async () => {
+  const page = {
+    isClosed: () => false,
+    waitForEvent: () => new Promise(() => undefined),
+  };
+
+  assert.equal(await waitForLoginHandoff(page, 5), "hold_expired");
+  assert.throws(
+    () => parseArguments([...identityArguments, "login", "--hold-ms", "4999"]),
+    /--hold-ms must be from 5000 to 600000/u,
+  );
+});
+
+test("MAX skill tells the owner to close the login window and requires a fresh probe", () => {
+  const skillSource = fs.readFileSync(
+    new URL("../skills/trelio-skill-catalog/SKILL.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(skillSource, /После входа в MAX закройте окно\./u);
+  assert.match(skillSource, /immediately run one fresh\s+`probe`/u);
+  assert.doesNotMatch(skillSource, /не закрывайте (?:его|окно)/iu);
 });
 
 test("MAX parses bounded history, repeated files and exact member references", () => {
