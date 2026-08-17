@@ -164,10 +164,7 @@ continue through the bundled bridge; the bridge will use `git.gitPath` by
 absolute path. `processPathReady=false` is not a reason to restart Codex.
 Doctor validates a real external Git executable and a temporary
 `init → add → commit`, not the private Git that Codex may use to download a
-marketplace. On macOS it first calls the side-effect-free
-`xcode-select --print-path`; when developer tools are absent, it must not
-execute the `/usr/bin/git` xcrun stub because that probe can open Apple's
-installer behind the client window.
+marketplace.
 
 When doctor returns `TRELIO_GIT_REQUIRED`, `not_found`, `upgrade_required`, or
 `unusable`, immediately execute its exact installation plan. Do not stop at an
@@ -176,14 +173,9 @@ still show their ordinary command approval, administrator prompt, or signed
 installer window; never bypass or click that approval for the user.
 
 - On macOS with Homebrew, run the returned `brew install git`. Without
-  Homebrew, run `xcode-select --install` immediately and then execute the
-  returned `install.nativeWindowActivation` command once, best effort, to bring
-  the native Apple installer in front of the client. Activation does not
-  approve or operate the installer for the user. If activation fails, explain
-  that the installer may be behind Codex or Claude; do not launch a second Git
-  installer or start `softwareupdate` concurrently. Let the user finish the
-  native window, and then rerun doctor without asking them to report completion
-  in chat.
+  Homebrew, run `xcode-select --install` immediately, let the user finish the
+  native Apple installer window, and then rerun doctor without asking them to
+  report completion in chat.
 - On native Windows with App Installer, run the returned
   `winget install --id Git.Git -e --source winget --accept-source-agreements
   --accept-package-agreements`. If `winget` is genuinely unavailable, open the

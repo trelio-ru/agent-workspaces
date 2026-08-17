@@ -276,14 +276,9 @@
   `init → add → commit`, а не только прочитать version string. При
   `TRELIO_GIT_REQUIRED` onboarding сразу запускает возвращённый штатный
   installer: `brew install git` либо `xcode-select --install` на macOS,
-  `winget install --id Git.Git -e` на Windows. На чистом macOS doctor обязан
-  сначала проверить `xcode-select --print-path` и не выполнять xcrun
-  `/usr/bin/git` при отсутствии tools; после `xcode-select --install` агент один
-  раз запускает возвращённый best-effort `install.nativeWindowActivation`,
-  чтобы вывести Apple installer перед клиентом, но не подтверждает его за
-  человека и не запускает параллельный `softwareupdate`. Отдельного вопроса в
-  чате перед этим нет, но обычные approval/admin/native installer окна клиента
-  и ОС не обходятся и не подтверждаются агентом. После установки doctor повторяется в
+  `winget install --id Git.Git -e` на Windows. Отдельного вопроса в чате перед
+  этим нет, но обычные approval/admin/native installer окна клиента и ОС не
+  обходятся и не подтверждаются агентом. После установки doctor повторяется в
   той же задаче, новый absolute path используется без restart; ambiguous
   installer result сначала проверяется doctor, а не повторяется вслепую.
 - Codex `SessionStart` с `source=startup` один раз добавляет в первый model call

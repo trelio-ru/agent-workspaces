@@ -87,12 +87,8 @@ Bundled `trelio-workspace doctor --json` отдельно разрешает abs
 Если standalone Git отсутствует,
 onboarding сразу запускает `brew install git` либо `xcode-select --install` на
 macOS и `winget install --id Git.Git -e` на Windows. Обычное системное
-approval/native installer окно остаётся за пользователем. На чистом macOS
-doctor не вызывает `/usr/bin/git` до успешного `xcode-select --print-path`, а
-после запуска Apple installer выполняет best-effort
-`open -b com.apple.dt.CommandLineTools.installondemand`, чтобы окно оказалось
-перед Codex/Claude. После завершения doctor повторяется и найденный absolute
-path используется без restart.
+approval/native installer окно остаётся за пользователем, после чего doctor
+повторяется и найденный absolute path используется без restart.
 
 Политика модели компании действует и без Agent Run. В связанном проекте hook
 закрепляет её при первом защищённом действии, а вне проекта – при scoped Trelio

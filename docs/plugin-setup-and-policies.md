@@ -105,10 +105,7 @@ absolute Git path без shell. Найденный после установки
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 
 - macOS – `brew install git`, если Homebrew уже установлен, иначе
-  `xcode-select --install`, затем возвращённый best-effort
-  `install.nativeWindowActivation` (`open -b
-  com.apple.dt.CommandLineTools.installondemand`), чтобы активировать уже
-  открытое Apple-окно;
+  `xcode-select --install`;
 - Windows – `winget install --id Git.Git -e --source winget
   --accept-source-agreements --accept-package-agreements`; если App Installer
   отсутствует, открывается официальный Git for Windows installer.
@@ -117,10 +114,7 @@ absolute Git path без shell. Найденный после установки
 или native installer окно ОС остаётся за пользователем. После завершения
 onboarding повторяет doctor в той же задаче и только затем повторяет исходную
 workspace-команду; неоднозначный результат installer-а не повторяется до этой
-проверки. На macOS doctor предварительно использует side-effect-free
-`xcode-select --print-path` и не выполняет xcrun `/usr/bin/git` при отсутствующих
-tools; ошибка window activation не разрешает запускать второй installer или
-параллельный `softwareupdate`.
+проверки.
 
 ## Pairing локального bridge
 

@@ -319,37 +319,6 @@ const inspectGitExecutable = async (gitPath, execFileCommand) => {
   }
 };
 
-/**
- * Check whether Apple's developer tools are selected without touching
- * `/usr/bin/git`. On a clean Mac that Git path is an xcrun launcher rather
- * than a usable executable, and even `git --version` can open Apple's native
- * installer behind the host application. `xcode-select --print-path` is the
- * side-effect-free prerequisite probe Apple provides for this state.
- */
-export const inspectMacDeveloperTools = async ({
-  execFileCommand = execFileAsync,
-} = {}) => {
-  try {
-    const { stdout } = await execFileCommand(
-      "/usr/bin/xcode-select",
-      ["--print-path"],
-      {
-        encoding: "utf8",
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-        shell: false,
-        windowsHide: true,
-      },
-    );
-    const developerDirectory = String(stdout || "").trim();
-    return developerDirectory
-      ? { status: "ready", developerDirectory }
-      : { status: "missing", developerDirectory: null };
-  } catch {
-    return { status: "missing", developerDirectory: null };
-  }
-};
-
 const readDurableWindowsPaths = async ({ environment, execFileCommand }) => {
   const systemRoot = getEnvironmentValue(environment, "SystemRoot", "win32")
     || getEnvironmentValue(environment, "WINDIR", "win32")
@@ -456,15 +425,6 @@ export const resolveGitInstallPlan = async ({
       requiresNativeApproval: true,
       waitsForCompletion: false,
       nativeWindowExpected: true,
-      // LaunchServices activates the already requested Apple installer by its
-      // stable bundle id. This is deliberately a second, best-effort command:
-      // it neither approves the installer nor changes its system-owned flow.
-      nativeWindowActivation: {
-        executable: "/usr/bin/open",
-        args: ["-b", "com.apple.dt.CommandLineTools.installondemand"],
-        displayCommand: "open -b com.apple.dt.CommandLineTools.installondemand",
-        bestEffort: true,
-      },
     };
   }
 
@@ -537,7 +497,6 @@ export const resolveGitExecutable = async ({
   filesystem = fs,
   execFileCommand = execFileAsync,
   loadDurableWindowsPaths = readDurableWindowsPaths,
-  inspectMacDeveloperToolsCommand = inspectMacDeveloperTools,
 } = {}) => {
   let durablePaths = {
     machinePath: machinePath || "",
@@ -572,17 +531,6 @@ export const resolveGitExecutable = async ({
       continue;
     }
     seenCanonicalPaths.add(comparablePath);
-
-    if (platform === "darwin" && candidate.source === "system") {
-      const developerTools = await inspectMacDeveloperToolsCommand({
-        execFileCommand,
-      });
-      if (developerTools.status !== "ready") {
-        // Do not execute the xcrun Git stub: that probe itself launches the
-        // native installer and macOS may place it behind Codex or Claude.
-        continue;
-      }
-    }
 
     const inspection = await inspectGitExecutable(gitPath, execFileCommand);
     if (inspection.status !== "ok") {

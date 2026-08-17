@@ -53,20 +53,12 @@ Program Files roots и durable Windows machine/user PATH; произвольны
 нужен лишь для диагностического `processPathReady`. Git принимается только по
 absolute path после `--version` и реального временного `init → add → commit`.
 Успешный marketplace clone внутренним Git Codex не является readiness proof для
-bridge. На macOS перед `/usr/bin/git` выполняется side-effect-free
-`xcode-select --print-path`: при отсутствии developer tools xcrun stub не
-запускается и самопроизвольно не открывает installer за окном клиента. Найденный
-вне process PATH Git сразу используется без restart.
+bridge. Найденный вне process PATH Git сразу используется без restart.
 
 При `TRELIO_GIT_REQUIRED` onboarding не останавливается на предложении и не
 задаёт отдельный вопрос в чате: сразу запускает exact installer plan doctor-а.
 На macOS это `brew install git` при имеющемся Homebrew, иначе
-`xcode-select --install` с последующим best-effort запуском возвращённого
-`install.nativeWindowActivation` (`open -b
-com.apple.dt.CommandLineTools.installondemand`), чтобы уже созданное Apple-окно
-оказалось перед Codex/Claude. Activation не подтверждает установку за человека;
-при её ошибке нельзя повторно запускать installer или параллельный
-`softwareupdate`. На Windows –
+`xcode-select --install`; на Windows –
 `winget install --id Git.Git -e --source winget --accept-source-agreements
 --accept-package-agreements`, а при отсутствии winget открывается официальный
 Git for Windows installer URL. Системное approval/admin/native installer окно
