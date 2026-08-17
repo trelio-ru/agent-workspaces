@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -16,34 +17,58 @@ const runtimePolicyScriptPath = fileURLToPath(
   new URL("../scripts/trelio-runtime-policy.mjs", import.meta.url),
 );
 
-const runPolicyHook = (hookInput, environment) => new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, [runtimePolicyScriptPath], {
-    env: {
-      ...process.env,
-      CLAUDE_CODE_ENTRYPOINT: "",
-      CLAUDE_EFFORT: "",
-      CODEX_THREAD_ID: "",
-      ...environment,
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
+const runPolicyHook = async (hookInput, environment = {}) => {
+  const isolatedHome = environment.HOME
+    || await mkdtemp(path.join(os.tmpdir(), "trelio-policy-hook-home-"));
+  const removeIsolatedHome = !environment.HOME;
 
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  child.once("error", reject);
-  child.once("close", (exitCode) => {
-    resolve({ exitCode, stdout, stderr });
-  });
-  child.stdin.end(JSON.stringify(hookInput));
-});
+  try {
+    return await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [runtimePolicyScriptPath], {
+        env: {
+          ...process.env,
+          HOME: isolatedHome,
+          USERPROFILE: isolatedHome,
+          LOCALAPPDATA: environment.LOCALAPPDATA || path.join(isolatedHome, "LocalAppData"),
+          CLAUDE_CODE_ENTRYPOINT: "",
+          CLAUDE_EFFORT: "",
+          CODEX_THREAD_ID: "",
+          ...environment,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.once("error", reject);
+      child.once("close", (exitCode) => {
+        resolve({ exitCode, stdout, stderr });
+      });
+      child.stdin.end(JSON.stringify(hookInput));
+    });
+  } finally {
+    if (removeIsolatedHome) {
+      await rm(isolatedHome, { recursive: true, force: true });
+    }
+  }
+};
+
+const writePrivateJsonFixture = async (filePath, value) => {
+  await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  await writeFile(filePath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  if (process.platform !== "win32") {
+    await chmod(path.dirname(filePath), 0o700);
+    await chmod(filePath, 0o600);
+  }
+};
 
 const buildPolicySnapshot = ({
   mode = "enforce",
@@ -368,6 +393,307 @@ test("PreToolUse hook blocks a low-effort Codex action inside a pinned Run", asy
     assert.equal(result.exitCode, 2);
     assert.match(result.stderr, /EFFORT_TOO_LOW/u);
     assert.equal(result.stdout, "");
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("ordinary Trelio-bound Codex task pins policy once and rechecks switched effort locally", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-ordinary-"));
+  const projectDirectory = path.join(temporaryDirectory, "project");
+  const transcriptPath = path.join(temporaryDirectory, "rollout.jsonl");
+  const localAppData = path.join(temporaryDirectory, "LocalAppData");
+  const configDirectory = process.platform === "win32"
+    ? path.join(localAppData, "Trelio", "workspace-bridge")
+    : path.join(temporaryDirectory, ".config", "trelio", "workspace-bridge");
+  const threadId = "019f9fcd-899a-72b3-91f6-fdf3134381bb";
+  let admissionRequests = 0;
+  const server = createServer(async (request, response) => {
+    admissionRequests += 1;
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/api/agent-workspaces/runtime-policy/admissions");
+    assert.equal(request.headers.authorization, "Bearer test-bridge-session");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.1");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    assert.equal(body.companySlug, "vkus");
+    assert.equal(body.runtimeAttestation.effortLevel, "medium");
+
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      schemaVersion: 1,
+      company: {
+        id: "22222222-2222-4222-8222-222222222222",
+        slug: "vkus",
+      },
+      runtimePolicySnapshot: buildPolicySnapshot(),
+      evaluation: {
+        satisfied: false,
+        enforced: true,
+        reasonCode: "EFFORT_TOO_LOW",
+        canonicalModelId: "gpt-5.6-sol",
+        minimumEffort: "high",
+      },
+    }));
+  });
+
+  try {
+    await mkdir(projectDirectory);
+    await writeFile(
+      path.join(projectDirectory, "AGENTS.md"),
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "## Контекст Trelio",
+        "",
+        "Этот Codex-проект связан с компанией Trelio «Вкус» (`vkus`).",
+        "<!-- trelio-agent-workspaces:end -->",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "medium" },
+      })}\n`,
+    );
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writePrivateJsonFixture(path.join(configDirectory, "credentials.json"), {
+      [origin]: { bridgeSessionToken: "test-bridge-session" },
+    });
+
+    const environment = {
+      HOME: temporaryDirectory,
+      USERPROFILE: temporaryDirectory,
+      LOCALAPPDATA: localAppData,
+      CODEX_THREAD_ID: threadId,
+      TRELIO_WORKSPACE_ORIGIN: origin,
+    };
+    const lowResult = await runPolicyHook({
+      hook_event_name: "PreToolUse",
+      cwd: projectDirectory,
+      tool_name: "exec_command",
+      tool_input: { cmd: "node --version" },
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+    }, environment);
+    assert.equal(lowResult.exitCode, 2);
+    assert.match(lowResult.stderr, /EFFORT_TOO_LOW/u);
+    assert.equal(admissionRequests, 1);
+
+    await new Promise((resolve) => server.close(resolve));
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      })}\n`,
+    );
+    const highResult = await runPolicyHook({
+      hook_event_name: "PreToolUse",
+      cwd: projectDirectory,
+      tool_name: "exec_command",
+      tool_input: { cmd: "node --version" },
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+    }, environment);
+    assert.equal(highResult.exitCode, 0);
+    assert.equal(highResult.stderr, "");
+    assert.equal(admissionRequests, 1, "same task must reuse its pinned snapshot");
+  } finally {
+    if (server.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("ordinary scoped Trelio tool is guarded even outside a bound project", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-scoped-"));
+  const transcriptPath = path.join(temporaryDirectory, "rollout.jsonl");
+  const localAppData = path.join(temporaryDirectory, "LocalAppData");
+  const configDirectory = process.platform === "win32"
+    ? path.join(localAppData, "Trelio", "workspace-bridge")
+    : path.join(temporaryDirectory, ".config", "trelio", "workspace-bridge");
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Полностью читаем body до ответа, как production Fastify route.
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      schemaVersion: 1,
+      company: {
+        id: "22222222-2222-4222-8222-222222222222",
+        slug: "vkus",
+      },
+      runtimePolicySnapshot: buildPolicySnapshot(),
+      evaluation: { satisfied: false, enforced: true, reasonCode: "EFFORT_TOO_LOW" },
+    }));
+  });
+
+  try {
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "medium" },
+      })}\n`,
+    );
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writePrivateJsonFixture(path.join(configDirectory, "credentials.json"), {
+      [origin]: { bridgeSessionToken: "test-bridge-session" },
+    });
+
+    const result = await runPolicyHook({
+      hook_event_name: "PreToolUse",
+      cwd: temporaryDirectory,
+      tool_name: "mcp__trelio__get_task",
+      tool_input: {
+        companySlug: "vkus",
+        projectSlug: "avtomatizatsiya-upravleniya",
+        taskNumber: 1,
+      },
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+    }, {
+      HOME: temporaryDirectory,
+      USERPROFILE: temporaryDirectory,
+      LOCALAPPDATA: localAppData,
+      CODEX_THREAD_ID: "029f9fcd-899a-72b3-91f6-fdf3134381bb",
+      TRELIO_WORKSPACE_ORIGIN: origin,
+    });
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /EFFORT_TOO_LOW/u);
+  } finally {
+    if (server.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("unreleased bridge stays compatible with a backend that has no admission route yet", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-old-backend-"));
+  const projectDirectory = path.join(temporaryDirectory, "project");
+  const transcriptPath = path.join(temporaryDirectory, "rollout.jsonl");
+  const localAppData = path.join(temporaryDirectory, "LocalAppData");
+  const configDirectory = process.platform === "win32"
+    ? path.join(localAppData, "Trelio", "workspace-bridge")
+    : path.join(temporaryDirectory, ".config", "trelio", "workspace-bridge");
+  const server = createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Старый backend принимает соединение, но route ещё не существует.
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "Not Found" }));
+  });
+
+  try {
+    await mkdir(projectDirectory);
+    await writeFile(
+      path.join(projectDirectory, "AGENTS.md"),
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "Этот Codex-проект связан с компанией Trelio «Вкус» (`vkus`).",
+        "<!-- trelio-agent-workspaces:end -->",
+      ].join("\n"),
+    );
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      })}\n`,
+    );
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writePrivateJsonFixture(path.join(configDirectory, "credentials.json"), {
+      [origin]: { bridgeSessionToken: "test-bridge-session" },
+    });
+
+    const result = await runPolicyHook({
+      hook_event_name: "PreToolUse",
+      cwd: projectDirectory,
+      tool_name: "exec_command",
+      tool_input: { cmd: "node --version" },
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+    }, {
+      HOME: temporaryDirectory,
+      USERPROFILE: temporaryDirectory,
+      LOCALAPPDATA: localAppData,
+      CODEX_THREAD_ID: "049f9fcd-899a-72b3-91f6-fdf3134381bb",
+      TRELIO_WORKSPACE_ORIGIN: origin,
+    });
+    assert.equal(result.exitCode, 0, result.stderr);
+  } finally {
+    if (server.listening) {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("missing bridge session blocks bound work but still permits the recovery login", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-login-"));
+  const projectDirectory = path.join(temporaryDirectory, "project");
+  const transcriptPath = path.join(temporaryDirectory, "rollout.jsonl");
+  const environment = {
+    HOME: temporaryDirectory,
+    USERPROFILE: temporaryDirectory,
+    LOCALAPPDATA: path.join(temporaryDirectory, "LocalAppData"),
+    CODEX_THREAD_ID: "039f9fcd-899a-72b3-91f6-fdf3134381bb",
+  };
+
+  try {
+    await mkdir(projectDirectory);
+    await writeFile(
+      path.join(projectDirectory, "AGENTS.md"),
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "Этот Codex-проект связан с компанией Trelio «Вкус» (`vkus`).",
+        "<!-- trelio-agent-workspaces:end -->",
+      ].join("\n"),
+    );
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      })}\n`,
+    );
+    const commonInput = {
+      hook_event_name: "PreToolUse",
+      cwd: projectDirectory,
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+    };
+    const blocked = await runPolicyHook({
+      ...commonInput,
+      tool_name: "exec_command",
+      tool_input: { cmd: "node --version" },
+    }, environment);
+    assert.equal(blocked.exitCode, 2);
+    assert.match(blocked.stderr, /Подключите локальный компонент/u);
+
+    const recovery = await runPolicyHook({
+      ...commonInput,
+      tool_name: "exec_command",
+      tool_input: {
+        cmd: "node /opt/plugin/scripts/trelio-workspace.mjs login",
+      },
+    }, environment);
+    assert.equal(recovery.exitCode, 0);
+    assert.equal(recovery.stderr, "");
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }

@@ -6,42 +6,35 @@
  * Скрипт используется двумя способами:
  * 1. bridge получает локально наблюдаемую model/effort attestation перед claim;
  * 2. Codex/Claude Code PreToolUse повторно проверяет pinned policy после
- *    materialization Run, поэтому смена модели посреди сессии тоже блокируется.
+ *    materialization Run;
+ * 3. вне Run тот же hook закрепляет current policy за обычной client session
+ *    и применяет её ко всему Trelio-bound проекту либо exact scoped MCP call.
  *
  * Это осознанно называется local_observed, а не platform_attested: локальный
  * администратор машины технически может изменить plugin или отключить hooks.
  */
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  detectAgentRuntimeAttestation,
+} from "./trelio-runtime-attestation.mjs";
+import { evaluatePinnedRuntimePolicy } from "./trelio-runtime-policy-evaluator.mjs";
 
-const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
-const MODEL_SUPPORTED_EFFORTS = new Map([
-  ["gpt-5.6-sol", ["low", "medium", "high", "xhigh", "max", "ultra"]],
-  ["gpt-5.6-terra", ["low", "medium", "high", "xhigh", "max", "ultra"]],
-  ["gpt-5.6-luna", ["low", "medium", "high", "xhigh", "max"]],
-  ["gpt-5.5", ["low", "medium", "high", "xhigh"]],
-  ["gpt-5.4", ["low", "medium", "high", "xhigh"]],
-  ["gpt-5.4-mini", ["low", "medium", "high", "xhigh"]],
-  ["gpt-5.3-codex-spark", ["low", "medium", "high", "xhigh"]],
-  ["claude-fable-5", ["low", "medium", "high", "xhigh", "max"]],
-  ["claude-opus-5", ["low", "medium", "high", "xhigh", "max"]],
-  ["claude-sonnet-5", ["low", "medium", "high", "xhigh", "max"]],
-  ["claude-opus-4-8", ["low", "medium", "high", "xhigh", "max"]],
-  ["claude-opus-4-7", ["low", "medium", "high", "xhigh", "max"]],
-  ["claude-opus-4-6", ["low", "medium", "high", "max"]],
-  ["claude-sonnet-4-6", ["low", "medium", "high", "max"]],
-  ["claude-haiku-4-5", []],
-]);
-const THREAD_ID_PATTERN = /^[0-9a-f-]{16,64}$/i;
-const MAX_TRANSCRIPT_TAIL_BYTES = 2 * 1024 * 1024;
+export { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs";
+export { evaluatePinnedRuntimePolicy } from "./trelio-runtime-policy-evaluator.mjs";
+
 const INITIAL_CHAT_TITLE_REMINDER = [
   "Это первый ход нового основного чата.",
   "После сбора исходного контекста один раз проверь, нужно ли задать текущему чату короткое информативное название через прямой безопасный инструмент именно текущего чата.",
   "Если название уже понятное или задано пользователем либо прямого инструмента нет, молча продолжай.",
   "В следующих ходах автоматически к названию не возвращайся.",
 ].join(" ");
+const TRELIO_MANAGED_BLOCK_PATTERN = /<!-- trelio-agent-workspaces:start -->([\s\S]*?)<!-- trelio-agent-workspaces:end -->/u;
+const TRELIO_COMPANY_BINDING_PATTERN = /связан[^\n]*?\(`([a-z0-9]+(?:-[a-z0-9]+)*)`\)/iu;
+const TRELIO_COMPANY_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const MAX_INSTRUCTION_FILE_BYTES = 512 * 1024;
 
 const readStdinJson = async () => {
   const chunks = [];
@@ -55,184 +48,6 @@ const readStdinJson = async () => {
   }
 
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-};
-
-const readFileTail = async (filePath, maximumBytes = MAX_TRANSCRIPT_TAIL_BYTES) => {
-  const handle = await fs.open(filePath, "r");
-
-  try {
-    const stat = await handle.stat();
-    const start = Math.max(0, stat.size - maximumBytes);
-    const buffer = Buffer.alloc(stat.size - start);
-    await handle.read(buffer, 0, buffer.length, start);
-    return buffer.toString("utf8");
-  } finally {
-    await handle.close();
-  }
-};
-
-const parseJsonLinesFromTail = async (filePath) => {
-  try {
-    const tail = await readFileTail(filePath);
-    const lines = tail.split(/\r?\n/u).filter(Boolean);
-    const parsed = [];
-
-    // Если чтение началось посреди первой JSONL-строки, она просто
-    // отбрасывается; следующие bounded строки остаются полноценными.
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      try {
-        parsed.push(JSON.parse(lines[index]));
-      } catch {
-        // Transcript является runtime-форматом клиента. Одна повреждённая
-        // строка не должна мешать найти более ранний валидный context event.
-      }
-    }
-
-    return parsed;
-  } catch {
-    return [];
-  }
-};
-
-const findCodexRolloutPath = async (threadId, environment = process.env) => {
-  if (!THREAD_ID_PATTERN.test(String(threadId || ""))) {
-    return null;
-  }
-
-  const codexRoot = environment.CODEX_HOME
-    ? path.resolve(environment.CODEX_HOME)
-    : path.join(os.homedir(), ".codex");
-  const sessionsRoot = path.join(codexRoot, "sessions");
-
-  try {
-    const entries = await fs.readdir(sessionsRoot, {
-      recursive: true,
-      withFileTypes: true,
-    });
-    const matchingEntry = entries.find((entry) => (
-      entry.isFile()
-      && entry.name.endsWith(".jsonl")
-      && entry.name.includes(threadId)
-    ));
-
-    if (!matchingEntry) {
-      return null;
-    }
-
-    return path.join(matchingEntry.parentPath, matchingEntry.name);
-  } catch {
-    return null;
-  }
-};
-
-const readCodexRuntime = async ({ hookInput = {}, environment = process.env } = {}) => {
-  const transcriptPath = typeof hookInput.transcript_path === "string"
-    ? hookInput.transcript_path
-    : await findCodexRolloutPath(environment.CODEX_THREAD_ID, environment);
-  const rows = transcriptPath ? await parseJsonLinesFromTail(transcriptPath) : [];
-  const turnContext = rows.find((row) => (
-    row?.type === "turn_context"
-    && row.payload
-    && typeof row.payload === "object"
-  ));
-  const modelId = typeof hookInput.model === "string" && hookInput.model.trim()
-    ? hookInput.model.trim()
-    : typeof turnContext?.payload?.model === "string"
-      ? turnContext.payload.model.trim()
-      : null;
-  const effortLevel = EFFORT_LEVELS.includes(turnContext?.payload?.effort)
-    ? turnContext.payload.effort
-    : null;
-
-  return {
-    schemaVersion: 1,
-    clientFamily: "codex",
-    modelId,
-    effortLevel,
-    // Отсутствующий effort остаётся наблюдаемым фактом и отдельно даёт
-    // EFFORT_REQUIRED. Не понижаем всю attestation до unavailable, потому что
-    // модели без effort (например Claude Haiku) могут быть явно разрешены.
-    evidenceLevel: modelId ? "local_observed" : "unavailable",
-    source: hookInput.hook_event_name ? "codex_hook" : "codex_rollout",
-    observedAt: new Date().toISOString(),
-  };
-};
-
-const readClaudeTranscriptModel = async (transcriptPath) => {
-  if (!transcriptPath) {
-    return null;
-  }
-
-  const rows = await parseJsonLinesFromTail(transcriptPath);
-
-  for (const row of rows) {
-    const candidates = [
-      row?.message?.model,
-      row?.model,
-      row?.payload?.model,
-    ];
-    const model = candidates.find((value) => typeof value === "string" && value.trim());
-
-    if (model) {
-      return model.trim();
-    }
-  }
-
-  return null;
-};
-
-const readClaudeRuntime = async ({ hookInput = {}, environment = process.env } = {}) => {
-  const transcriptModel = await readClaudeTranscriptModel(hookInput.transcript_path);
-  const modelId = transcriptModel
-    || (typeof hookInput.model === "string" ? hookInput.model.trim() : "")
-    || (typeof environment.TRELIO_CLAUDE_MODEL === "string" ? environment.TRELIO_CLAUDE_MODEL.trim() : "")
-    || null;
-  const hookEffort = hookInput?.effort?.level;
-  const environmentEffort = environment.CLAUDE_EFFORT;
-  const effortLevel = EFFORT_LEVELS.includes(hookEffort)
-    ? hookEffort
-    : EFFORT_LEVELS.includes(environmentEffort)
-      ? environmentEffort
-      : null;
-
-  return {
-    schemaVersion: 1,
-    clientFamily: "claude-code",
-    modelId,
-    effortLevel,
-    evidenceLevel: modelId ? "local_observed" : "unavailable",
-    source: "claude_hook",
-    observedAt: new Date().toISOString(),
-  };
-};
-
-export const detectAgentRuntimeAttestation = async ({
-  hookInput = {},
-  environment = process.env,
-} = {}) => {
-  const hasClaudeRuntime = Boolean(
-    environment.CLAUDE_CODE_ENTRYPOINT
-    || environment.CLAUDE_EFFORT
-    || hookInput?.effort,
-  );
-
-  if (hasClaudeRuntime) {
-    return readClaudeRuntime({ hookInput, environment });
-  }
-
-  if (environment.CODEX_THREAD_ID || typeof hookInput.model === "string") {
-    return readCodexRuntime({ hookInput, environment });
-  }
-
-  return {
-    schemaVersion: 1,
-    clientFamily: "other",
-    modelId: null,
-    effortLevel: null,
-    evidenceLevel: "unavailable",
-    source: "unknown",
-    observedAt: new Date().toISOString(),
-  };
 };
 
 /**
@@ -299,93 +114,171 @@ const findRunMetadataPath = async (cwd) => {
   return null;
 };
 
-const resolvePolicyRule = (providerPolicy, rawModelId) => {
-  const normalizedModelId = String(rawModelId || "").trim().toLowerCase();
-  const models = Array.isArray(providerPolicy?.models) ? providerPolicy.models : [];
-
-  return models.find((rule) => {
-    const canonical = String(rule?.modelId || "").trim().toLowerCase();
-
-    if (!canonical) {
-      return false;
-    }
-
-    return normalizedModelId === canonical
-      || (
-        canonical.startsWith("claude-")
-        && (
-          normalizedModelId.startsWith(`${canonical}-`)
-          || normalizedModelId.includes(`.${canonical}`)
-          || normalizedModelId.includes(`/${canonical}`)
-        )
-      );
-  }) ?? null;
+export const parseTrelioProjectBinding = (markdown) => {
+  const managedBlock = String(markdown || "").match(TRELIO_MANAGED_BLOCK_PATTERN)?.[1] ?? "";
+  const companySlug = managedBlock.match(TRELIO_COMPANY_BINDING_PATTERN)?.[1] ?? null;
+  return companySlug && TRELIO_COMPANY_SLUG_PATTERN.test(companySlug)
+    ? { companySlug }
+    : null;
 };
 
-export const evaluatePinnedRuntimePolicy = (snapshot, attestation) => {
-  const policy = snapshot?.policy;
-
-  if (!policy || policy.mode === "disabled") {
-    return { satisfied: true, enforced: false, reasonCode: "POLICY_DISABLED" };
-  }
-
-  const enforced = policy.mode === "enforce";
-
-  if (attestation?.clientFamily === "other") {
-    const satisfied = policy.otherClientsAction === "allow";
+const readInstructionBinding = async (filePath) => {
+  try {
+    const metadata = await fs.lstat(filePath);
+    if (
+      !metadata.isFile()
+      || metadata.isSymbolicLink()
+      || metadata.size > MAX_INSTRUCTION_FILE_BYTES
+    ) {
+      return { exists: true, binding: null };
+    }
     return {
-      satisfied,
-      enforced,
-      reasonCode: satisfied ? "OTHER_CLIENT_ALLOWED" : "OTHER_CLIENT_DENIED",
+      exists: true,
+      binding: parseTrelioProjectBinding(await fs.readFile(filePath, "utf8")),
     };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, binding: null };
+    return { exists: true, binding: null };
+  }
+};
+
+export const findTrelioProjectBinding = async (cwd) => {
+  let current = path.resolve(cwd || process.cwd());
+
+  for (let depth = 0; depth < 16; depth += 1) {
+    // AGENTS.override.md целиком заменяет AGENTS.md на том же уровне. Hook
+    // повторяет этот выбор и не извлекает binding из неэффективного файла.
+    const override = await readInstructionBinding(path.join(current, "AGENTS.override.md"));
+    if (override.exists) {
+      if (override.binding) return override.binding;
+    } else {
+      const agents = await readInstructionBinding(path.join(current, "AGENTS.md"));
+      if (agents.binding) return agents.binding;
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
 
-  if (
-    !attestation
-    || attestation.evidenceLevel !== "local_observed"
-    || !attestation.modelId
-  ) {
-    return { satisfied: false, enforced, reasonCode: "EVIDENCE_REQUIRED" };
+  return null;
+};
+
+const resolveHookToolName = (hookInput) => String(
+  hookInput?.tool_name
+  || hookInput?.toolName
+  || "",
+);
+
+const resolveHookToolInput = (hookInput) => {
+  const raw = hookInput?.tool_input ?? hookInput?.toolInput ?? hookInput?.input ?? {};
+  if (typeof raw !== "string" || raw.length > 256 * 1024) return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+};
+
+const isTrelioToolName = (toolName) => (
+  /(?:^|[_:./-])trelio(?:[_:./-]|$)/iu.test(toolName)
+);
+
+const findCompanyTarget = (value, depth = 0, seen = new Set()) => {
+  if (!value || typeof value !== "object" || depth > 4 || seen.has(value)) return null;
+  seen.add(value);
+
+  for (const [key, candidate] of Object.entries(value).slice(0, 100)) {
+    if (
+      ["companySlug", "company_slug"].includes(key)
+      && typeof candidate === "string"
+      && candidate.length <= 255
+      && TRELIO_COMPANY_SLUG_PATTERN.test(candidate)
+    ) {
+      return { companySlug: candidate };
+    }
+    if (
+      ["companyId", "company_id"].includes(key)
+      && typeof candidate === "string"
+      && UUID_PATTERN.test(candidate)
+    ) {
+      return { companyId: candidate.toLowerCase() };
+    }
   }
 
-  const providerPolicy = attestation.clientFamily === "codex"
-    ? policy?.providers?.codex
-    : policy?.providers?.claudeCode;
-  const rule = resolvePolicyRule(providerPolicy, attestation.modelId);
+  for (const candidate of Object.values(value).slice(0, 100)) {
+    const nested = findCompanyTarget(candidate, depth + 1, seen);
+    if (nested) return nested;
+  }
+  return null;
+};
 
-  if (!rule) {
-    const satisfied = providerPolicy?.unlistedModelsAction === "allow";
-    return {
-      satisfied,
-      enforced,
-      reasonCode: satisfied ? "UNLISTED_MODEL_ALLOWED" : "UNLISTED_MODEL_DENIED",
-    };
+export const resolveTrelioToolCompanyTarget = (hookInput) => {
+  const toolName = resolveHookToolName(hookInput);
+  return isTrelioToolName(toolName)
+    ? findCompanyTarget(resolveHookToolInput(hookInput))
+    : null;
+};
+
+const resolveRuntimeSessionId = (hookInput, environment = process.env) => {
+  const value = environment.CODEX_THREAD_ID
+    || hookInput?.session_id
+    || environment.TRELIO_CLAUDE_SESSION_ID
+    || null;
+  return typeof value === "string" && value.length <= 512 ? value : null;
+};
+
+const isBridgeLoginRecoveryTool = (hookInput) => {
+  const toolName = resolveHookToolName(hookInput);
+  if (/approve_agent_workspace_bridge_pairing/iu.test(toolName)) return true;
+
+  const toolInput = resolveHookToolInput(hookInput);
+  const command = typeof toolInput?.cmd === "string"
+    ? toolInput.cmd
+    : typeof toolInput?.command === "string"
+      ? toolInput.command
+      : "";
+  return /(?:trelio-workspace(?:\.mjs)?)[^\r\n]*(?:\s|^)(?:login|doctor)(?:\s|$)/iu.test(command)
+    || /codex\s+mcp\s+login\s+trelio(?:\s|$)/iu.test(command);
+};
+
+const enforceOrdinaryRuntimePolicy = async ({ hookInput, attestation }) => {
+  const [binding, workspaceModule] = await Promise.all([
+    findTrelioProjectBinding(hookInput.cwd),
+    import("./trelio-workspace.mjs"),
+  ]);
+  const admission = await workspaceModule.resolveOrdinaryRuntimePolicyAdmission({
+    origin: process.env.TRELIO_WORKSPACE_ORIGIN || "https://trelio.ru",
+    sessionId: resolveRuntimeSessionId(hookInput),
+    clientFamily: attestation.clientFamily,
+    observedBoundCompanySlug: binding?.companySlug ?? null,
+    target: resolveTrelioToolCompanyTarget(hookInput),
+    runtimeAttestation: attestation,
+  });
+
+  if (["not_applicable", "backend_unsupported"].includes(admission.status)) return;
+
+  if (admission.status === "bridge_login_required") {
+    if (isBridgeLoginRecoveryTool(hookInput)) return;
+    process.stderr.write(
+      "Trelio заблокировал действие до защищённой проверки политики компании. "
+        + "Подключите локальный компонент штатной командой `trelio-workspace login` и повторите действие.\n",
+    );
+    process.exitCode = 2;
+    return;
   }
 
-  if (rule.decision === "deny") {
-    return { satisfied: false, enforced, reasonCode: "MODEL_DENIED" };
+  const evaluation = evaluatePinnedRuntimePolicy(
+    admission.runtimePolicySnapshot,
+    attestation,
+  );
+  if (evaluation.enforced && !evaluation.satisfied) {
+    process.stderr.write(
+      `Trelio заблокировал действие политикой компании (${evaluation.reasonCode}). `
+        + "Выберите разрешённую модель и достаточный уровень рассуждений, затем повторите действие.\n",
+    );
+    process.exitCode = 2;
   }
-
-  if (rule.minimumEffort === null) {
-    return { satisfied: true, enforced, reasonCode: "MODEL_ALLOWED" };
-  }
-
-  if (!EFFORT_LEVELS.includes(attestation.effortLevel)) {
-    return { satisfied: false, enforced, reasonCode: "EFFORT_REQUIRED" };
-  }
-
-  // Набор уровней различается между моделями. Например, `ultra` есть у
-  // Codex 5.6 Sol/Terra, но не у Claude, а Opus 4.6 не поддерживает `xhigh`.
-  // Сравнение по одной глобальной шкале ошибочно разрешило бы такой уровень.
-  const supportedEfforts = MODEL_SUPPORTED_EFFORTS.get(rule.modelId) ?? EFFORT_LEVELS;
-  const actualIndex = supportedEfforts.indexOf(attestation.effortLevel);
-  const minimumIndex = supportedEfforts.indexOf(rule.minimumEffort);
-  const satisfied = actualIndex >= minimumIndex && minimumIndex >= 0;
-  return {
-    satisfied,
-    enforced,
-    reasonCode: satisfied ? "MODEL_ALLOWED" : "EFFORT_TOO_LOW",
-  };
 };
 
 const persistClaudeSessionEnvironment = async (hookInput) => {
@@ -429,6 +322,8 @@ const runHook = async () => {
   const metadataPath = await findRunMetadataPath(hookInput.cwd);
 
   if (!metadataPath) {
+    const attestation = await detectAgentRuntimeAttestation({ hookInput });
+    await enforceOrdinaryRuntimePolicy({ hookInput, attestation });
     return;
   }
 

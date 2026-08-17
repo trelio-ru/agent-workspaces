@@ -26,7 +26,8 @@ import {
   GitPrerequisiteError,
   verifyGitRuntime,
 } from "./trelio-git.mjs";
-import { detectAgentRuntimeAttestation } from "./trelio-runtime-policy.mjs";
+import { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs";
+import { evaluatePinnedRuntimePolicy } from "./trelio-runtime-policy-evaluator.mjs";
 import {
   SecretBrowserFillError,
   runSecretBrowserFill,
@@ -186,6 +187,10 @@ const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "cre
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
+const RUNTIME_POLICY_SESSION_FILE = path.join(
+  CONFIG_DIRECTORY,
+  "runtime-policy-sessions.json",
+);
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
 const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
@@ -2097,6 +2102,333 @@ export const loadToken = async (origin) => (
   || await loadLegacyOAuthToken(origin)
 );
 
+const RUNTIME_POLICY_COMPANY_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const MAX_RUNTIME_POLICY_SESSIONS = 64;
+const MAX_RUNTIME_POLICY_COMPANIES_PER_SESSION = 16;
+
+const normalizeRuntimePolicyTarget = (target) => {
+  if (!target || typeof target !== "object") return null;
+
+  if (
+    typeof target.companySlug === "string"
+    && target.companySlug.length <= 255
+    && RUNTIME_POLICY_COMPANY_SLUG_PATTERN.test(target.companySlug)
+  ) {
+    return {
+      key: `slug:${target.companySlug}`,
+      companySlug: target.companySlug,
+    };
+  }
+
+  if (UUID_PATTERN.test(String(target.companyId || ""))) {
+    const companyId = String(target.companyId).toLowerCase();
+    return {
+      key: `id:${companyId}`,
+      companyId,
+    };
+  }
+
+  return null;
+};
+
+const normalizeRuntimePolicySnapshotFromAdmission = (value) => {
+  if (
+    !value
+    || typeof value !== "object"
+    || value.schemaVersion !== 1
+    || !value.policy
+    || typeof value.policy !== "object"
+    || !["disabled", "observe", "enforce"].includes(value.policy.mode)
+  ) {
+    throw new Error("Trelio вернул некорректный снимок политики модели.");
+  }
+
+  // Disabled policy не использует model rules. Для observe/enforce требуем
+  // полный provider-контракт: частичный ответ не должен превратиться в allow.
+  if (
+    value.policy.mode !== "disabled"
+    && (
+      !value.policy.providers
+      || typeof value.policy.providers !== "object"
+      || typeof value.policy.providers.codex !== "object"
+      || typeof value.policy.providers.claudeCode !== "object"
+      || !["allow", "deny"].includes(value.policy.otherClientsAction)
+    )
+  ) {
+    throw new Error("Trelio вернул неполную политику модели.");
+  }
+
+  return value;
+};
+
+const normalizeRuntimePolicyAdmissionPayload = (value, requestedTarget) => {
+  if (
+    !value
+    || typeof value !== "object"
+    || value.schemaVersion !== 1
+    || !value.company
+    || typeof value.company !== "object"
+    || !UUID_PATTERN.test(String(value.company.id || ""))
+    || !RUNTIME_POLICY_COMPANY_SLUG_PATTERN.test(String(value.company.slug || ""))
+  ) {
+    throw new Error("Trelio вернул некорректный контекст политики модели.");
+  }
+
+  const companyId = String(value.company.id).toLowerCase();
+  const companySlug = String(value.company.slug);
+  if (
+    requestedTarget.companyId && requestedTarget.companyId !== companyId
+    || requestedTarget.companySlug && requestedTarget.companySlug !== companySlug
+  ) {
+    throw new Error("Trelio вернул политику другой компании.");
+  }
+
+  return {
+    schemaVersion: 1,
+    company: { id: companyId, slug: companySlug },
+    runtimePolicySnapshot: normalizeRuntimePolicySnapshotFromAdmission(
+      value.runtimePolicySnapshot,
+    ),
+    evaluation: value.evaluation && typeof value.evaluation === "object"
+      ? value.evaluation
+      : null,
+  };
+};
+
+const readRuntimePolicySessionState = async (stateFile) => {
+  try {
+    const value = await readPrivateJsonFile(stateFile);
+    return value?.schemaVersion === 1 && value.sessions && typeof value.sessions === "object"
+      ? value
+      : { schemaVersion: 1, sessions: {} };
+  } catch (error) {
+    // Содержимое cache можно безопасно восстановить с сервера. Ошибки owner,
+    // mode или symlink не маскируем, но оборванный JSON не должен навсегда
+    // блокировать все новые задачи после сбоя питания во время старой версии.
+    if (error instanceof SyntaxError) {
+      return { schemaVersion: 1, sessions: {} };
+    }
+    throw error;
+  }
+};
+
+const pruneRuntimePolicySessionState = (state) => {
+  const entries = Object.entries(state.sessions || {})
+    .sort((left, right) => String(right[1]?.initializedAt || "")
+      .localeCompare(String(left[1]?.initializedAt || "")))
+    .slice(0, MAX_RUNTIME_POLICY_SESSIONS);
+  return {
+    schemaVersion: 1,
+    sessions: Object.fromEntries(entries),
+  };
+};
+
+const isRetryableRuntimePolicyAdmissionError = (error) => (
+  error instanceof TrelioApiError
+    ? error.statusCode === 429 || error.statusCode >= 500
+    : ["ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND"]
+      .includes(String(error?.code || error?.cause?.code || ""))
+);
+
+const fetchRuntimePolicyAdmission = async ({
+  origin,
+  token,
+  target,
+  runtimeAttestation,
+  requestCommand = request,
+  waitForRetry = wait,
+}) => {
+  let lastError = null;
+
+  // Admission только читает immutable current revision и поэтому безопасно
+  // повторяется при transport/5xx. Три короткие попытки укладываются в hook
+  // timeout и не повторяют ни pairing, ни другую mutation.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await requestCommand(
+        origin,
+        token,
+        "/api/agent-workspaces/runtime-policy/admissions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...(target.companySlug ? { companySlug: target.companySlug } : {}),
+            ...(target.companyId ? { companyId: target.companyId } : {}),
+            runtimeAttestation,
+          }),
+        },
+      );
+      return normalizeRuntimePolicyAdmissionPayload(await response.json(), target);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 2 || !isRetryableRuntimePolicyAdmissionError(error)) {
+        throw error;
+      }
+      await waitForRetry(150 * (2 ** attempt));
+    }
+  }
+
+  throw lastError ?? new Error("Не удалось проверить политику модели Trelio.");
+};
+
+/**
+ * Закрепляет current company policy за обычной задачей Codex/Claude Code.
+ *
+ * Первый защищённый PreToolUse одной client session фиксирует непустую company
+ * binding. Поэтому onboarding может создать AGENTS.md и продолжить в той же
+ * задаче, а последующая замена уже закреплённой компании не меняет policy.
+ * Для Trelio MCP tool с явным companySlug точный target имеет приоритет над
+ * project binding.
+ */
+export const resolveOrdinaryRuntimePolicyAdmission = async ({
+  origin: rawOrigin = DEFAULT_ORIGIN,
+  sessionId = null,
+  clientFamily = "other",
+  observedBoundCompanySlug = null,
+  target: rawTarget = null,
+  runtimeAttestation,
+  stateFile = RUNTIME_POLICY_SESSION_FILE,
+  loadTokenCommand = loadToken,
+  requestCommand = request,
+  waitForRetry = wait,
+  now = new Date(),
+} = {}) => {
+  const origin = normalizeOrigin(rawOrigin);
+  const explicitTarget = normalizeRuntimePolicyTarget(rawTarget);
+  const normalizedBoundCompanySlug = normalizeRuntimePolicyTarget({
+    companySlug: observedBoundCompanySlug,
+  })?.companySlug ?? null;
+  const normalizedSessionId = typeof sessionId === "string"
+    && sessionId.length > 0
+    && sessionId.length <= 512
+    ? sessionId
+    : null;
+  let state = { schemaVersion: 1, sessions: {} };
+  let session = null;
+  let sessionKey = null;
+  let stateChanged = false;
+
+  if (normalizedSessionId) {
+    state = await readRuntimePolicySessionState(stateFile);
+    sessionKey = crypto
+      .createHash("sha256")
+      .update(`${clientFamily}\0${normalizedSessionId}`)
+      .digest("hex");
+    session = state.sessions[sessionKey];
+
+    if (!session || session.schemaVersion !== 1) {
+      const firstTarget = explicitTarget || normalizeRuntimePolicyTarget({
+        companySlug: normalizedBoundCompanySlug,
+      });
+      // Обычный unbound tool call не является защищённым действием Trelio и не
+      // должен навсегда закреплять пустую binding. После onboarding первый уже
+      // связанный вызов этой же задачи получит и зафиксирует company snapshot.
+      if (!firstTarget) {
+        return { status: "not_applicable" };
+      }
+      session = {
+        schemaVersion: 1,
+        clientFamily,
+        boundCompanySlug: normalizedBoundCompanySlug,
+        initializedAt: now.toISOString(),
+        admissions: {},
+      };
+      state.sessions[sessionKey] = session;
+      stateChanged = true;
+    } else if (!session.boundCompanySlug && normalizedBoundCompanySlug) {
+      // Exact scoped MCP admission мог появиться до записи project binding.
+      // Разрешаем заполнить только прежнее пустое поле и никогда не заменяем
+      // уже закреплённый company slug посреди client session.
+      session.boundCompanySlug = normalizedBoundCompanySlug;
+      state.sessions[sessionKey] = session;
+      stateChanged = true;
+    }
+  }
+
+  const target = explicitTarget || normalizeRuntimePolicyTarget({
+    companySlug: session ? session.boundCompanySlug : normalizedBoundCompanySlug,
+  });
+
+  if (!target) {
+    if (stateChanged) {
+      await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
+    }
+    return { status: "not_applicable" };
+  }
+
+  const cached = session?.admissions?.[target.key];
+  if (cached?.runtimePolicySnapshot) {
+    return {
+      status: "ready",
+      source: "session_cache",
+      company: cached.company,
+      runtimePolicySnapshot: normalizeRuntimePolicySnapshotFromAdmission(
+        cached.runtimePolicySnapshot,
+      ),
+    };
+  }
+
+  const token = await loadTokenCommand(origin);
+  if (!token) {
+    if (stateChanged) {
+      await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
+    }
+    return {
+      status: "bridge_login_required",
+      companySlug: target.companySlug ?? null,
+      companyId: target.companyId ?? null,
+    };
+  }
+
+  let admission;
+  try {
+    admission = await fetchRuntimePolicyAdmission({
+      origin,
+      token,
+      target,
+      runtimeAttestation,
+      requestCommand,
+      waitForRetry,
+    });
+  } catch (error) {
+    // Main может содержать клиентский код следующего patch до coordinated
+    // backend deploy. Только ещё не выпущенный bridge 1.10.1 принимает exact
+    // authoritative 404 как отсутствие нового admission-контракта; начиная с
+    // 1.10.2 тот же ответ снова fail-closed и не маскирует сломанный deploy.
+    if (
+      error instanceof TrelioApiError
+      && error.statusCode === 404
+      && !isStableVersionAtLeast(BRIDGE_VERSION, "1.10.2")
+    ) {
+      return { status: "backend_unsupported" };
+    }
+    throw error;
+  }
+
+  if (session && sessionKey) {
+    const admissionEntries = Object.entries(session.admissions || {})
+      .filter(([key]) => key !== target.key)
+      .slice(-(MAX_RUNTIME_POLICY_COMPANIES_PER_SESSION - 1));
+    session.admissions = Object.fromEntries(admissionEntries);
+    session.admissions[target.key] = {
+      company: admission.company,
+      admittedAt: now.toISOString(),
+      runtimePolicySnapshot: admission.runtimePolicySnapshot,
+    };
+    state.sessions[sessionKey] = session;
+    await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
+  }
+
+  return {
+    status: "ready",
+    source: "server",
+    company: admission.company,
+    runtimePolicySnapshot: admission.runtimePolicySnapshot,
+    evaluation: admission.evaluation,
+  };
+};
+
 const saveCredential = async (origin, field, accessToken, keychainService) => {
   await ensurePrivateDirectory(CONFIG_DIRECTORY);
 
@@ -3858,6 +4190,42 @@ const runMaterializedAgentSkill = async ({
   }
 };
 
+const assertOrdinaryRuntimePolicyForCompany = async ({ origin, token, companyId }) => {
+  const runtimeAttestation = await detectAgentRuntimeAttestation();
+  const sessionId = process.env.CODEX_THREAD_ID
+    || process.env.TRELIO_CLAUDE_SESSION_ID
+    || null;
+  const admission = await resolveOrdinaryRuntimePolicyAdmission({
+    origin,
+    sessionId,
+    clientFamily: runtimeAttestation.clientFamily,
+    target: { companyId },
+    runtimeAttestation,
+    // skill run уже доказал token через requireToken. Не читаем credential file
+    // второй раз и никогда не передаём сам token в argv/env дочернего runtime.
+    loadTokenCommand: async () => token,
+  });
+
+  if (admission.status === "backend_unsupported") {
+    return;
+  }
+
+  if (admission.status !== "ready") {
+    throw new Error("Не удалось получить политику модели для запуска навыка Trelio.");
+  }
+
+  const evaluation = evaluatePinnedRuntimePolicy(
+    admission.runtimePolicySnapshot,
+    runtimeAttestation,
+  );
+  if (evaluation.enforced && !evaluation.satisfied) {
+    throw new Error(
+      `Trelio заблокировал запуск навыка политикой модели (${evaluation.reasonCode}). `
+        + "Выберите разрешённую модель и достаточный уровень рассуждений.",
+    );
+  }
+};
+
 const skillCommand = async (
   origin,
   options,
@@ -3910,6 +4278,7 @@ const skillCommand = async (
 
   const token = await requireToken(origin);
   await ensureBridgeCompatibility(origin, token);
+  await assertOrdinaryRuntimePolicyForCompany({ origin, token, companyId });
   const response = await request(
     origin,
     token,

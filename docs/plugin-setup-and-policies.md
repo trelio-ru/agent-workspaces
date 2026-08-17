@@ -158,14 +158,19 @@ Claude обновляет marketplace своим plugin manager. После об
 
 ## Политика моделей
 
-Компания может закрепить допустимые client/model/reasoning effort для новых
-Agent Runs. Bridge сообщает только локально наблюдаемые значения; это
-`local_observed`, не криптографическая аттестация платформы.
+Компания может закрепить допустимые client/model/reasoning effort для всей
+новой работы с Trelio, включая обычные задачи без Agent Run. Bridge сообщает
+только локально наблюдаемые значения; это `local_observed`, не
+криптографическая аттестация платформы.
 
-Policy закрепляется за Run и повторно проверяется локальным `PreToolUse` guard
-Codex/Claude Code. Неизвестные модели и клиенты, включая среду без надёжных
-model+effort данных, управляются отдельным allow/deny правилом. Нельзя обходить
-guard редактированием `.trelio-run.json`, hook или client metadata.
+В связанном проекте policy определяется по Trelio-блоку `AGENTS.md`, вне него –
+по exact company в scoped Trelio MCP-вызове. Обычная задача закрепляет snapshot
+при первом защищённом действии, Agent Run – при запуске; затем локальный
+`PreToolUse` guard Codex/Claude Code повторно проверяет текущую model/effort.
+Отдельная команда агента не нужна. Неизвестные модели и клиенты, включая среду
+без надёжных model+effort данных, управляются отдельным allow/deny правилом.
+Нельзя обходить guard редактированием `.trelio-run.json`, приватного admission
+state, hook или client metadata.
 
 ## Правила компании, проекта и пользователя
 
