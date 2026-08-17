@@ -127,12 +127,16 @@ test("Git resolver ignores a private Codex runtime executable from process PATH"
   assert.equal(result.install.strategy, "xcode-command-line-tools");
 });
 
-test("macOS Git resolver rejects an xcrun stub and selects native installation", async () => {
+test("macOS Git resolver skips the xcrun stub and returns a foreground installer plan", async () => {
   const platform = "darwin";
   const gitStubPath = "/usr/bin/git";
   const filesystem = createVirtualFilesystem([gitStubPath], platform);
-  const execFileCommand = async () => {
-    const error = new Error("xcrun requires Command Line Tools");
+  const executions = [];
+  const execFileCommand = async (executable, args) => {
+    executions.push({ executable, args });
+    assert.equal(executable, "/usr/bin/xcode-select");
+    assert.deepEqual(args, ["--print-path"]);
+    const error = new Error("No active developer directory");
     error.code = 1;
     throw error;
   };
@@ -148,6 +152,48 @@ test("macOS Git resolver rejects an xcrun stub and selects native installation",
   assert.equal(result.code, "TRELIO_GIT_REQUIRED");
   assert.equal(result.install.strategy, "xcode-command-line-tools");
   assert.deepEqual(result.install.args, ["--install"]);
+  assert.deepEqual(result.install.nativeWindowActivation, {
+    executable: "/usr/bin/open",
+    args: ["-b", "com.apple.dt.CommandLineTools.installondemand"],
+    displayCommand: "open -b com.apple.dt.CommandLineTools.installondemand",
+    bestEffort: true,
+  });
+  assert.deepEqual(executions, [{
+    executable: "/usr/bin/xcode-select",
+    args: ["--print-path"],
+  }]);
+});
+
+test("macOS Git resolver inspects system Git only after developer tools are ready", async () => {
+  const platform = "darwin";
+  const gitPath = "/usr/bin/git";
+  const filesystem = createVirtualFilesystem([gitPath], platform);
+  const executions = [];
+  const execFileCommand = async (executable, args) => {
+    executions.push({ executable, args });
+    if (executable === "/usr/bin/xcode-select") {
+      assert.deepEqual(args, ["--print-path"]);
+      return { stdout: "/Library/Developer/CommandLineTools\n", stderr: "" };
+    }
+    assert.equal(executable, gitPath);
+    assert.deepEqual(args, ["--version"]);
+    return { stdout: "git version 2.39.5 (Apple Git-154)\n", stderr: "" };
+  };
+
+  const result = await resolveGitExecutable({
+    platform,
+    environment: { PATH: "/usr/bin" },
+    filesystem,
+    execFileCommand,
+  });
+
+  assert.equal(result.status, "ready");
+  assert.equal(result.gitPath, gitPath);
+  assert.equal(result.source, "system");
+  assert.deepEqual(executions.map(({ executable }) => executable), [
+    "/usr/bin/xcode-select",
+    gitPath,
+  ]);
 });
 
 test("Windows Git resolver reads durable machine PATH without an app restart", async () => {

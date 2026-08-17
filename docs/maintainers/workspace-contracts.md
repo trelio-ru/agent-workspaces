@@ -45,7 +45,10 @@ PATH; произвольный executable из process PATH кандидатом
 shell. `doctor --json` дополнительно доказывает временный
 `init → add → commit`; `open`, checkpoint и finish при отсутствующем или
 неработающем Git fail-closed возвращают `TRELIO_GIT_REQUIRED`, не создавая
-частичный candidate.
+частичный candidate. На чистом macOS doctor проверяет
+`xcode-select --print-path` до `/usr/bin/git`, чтобы не запустить xcrun installer
+побочным эффектом, а install plan содержит отдельную best-effort activation
+системного окна по Apple bundle id.
 
 ## Run, candidate и handoff
 

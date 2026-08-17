@@ -2462,6 +2462,10 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /do not ask for a separate confirmation in chat/u);
   assert.match(onboardingSkill, /brew install git/u);
   assert.match(onboardingSkill, /xcode-select --install/u);
+  assert.match(onboardingSkill, /xcode-select --print-path/u);
+  assert.match(onboardingSkill, /must not\s+execute the `\/usr\/bin\/git` xcrun stub/u);
+  assert.match(onboardingSkill, /install\.nativeWindowActivation/u);
+  assert.match(onboardingSkill, /do not launch a second Git\s+installer or start `softwareupdate` concurrently/u);
   assert.match(onboardingSkill, /winget install --id Git\.Git -e/u);
   assert.match(onboardingSkill, /rerun doctor in the same task/u);
   assert.match(onboardingSkill, /do not require an\s+app restart/u);
@@ -2543,6 +2547,9 @@ test("workspace recovery installs missing Git through the native macOS or Window
   assert.match(workspaceSkill, /immediately\s+run its exact installation plan without another confirmation question/u);
   assert.match(workspaceSkill, /brew install git/u);
   assert.match(workspaceSkill, /xcode-select --install/u);
+  assert.match(workspaceSkill, /xcode-select --print-path/u);
+  assert.match(workspaceSkill, /install\.nativeWindowActivation/u);
+  assert.match(workspaceSkill, /do not launch a second installer or run `softwareupdate` concurrently/u);
   assert.match(workspaceSkill, /winget install --id Git\.Git -e/u);
   assert.match(workspaceSkill, /normal command approval, administrator prompt/u);
   assert.match(workspaceSkill, /rerun doctor in the same task/u);

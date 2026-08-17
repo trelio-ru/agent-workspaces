@@ -64,14 +64,20 @@ plugin installation. On `TRELIO_GIT_REQUIRED`, run this loaded plugin's bundled
 executable. Doctor resolves standalone Git 2.28+ only from standard macOS/
 Windows locations and durable Windows PATH and proves a temporary
 `init → add → commit`. Arbitrary process-PATH executables are not candidates;
-never reuse an undocumented Git private to Codex's marketplace manager.
+never reuse an undocumented Git private to Codex's marketplace manager. On
+macOS doctor checks `xcode-select --print-path` before `/usr/bin/git`; it never
+executes the xcrun Git stub when developer tools are absent because that probe
+can open Apple's installer behind the client window.
 
 If doctor reports `not_found`, `upgrade_required`, or `unusable`, immediately
 run its exact installation plan without another confirmation question in chat:
 
 - macOS uses `brew install git` when Homebrew is already installed; otherwise
-  start `xcode-select --install` and let the user complete Apple's native
-  installer window;
+  start `xcode-select --install`, then run the returned
+  `install.nativeWindowActivation` once, best effort, to bring Apple's native
+  installer in front. This does not approve the installer for the user. If
+  activation fails, tell them that the window may be behind Codex or Claude;
+  do not launch a second installer or run `softwareupdate` concurrently;
 - native Windows uses
   `winget install --id Git.Git -e --source winget --accept-source-agreements
   --accept-package-agreements`; without `winget`, immediately open the returned
