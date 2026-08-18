@@ -11,6 +11,11 @@ Workspace context discovery to the current project: relevant material may be
 linked across projects. Ask only when ambiguity remains after read-only
 discovery.
 
+Every discovery call still carries the exact current `runtimeAttestation`.
+Discovery relaxes only the company's minimum effort; a forbidden or disallowed
+unlisted model remains blocked. Exact content reads selected from discovery
+then enforce both model and minimum effort.
+
 ## Resolve the work item
 
 Trelio context search is lexical, not semantic. Company/project rules are not

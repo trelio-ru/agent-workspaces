@@ -157,28 +157,27 @@ exact hash.
 
 ## Model/runtime policy
 
-Bridge admission, start/claim и signed skill run сообщают client/model/effort
-как `local_observed`. Company policy применяется ко всей новой работе с Trelio,
-а не только к Agent Run. Обычная задача закрепляет immutable snapshot при
-первом защищённом действии exact компании; Run сохраняет server-pinned snapshot
-и имеет приоритет. PreToolUse guard проверяет фактический runtime перед каждым
-действием без отдельной команды агента.
+Каждый non-recovery Trelio MCP request передаёт self-reported
+`runtimeAttestation` exact текущего вызова. Для Codex/Claude Code обязательны
+`source=agent_request`, `evidenceLevel=self_reported`, real model/effort и ISO
+`observedAt`; после переключения runtime значения формируются заново. Backend
+сам разрешает фактическую company и применяет current revision, поэтому
+локальная binding, session cache и hook не являются частью admission.
 
-В связанном проекте hook читает только marked Trelio block действующего
-`AGENTS.md`; вне привязки exact company берётся из scoped Trelio MCP input.
-Привязка задачи и policy snapshots хранятся в приватном bridge state по
-hash-based session key. Пустой unbound tool call ничего не закрепляет, поэтому
-созданная onboarding-ом привязка включается на следующем защищённом действии в
-той же задаче; уже закреплённый company slug не заменяется. Raw transcript и
-исходный session id не сохраняются.
-После первого admission повторный network call не нужен; scoped действие для
-другой exact компании закрепляет её отдельный snapshot. Unbound generic work и
-Trelio discovery без exact company не получают произвольную policy.
+Discovery allowlist (`search`, lists, metadata/resolvers) проверяет, разрешена
+ли модель, но намеренно не minimum effort. Context reads, mutations и Agent
+Workspace tools проверяют оба ограничения. Неизвестный новый read по умолчанию
+context, write – mutation. Login/doctor/pairing recovery не блокируются.
 
-Отсутствующая bridge-session fail-closed блокирует защищённую работу, но не
-exact login/doctor/pairing recovery. Unknown client/model управляется explicit
-allow/deny. `CLAUDE_PLUGIN_ROOT` не доказывает client kind. Guard нельзя
-обходить editing runtime files, private admission state или client metadata.
+Agent Run закрепляет policy snapshot и initiating attestation. Возвращённая MCP
+open-команда переносит exact declaration в `--runtime-*`; bridge повторяет её
+при start/claim и не определяет модель из env/transcript. Signed Agent Skill
+получает те же argv и повторный server admission. SessionStart hook остаётся
+только для несвязанного title reminder; `PreToolUse` отсутствует.
+
+Это cooperative self-report, а не криптографическая platform attestation.
+Unknown client/model управляется explicit allow/deny. Не выдавать неизвестный
+cloud runtime за Claude Code и не копировать декларацию другой модели.
 
 ## Working-folder onboarding skill
 

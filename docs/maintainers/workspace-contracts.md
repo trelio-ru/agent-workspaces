@@ -34,8 +34,10 @@ exact diff → explicit confirmation → publish и действуют толь�
 Runs. Нельзя редактировать protected files или скрывать правило в
 `WORKSPACE_CONTEXT.md`.
 
-Model/effort policy закрепляется за Run и проверяется до действий. Никогда не
-редактировать `.trelio-run.json`, hook или attestation для обхода.
+Каждый Trelio MCP request сообщает exact self-reported runtime; discovery
+проверяет модель, а context/mutation/Agent Workspace – также minimum effort.
+Run закрепляет initiating declaration и policy snapshot. Никогда не копировать
+attestation другой модели и не редактировать `.trelio-run.json` для обхода.
 
 Локальный Git data plane не полагается на bare `git` из process PATH и не
 заимствует undocumented executable Codex plugin manager. Bridge разрешает

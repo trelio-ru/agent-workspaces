@@ -24,6 +24,19 @@ a credential in a prompt. The only prompt/MCP exception is the exact
 already-shared value and explicit company/user opt-in flow documented below;
 it does not permit copying the value anywhere else.
 
+## Report the current runtime on every Trelio call
+
+For every non-recovery Trelio MCP tool call, include `runtimeAttestation` for
+that exact request. Codex and Claude Code must report the real current
+`clientFamily`, `modelId`, and `effortLevel`, with `schemaVersion=1`,
+`source=agent_request`, `evidenceLevel=self_reported`, and a fresh ISO
+`observedAt`. Rebuild it after any model or effort change; never copy another
+model's declaration. Discovery tools still require an allowed model but ignore
+minimum effort. Context reads, mutations, and Agent Workspace tools require
+both. Pairing and bridge-session recovery tools are the only exemption. If the
+host does not expose model/effort, report `other` only when that is truthful;
+never guess a known client identity.
+
 ## Route the current scenario
 
 Classify every user addition independently before acting.

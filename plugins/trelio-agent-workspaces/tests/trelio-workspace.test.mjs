@@ -61,7 +61,6 @@ import {
   restoreRetainedCodexPluginInstallations,
   retainLoadedCodexPluginInstallation,
   request,
-  resolveOrdinaryRuntimePolicyAdmission,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
@@ -172,93 +171,6 @@ const writeTestCredential = async (homeDirectory, origin) => {
     { mode: 0o600 },
   );
 };
-
-test("ordinary policy waits for the first non-empty binding and then keeps it stable", async () => {
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-policy-binding-"));
-  const privateDirectory = path.join(temporaryDirectory, "private");
-  const stateFile = path.join(privateDirectory, "runtime-policy-sessions.json");
-  const sessionId = "019f9fcd-899a-72b3-91f6-fdf3134381bb";
-  const runtimeAttestation = {
-    schemaVersion: 1,
-    clientFamily: "codex",
-    modelId: "gpt-5.6-sol",
-    effortLevel: "high",
-    evidenceLevel: "local_observed",
-    source: "codex_rollout",
-    observedAt: "2026-08-17T12:00:00.000Z",
-  };
-  let requestCount = 0;
-  const requestCommand = async (_origin, _token, requestPath, options) => {
-    requestCount += 1;
-    assert.equal(requestPath, "/api/agent-workspaces/runtime-policy/admissions");
-    assert.equal(JSON.parse(options.body).companySlug, "vkus");
-    return {
-      json: async () => ({
-        schemaVersion: 1,
-        company: {
-          id: "22222222-2222-4222-8222-222222222222",
-          slug: "vkus",
-        },
-        runtimePolicySnapshot: {
-          schemaVersion: 1,
-          revision: null,
-          policy: { schemaVersion: 1, mode: "disabled" },
-        },
-        evaluation: {
-          satisfied: true,
-          enforced: false,
-          reasonCode: "POLICY_DISABLED",
-        },
-      }),
-    };
-  };
-
-  try {
-    const unbound = await resolveOrdinaryRuntimePolicyAdmission({
-      sessionId,
-      runtimeAttestation,
-      stateFile,
-      loadTokenCommand: async () => {
-        throw new Error("unbound work must not read credentials");
-      },
-      requestCommand,
-    });
-    assert.deepEqual(unbound, { status: "not_applicable" });
-    await assert.rejects(readFile(stateFile), { code: "ENOENT" });
-
-    const admitted = await resolveOrdinaryRuntimePolicyAdmission({
-      sessionId,
-      observedBoundCompanySlug: "vkus",
-      runtimeAttestation,
-      stateFile,
-      loadTokenCommand: async () => "test-token",
-      requestCommand,
-    });
-    assert.equal(admitted.status, "ready");
-    assert.equal(admitted.company.slug, "vkus");
-    assert.equal(requestCount, 1);
-    if (process.platform !== "win32") {
-      assert.equal((await stat(privateDirectory)).mode & 0o777, 0o700);
-      assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
-    }
-
-    const laterDifferentBinding = await resolveOrdinaryRuntimePolicyAdmission({
-      sessionId,
-      observedBoundCompanySlug: "drugaya-kompaniya",
-      runtimeAttestation,
-      stateFile,
-      loadTokenCommand: async () => {
-        throw new Error("pinned policy must use its private cache");
-      },
-      requestCommand,
-    });
-    assert.equal(laterDifferentBinding.status, "ready");
-    assert.equal(laterDifferentBinding.company.slug, "vkus");
-    assert.equal(requestCount, 1);
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  }
-});
 
 const createExportBundle = async (temporaryDirectory, files) => {
   const repositoryDirectory = path.join(temporaryDirectory, "repository");
@@ -2429,7 +2341,9 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Company\/project rules не являются поисковыми документами.*exact `fetch`\/`get_task`\/`get_dossier`.*первым `effectiveInstructions`.*внутри Run используй pinned instruction\/profile snapshot/u,
     /не вызывай list_dossiers только ради discovery/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
-    /не меняй attestation, hook или `\.trelio-run\.json`/u,
+    /В каждом MCP-вызове Trelio честно передавай self-reported runtimeAttestation/u,
+    /Discovery проверяет модель без минимального effort.*context, mutation и Agent Workspace применяют оба ограничения/u,
+    /не копируй attestation другой модели и не меняй `\.trelio-run\.json`/u,
     /Fallback допустим, когда релевантного навыка нет/u,
     /`no_access` \/ `needs_reconnect`/u,
     /`telegram-mtproto` primary priority `100`/u,
@@ -4286,6 +4200,16 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   const companyId = "99999999-9999-4999-8999-999999999999";
   const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const connectionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const runtimeArgv = [
+    "--runtime-client",
+    "codex",
+    "--runtime-model",
+    "gpt-5.6-sol",
+    "--runtime-effort",
+    "high",
+    "--runtime-observed-at",
+    "2026-08-19T12:34:56.000Z",
+  ];
   const deliveredFilePathLog = path.join(temporaryDirectory, "delivered-file-path.txt");
   const runId = "66666666-6666-4666-8666-666666666666";
   const grantIds = {
@@ -4356,10 +4280,15 @@ test("skill host resolves on every run, verifies signed package, caches it and r
       ) {
         const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
         assert.equal(body.companyId, companyId);
-        assert.ok(
-          ["codex", "other"].includes(body.runtimeAttestation.clientFamily),
-          "bridge must report the actually observed host instead of forging a test client",
-        );
+        assert.deepEqual(body.runtimeAttestation, {
+          schemaVersion: 1,
+          clientFamily: "codex",
+          modelId: "gpt-5.6-sol",
+          effortLevel: "high",
+          evidenceLevel: "self_reported",
+          source: "agent_request",
+          observedAt: "2026-08-19T12:34:56.000Z",
+        });
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
           schemaVersion: 1,
@@ -4508,6 +4437,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
         skillId,
         "--release",
         releaseId,
+        ...runtimeArgv,
         "--",
         "--message",
         "hello",
@@ -4551,6 +4481,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
         skillId,
         "--release",
         releaseId,
+        ...runtimeArgv,
         "--",
         "--message",
         deliveryMode,

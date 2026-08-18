@@ -26,8 +26,6 @@ import {
   GitPrerequisiteError,
   verifyGitRuntime,
 } from "./trelio-git.mjs";
-import { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs";
-import { evaluatePinnedRuntimePolicy } from "./trelio-runtime-policy-evaluator.mjs";
 import {
   SecretBrowserFillError,
   runSecretBrowserFill,
@@ -55,7 +53,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
   "- Новый Run может записывать только в task или dossier Workspace. Если открыт уже существовавший до миграции legacy company/project Run, разрешено завершить только этот exact pinned Run через обычные checkpoint/finish; не начинай новый Run такой области. Company/project задают ACL и immutable правила, но не являются новыми material Workspace; дополнительный контекст приходит только через явно закреплённые related task/dossier heads. Не считай наличие legacy `context/company` или `context/project` отдельным разрешением на запись.",
   `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
-  "- Не обходи закреплённую policy модели/effort. При блокировке выбери разрешённые значения и заново открой или claim-ни Run; не меняй attestation, hook или `.trelio-run.json`.",
+  "- В каждом MCP-вызове Trelio честно передавай self-reported runtimeAttestation текущей модели и effort. Discovery проверяет модель без минимального effort; context, mutation и Agent Workspace применяют оба ограничения. При смене runtime используй новые значения, не копируй attestation другой модели и не меняй `.trelio-run.json`.",
   "",
   "## Начало Run",
   "",
@@ -189,10 +187,6 @@ const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "cre
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
-const RUNTIME_POLICY_SESSION_FILE = path.join(
-  CONFIG_DIRECTORY,
-  "runtime-policy-sessions.json",
-);
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
 const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
@@ -370,6 +364,89 @@ const parseArguments = (rawArguments) => {
   }
 
   return { command, options, positional };
+};
+
+const AGENT_RUNTIME_CLIENT_FAMILIES = new Set(["codex", "claude-code", "other"]);
+const AGENT_RUNTIME_EFFORT_LEVELS = new Set([
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+]);
+const AGENT_RUNTIME_MODEL_ID_PATTERN = /^[a-z0-9._:+/-]+$/iu;
+
+const readSingleRuntimeOption = (options, key) => {
+  const value = options[key];
+
+  if (value === undefined) return null;
+  if (value === true || Array.isArray(value)) {
+    throw new Error(`Параметр --${key} должен быть указан ровно один раз со значением.`);
+  }
+
+  const normalized = String(value).trim();
+  if (!normalized) {
+    throw new Error(`Параметр --${key} не может быть пустым.`);
+  }
+  return normalized;
+};
+
+/**
+ * Собирает только явную self-attestation из exact команды, которую вернул MCP.
+ * Bridge принципиально не пытается угадывать model/effort из env, transcript
+ * или hook: эти источники локальны и не являются доверенной границей Trelio.
+ */
+export const parseSelfReportedRuntimeAttestationOptions = (options = {}) => {
+  const clientFamily = readSingleRuntimeOption(options, "runtime-client");
+  const modelId = readSingleRuntimeOption(options, "runtime-model");
+  const effortLevel = readSingleRuntimeOption(options, "runtime-effort");
+  const observedAt = readSingleRuntimeOption(options, "runtime-observed-at");
+
+  if (!clientFamily) {
+    if (modelId || effortLevel || observedAt) {
+      throw new Error("Runtime attestation требует --runtime-client.");
+    }
+    return null;
+  }
+  if (!AGENT_RUNTIME_CLIENT_FAMILIES.has(clientFamily)) {
+    throw new Error("Параметр --runtime-client должен быть codex, claude-code или other.");
+  }
+  if (!observedAt || Number.isNaN(Date.parse(observedAt))) {
+    throw new Error("Параметр --runtime-observed-at должен содержать ISO timestamp.");
+  }
+
+  if (clientFamily === "other") {
+    if (modelId || effortLevel) {
+      throw new Error("Runtime other не должен объявлять model или effort.");
+    }
+    return {
+      schemaVersion: 1,
+      clientFamily,
+      modelId: null,
+      effortLevel: null,
+      evidenceLevel: "unavailable",
+      source: "unknown",
+      observedAt,
+    };
+  }
+
+  if (!modelId || !AGENT_RUNTIME_MODEL_ID_PATTERN.test(modelId)) {
+    throw new Error("Параметр --runtime-model должен содержать безопасный model id.");
+  }
+  if (effortLevel && !AGENT_RUNTIME_EFFORT_LEVELS.has(effortLevel)) {
+    throw new Error("Параметр --runtime-effort содержит неподдерживаемый уровень.");
+  }
+
+  return {
+    schemaVersion: 1,
+    clientFamily,
+    modelId,
+    effortLevel,
+    evidenceLevel: "self_reported",
+    source: "agent_request",
+    observedAt,
+  };
 };
 
 export const normalizeOrigin = (value) => {
@@ -2105,8 +2182,6 @@ export const loadToken = async (origin) => (
 );
 
 const RUNTIME_POLICY_COMPANY_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-const MAX_RUNTIME_POLICY_SESSIONS = 64;
-const MAX_RUNTIME_POLICY_COMPANIES_PER_SESSION = 16;
 
 const normalizeRuntimePolicyTarget = (target) => {
   if (!target || typeof target !== "object") return null;
@@ -2197,34 +2272,6 @@ const normalizeRuntimePolicyAdmissionPayload = (value, requestedTarget) => {
   };
 };
 
-const readRuntimePolicySessionState = async (stateFile) => {
-  try {
-    const value = await readPrivateJsonFile(stateFile);
-    return value?.schemaVersion === 1 && value.sessions && typeof value.sessions === "object"
-      ? value
-      : { schemaVersion: 1, sessions: {} };
-  } catch (error) {
-    // Содержимое cache можно безопасно восстановить с сервера. Ошибки owner,
-    // mode или symlink не маскируем, но оборванный JSON не должен навсегда
-    // блокировать все новые задачи после сбоя питания во время старой версии.
-    if (error instanceof SyntaxError) {
-      return { schemaVersion: 1, sessions: {} };
-    }
-    throw error;
-  }
-};
-
-const pruneRuntimePolicySessionState = (state) => {
-  const entries = Object.entries(state.sessions || {})
-    .sort((left, right) => String(right[1]?.initializedAt || "")
-      .localeCompare(String(left[1]?.initializedAt || "")))
-    .slice(0, MAX_RUNTIME_POLICY_SESSIONS);
-  return {
-    schemaVersion: 1,
-    sessions: Object.fromEntries(entries),
-  };
-};
-
 const isRetryableRuntimePolicyAdmissionError = (error) => (
   error instanceof TrelioApiError
     ? error.statusCode === 429 || error.statusCode >= 500
@@ -2242,9 +2289,8 @@ const fetchRuntimePolicyAdmission = async ({
 }) => {
   let lastError = null;
 
-  // Admission только читает immutable current revision и поэтому безопасно
-  // повторяется при transport/5xx. Три короткие попытки укладываются в hook
-  // timeout и не повторяют ни pairing, ни другую mutation.
+  // Admission только читает current revision и поэтому безопасно повторяется
+  // при transport/5xx. Попытки не повторяют skill runtime или другую mutation.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const response = await requestCommand(
@@ -2257,7 +2303,7 @@ const fetchRuntimePolicyAdmission = async ({
           body: JSON.stringify({
             ...(target.companySlug ? { companySlug: target.companySlug } : {}),
             ...(target.companyId ? { companyId: target.companyId } : {}),
-            runtimeAttestation,
+            ...(runtimeAttestation ? { runtimeAttestation } : {}),
           }),
         },
       );
@@ -2272,150 +2318,6 @@ const fetchRuntimePolicyAdmission = async ({
   }
 
   throw lastError ?? new Error("Не удалось проверить политику модели Trelio.");
-};
-
-/**
- * Закрепляет current company policy за обычной задачей Codex/Claude Code.
- *
- * Первый защищённый PreToolUse одной client session фиксирует непустую company
- * binding. Поэтому onboarding может создать AGENTS.md и продолжить в той же
- * задаче, а последующая замена уже закреплённой компании не меняет policy.
- * Для Trelio MCP tool с явным companySlug точный target имеет приоритет над
- * project binding.
- */
-export const resolveOrdinaryRuntimePolicyAdmission = async ({
-  origin: rawOrigin = DEFAULT_ORIGIN,
-  sessionId = null,
-  clientFamily = "other",
-  observedBoundCompanySlug = null,
-  target: rawTarget = null,
-  runtimeAttestation,
-  stateFile = RUNTIME_POLICY_SESSION_FILE,
-  loadTokenCommand = loadToken,
-  requestCommand = request,
-  waitForRetry = wait,
-  now = new Date(),
-} = {}) => {
-  const origin = normalizeOrigin(rawOrigin);
-  const explicitTarget = normalizeRuntimePolicyTarget(rawTarget);
-  const normalizedBoundCompanySlug = normalizeRuntimePolicyTarget({
-    companySlug: observedBoundCompanySlug,
-  })?.companySlug ?? null;
-  const normalizedSessionId = typeof sessionId === "string"
-    && sessionId.length > 0
-    && sessionId.length <= 512
-    ? sessionId
-    : null;
-  let state = { schemaVersion: 1, sessions: {} };
-  let session = null;
-  let sessionKey = null;
-  let stateChanged = false;
-
-  if (normalizedSessionId) {
-    state = await readRuntimePolicySessionState(stateFile);
-    sessionKey = crypto
-      .createHash("sha256")
-      .update(`${clientFamily}\0${normalizedSessionId}`)
-      .digest("hex");
-    session = state.sessions[sessionKey];
-
-    if (!session || session.schemaVersion !== 1) {
-      const firstTarget = explicitTarget || normalizeRuntimePolicyTarget({
-        companySlug: normalizedBoundCompanySlug,
-      });
-      // Обычный unbound tool call не является защищённым действием Trelio и не
-      // должен навсегда закреплять пустую binding. После onboarding первый уже
-      // связанный вызов этой же задачи получит и зафиксирует company snapshot.
-      if (!firstTarget) {
-        return { status: "not_applicable" };
-      }
-      session = {
-        schemaVersion: 1,
-        clientFamily,
-        boundCompanySlug: normalizedBoundCompanySlug,
-        initializedAt: now.toISOString(),
-        admissions: {},
-      };
-      state.sessions[sessionKey] = session;
-      stateChanged = true;
-    } else if (!session.boundCompanySlug && normalizedBoundCompanySlug) {
-      // Exact scoped MCP admission мог появиться до записи project binding.
-      // Разрешаем заполнить только прежнее пустое поле и никогда не заменяем
-      // уже закреплённый company slug посреди client session.
-      session.boundCompanySlug = normalizedBoundCompanySlug;
-      state.sessions[sessionKey] = session;
-      stateChanged = true;
-    }
-  }
-
-  const target = explicitTarget || normalizeRuntimePolicyTarget({
-    companySlug: session ? session.boundCompanySlug : normalizedBoundCompanySlug,
-  });
-
-  if (!target) {
-    if (stateChanged) {
-      await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
-    }
-    return { status: "not_applicable" };
-  }
-
-  const cached = session?.admissions?.[target.key];
-  if (cached?.runtimePolicySnapshot) {
-    return {
-      status: "ready",
-      source: "session_cache",
-      company: cached.company,
-      runtimePolicySnapshot: normalizeRuntimePolicySnapshotFromAdmission(
-        cached.runtimePolicySnapshot,
-      ),
-    };
-  }
-
-  const token = await loadTokenCommand(origin);
-  if (!token) {
-    if (stateChanged) {
-      await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
-    }
-    return {
-      status: "bridge_login_required",
-      companySlug: target.companySlug ?? null,
-      companyId: target.companyId ?? null,
-    };
-  }
-
-  // Stable 1.10.2 выпускается только после backend admission endpoint.
-  // Поэтому authoritative 404 здесь снова является ошибкой deployment-а и не
-  // должен превращать защищённое действие в незаметный allow.
-  const admission = await fetchRuntimePolicyAdmission({
-    origin,
-    token,
-    target,
-    runtimeAttestation,
-    requestCommand,
-    waitForRetry,
-  });
-
-  if (session && sessionKey) {
-    const admissionEntries = Object.entries(session.admissions || {})
-      .filter(([key]) => key !== target.key)
-      .slice(-(MAX_RUNTIME_POLICY_COMPANIES_PER_SESSION - 1));
-    session.admissions = Object.fromEntries(admissionEntries);
-    session.admissions[target.key] = {
-      company: admission.company,
-      admittedAt: now.toISOString(),
-      runtimePolicySnapshot: admission.runtimePolicySnapshot,
-    };
-    state.sessions[sessionKey] = session;
-    await writePrivateJsonFile(stateFile, pruneRuntimePolicySessionState(state));
-  }
-
-  return {
-    status: "ready",
-    source: "server",
-    company: admission.company,
-    runtimePolicySnapshot: admission.runtimePolicySnapshot,
-    evaluation: admission.evaluation,
-  };
 };
 
 const saveCredential = async (origin, field, accessToken, keychainService) => {
@@ -4179,34 +4081,26 @@ const runMaterializedAgentSkill = async ({
   }
 };
 
-const assertOrdinaryRuntimePolicyForCompany = async ({ origin, token, companyId }) => {
-  const runtimeAttestation = await detectAgentRuntimeAttestation();
-  const sessionId = process.env.CODEX_THREAD_ID
-    || process.env.TRELIO_CLAUDE_SESSION_ID
-    || null;
-  const admission = await resolveOrdinaryRuntimePolicyAdmission({
+const assertOrdinaryRuntimePolicyForCompany = async ({
+  origin,
+  token,
+  companyId,
+  runtimeAttestation,
+}) => {
+  const target = normalizeRuntimePolicyTarget({ companyId });
+  if (!target) {
+    throw new Error("Некорректная company для проверки политики модели.");
+  }
+  const admission = await fetchRuntimePolicyAdmission({
     origin,
-    sessionId,
-    clientFamily: runtimeAttestation.clientFamily,
-    target: { companyId },
+    token,
+    target,
     runtimeAttestation,
-    // skill run уже доказал token через requireToken. Не читаем credential file
-    // второй раз и никогда не передаём сам token в argv/env дочернего runtime.
-    loadTokenCommand: async () => token,
   });
-
-  if (admission.status === "backend_unsupported") {
-    return;
+  const evaluation = admission.evaluation;
+  if (!evaluation) {
+    throw new Error("Trelio не вернул оценку политики модели для запуска навыка.");
   }
-
-  if (admission.status !== "ready") {
-    throw new Error("Не удалось получить политику модели для запуска навыка Trelio.");
-  }
-
-  const evaluation = evaluatePinnedRuntimePolicy(
-    admission.runtimePolicySnapshot,
-    runtimeAttestation,
-  );
   if (evaluation.enforced && !evaluation.satisfied) {
     throw new Error(
       `Trelio заблокировал запуск навыка политикой модели (${evaluation.reasonCode}). `
@@ -4260,6 +4154,7 @@ const skillCommand = async (
     : null;
   const releaseId = requireUuid(options.release, "release");
   const skillId = String(options.skill || "");
+  const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
 
   if (!SKILL_ID_PATTERN.test(skillId)) {
     throw new Error("Параметр --skill должен содержать lowercase kebab-case id.");
@@ -4267,7 +4162,12 @@ const skillCommand = async (
 
   const token = await requireToken(origin);
   await ensureBridgeCompatibility(origin, token);
-  await assertOrdinaryRuntimePolicyForCompany({ origin, token, companyId });
+  await assertOrdinaryRuntimePolicyForCompany({
+    origin,
+    token,
+    companyId,
+    runtimeAttestation,
+  });
   const response = await request(
     origin,
     token,
@@ -5652,10 +5552,10 @@ const openWorkspace = async (origin, options) => {
     automatic: true,
   }).catch(() => undefined);
   const workspaceId = requireUuid(options.workspace, "workspace");
-  // Claim/start принимает только локально наблюдаемую attestation официального
-  // bridge. Model/effort не берутся из аргументов агента, поэтому обычной
-  // строкой команды нельзя выдать запрещённую модель за разрешённую.
-  const runtimeAttestation = await detectAgentRuntimeAttestation();
+  // Exact open-команду строит MCP после server-side policy check. Bridge
+  // повторяет переданную агентом self-attestation при claim/start и никогда не
+  // подменяет её локальным чтением env, transcript или hook.
+  const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
   let runPayload;
   let runOverview = null;
 
@@ -5697,7 +5597,7 @@ const openWorkspace = async (origin, options) => {
           expectedFencingToken: existingRun.fencingToken,
           clientKind: "workspace-bridge",
           clientVersion: BRIDGE_VERSION,
-          runtimeAttestation,
+          ...(runtimeAttestation ? { runtimeAttestation } : {}),
           ...(activeAgentRules
             ? { platformRulesSha256: activeAgentRules.sha256 }
             : {}),
@@ -5721,7 +5621,7 @@ const openWorkspace = async (origin, options) => {
             body: JSON.stringify({
               clientKind: "workspace-bridge",
               clientVersion: BRIDGE_VERSION,
-              runtimeAttestation,
+              ...(runtimeAttestation ? { runtimeAttestation } : {}),
               ...(activeAgentRules
                 ? { platformRulesSha256: activeAgentRules.sha256 }
                 : {}),

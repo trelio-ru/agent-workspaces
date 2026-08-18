@@ -10,6 +10,14 @@ a disposable Trelio workspace run. Keep the binding durable in that folder's
 instruction file, but always read the current skill catalog and connection
 state from Trelio.
 
+For every non-recovery Trelio MCP call, include exact current
+`runtimeAttestation`. Codex/Claude Code use `source=agent_request`,
+`evidenceLevel=self_reported`, their real model/effort and a fresh ISO
+`observedAt`; rebuild it after a runtime change. Discovery ignores only the
+minimum effort, not a model deny. Pairing/session recovery is exempt so setup
+can be repaired. Do not infer runtime from plugin env or reuse another model's
+declaration.
+
 ## Confirm the working folder first
 
 1. Before inspecting or installing plugins, running a package manager, opening

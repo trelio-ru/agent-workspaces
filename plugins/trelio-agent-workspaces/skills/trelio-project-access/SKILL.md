@@ -9,6 +9,13 @@ Use only the dedicated Trelio MCP tools. This flow changes one active company
 member's direct membership in one project; it does not invite people to the
 company, edit groups, or perform bulk membership replacement.
 
+Include exact current `runtimeAttestation` in every Trelio MCP call in this
+flow: real Codex/Claude Code model and effort, `source=agent_request`,
+`evidenceLevel=self_reported`, and a fresh ISO `observedAt`. Discovery checks
+the model without minimum effort; instruction/context reads and both plan/apply
+steps enforce the full policy. Rebuild the declaration after any runtime
+change and never reuse another model's values.
+
 ## Check authority and connection
 
 1. Require callable Trelio MCP tools. If the tools are missing, ask the user to

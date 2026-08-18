@@ -66,18 +66,18 @@
 - Company/project rules, platform rules, личный профиль и checkpoint
   закрепляются за Run; новый publish не меняет активный Run.
 - Company model/reasoning policy действует во всей новой работе с Trelio.
-  Обычная связанная задача закрепляет immutable snapshot exact компании при
-  первом защищённом действии через read-only bridge admission; scoped Trelio
-  MCP-вызов вне привязки закрепляет snapshot указанной exact компании. Agent
-  Run использует свой server-pinned snapshot с приоритетом, а signed Agent
-  Skill проверяется до runtime. PreToolUse сравнивает фактические model/effort
-  локально без отдельной команды агента. Binding и snapshots хранятся в
-  приватном bridge state по hashed session key. Пустой unbound action ничего
-  не закрепляет, поэтому созданная onboarding-ом binding включается в той же
-  задаче; уже закреплённую company binding последующая правка AGENTS не меняет.
-  Без bridge-session защищённое действие fail-closed,
-  кроме exact login/doctor/pairing recovery. Unbound generic work и discovery
-  без exact company не получают произвольную policy.
+  Каждый non-recovery MCP request несёт self-reported `runtimeAttestation`
+  exact текущего client/model/effort; backend разрешает фактический объект в
+  company и применяет её current revision. Discovery allowlist проверяет
+  модель без minimum effort, context reads/mutations/Agent Workspace – оба
+  ограничения; новый неизвестный read считается context, write – mutation.
+  Agent Run закрепляет snapshot и initiating attestation, а exact bridge open
+  command повторяет её явными `--runtime-*` аргументами. Signed Agent Skill
+  получает те же аргументы и server admission до runtime. Plugin не определяет
+  модель через env, transcript или `PreToolUse`; hook остаётся только для
+  несвязанного SessionStart reminder. Login/doctor/pairing recovery не
+  блокируются. Это cooperative self-report, а не platform attestation;
+  `local_observed` разрешён только для продолжения уже закреплённого legacy Run.
 - Новые material Agent Workspace и Run допускаются только для `task` и
   `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
   task/dossier связи читаются первыми, остальной контекст ищется каноническим

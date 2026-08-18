@@ -7,6 +7,14 @@ description: Discover and load current agent skills enabled by Trelio companies 
 
 Trelio skills are live, additive instructions supplied by a company or a project. They coexist with personal skills already installed by the user. A missing or disabled Trelio assignment means only that Trelio does not provide the skill in that context; it is not a company prohibition.
 
+Every non-recovery Trelio MCP call must include exact current
+`runtimeAttestation`. Codex/Claude Code report their real model and effort with
+`source=agent_request`, `evidenceLevel=self_reported`, and a fresh ISO
+`observedAt`. Catalog discovery checks whether the model is allowed but ignores
+minimum effort; `get_agent_skill` is a protected context read and checks both.
+Rebuild the declaration after a runtime change and never copy another model's
+values.
+
 ## Separate operational use from source maintenance
 
 The catalog gate governs operational use of a connected service on behalf of a

@@ -1,19 +1,7 @@
 {
-  "description": "Напоминает один раз назвать новую задачу Codex и проверяет закреплённую company policy модели и reasoning effort во всей работе с Trelio.",
+  "description": "Один раз напоминает назвать новую задачу Codex. Политика модели проверяется backend-ом Trelio по self-attestation каждого MCP-запроса, а не локальным hook.",
   "hooks": {
     "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-policy.mjs\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
       {
         "matcher": "*",
         "hooks": [

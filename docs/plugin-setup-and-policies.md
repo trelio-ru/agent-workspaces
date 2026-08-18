@@ -166,18 +166,18 @@ Claude обновляет marketplace своим plugin manager. После ус
 ## Политика моделей
 
 Компания может закрепить допустимые client/model/reasoning effort для всей
-новой работы с Trelio, включая обычные задачи без Agent Run. Bridge сообщает
-только локально наблюдаемые значения; это `local_observed`, не
-криптографическая аттестация платформы.
+работы с Trelio, включая обычные задачи без Agent Run. Каждый non-recovery MCP
+request содержит self-reported `runtimeAttestation` current model/effort, а
+backend применяет policy фактической company. Discovery проверяет разрешённость
+модели без minimum effort; context, mutation и Agent Workspace требуют оба
+ограничения.
 
-В связанном проекте policy определяется по Trelio-блоку `AGENTS.md`, вне него –
-по exact company в scoped Trelio MCP-вызове. Обычная задача закрепляет snapshot
-при первом защищённом действии, Agent Run – при запуске; затем локальный
-`PreToolUse` guard Codex/Claude Code повторно проверяет текущую model/effort.
-Отдельная команда агента не нужна. Неизвестные модели и клиенты, включая среду
-без надёжных model+effort данных, управляются отдельным allow/deny правилом.
-Нельзя обходить guard редактированием `.trelio-run.json`, приватного admission
-state, hook или client metadata.
+Agent Run закрепляет snapshot и initiating declaration; exact open command
+передаёт её bridge в `--runtime-*`. Plugin не читает модель из env/transcript и
+не регистрирует `PreToolUse` guard. Неизвестные модели и клиенты управляются
+отдельными allow/deny правилами. Это cooperative `self_reported`, не
+криптографическая аттестация. Нельзя копировать attestation другой модели или
+редактировать `.trelio-run.json` для обхода.
 
 ## Правила компании, проекта и пользователя
 
