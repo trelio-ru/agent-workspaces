@@ -55,6 +55,14 @@ def company_config(**overrides: object) -> dict[str, object]:
     }
 
 
+def request_target_bytes(url: str) -> int:
+    """Measure the ASCII request target independently from runtime batching."""
+
+    parsed = MODULE.urllib.parse.urlsplit(url)
+    target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    return len(target.encode("utf-8"))
+
+
 class FakeResponse:
     def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
         self._stream = io.BytesIO(body)
@@ -103,7 +111,7 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         return identity, config, credentials
 
     def test_browser_connect_release_and_cli_contract(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.17")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.18")
 
         default_args = MODULE.build_parser().parse_args(["connect"])
         terminal_args = MODULE.build_parser().parse_args(
@@ -1245,11 +1253,25 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             [(2, 0), (2, 2)],
         )
 
-    def test_status_register_batches_are_fixed_bounded_and_percent_encoded(
+    def test_status_register_batches_fit_request_target_and_survive_proxy_limit(
         self,
     ) -> None:
-        """Status fan-out must stay bounded even for a large search result."""
+        """Status fan-out must not reproduce the live proxy's misleading 404.
 
+        The production failure appeared only when a broad result filled the
+        old 20-UUID batch. 1C still returned statuses for narrow requests, so
+        this fake transport deliberately behaves like that boundary: it
+        rejects an oversized HTTP request line with 404 and accepts the exact
+        same fixed query after safe batching.
+        """
+
+        os.environ["TRELIO_SKILL_CONNECTION_CONFIG_JSON"] = json.dumps(
+            company_config(
+                odataBaseUrl=(
+                    "https://cloud.itprogress.ru/taste/odata/standard.odata/"
+                ),
+            ),
+        )
         _, config, credentials = self.store_connected_credentials()
         document_ids = [str(__import__("uuid").uuid4()) for _ in range(21)]
         documents = {
@@ -1262,7 +1284,8 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             }
             for document_id in document_ids
         }
-        requests: list[dict[str, object]] = []
+        requests: list[tuple[dict[str, object], int]] = []
+        proxy_request_line_limit = 2_048
 
         def fake_request(
             request_config,
@@ -1275,8 +1298,17 @@ class OneCEdoRuntimeTest(unittest.TestCase):
             self.assertEqual(entity, MODULE.STATUS_REGISTER_ENTITY)
             self.assertEqual(diagnostic_stage, "status.incoming.lookup")
             query = dict(parameters)
-            requests.append(query)
             url = MODULE._odata_url(request_config, entity, parameters)
+            target_bytes = request_target_bytes(url)
+            request_line_bytes = target_bytes + len("GET  HTTP/1.1\r\n")
+            if request_line_bytes > proxy_request_line_limit:
+                raise MODULE.NetworkError(
+                    "http_error",
+                    "1С отклонила фиксированный запрос: HTTP 404.",
+                    diagnostic_stage=diagnostic_stage,
+                    http_status=404,
+                )
+            requests.append((query, target_bytes))
             self.assertIn("%20eq%20cast", url)
             self.assertNotIn("+", url)
             requested_ids = re.findall(r"guid'([0-9a-f-]+)'", str(query["$filter"]))
@@ -1296,18 +1328,137 @@ class OneCEdoRuntimeTest(unittest.TestCase):
         with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
             MODULE._attach_register_statuses(config, credentials, documents)
 
-        self.assertEqual([request["$top"] for request in requests], [20, 1])
+        self.assertGreater(len(requests), 2)
+        requested_ids = [
+            document_id
+            for request, _target_bytes in requests
+            for document_id in re.findall(
+                r"guid'([0-9a-f-]+)'",
+                str(request["$filter"]),
+            )
+        ]
+        self.assertEqual(sorted(requested_ids), sorted(document_ids))
+        self.assertTrue(
+            all(
+                target_bytes <= MODULE.MAX_ODATA_REQUEST_TARGET_BYTES
+                for _request, target_bytes in requests
+            ),
+        )
         self.assertTrue(
             all(
                 str(request["$select"])
                 == "ЭлектронныйДокумент,ЭлектронныйДокумент_Type,Состояние"
-                for request in requests
+                for request, _target_bytes in requests
             ),
         )
         self.assertTrue(
             all(
                 entry["document"]["statusAvailability"]["available"]
                 for entry in documents.values()
+            ),
+        )
+
+    def test_file_document_batches_fit_request_target_and_survive_proxy_limit(
+        self,
+    ) -> None:
+        """Filename search must split its exact document fan-out before 404."""
+
+        os.environ["TRELIO_SKILL_CONNECTION_CONFIG_JSON"] = json.dumps(
+            company_config(
+                odataBaseUrl=(
+                    "https://cloud.itprogress.ru/taste/odata/standard.odata/"
+                ),
+            ),
+        )
+        _, config, credentials = self.store_connected_credentials()
+        document_ids = [str(__import__("uuid").uuid4()) for _ in range(21)]
+        candidates = {
+            ("incoming", document_id): [
+                {
+                    "scheme": "new",
+                    "file": {"Ref_Key": str(__import__("uuid").uuid4())},
+                },
+            ]
+            for document_id in document_ids
+        }
+        criteria = MODULE.SearchCriteria(
+            term="",
+            exact=False,
+            received_range=None,
+            document_date_range=None,
+            counterparty_name="",
+            counterparty_ids=(),
+            contract_id=None,
+            contract_number="",
+            organization_id=None,
+            document_number="",
+        )
+        requests: list[tuple[dict[str, object], int]] = []
+        proxy_request_line_limit = 2_048
+
+        def fake_request(
+            request_config,
+            _credentials,
+            entity,
+            parameters=(),
+            *,
+            diagnostic_stage,
+        ):
+            self.assertEqual(
+                entity,
+                MODULE.DOCUMENT_ENTITIES["incoming"],
+            )
+            self.assertEqual(
+                diagnostic_stage,
+                "search.files.incoming.documents",
+            )
+            query = dict(parameters)
+            url = MODULE._odata_url(request_config, entity, parameters)
+            target_bytes = request_target_bytes(url)
+            request_line_bytes = target_bytes + len("GET  HTTP/1.1\r\n")
+            if request_line_bytes > proxy_request_line_limit:
+                raise MODULE.NetworkError(
+                    "http_error",
+                    "1С отклонила фиксированный запрос: HTTP 404.",
+                    diagnostic_stage=diagnostic_stage,
+                    http_status=404,
+                )
+            requests.append((query, target_bytes))
+            requested_ids = re.findall(
+                r"guid'([0-9a-f-]+)'",
+                str(query["$filter"]),
+            )
+            return {
+                "value": [
+                    {"Ref_Key": document_id}
+                    for document_id in requested_ids
+                ],
+            }
+
+        with mock.patch.object(MODULE, "_request_odata", side_effect=fake_request):
+            documents = MODULE._fetch_candidate_documents(
+                config,
+                credentials,
+                candidates,
+                criteria,
+                contract_ids=(),
+            )
+
+        self.assertEqual(len(documents), len(document_ids))
+        self.assertGreater(len(requests), 1)
+        requested_ids = [
+            document_id
+            for request, _target_bytes in requests
+            for document_id in re.findall(
+                r"guid'([0-9a-f-]+)'",
+                str(request["$filter"]),
+            )
+        ]
+        self.assertEqual(sorted(requested_ids), sorted(document_ids))
+        self.assertTrue(
+            all(
+                target_bytes <= MODULE.MAX_ODATA_REQUEST_TARGET_BYTES
+                for _request, target_bytes in requests
             ),
         )
 

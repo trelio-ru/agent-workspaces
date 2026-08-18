@@ -44,11 +44,11 @@ import uuid
 import webbrowser
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
 
 
 SKILL_ID = "1c-edo"
-RUNTIME_VERSION = "1.0.17"
+RUNTIME_VERSION = "1.0.18"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -199,6 +199,12 @@ MAX_FILE_SEARCH_DOCUMENTS = 100
 REFERENCE_LOOKUP_BATCH_SIZE = 20
 MAX_STATUS_LOOKUP_DOCUMENTS = MAX_SEARCH_DOCUMENTS
 STATUS_LOOKUP_BATCH_SIZE = 20
+# A live 1C publication accepted the same fixed lookups for narrow batches but
+# returned HTTP 404 once a percent-encoded OR filter approached an 8 KiB
+# request line. Keep the encoded path and query below a conservative 2 KiB
+# boundary instead of relying on a proxy-specific 414/431 response. The count
+# limits above remain an independent fan-out guard.
+MAX_ODATA_REQUEST_TARGET_BYTES = 2_000
 DIAGNOSTIC_STAGES = frozenset(
     {
         "connect.probe",
@@ -1271,6 +1277,94 @@ def _odata_url(
     return f"{url}?{query}" if query else url
 
 
+def _odata_request_target_bytes(url: str) -> int:
+    """Return byte length of the encoded HTTP path and query.
+
+    HTTP intermediaries enforce their request-line limit against the request
+    target, not the absolute URL used locally by ``urllib``. `_odata_url`
+    percent-encodes runtime-generated OData syntax first, so measuring this
+    final target also accounts for Cyrillic field/entity names and the exact
+    configured base path without exposing either value in diagnostics.
+    """
+
+    parsed = urllib.parse.urlsplit(url)
+    request_target = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    return len(request_target.encode("utf-8"))
+
+
+def _iter_odata_request_batches(
+    config: CompanyConfig,
+    entity: str,
+    values: Iterable[str],
+    *,
+    max_items: int,
+    parameter_factory: Callable[
+        [tuple[str, ...]],
+        Iterable[tuple[str, str | int]],
+    ],
+) -> Iterator[
+    tuple[
+        tuple[str, ...],
+        tuple[tuple[str, str | int], ...],
+    ]
+]:
+    """Yield exact batches bounded by item count and encoded target bytes.
+
+    The factory is internal and produces only fixed allowlisted parameters.
+    Parameters are returned together with the batch that was measured, so the
+    caller cannot accidentally send a different, longer query after the size
+    check. A single item that cannot fit fails closed instead of leaking its
+    URL or retrying a misleading HTTP 404.
+    """
+
+    if max_items < 1:
+        raise OneCEdoError(
+            "query_builder_error",
+            "Внутренний OData batch получил некорректный лимит.",
+        )
+
+    batch: tuple[str, ...] = ()
+    batch_parameters: tuple[tuple[str, str | int], ...] = ()
+    for value in values:
+        candidate = (*batch, value)
+        candidate_parameters: tuple[tuple[str, str | int], ...] | None = None
+        candidate_fits = len(candidate) <= max_items
+        if candidate_fits:
+            candidate_parameters = tuple(parameter_factory(candidate))
+            candidate_url = _odata_url(config, entity, candidate_parameters)
+            candidate_fits = (
+                _odata_request_target_bytes(candidate_url)
+                <= MAX_ODATA_REQUEST_TARGET_BYTES
+            )
+
+        if candidate_fits and candidate_parameters is not None:
+            batch = candidate
+            batch_parameters = candidate_parameters
+            continue
+
+        if not batch:
+            raise OneCEdoError(
+                "query_builder_error",
+                "Фиксированный OData-запрос не помещается в безопасный лимит.",
+            )
+        yield batch, batch_parameters
+
+        batch = (value,)
+        batch_parameters = tuple(parameter_factory(batch))
+        single_url = _odata_url(config, entity, batch_parameters)
+        if (
+            _odata_request_target_bytes(single_url)
+            > MAX_ODATA_REQUEST_TARGET_BYTES
+        ):
+            raise OneCEdoError(
+                "query_builder_error",
+                "Фиксированный OData-запрос не помещается в безопасный лимит.",
+            )
+
+    if batch:
+        yield batch, batch_parameters
+
+
 def _file_url(config: CompanyConfig, scheme: str, file_id: str) -> str:
     metadata = FILE_METADATA.get(scheme)
     if metadata is None:
@@ -1747,18 +1841,29 @@ def _attach_register_statuses(
             for candidate_direction, document_id in documents
             if candidate_direction == direction
         )
-        for start in range(0, len(direction_ids), STATUS_LOOKUP_BATCH_SIZE):
-            batch = direction_ids[start : start + STATUS_LOOKUP_BATCH_SIZE]
+        for batch, parameters in _iter_odata_request_batches(
+            config,
+            STATUS_REGISTER_ENTITY,
+            direction_ids,
+            max_items=STATUS_LOOKUP_BATCH_SIZE,
+            parameter_factory=lambda document_ids, document_entity=entity: (
+                (
+                    "$select",
+                    _selected_fields(STATUS_REGISTER_SELECT_FIELDS),
+                ),
+                (
+                    "$filter",
+                    _status_reference_filter(document_ids, document_entity),
+                ),
+                ("$top", len(document_ids)),
+            ),
+        ):
             expected = {(direction, document_id) for document_id in batch}
             payload = _request_odata(
                 config,
                 credentials,
                 STATUS_REGISTER_ENTITY,
-                (
-                    ("$select", _selected_fields(STATUS_REGISTER_SELECT_FIELDS)),
-                    ("$filter", _status_reference_filter(batch, entity)),
-                    ("$top", len(batch)),
-                ),
+                parameters,
                 diagnostic_stage=f"status.{direction}.lookup",
             )
             seen: set[tuple[str, str]] = set()
@@ -3259,18 +3364,23 @@ def _append_old_file_candidates(
         )
 
     message_ids = sorted(files_by_message)
-    for start in range(0, len(message_ids), REFERENCE_LOOKUP_BATCH_SIZE):
-        batch = message_ids[start : start + REFERENCE_LOOKUP_BATCH_SIZE]
+    for batch, parameters in _iter_odata_request_batches(
+        config,
+        OLD_MESSAGE_ENTITY,
+        message_ids,
+        max_items=REFERENCE_LOOKUP_BATCH_SIZE,
+        parameter_factory=lambda reference_ids: (
+            ("$select", _selected_fields(OLD_MESSAGE_SELECT_FIELDS)),
+            ("$filter", _guid_alternatives("Ref_Key", reference_ids)),
+            ("$top", len(reference_ids)),
+        ),
+    ):
         expected = set(batch)
         payload = _request_odata(
             config,
             credentials,
             OLD_MESSAGE_ENTITY,
-            (
-                ("$select", _selected_fields(OLD_MESSAGE_SELECT_FIELDS)),
-                ("$filter", _guid_alternatives("Ref_Key", batch)),
-                ("$top", len(batch)),
-            ),
+            parameters,
             diagnostic_stage="search.files.old.messages",
         )
         seen: set[str] = set()
@@ -3312,33 +3422,50 @@ def _fetch_candidate_documents(
     """Fetch only candidate document UUIDs and apply all structured filters."""
 
     documents: dict[tuple[str, str], dict[str, Any]] = {}
+    # The size-aware batch builder evaluates candidate parameters more than
+    # once while growing a batch. Materialize this bounded iterable so a
+    # one-shot caller cannot silently lose contract filters after the first
+    # measurement.
+    normalized_contract_ids = tuple(contract_ids)
     for direction, entity in DOCUMENT_ENTITIES.items():
         direction_ids = sorted(
             document_id
             for candidate_direction, document_id in candidates
             if candidate_direction == direction
         )
-        for start in range(0, len(direction_ids), REFERENCE_LOOKUP_BATCH_SIZE):
-            batch = direction_ids[start : start + REFERENCE_LOOKUP_BATCH_SIZE]
-            expected = set(batch)
+        def document_parameters(
+            reference_ids: tuple[str, ...],
+        ) -> tuple[tuple[str, str | int], ...]:
+            """Build the exact document request measured for this batch."""
+
             document_filter = _combine_filter_clauses(
                 (
-                    _guid_alternatives("Ref_Key", batch),
+                    _guid_alternatives("Ref_Key", reference_ids),
                     *_document_filter_clauses(
                         criteria,
-                        contract_ids=contract_ids,
+                        contract_ids=normalized_contract_ids,
                     ),
                 ),
             )
+            return (
+                ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
+                ("$filter", document_filter),
+                ("$top", len(reference_ids)),
+            )
+
+        for batch, parameters in _iter_odata_request_batches(
+            config,
+            entity,
+            direction_ids,
+            max_items=REFERENCE_LOOKUP_BATCH_SIZE,
+            parameter_factory=document_parameters,
+        ):
+            expected = set(batch)
             payload = _request_odata(
                 config,
                 credentials,
                 entity,
-                (
-                    ("$select", _selected_fields(DOCUMENT_SELECT_FIELDS)),
-                    ("$filter", document_filter),
-                    ("$top", len(batch)),
-                ),
+                parameters,
                 diagnostic_stage=f"search.files.{direction}.documents",
             )
             seen: set[str] = set()

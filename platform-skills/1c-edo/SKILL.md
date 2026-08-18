@@ -88,6 +88,12 @@ honors a valid `Retry-After`, otherwise uses bounded exponential backoff with
 jitter, and performs at most two retries with at most 30 seconds of total
 waiting. Never wrap a failed command in an additional automatic retry loop.
 
+Wide exact reference and status lookups are also split by both item count and
+the final percent-encoded HTTP request-target size. Do not manually narrow a
+valid business query merely to work around a proxy's URL limit. If a bounded
+request still receives an HTTP rejection, report its fixed diagnostic stage
+and status normally; do not reinterpret it as an empty result.
+
 ## Read documents and files
 
 Use these runtime commands:
