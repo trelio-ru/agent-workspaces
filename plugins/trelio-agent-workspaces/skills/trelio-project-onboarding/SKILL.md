@@ -1,27 +1,58 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in the current Codex project, create or safely extend its durable AGENTS.md company/project binding, verify OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog, and guide selected company or personal connections without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio for a project, when a project needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in one durable local working folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog, and guide selected company or personal connections without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
 ---
 
-# Trelio Project Onboarding
+# Trelio Working-Folder Onboarding
 
-Set up one local Codex project without starting a disposable Trelio workspace
-run. Keep the project binding durable in the local instruction file, but always
-read the current skill catalog and connection state from Trelio.
+Set up one durable local working folder in Codex or Claude Code without starting
+a disposable Trelio workspace run. Keep the binding durable in that folder's
+instruction file, but always read the current skill catalog and connection
+state from Trelio.
+
+## Confirm the working folder first
+
+1. Before inspecting or installing plugins, running a package manager, opening
+   OAuth, calling Trelio, or making any other setup change, resolve one existing
+   writable folder from client-owned project context:
+   - In Codex, require a local project with an accessible primary folder
+     supplied by the host. A default process working directory in a projectless
+     task is not evidence of a selected folder.
+   - In Claude Code, require the stable project root supplied as
+     `CLAUDE_PROJECT_DIR`, an equivalent MCP root, or the directory from which
+     the user launched `claude`. Do not substitute another shell directory after
+     the session started.
+   The folder may be empty and does not need to be a Git repository.
+2. Treat the selected folder itself as the binding root. A Git root may confirm
+   it, but never climb above the client-selected root or redirect the binding to
+   home, a temporary directory, plugin cache, client-internal storage, or the
+   nearest convenient repository. A nearby `.trelio-run.json` or protected
+   managed-workspace `AGENTS.md` means this is a materialized Trelio Agent
+   Workspace, not an onboarding target.
+3. If no unambiguous durable folder is available, stop before every setup side
+   effect and do not create an arbitrary folder for the user. Say
+   `Рабочая папка не найдена. Настройка не начата.` Then give one client-specific
+   recovery action: in Codex, open a local project with a primary folder and
+   repeat the request in a new task in that project; in Claude Code, open a
+   terminal in the intended folder, run `claude`, and repeat the request in that
+   new session.
 
 ## Check prerequisites
 
 1. Require callable Trelio MCP tools, not only this skill text. If tools are
    missing, diagnose the two independent prerequisites once in the current
    task before considering another task:
-   - Inspect `codex mcp list --json` to distinguish an unavailable or
-     unauthenticated `trelio` HTTP server from the local
-     `trelio-remote-skills` server. The plugin version alone does not prove
-     that either server is ready. In particular, `auth_status: "o_auth"`
-     identifies the configured authentication scheme; it does not prove that
-     the current Codex process attached a bearer. A failed live Trelio read
-     that explicitly reports HTTP 401 or a required/missing bearer is an OAuth
-     failure even when this status still says `o_auth`.
+   - Resolve the actual client from host-owned context; `CLAUDE_PLUGIN_ROOT`
+     alone does not prove Claude Code. In Codex, inspect
+     `codex mcp list --json` to distinguish an unavailable or unauthenticated
+     `trelio` HTTP server from the local `trelio-remote-skills` server. In
+     Claude Code, inspect `claude mcp list`; never run `codex` diagnostics or
+     login commands there. The plugin version alone does not prove that either
+     server is ready. In particular, Codex `auth_status: "o_auth"` identifies
+     the configured authentication scheme; it does not prove that the current
+     process attached a bearer. A failed live Trelio read that explicitly
+     reports HTTP 401 or a required/missing bearer is an OAuth failure even
+     when this status still says `o_auth`.
    - Resolve Node.js without intentionally executing a missing command. On
      native Windows, run this loaded plugin's bundled
      `../../scripts/resolve-node.ps1`; it checks the current process, durable
@@ -38,25 +69,32 @@ read the current skill catalog and connection state from Trelio.
      proves `init → add → commit` in a temporary repository. If Git needs installation
      or upgrade, follow **Connect the local component** immediately. A Git
      problem does not prove that Trelio OAuth is invalid.
-   - If the remote `trelio` server needs authentication and the ON_INSTALL
-     OAuth window is already open, let the user finish that one window. If it
-     is not open, immediately run `codex mcp login trelio` and wait for it.
+   - If the remote `trelio` server needs authentication and an OAuth window is
+     already open, let the user finish that one window. If it is not open,
+     immediately run the exact client command and wait for it: in Codex use
+     `codex mcp login trelio`; in Claude Code use
+     `claude mcp login trelio`, or direct the user to `/mcp` and the exact
+     `trelio` server when the installed Claude Code version does not expose the
+     CLI login command.
      The authorization URL itself redirects an unauthenticated user through
      Trelio login and back to consent. Never open the Trelio site as a
      preparatory login, use Computer Use to enter credentials, or ask the user
      to report that login finished before starting OAuth. The user personally
      completes login and consent in the single browser flow.
-   - After OAuth, refresh `codex mcp list --json` and retry one low-risk Trelio
-     read in this same task. Continue onboarding here as soon as the tools are
-     callable. Ask for a new task only when that live retry proves the current
-     task still has no refreshed tools; do not assume a static tool list. If
-     that retry still explicitly lacks a bearer after the user completed this
-     one OAuth flow, do not start another login loop: an already-open Codex
-     process may not have adopted the refreshed credential. Continue from a
-     fresh task/process and preserve the successful authorization.
-   Require a full Codex restart only when a live current-task retry and then a
-   new task still lack the tools or report the old plugin version. If the
-   marketplace itself is missing, run
+   - After OAuth, refresh the same client's MCP status and retry one low-risk
+     Trelio read in this same task. Continue onboarding here as soon as the
+     tools are callable. Ask for a new task or Claude session in the same
+     working folder only when that live retry proves the current process still
+     has no refreshed tools; do not assume a static tool list. If that retry
+     still explicitly lacks a bearer after the user completed this one OAuth
+     flow, do not start another login loop: the already-open client process may
+     not have adopted the refreshed credential. Preserve the successful
+     authorization.
+   Require a full app restart only when a live current-process retry and then a
+   new task/session in the same folder still lack the tools or report the old
+   plugin version. In Claude Code, run `/reload-plugins` before creating the new
+   session when the plugin was installed or updated during the current one. In
+   Codex, if the marketplace itself is missing, run
    `codex plugin marketplace add trelio-ru/agent-workspaces`. Then inspect
    `codex plugin list --json`: a listed marketplace is not proof that its
    plugin is installed. If `trelio-agent-workspaces@trelio-plugins` is not
@@ -64,26 +102,21 @@ read the current skill catalog and connection state from Trelio.
    `codex plugin add trelio-agent-workspaces@trelio-plugins`. Treat
    `INSTALLED_BY_DEFAULT` only as a host optimization, never as a reason to
    skip this live installation check.
-2. Resolve the current local project root from the active workspace. Prefer
-   the Git root when the project is a repository. Do not place this binding
-   inside a materialized Trelio Agent Workspace: a nearby `.trelio-run.json`
-   or the protected managed-workspace `AGENTS.md` means the user must return to
-   their ordinary Codex project first.
-3. Resolve the exact company. Reuse an explicit company slug from current
+2. Resolve the exact company. Reuse an explicit company slug from current
    instructions or the user's request; otherwise call `list_companies`.
    Automatically continue only when one accessible company or one exact match
    remains. Ask the user to choose when several companies are plausible.
-4. Bind a project slug only when the user wants this whole Codex project
-   restricted to one Trelio project. A company-wide Codex project must not
+3. Bind a project slug only when the user wants this whole working folder
+   restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
-5. Call `get_agent_instructions` for the resolved company and optional project
+4. Call `get_agent_instructions` for the resolved company and optional project
    before making substantive setup changes. Follow the effective working rules
    and authenticated user's personal profile without copying either into the
-   local project binding.
+   local working-folder binding.
 
 ## Create or extend the local instruction file
 
-Read the project-root instruction files before writing:
+Read the selected working-folder instruction files before writing:
 
 - If `AGENTS.override.md` exists at the same root, explain that it shadows
   `AGENTS.md` and ask whether to update the override or remove/rename it. Do not
@@ -92,8 +125,8 @@ Read the project-root instruction files before writing:
 - Never replace unrelated existing instructions. If the managed markers
   already exist, update only their complete block. Otherwise append the block
   after a blank line or create a new file.
-- Show the exact proposed block or concise diff before the write. Selecting
-  the starter prompt and choosing the company authorizes this expected,
+- Show the exact proposed block or concise diff before the write. Invoking
+  onboarding and choosing the company authorizes this expected,
   reversible local edit; do not add a second ceremonial confirmation unless
   the target file or scope is ambiguous.
 
@@ -103,7 +136,7 @@ Use this block, substituting the verified display name and slug:
 <!-- trelio-agent-workspaces:start -->
 ## Контекст Trelio
 
-Этот Codex-проект связан с компанией Trelio «Компания» (`company-slug`).
+Эта рабочая папка связана с компанией Trelio «Компания» (`company-slug`).
 
 Для запросов, относящихся к Trelio, используй расширение Trelio Agent
 Workspaces. Актуальные правила выбора и ведения рабочего пространства получай
@@ -131,7 +164,7 @@ executable exists. On native Windows use the bundled
 `../../scripts/resolve-node.ps1` diagnostic. If it returns `ready` with
 `processPathReady=false`, Node is already installed: use its absolute
 `nodePath` for the bundled bridge in this task. Do not reinstall Node, repeat
-restart advice, or block remote Trelio OAuth merely because the current Codex
+restart advice, or block remote Trelio OAuth merely because the current client
 process has a stale PATH. The plugin's `trelio-remote-skills` stdio server may
 still need one later app restart, but mention that only when a skill selected
 by the user actually returns `remoteMcpExecution` and the server is unavailable.
@@ -152,7 +185,7 @@ concise explicit confirmation before running its package manager command and
 let the client apply its normal command approval. Never install Node.js
 silently. Afterward, rerun the resolver and verify the exact version. Use the
 absolute executable immediately for the bundled bridge. Ask for one full app
-restart only if a selected `remoteMcpExecution` skill needs the Codex-managed
+restart only if a selected `remoteMcpExecution` skill needs the client-managed
 local MCP server and that server still cannot start. If the user says they
 already restarted, do not repeat the same advice: compare the process PATH with
 the durable machine/user PATH and report one exact environment repair or a
@@ -161,7 +194,7 @@ bounded unsupported-client blocker.
 After compatible Node.js is available, run the bundled
 `trelio-workspace.mjs doctor --json` before pairing. When it returns `ready`,
 continue through the bundled bridge; the bridge will use `git.gitPath` by
-absolute path. `processPathReady=false` is not a reason to restart Codex.
+absolute path. `processPathReady=false` is not a reason to restart the app.
 Doctor validates a real external Git executable and a temporary
 `init → add → commit`, not the private Git that Codex may use to download a
 marketplace.
@@ -182,11 +215,11 @@ installer window; never bypass or click that approval for the user.
   returned official `https://git-scm.com/download/win` installer page
   immediately, let the user finish the signed installer, and rerun doctor.
 
-After installation, rerun doctor in the same task and continue as soon as it
-returns `ready`. A newly installed Git found in Program Files, Homebrew, or
-durable Windows PATH is used by absolute path immediately; do not require an
-app restart. Do not retry an installer whose result is ambiguous until doctor
-has checked whether Git is already ready.
+After installation, rerun doctor in the same task/session and continue as soon
+as it returns `ready`. A newly installed Git found in Program Files, Homebrew,
+or durable Windows PATH is used by absolute path immediately; do not require
+an app restart. Do not retry an installer whose result is ambiguous until
+doctor has checked whether Git is already ready.
 
 Run `trelio-workspace login` through the logical launcher of this installed
 plugin. Resolve it without executing a failing probe: use the PATH command when
@@ -204,7 +237,7 @@ cancel a disposable result merely to test the connection.
 ## Offer the live Trelio skills
 
 1. Call `list_agent_skills` once for the exact effective scope. Use only
-   `companySlug` for a company-wide Codex project; include `projectSlug` for a
+   `companySlug` for a company-wide working folder; include `projectSlug` for a
    deliberately project-bound setup. Do not scan every visible project to
    collect strict project-only skills. The company-wide response already
    includes every portable project assignment granted through the current
@@ -229,10 +262,11 @@ cancel a disposable result merely to test the connection.
      their administrator blockers or reuse config, Agent Secret, connection id
      or personal local credentials from another 1C skill.
    - If `minPluginVersion` or the runtime host requires a newer plugin, stop
-     setup for that item and let the bridge attempt its quiet official Codex
-     update first. Continue in the same task after successful re-dispatch;
-     otherwise use a new task, and require a full restart only if the new task
-     still sees the old version.
+     setup for that item. In Codex, let the bridge attempt its quiet official
+     update first and continue in the same task after successful re-dispatch.
+     In Claude Code, use its plugin manager and `/reload-plugins`. Otherwise
+     use a new task/session in the same folder, and require a full restart only
+     if that fresh process still sees the old version.
 4. Briefly ask which available skills the user wants to configure. Do not
    connect everything automatically. In a company-wide setup, include
    portable `project_membership` skills returned by the catalog in this first
@@ -270,14 +304,14 @@ cancel a disposable result merely to test the connection.
 
 Summarize:
 
-1. the company and optional project bound to the local Codex project;
+1. the working folder and its bound company and optional Trelio project;
 2. whether the local component is connected;
 3. each offered skill as ready, awaiting personal setup, or
    `требуется настройка администратором компании`;
 4. the exact next action for every incomplete item.
 
 If `AGENTS.md` or `AGENTS.override.md` changed, tell the user that future tasks
-will load the binding automatically and that a new task is required for the
-new instruction file to become active. The current onboarding task may still
-finish connection checks because this skill already carries the explicit
-setup scope.
+or Claude sessions opened in this folder will use the binding automatically
+and that a new task/session is required for the instruction file to become
+active. The current onboarding process may still finish connection checks
+because this skill already carries the explicit setup scope.

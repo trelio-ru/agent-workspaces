@@ -6,9 +6,16 @@
 - OAuth и pairing
 - Version gate и self-update
 - Model/runtime policy
-- Project onboarding skill
+- Working-folder onboarding skill
 
 ## Codex onboarding
+
+До marketplace, package manager, OAuth и любого другого setup side effect
+onboarding требует host-owned local project root с доступной основной папкой.
+Пустая папка допустима, Git-репозиторий необязателен. Projectless task и один
+process cwd без host-owned workspace evidence не подходят: onboarding
+останавливается с понятным recovery, а пользователь открывает локальный проект
+и повторяет запрос в новой задаче этого проекта.
 
 Marketplace добавляется без `--ref`, после чего clean-install flow всегда
 выполняет `codex plugin add trelio-agent-workspaces@trelio-plugins`. Codex CLI
@@ -23,11 +30,12 @@ fallback.
 После install/OAuth onboarding сначала обновляет status и повторяет безопасный
 read `get_my_context`/`get_task` в текущей задаче. Если tools уже callable,
 работа продолжается там же. Новая задача нужна только после доказанного live
-failure текущей; в ней пользователь выбирает manifest starter prompt `Настрой
-Trelio и доступные навыки для текущего проекта`, который Codex предлагает после
-установки. Полный restart – только если и новая задача сохраняет старую версию
-или не видит tools. Skill без tools не доказывает readiness, но и статичный
-список заранее не предполагается. Browser не подменяет MCP.
+failure текущей; в ней пользователь остаётся в том же локальном проекте и
+выбирает manifest starter prompt `Настрой Trelio Agent Workspaces для текущей
+рабочей папки`, который Codex предлагает после установки. Полный restart –
+только если и новая задача сохраняет старую версию или не видит tools. Skill
+без tools не доказывает readiness, но и статичный список заранее не
+предполагается. Browser не подменяет MCP.
 
 Node.js 22+ остаётся локальной предпосылкой bundled bridge и
 `trelio-remote-skills`, но не удалённого Trelio OAuth. При отсутствующих tools
@@ -172,29 +180,38 @@ exact login/doctor/pairing recovery. Unknown client/model управляется
 allow/deny. `CLAUDE_PLUGIN_ROOT` не доказывает client kind. Guard нельзя
 обходить editing runtime files, private admission state или client metadata.
 
-## Project onboarding skill
+## Working-folder onboarding skill
 
-Onboarding работает в обычном Codex project, не внутри materialized Agent
-Workspace. Он:
+Onboarding работает в одной явно выбранной постоянной папке Codex или Claude
+Code, не внутри materialized Agent Workspace. Он:
 
-1. разрешает exact company и optional project;
-2. читает `get_agent_instructions` до substantive setup;
-3. безопасно создаёт/обновляет только marked Trelio block в project-root
+1. до установки, OAuth и других side effects подтверждает host-owned рабочую
+   папку; Git для неё необязателен, а projectless task останавливается;
+2. разрешает exact company и optional project;
+3. читает `get_agent_instructions` до substantive setup;
+4. безопасно создаёт/обновляет только marked Trelio block в working-folder
    `AGENTS.md`/override, не заменяя unrelated instructions;
-4. отдельно диагностирует Trelio OAuth, Node.js 22+ и standalone Git 2.28+;
+5. отдельно диагностирует Trelio OAuth, Node.js 22+ и standalone Git 2.28+;
    отсутствующий Node предлагает установить после явного подтверждения, а
    exact Git installer запускает сразу с обычным client/OS approval;
-5. выполняет `trelio-workspace login` без disposable Run;
-6. читает live `list_agent_skills` exact scope;
-7. в company-wide scope сразу предлагает и company assignments, и возвращённые
+6. выполняет `trelio-workspace login` без disposable Run;
+7. читает live `list_agent_skills` exact scope;
+8. в company-wide scope сразу предлагает и company assignments, и возвращённые
    переносимые project assignments с `enabledThroughProjectMembership=true` /
    `sources: ["project_membership"]`; только отсутствующие в этом ответе strict
    project-only skills ждут конкретного проекта или задачи;
-8. предлагает настроить только выбранные skills one by one;
-9. показывает unconfigured company connection как
+9. предлагает настроить только выбранные skills one by one;
+10. показывает unconfigured company connection как
    `требуется настройка администратором компании`;
-10. никогда не пишет skills/connection state/credentials/IDs/local paths в
+11. никогда не пишет skills/connection state/credentials/IDs/local paths в
    project AGENTS.
+
+Codex получает MCP-status через `codex mcp list --json` и запускает OAuth через
+`codex mcp login trelio`. Claude Code использует `claude mcp list`,
+`claude mcp login trelio` либо `/mcp`; после установки или обновления plugin
+сначала выполняется `/reload-plugins`. Команды `codex` в Claude Code не
+используются. После OAuth каждый клиент делает один live retry в текущем
+процессе и только затем переходит в новую задачу или сессию с тем же root.
 
 Personal credentials вводятся только через protected runtime flow. Company
 config и personal connection независимы; отдельные 1С skills нельзя сливать.

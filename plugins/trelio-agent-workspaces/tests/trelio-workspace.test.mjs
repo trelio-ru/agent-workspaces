@@ -2509,7 +2509,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   }
 });
 
-test("plugin exposes safe project onboarding before ordinary task work", async () => {
+test("plugin exposes folder-first onboarding before ordinary task work", async () => {
   const codexManifest = JSON.parse(await readFile(
     path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
     "utf8",
@@ -2528,11 +2528,37 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
     path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
     "utf8",
   );
+  const onboardingAgentMetadata = await readFile(
+    path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-project-onboarding",
+      "agents",
+      "openai.yaml",
+    ),
+    "utf8",
+  );
 
   assert.deepEqual(codexManifest.interface.defaultPrompt, [
-    "Настрой Trelio и доступные навыки для текущего проекта.",
+    "Настрой Trelio Agent Workspaces для текущей рабочей папки.",
     "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат и сохрани материалы в рабочем пространстве.",
   ]);
+  const folderGateIndex = onboardingSkill.indexOf("## Confirm the working folder first");
+  const prerequisiteIndex = onboardingSkill.indexOf("## Check prerequisites");
+
+  assert.ok(folderGateIndex >= 0);
+  assert.ok(prerequisiteIndex > folderGateIndex);
+  assert.match(onboardingSkill, /local project with an accessible primary folder/u);
+  assert.match(onboardingSkill, /projectless\s+task is not evidence of a selected folder/u);
+  assert.match(onboardingSkill, /may be empty and does not need to be a Git repository/u);
+  assert.match(onboardingSkill, /stop before every setup side\s+effect/u);
+  assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
+  assert.match(onboardingSkill, /`CLAUDE_PROJECT_DIR`/u);
+  assert.match(onboardingSkill, /`claude mcp list`/u);
+  assert.match(onboardingSkill, /`claude mcp login trelio`/u);
+  assert.match(onboardingSkill, /`\/reload-plugins`/u);
+  assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
+  assert.match(onboardingAgentMetadata, /\$trelio-project-onboarding/u);
   assert.match(onboardingSkill, /<!-- trelio-agent-workspaces:start -->/u);
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
@@ -2544,11 +2570,11 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
   assert.match(onboardingSkill, /resolve-node\.ps1/u);
   assert.match(onboardingSkill, /durable\s+machine\/user PATH values/u);
-  assert.match(onboardingSkill, /immediately run `codex mcp login trelio`/u);
+  assert.match(onboardingSkill, /in Codex use\s+`codex mcp login trelio`/u);
   assert.match(onboardingSkill, /Never open the Trelio site as a\s+preparatory login/u);
   assert.match(onboardingSkill, /ask the user\s+to report that login finished/u);
-  assert.match(onboardingSkill, /retry one low-risk Trelio\s+read in this same task/u);
-  assert.match(onboardingSkill, /Ask for a new task only when that live retry proves/u);
+  assert.match(onboardingSkill, /retry one low-risk\s+Trelio read in this same task/u);
+  assert.match(onboardingSkill, /Ask for a new task or Claude session in the same\s+working folder only when that live retry proves/u);
   assert.match(onboardingSkill, /processPathReady=false/u);
   assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
   assert.match(onboardingSkill, /do not repeat the same advice/u);
@@ -2578,7 +2604,7 @@ test("plugin exposes safe project onboarding before ordinary task work", async (
     /project-only skills will be offered just in time when a concrete Trelio/u,
   );
   assert.match(onboardingSkill, /Do not open a company workspace/u);
-  assert.match(onboardingSkill, /full restart only if the new task/u);
+  assert.match(onboardingSkill, /full restart only\s+if that fresh process still sees the old version/u);
   assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
   assert.match(workerAgentMetadata, /для работы с Trelio и безопасного сохранения результата/u);

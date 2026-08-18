@@ -1,4 +1,4 @@
 interface:
-  display_name: "Настройка Trelio"
-  short_description: "Подключает проект и доступные навыки Trelio"
-  default_prompt: "Используй $trelio-project-onboarding, чтобы настроить Trelio и доступные навыки для текущего проекта."
+  display_name: "Настройка Trelio в папке"
+  short_description: "Настраивает Trelio в текущей рабочей папке"
+  default_prompt: "Используй $trelio-project-onboarding, чтобы настроить Trelio Agent Workspaces для текущей рабочей папки."

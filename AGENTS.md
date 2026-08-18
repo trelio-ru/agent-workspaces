@@ -248,6 +248,18 @@
   exact одно env/file/stdin значение одному live-resolved runtime и сразу
   очищает file delivery; grant не может менять `TRELIO_SKILL_*`, config/cache
   roots или другой host-owned context.
+- Guided onboarding до любой проверки/установки plugin, package manager, OAuth
+  или Trelio-вызова обязан разрешить одну постоянную рабочую папку из
+  host-owned project context. Codex требует local project с доступной primary
+  folder; Claude Code использует `CLAUDE_PROJECT_DIR`, MCP root либо exact
+  launch directory. Пустая папка допустима, Git-репозиторий необязателен.
+  Projectless task, process cwd без host evidence, home, temp, plugin cache и
+  materialized Agent Workspace не подходят. При отсутствии exact root setup
+  завершается до side effects с сообщением `Рабочая папка не найдена.
+  Настройка не начата.` и одним client-specific recovery. Binding остаётся в
+  выбранной папке и не поднимается к соседнему Git root. Codex использует
+  `codex mcp ...`, Claude Code – `claude mcp ...` или `/mcp` и
+  `/reload-plugins`; клиентские команды не смешиваются.
 - Node.js 22+ остаётся локальной предпосылкой bridge и local MCP. Onboarding
   диагностирует её отдельно от Trelio OAuth. Windows resolver обязан проверять
   process PATH, durable machine/user PATH и штатный Program Files; найденный
