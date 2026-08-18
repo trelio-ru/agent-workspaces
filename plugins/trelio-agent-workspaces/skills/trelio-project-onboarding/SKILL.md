@@ -217,8 +217,8 @@ installer window; never bypass or click that approval for the user.
 
 After installation, rerun doctor in the same task/session and continue as soon
 as it returns `ready`. A newly installed Git found in Program Files, Homebrew,
-or durable Windows PATH is used by absolute path immediately; do not require
-an app restart. Do not retry an installer whose result is ambiguous until
+or durable Windows PATH is used by absolute path immediately; do not require an
+app restart. Do not retry an installer whose result is ambiguous until
 doctor has checked whether Git is already ready.
 
 Run `trelio-workspace login` through the logical launcher of this installed
