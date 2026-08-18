@@ -413,7 +413,7 @@ test("ordinary Trelio-bound Codex task pins policy once and rechecks switched ef
     assert.equal(request.method, "POST");
     assert.equal(request.url, "/api/agent-workspaces/runtime-policy/admissions");
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.2");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.3");
     const chunks = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
