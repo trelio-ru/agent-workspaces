@@ -322,7 +322,18 @@
 - Accepted task Run создаёт технический system handoff для аудита и агентов,
   после чего `propose_task_comment` готовит обычный комментарий для людей.
   Публикация и attachments остаются явным действием человека и не блокируют
-  durable acceptance.
+  durable acceptance. Ни accepted Run, ни `taskOutcome` не меняют статус:
+  outcome только рекомендует semantic target. Если вся задача готова, агент
+  отдельно вызывает `render_task_status_proposal`; partial work не создаёт
+  status proposal, но всё равно получает comment proposal.
+- Immediate status mutation через `update_task_status`, task patch, batch patch
+  или `move_task_to_project` разрешена только после прямой однозначной команды
+  человека изменить exact задачу на exact статус сейчас и требует literal
+  `userExplicitlyRequestedImmediateStatusChange=true`. Завершение поручения,
+  accepted Run, вывод агента и условное «когда закончишь» этого права не дают.
+  `apply_task_status_proposal` / `dismiss_task_status_proposal` вызываются только
+  после действия пользователя в отдельной MCP App-карточке либо явного решения
+  по exact proposal.
 - Явная просьба предложить или подготовить комментарий к exact задаче всегда
   является отдельным native Trelio flow, включая follow-up во время maintainer
   work, другого сценария или после compaction. Direct proposal использует exact

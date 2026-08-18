@@ -6,7 +6,8 @@ description: >-
   a meeting transcript; asks Codex to take, continue, analyze, prepare materials
   for, complete, restore, or preserve OCR/vision output for work tied to Trelio;
   asks for an editable task-comment proposal or reply with or without an Agent
-  Run; needs durable dossier context, a dossier transfer, or task controls;
+  Run; asks to change a task status or prepare a separate editable status
+  proposal; needs durable dossier context, a dossier transfer, or task controls;
   requests personal/company/project agent-rule changes; or needs recovery from
   missing MCP tools, stale OAuth scopes, local Git prerequisites,
   plugin-version gates, blockers, or concurrent Agent Runs.
@@ -56,13 +57,19 @@ These references are additive; do not read unrelated files speculatively.
   Treat a follow-up as its own native Trelio route even during maintainer work,
   after context compaction, or while another operation is already in progress.
   Also read the scope reference when the exact task target is not already known.
+- **The user asks to change a task status, status readiness is inferred from
+  completed work, or an accepted task Run assessed the whole task as ready:**
+  read [`references/task-status-proposals.md`](references/task-status-proposals.md).
+  Keep this decision independent from the required human comment proposal.
+  Also read the scope reference when the exact task target is not already known.
 - **An Agent Workspace Run must be started, opened, continued, checkpointed,
   submitted, restored, cancelled, or recovered from concurrency:** read
   [`references/agent-run.md`](references/agent-run.md). Also read the scope
   reference unless the exact workspace and Run are already known.
 - **The writable Run is task-scoped:** additionally read
   [`references/task-run.md`](references/task-run.md) before handoff, task
-  outcome, submit, or final report.
+  outcome, submit, or final report. Read the status-proposal reference only if
+  the whole task is ready or the user separately addresses its status.
 - **OCR or vision output will be stored in a workspace:** additionally read
   [`references/ocr-and-vision.md`](references/ocr-and-vision.md) before writing
   the extracted artifact or manifest.

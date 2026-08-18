@@ -126,14 +126,32 @@ Accepted task Run создаёт системный комментарий из 
 Последовательные Runs пользователя группируются в пределах календарного дня,
 но каждый Run остаётся раскрываемым.
 
-Task outcome выбирается только по semantic status kind:
+Task outcome оценивает готовность всей задачи, а не только выполненного
+поручения, и выбирается по semantic status kind:
 
-- `work_completed` → `review`, fallback `done` при отсутствии review-kind;
-- `review_passed` – только успешная проверка уже review-задачи;
-- `direct_completion` – explicit permission/rule или self-created/self-assigned;
-- `no_status_change` – partial/info/failed review/open questions.
+- `work_completed` рекомендует `review`, fallback `done` при отсутствии
+  review-kind;
+- `review_passed` рекомендует `done` только после успешной проверки уже
+  review-задачи;
+- `direct_completion` рекомендует `done` только при explicit permission/rule
+  или self-created/self-assigned;
+- `no_status_change` – safe default для partial/info/failed review/open
+  questions.
 
-Blocked status transition не отменяет accepted workspace result.
+Accepted Run сохраняет outcome и recommendation, но никогда не вызывает status
+mutation. Comment proposal обязателен после каждого содержательного accepted
+task Run. Отдельный status proposal создаётся только после проверки готовности
+всей задачи через `get_task_status_proposal_context` →
+`render_task_status_proposal`; partial work его не создаёт. Apply/dismiss
+выполняются только по действию человека в MCP App или явному решению по exact
+proposal, а optimistic revision/current-status CAS сохраняют более новую смену.
+
+Прямые `update_task_status`, status task/batch patch и
+`move_task_to_project` требуют literal
+`userExplicitlyRequestedImmediateStatusChange=true`. Флаг допустим только после
+прямой однозначной команды человека изменить exact задачу на exact статус
+сейчас; завершение поручения, accepted Run, условное «когда закончишь» или
+вывод агента не являются authority.
 
 ## External objects и related context
 

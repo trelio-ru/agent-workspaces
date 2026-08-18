@@ -2402,6 +2402,11 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     "render_task_comment_proposal",
     "dismiss_task_comment_proposal",
     "publish_task_comment_proposal",
+    "get_task_status_proposal_context",
+    "render_task_status_proposal",
+    "dismiss_task_status_proposal",
+    "apply_task_status_proposal",
+    "userExplicitlyRequestedImmediateStatusChange",
     "create_comment",
     "get_task",
     "create_task_control",
@@ -2434,6 +2439,10 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /ту же защищённую систему другим путём/u,
     /Недоступность каталога и transient network failure сами по себе не равны `no_access`/u,
     /обычный proposal — коммуникация для людей/u,
+    /Статус — отдельное решение по всей задаче.*accepted Run и `taskOutcome` его не меняют/u,
+    /Для partial work используй `no_status_change`.*не создавай status proposal/u,
+    /Immediate `update_task_status`.*exact задачу на exact статус сейчас.*`userExplicitlyRequestedImmediateStatusChange=true`/u,
+    /условное «когда закончишь» этого права не дают/u,
     /Не публикуй автоматически/u,
     /дата не уведомляет/u,
     /не расширяй personal в shared без полномочия/u,
@@ -2459,6 +2468,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "dossier-transfer.md",
     "task-controls.md",
     "task-comment-proposals.md",
+    "task-status-proposals.md",
     "agent-run.md",
     "task-run.md",
     "ocr-and-vision.md",
@@ -2820,6 +2830,37 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.match(bridgeSource, /--task-outcome/u);
   assert.doesNotMatch(skillMarkdown, /--task-comment/u);
   assert.doesNotMatch(bridgeSource, /task-comment/u);
+});
+
+test("workspace skill keeps status proposal separate from Run acceptance and comment proposal", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const mainSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const statusProposalReference = await readFile(
+    path.join(workerDirectory, "references", "task-status-proposals.md"),
+    "utf8",
+  );
+  const taskRunReference = await readFile(
+    path.join(workerDirectory, "references", "task-run.md"),
+    "utf8",
+  );
+
+  assert.match(mainSkill, /asks to change a task status or prepare a separate editable status\s+proposal/u);
+  assert.match(mainSkill, /Keep this decision independent from the required human comment proposal/u);
+  assert.match(statusProposalReference, /independent from both Agent Run acceptance and the human\s+comment proposal/u);
+  assert.match(statusProposalReference, /Completing the immediate agent instruction may cover only\s+part of the task/u);
+  assert.match(statusProposalReference, /After partial work, still prepare the required comment proposal, but do not\s+create a status proposal/u);
+  assert.match(statusProposalReference, /get_task_status_proposal_context/u);
+  assert.match(statusProposalReference, /render_task_status_proposal/u);
+  assert.match(statusProposalReference, /apply_task_status_proposal/u);
+  assert.match(statusProposalReference, /dismiss_task_status_proposal/u);
+  assert.match(statusProposalReference, /userExplicitlyRequestedImmediateStatusChange=true/u);
+  assert.match(statusProposalReference, /conditional instruction such as “when\s+done move to review” does not satisfy this assertion/u);
+  assert.match(statusProposalReference, /presses the corresponding MCP App action or\s+explicitly approves\/rejects that exact proposal/u);
+  assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
+  assert.match(taskRunReference, /Partial work produces no status proposal/u);
+  assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /accepted Run и `taskOutcome` его не меняют/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Outcome — recommendation для отдельного status proposal/u);
 });
 
 test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {
