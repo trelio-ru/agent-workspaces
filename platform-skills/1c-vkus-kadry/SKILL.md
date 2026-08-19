@@ -35,6 +35,12 @@ best-effort hint, поэтому страница прямо предупреж�
 Не запрашивать логин, пароль или `X-OData` в чате, MCP, аргументах, environment
 variables или workspace-файлах.
 
+Следовать machine-полю `availability` в ответе runtime. Если оно сообщает
+`setup_required` или `access_required`, прямо сказать, что именно этот навык
+сейчас недоступен, назвать его `action` и остановить текущий запрос к данным.
+Не искать другой источник автоматически; вне formal `integrationRouting` он
+допустим только после явного выбора пользователя.
+
 Для сетевой команды:
 
 1. Вызвать `prepare_agent_secret_checkout` для binding `x_odata` текущего Run.
@@ -121,6 +127,8 @@ Runtime `1.0.6` исправляет `connect` и `doctor`: content-free про�
 signed registry, и больше не проходит через allowlist сущностей отдельного
 широкого навыка `1c-vkus`. HTTPS/SSRF/redirect/timeout, Basic Auth, X-OData,
 лимит ответа и fail-closed проверка фактического JSON/EDM контракта сохранены.
+Та же версия возвращает единое `availability` для doctor/access/connect и
+ошибок отсутствующей либо устаревшей настройки.
 
 По умолчанию несовпадение фактически полученных байт с полем `Размер` из
 metadata 1С остаётся fail-closed. Не добавлять

@@ -387,7 +387,14 @@ class VkusHrRuntimeTests(unittest.TestCase):
         ):
             result = MODULE.command_connect(mock.Mock(terminal_prompts=False))
 
-        self.assertEqual(result, {"status": "connected"})
+        self.assertEqual(result, {
+            "status": "connected",
+            "availability": {
+                "status": "available",
+                "skillId": MODULE.HR_SKILL_ID,
+                "action": None,
+            },
+        })
         decoded_url = __import__("urllib.parse").parse.unquote(opened_urls[0])
         probe_source = next(
             source
@@ -400,6 +407,72 @@ class VkusHrRuntimeTests(unittest.TestCase):
         self.assertEqual(opened.call_args.kwargs["x_odata"], "x" * 32)
         save_credentials.assert_called_once_with(identity, config, credentials)
         save_access_state.assert_called_once_with(identity, config, "connected")
+
+    def test_availability_explains_setup_without_selecting_another_source(self) -> None:
+        self.assertEqual(MODULE._availability("unknown"), {
+            "status": "setup_required",
+            "skillId": MODULE.HR_SKILL_ID,
+            "action": "connect",
+        })
+        self.assertEqual(MODULE._availability("needs_reconnect"), {
+            "status": "setup_required",
+            "skillId": MODULE.HR_SKILL_ID,
+            "action": "reconnect",
+        })
+        self.assertEqual(MODULE._availability("no_access"), {
+            "status": "access_required",
+            "skillId": MODULE.HR_SKILL_ID,
+            "action": "request_access",
+        })
+
+        missing = MODULE.provider.OneCEdoError(
+            "credentials_missing",
+            "Личные данные не подключены.",
+        )
+        company = MODULE.provider.OneCEdoError(
+            "connection_not_configured",
+            "Компания не настроила подключение.",
+        )
+        self.assertEqual(
+            MODULE._safe_error(missing)["availability"]["action"],
+            "connect",
+        )
+        self.assertEqual(
+            MODULE._safe_error(company)["availability"]["action"],
+            "configure_company_connection",
+        )
+
+    def test_data_request_stops_on_unknown_personal_setup(self) -> None:
+        identity = MODULE.provider.Identity(
+            company_id=MODULE.EXPECTED_COMPANY_ID,
+            member_id="11111111-1111-4111-8111-111111111111",
+            connection_id="22222222-2222-4222-8222-222222222222",
+        )
+        config = self._company_config()
+
+        with (
+            mock.patch.object(MODULE, "_current_identity", return_value=identity),
+            mock.patch.object(
+                MODULE.provider,
+                "load_company_config",
+                return_value=config,
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "load_access_state",
+                return_value={"status": "unknown", "connectionChanged": False},
+            ),
+            mock.patch.object(MODULE.provider, "load_credentials") as load_credentials,
+        ):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE._connected_context()
+
+        self.assertEqual(caught.exception.code, "access_status_unknown")
+        self.assertEqual(
+            MODULE._safe_error(caught.exception)["availability"]["status"],
+            "setup_required",
+        )
+        load_credentials.assert_not_called()
 
     def test_parser_requires_explicit_unverified_download_flag(self) -> None:
         parsed = MODULE.build_parser().parse_args(

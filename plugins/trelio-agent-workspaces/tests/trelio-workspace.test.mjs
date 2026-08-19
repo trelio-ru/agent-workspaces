@@ -1203,7 +1203,15 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Перед подключённым сервисом или внешней системой вызови `list_agent_skills`/u,
+      /Перед подключённым сервисом или внешней системой вызови `search_agent_skills`/u,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /`list_agent_skills` используй только для явной инвентаризации всего каталога/u,
+    );
+    assert.match(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
     );
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-mtproto` primary priority `100`/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-web` secondary priority `200`/u);
@@ -1222,11 +1230,11 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Наличие checkout само по себе не включает этот режим/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Fallback допустим, когда релевантного навыка нет/u,
+      /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
     );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`no_access` \/ `needs_reconnect`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /а не отказывайся из-за отсутствия или недоступности навыка/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /ту же защищённую систему другим путём/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /назови required action и останови текущий запрос к данным/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /допустим только после явного выбора пользователя/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Недоступность search\/get control plane и transient network failure/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Trelio MCP и bundled bridge остаются штатным workflow/u,
@@ -2307,6 +2315,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
   for (const identifier of [
     "plan_my_agent_profile_update",
     "plan_agent_instructions_update",
+    "search_agent_skills",
     "list_agent_skills",
     "get_agent_skill",
     "AGENT_SKILL_RELEASE_CHANGED",
@@ -2347,14 +2356,14 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /hook сам подставляет одноразовый runtimeSessionProof/u,
     /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
     /не обходи gate другим MCP, HTTP, browser или shell/iu,
-    /Fallback допустим, когда релевантного навыка нет/u,
-    /`no_access` \/ `needs_reconnect`/u,
+    /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
+    /назови required action и останови текущий запрос к данным/u,
     /`telegram-mtproto` primary priority `100`/u,
     /`telegram-web` secondary priority `200`/u,
     /не разрешают переключение или автоматический повтор/u,
-    /а не отказывайся из-за отсутствия или недоступности навыка/u,
-    /ту же защищённую систему другим путём/u,
-    /Недоступность каталога и transient network failure сами по себе не равны `no_access`/u,
+    /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
+    /допустим только после явного выбора пользователя/u,
+    /Недоступность search\/get control plane и transient network failure/u,
     /обычный proposal — коммуникация для людей/u,
     /Статус — отдельное решение по всей задаче.*accepted Run и `taskOutcome` его не меняют/u,
     /Для partial work используй `no_status_change`.*не создавай status proposal/u,
@@ -3908,17 +3917,17 @@ test("workspace worker gates external services but not native Trelio work", asyn
   );
 
   assert.match(workerSkill, /Before a connected service or external system/u);
-  assert.match(workerSkill, /call\s+`list_agent_skills`/u);
+  assert.match(workerSkill, /`search_agent_skills` with the task and compact concept hints/u);
+  assert.match(workerSkill, /Reserve\s+`list_agent_skills` for explicit catalog inventory/u);
   assert.match(workerSkill, /call `get_agent_skill` immediately\s+before acting/u);
   assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
-  assert.match(workerSkill, /do not bypass it while it is usable/u);
-  assert.match(workerSkill, /A confirmed missing\s+or unusable skill.*permits an independent fallback/su);
-  assert.match(workerSkill, /explicit runtime `no_access` or\s+`needs_reconnect`/);
+  assert.match(workerSkill, /do not bypass it while it is\s+usable/u);
+  assert.match(workerSkill, /reports `setup_required`, `no_access`, or\s+`needs_reconnect`/u);
+  assert.match(workerSkill, /say that it is unavailable and name the required action/u);
+  assert.match(workerSkill, /do not choose another source until the\s+user explicitly asks/u);
   assert.match(workerSkill, /MTProto primary priority `100` first and Telegram Web secondary\s+priority `200`/u);
   assert.match(workerSkill, /only after exact `not_configured`, `no_access`,\s+`needs_reconnect`, or `unsupported_operation`/u);
   assert.match(workerSkill, /ambiguous mutation outcome never\s+permit transport fallback or an automatic retry/u);
-  assert.match(workerSkill, /permits an independent fallback when needed to complete the\s+request/u);
-  assert.match(workerSkill, /another route into the same protected system/u);
   assert.match(workerSkill, /Native Trelio reads, task discovery and Agent Workspace control-plane\s+operations are the primary workflow/u);
   assert.match(workerSkill, /do not require a catalog or separate\s+skill lookup/u);
   assert.match(workerSkill, /Telegram MTProto runtime is a narrow persistence exception/u);
@@ -3935,15 +3944,17 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
   assert.match(workerSkill, /read each matching\s+reference completely/u);
   assert.match(workerSkill, /must preserve the `task-run\.md` limit/u);
-  assert.match(workerSkill, /Native Trelio discovery does not require `list_agent_skills`/u);
+  assert.match(workerSkill, /Native Trelio discovery requires neither `search_agent_skills` nor\s+`list_agent_skills`/u);
   assert.match(workerSkill, /Call `prepare_agent_workspace_run` once/u);
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
   assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
   assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
   assert.match(workerSkill, /Do not start another\s+OAuth flow/);
-  assert.match(catalogSkill, /Call `list_agent_skills` once for the effective work context/);
+  assert.match(catalogSkill, /For an ordinary task, call `search_agent_skills` once/u);
+  assert.match(catalogSkill, /Use `list_agent_skills` only when the user explicitly asks for the whole catalog/u);
   assert.match(catalogSkill, /Do not call `request_plugin_install`/u);
   assert.match(catalogSkill, /personal skill or connector remains allowed/u);
+  assert.match(catalogSkill, /do not silently turn absence of readiness into permission to choose another\s+source/u);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
   assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);

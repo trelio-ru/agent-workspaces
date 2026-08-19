@@ -157,11 +157,19 @@ const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
       ) {
         continue;
       }
-      return route;
+      return route.type === "fallback"
+        ? { type: "blocked", reason: route.reason }
+        : route;
     }
   }
 
-  return resolveCatalogFixtureSkill(relevantSkills[0], purpose);
+  const selectedRoute = resolveCatalogFixtureSkill(relevantSkills[0], purpose);
+  // A generic selected skill remains the chosen source until the user sees
+  // its blocker and explicitly requests another one. Only formal transport
+  // routing above may consume fallback reasons automatically.
+  return selectedRoute.type === "fallback"
+    ? { type: "blocked", reason: selectedRoute.reason }
+    : selectedRoute;
 };
 
 const buildTelegramCatalogFixture = ({
@@ -1319,27 +1327,27 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
 
   assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(instructions, /resolve the intended Trelio company before installing, authorizing, or invoking/u);
-  assert.match(instructions, /call `list_agent_skills` for that exact company and project/u);
+  assert.match(instructions, /use `search_agent_skills` as the standard path/u);
+  assert.match(instructions, /Use `list_agent_skills` only for explicit whole-catalog inventory/u);
   assert.match(instructions, /Do not call `request_plugin_install`/u);
-  assert.match(instructions, /personal skills and connectors available/u);
+  assert.match(instructions, /compatible personal skills and connectors remain available/u);
   assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
   assert.match(instructions, /separate maintainer route/u);
   assert.match(instructions, /Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes/u);
   assert.match(instructions, /A checkout alone never enables maintainer mode/u);
-  assert.match(instructions, /state that exact reason/u);
-  assert.match(instructions, /explicitly reports `no_access` or `needs_reconnect`/u);
+  assert.match(instructions, /state that this skill is currently unavailable and name the required setup action/u);
+  assert.match(instructions, /reports `setup_required`, `no_access`, or `needs_reconnect`/u);
+  assert.match(instructions, /do not search for or use another implementation automatically/u);
   assert.match(instructions, /`telegram-mtproto` as primary priority `100`/u);
   assert.match(instructions, /`telegram-web` as secondary priority `200`/u);
   assert.match(instructions, /exactly established `not_configured`, `no_access`, `needs_reconnect`, or `unsupported_operation`/u);
   assert.match(instructions, /ambiguous mutation outcome never permit transport fallback or an automatic repeat/u);
-  assert.match(instructions, /not a reason to refuse requested work/u);
-  assert.match(instructions, /same protected system through another route/u);
-  assert.match(instructions, /transient network failure does not by itself establish `no_access`/u);
+  assert.match(instructions, /only after the user explicitly chooses it after seeing the blocker/u);
+  assert.match(instructions, /transient network failure does not itself establish skill absence, `no_access`, or `setup_required`/u);
   assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
-  assert.match(instructions, /do not seek a missing catalog skill merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
-  assert.match(instructions, /fallback-reason rule applies only when replacing an implementation covered by a relevant skill/u);
+  assert.match(instructions, /do not run skill search merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
   assert.match(instructions, /does not weaken secret, personal-session, approval, or confirmation boundaries/u);
 });
 
@@ -1538,7 +1546,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
     type: "remoteMcpExecution",
     skillId: "future-orbital-inventory",
   });
-  assert.match(instructions, /Select a relevant assigned skill by its purpose/u);
+  assert.match(instructions, /Select a compact ranked result/u);
   assert.doesNotMatch(
     instructions,
     /1c-edo|dodo-knowledge-base|future-orbital-inventory/iu,
@@ -1556,13 +1564,12 @@ test("platform routing allows a named fallback when no relevant skill exists", a
     type: "fallback",
     reason: "no_relevant_skill",
   });
-  assert.match(instructions, /Fallback is allowed only when the exact catalog has no relevant skill/u);
-  assert.match(instructions, /required company or personal connection is not configured/u);
-  assert.match(instructions, /the operation is unsupported/u);
+  assert.match(instructions, /When search returns no relevant assigned skill/u);
+  assert.match(instructions, /compatible personal skills and connectors remain available/u);
   assert.match(instructions, /primary workspace workflow/u);
 });
 
-test("platform routing allows an independent fallback for explicit no_access", async () => {
+test("platform routing blocks on explicit no_access until the user chooses another source", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
   const route = resolveCatalogFixtureRoute({
     purpose: "legal_source_search",
@@ -1577,11 +1584,11 @@ test("platform routing allows an independent fallback for explicit no_access", a
   });
 
   assert.deepEqual(route, {
-    type: "fallback",
+    type: "blocked",
     reason: "no_access",
   });
-  assert.match(instructions, /use an otherwise allowed independent external source or implementation/u);
-  assert.match(instructions, /must never reach the same protected system through another route/u);
+  assert.match(instructions, /state that this skill is currently unavailable/u);
+  assert.match(instructions, /another source is eligible only after the user explicitly chooses it/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {

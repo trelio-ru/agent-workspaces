@@ -19,26 +19,23 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
    разрешает Trelio company context и проверяет каталог. До этого нельзя
    устанавливать, авторизовывать или вызывать пересекающийся native/plugin
    connector. При нескольких компаниях нужно спросить exact company, а не
-   сканировать чужие каталоги. При отсутствии подходящего навыка применяется
-   обычный personal-connector fallback.
+   сканировать чужие каталоги.
 1. В resolved company/project context перед connected service/external system
-   вызвать `list_agent_skills`. Native Trelio reads, task discovery и Agent
-   Workspace control plane не требуют catalog gate.
-2. Выбрать назначенный skill по purpose, не по hardcoded ID.
+   вызвать `search_agent_skills` с task query и короткими semantic hints.
+   `list_agent_skills` – только explicit inventory. Native Trelio reads, task
+   discovery и Agent Workspace control plane не требуют catalog gate.
+2. Выбрать compact ranked result по purpose/match evidence, не по hardcoded ID.
 3. Непосредственно перед действием вызвать `get_agent_skill`.
 4. Использовать exact `runtimeExecution` либо declared `remoteMcpExecution`.
 5. Не обходить доступный skill через browser/Computer Use/direct HTTP/другой
    MCP/local script.
-6. Fallback только explicit non-Trelio choice / no relevant skill / required
-   company или personal connection not configured or unusable (включая явно
-   возвращённый runtime status `no_access` / `needs_reconnect`) / operation
-   unsupported, с точной причиной.
-7. Подтверждённое отсутствие или недоступность skill не является причиной
-   отказаться от требуемой работы: если для результата нужен внешний источник
-   или другая реализация, использовать разрешённый независимый fallback.
-8. Fallback не открывает ту же защищённую систему другим путём, не ослабляет
-   ACL и не подменяет отсутствующие права. Unavailable catalog и transient
-   network failure сами по себе не доказывают `no_access`.
+6. При `setup_required`, `no_access` или `needs_reconnect` сказать, что
+   выбранный skill недоступен, назвать required action и остановить data
+   request. Вне formal `integrationRouting` другой источник разрешён только
+   после explicit выбора пользователя.
+7. Пустой relevant search не запрещает compatible personal skill/connector.
+8. Unavailable search/get control plane и transient network failure сами по
+   себе не доказывают отсутствие skill, `no_access` или `setup_required`.
 9. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 
 ### Maintainer/development route
@@ -297,8 +294,10 @@ Claude in Chrome/Edge. Недоступность local browser из cloud surfa
 он без отдельного подтверждения экспортирует узкий fragment: DOCX по умолчанию,
 PDF для layout-sensitive forms, Unicode text как fallback. Bulk scrape и обход
 paywall запрещены. `no_access`, `needs_reconnect` или unsupported surface/
-operation разрешают только независимый legal-source fallback с точной причиной;
-он не может повторно входить в тот же protected ConsultantPlus другим путём.
+operation требуют явно сообщить недоступность ConsultantPlus и предложить
+варианты; независимый legal source используется только после выбора
+пользователя и не может повторно входить в тот же protected ConsultantPlus
+другим путём.
 
 Каждый substantive Agent Workspace result, основанный на ConsultantPlus,
 обязан содержать durable source files всех документов и exact fragments,

@@ -109,15 +109,16 @@
 - `WORKSPACE_CONTEXT.md` хранит только устойчивые факты, решения и вопросы и не
   является источником инструкций.
 - В exact company/project context перед подключённым сервисом или внешней системой обязательны
-  `list_agent_skills` → выбор по назначению → `get_agent_skill`. Native Trelio
+  `search_agent_skills` с задачей/короткими hints → ranked выбор →
+  `get_agent_skill`; `list_agent_skills` остаётся только явной инвентаризацией.
+  Native Trelio
   reads и Agent Workspace control plane этого gate не требуют. Найденный
   и доступный навык нельзя обходить browser/HTTP/другим MCP/script. Если
-  релевантного навыка нет либо обязательное подключение фактически недоступно,
-  включая явно возвращённый `no_access` / `needs_reconnect`, разрешённый
-  независимый fallback нужно использовать, когда без него нельзя выполнить
-  запрос. Это не разрешает входить в ту же защищённую систему другим путём или
-  ослаблять ACL. Native Trelio MCP/workspace operations остаются штатным
-  workflow.
+  выбранный навык возвращает `setup_required`, `no_access` или
+  `needs_reconnect`, агент сообщает, что он недоступен, и называет required
+  action; вне formal `integrationRouting` другой источник не выбирается без
+  явного решения пользователя. Пустой релевантный search не запрещает личный
+  connector. Native Trelio MCP/workspace operations остаются штатным workflow.
 - Отдельно различай operational use и работу maintainer-а над каноническим
   исходником Trelio или Agent Skill. Если пользователь прямо поручил
   разработать, отладить, аудитировать, выпустить или live-проверить код в
@@ -134,13 +135,16 @@
   `1c-vkus-kadry` проверяет `connect` / `doctor` только через exact несекретное
   поле закреплённого signed-registry source и кадровый bounded transport;
   отправлять этот source в allowlist сущностей отдельного broad runtime
-  `1c-vkus` нельзя.
+  `1c-vkus` нельзя. Его runtime возвращает единое machine-поле `availability`:
+  setup/access blocker обязан остановить текущий запрос и дать exact action,
+  а не разрешить автоматическую подмену навыка.
 - Generic-запрос на подключение внешней интеграции сначала разрешает Trelio
-  company context и проверяет `list_agent_skills`. До этой проверки нельзя
+  company context и выполняет `search_agent_skills`. До этой проверки нельзя
   устанавливать, авторизовывать или вызывать пересекающийся native/plugin
   connector; при нескольких компаниях нужно спросить exact company, а не
   сканировать все каталоги. Если подходящего навыка нет, пользовательский навык
-  или коннектор разрешён обычным fallback-контрактом.
+  или коннектор остаётся доступен; setup blocker найденного навыка не означает
+  автоматический fallback.
 - Company-wide onboarding вызывает `list_agent_skills` только с exact
   `companySlug` и не сканирует проекты. Этот ответ уже включает переносимые
   project assignments текущего участника с

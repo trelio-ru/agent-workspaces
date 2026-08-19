@@ -119,12 +119,14 @@ ordinary company actions.
 
 Before a connected service or external system in an exact company/project
 context, use the current `trelio-skill-catalog` flow: call
-`list_agent_skills`, choose by purpose, then call `get_agent_skill` immediately
-before acting. Use an assigned skill's exact `runtimeExecution` or
-`remoteMcpExecution`; do not bypass it while it is usable. A confirmed missing
-or unusable skill, including an explicit runtime `no_access` or
-`needs_reconnect`, permits an independent fallback when needed to complete the
-request, but never another route into the same protected system or weaker ACL.
+`search_agent_skills` with the task and compact concept hints, choose a ranked
+result, then call `get_agent_skill` immediately before acting. Reserve
+`list_agent_skills` for explicit catalog inventory. Use an assigned skill's
+exact `runtimeExecution` or `remoteMcpExecution`; do not bypass it while it is
+usable. If the selected skill reports `setup_required`, `no_access`, or
+`needs_reconnect`, say that it is unavailable and name the required action.
+Outside formal `integrationRouting`, do not choose another source until the
+user explicitly asks after seeing that blocker.
 Native Trelio reads, task discovery and Agent Workspace control-plane
 operations are the primary workflow and do not require a catalog or separate
 skill lookup.

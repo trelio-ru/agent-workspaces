@@ -17,7 +17,8 @@ task communication, handoff, submit, or final reporting.
 1. Resolve the exact task or dossier writable target through the scope
    procedure. Company/project may identify rules, ACL and dossier ownership,
    but are not writable material Workspace.
-   Native Trelio discovery does not require `list_agent_skills`. Do not guess
+   Native Trelio discovery requires neither `search_agent_skills` nor
+   `list_agent_skills`. Do not guess
    an ID from a title. For task work, read `get_task` connections and linked
    dossiers. For durable task-independent subjects, search existing Workspace
    metadata/files; do not list dossiers merely for discovery. Prefer a project

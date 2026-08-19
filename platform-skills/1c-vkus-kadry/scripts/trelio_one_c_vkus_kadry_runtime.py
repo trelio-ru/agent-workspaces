@@ -210,8 +210,53 @@ def _connected_context() -> tuple[
 ]:
     identity = _current_identity()
     config = provider.load_company_config()
+    state = provider.load_access_state(identity, config)
+    if state["status"] == "unknown":
+        raise HrRuntimeError(
+            "access_status_unknown",
+            "Личное подключение кадрового навыка ещё не настроено.",
+        )
+    if state["status"] == "needs_reconnect":
+        raise HrRuntimeError(
+            "personal_connection_needs_reconnect",
+            "Личное подключение кадрового навыка нужно настроить заново.",
+        )
+    if state["status"] == "no_access":
+        raise HrRuntimeError(
+            "personal_access_required",
+            "Для кадрового навыка сначала нужно получить личный доступ к 1С.",
+        )
     credentials = provider.load_credentials(identity, config)
     return config, credentials
+
+
+def _availability(status: str) -> dict[str, Any]:
+    """Return one stable machine-readable readiness decision for the agent."""
+
+    mapping = {
+        "connected": ("available", None),
+        "unknown": ("setup_required", "connect"),
+        "needs_reconnect": ("setup_required", "reconnect"),
+        "no_access": ("access_required", "request_access"),
+    }
+    availability_status, action = mapping.get(
+        status,
+        ("setup_required", "connect"),
+    )
+    return {
+        "status": availability_status,
+        "skillId": HR_SKILL_ID,
+        "action": action,
+    }
+
+
+def _with_availability(result: dict[str, Any]) -> dict[str, Any]:
+    """Attach readiness without changing the existing human-facing status."""
+
+    return {
+        **result,
+        "availability": _availability(str(result.get("status") or "unknown")),
+    }
 
 
 def _probe_personal_connection(
@@ -331,7 +376,7 @@ def command_connect(args: argparse.Namespace) -> dict[str, Any]:
             title="1С подключена",
             message="Личные данные проверены и сохранены только на этом компьютере.",
         )
-    return {"status": "connected"}
+    return _with_availability({"status": "connected"})
 
 
 def command_doctor(_: argparse.Namespace) -> dict[str, Any]:
@@ -367,27 +412,27 @@ def command_doctor(_: argparse.Namespace) -> dict[str, Any]:
             result["network"] = "authentication_failed"
         except provider.NetworkError:
             result["network"] = "unreachable"
-    return result
+    return _with_availability(result)
 
 
 def command_access_show(args: argparse.Namespace) -> dict[str, Any]:
     _current_identity()
-    return provider.command_access_show(args)
+    return _with_availability(provider.command_access_show(args))
 
 
 def command_access_no_access(args: argparse.Namespace) -> dict[str, Any]:
     _current_identity()
-    return provider.command_access_no_access(args)
+    return _with_availability(provider.command_access_no_access(args))
 
 
 def command_access_reset(args: argparse.Namespace) -> dict[str, Any]:
     _current_identity()
-    return provider.command_access_reset(args)
+    return _with_availability(provider.command_access_reset(args))
 
 
 def command_forget_credentials(args: argparse.Namespace) -> dict[str, Any]:
     _current_identity()
-    return provider.command_forget_credentials(args)
+    return _with_availability(provider.command_forget_credentials(args))
 
 
 def _source_by_key(registry: Mapping[str, Any], key: str) -> dict[str, Any]:
@@ -1693,7 +1738,24 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _safe_error(error: provider.OneCEdoError) -> dict[str, Any]:
-    return provider._safe_error_payload(error)
+    payload = provider._safe_error_payload(error)
+    availability_by_code = {
+        "connection_not_configured": _availability("unknown") | {
+            "action": "configure_company_connection",
+        },
+        "invalid_company_config": _availability("unknown") | {
+            "action": "repair_company_connection",
+        },
+        "credentials_missing": _availability("unknown"),
+        "access_status_unknown": _availability("unknown"),
+        "authentication_failed": _availability("needs_reconnect"),
+        "personal_connection_needs_reconnect": _availability("needs_reconnect"),
+        "personal_access_required": _availability("no_access"),
+    }
+    availability = availability_by_code.get(error.code)
+    if availability is not None:
+        payload["availability"] = availability
+    return payload
 
 
 def main(

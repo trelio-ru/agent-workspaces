@@ -44,10 +44,10 @@ runtime flow as soon as the requested action is an ordinary company operation.
 ## Discover current skills
 
 1. Resolve the exact relevant company after Trelio OAuth authorization. Call `list_companies` only when the current Trelio task or user request does not already identify it; do not silently scan unrelated companies. For a generic request to connect or use an integration that Trelio may provide, perform this Trelio context check before requesting installation or authorization of an overlapping native/plugin integration. If several companies are available and the request does not identify one, ask which Trelio company applies instead of scanning every catalog or silently choosing the non-Trelio integration.
-2. Call `list_agent_skills` once for the effective work context. Pass the exact `companySlug` for company work, or both `companySlug` and `projectSlug` for project/task work. A project-scoped response already contains the additive union of company and project assignments and reports each source.
-3. Use the safe catalog metadata to decide which skills are relevant. Do not load every skill instruction speculatively.
-4. Briefly offer to configure newly available skills that are relevant to the user's work. Keep availability separate from readiness. When an enabled skill has `connection.configured=false`, label it exactly `требуется настройка администратором компании`; do not start personal credential setup until that company blocker is resolved. Treat every enabled 1C skill as an independent connection: never substitute another 1C skill's config, Agent Secret, connection id or local credentials. Do not configure credentials or perform external writes without the user's request.
-5. Immediately before using a Trelio-provided skill, call `get_agent_skill` with the same exact context and follow its current `instructionsMarkdown` plus its runtime requirements.
+2. For an ordinary task, call `search_agent_skills` once with the exact scope, a faithful compact restatement of the user's request in `query`, and only useful short concepts or synonyms in `hints`. Do not enumerate hypothetical cases. Use `list_agent_skills` only when the user explicitly asks for the whole catalog, or when an onboarding/inventory procedure below explicitly requires it. A project-scoped response already contains the additive union of company and project assignments and reports each source.
+3. Select from the compact ranked results and their match evidence. Do not load every skill instruction speculatively. If the user names one exact enabled skill, load it directly instead of searching for an alias.
+4. Keep availability separate from readiness. If the selected card reports company `setup_required`, say that the skill is currently unavailable and requires company setup. After `get_agent_skill` or the runtime, handle personal `setup_required`, `no_access`, or `needs_reconnect` the same way and name the returned required action. Stop the current data request at that blocker. Outside a formal `integrationRouting` contract, do not search for or invoke another source automatically; use one only after the user explicitly chooses it. Treat every enabled 1C skill as an independent connection: never substitute another 1C skill's config, Agent Secret, connection id or local credentials. Do not configure credentials or perform external writes without the user's request.
+5. Immediately before using the selected Trelio-provided skill, call `get_agent_skill` with the same exact context and follow its current `instructionsMarkdown` plus its runtime requirements.
 6. When `runtimeExecution` is present, invoke its exact `command`; append only the skill arguments allowed by the current instruction after the terminal `--`. Treat a leading `trelio-workspace` token as the logical launcher of this currently loaded plugin. Resolve it without executing it first. If it is available in `PATH`, use the returned command unchanged. If it is absent, replace only that first token with Node.js 22+ and this plugin's bundled `../../scripts/trelio-workspace.mjs`, preserving every remaining token and appended argument exactly. Resolve the script relative to this loaded skill; never scan plugin caches or select another installed version. This launcher resolution is part of executing the exact command, not a fallback or a local-script bypass. Do not announce a missing `PATH` entry or deliberately run a command that will fail merely to discover it; report a launcher problem only when neither approved form can run. The bridge resolves the expected release before every run, downloads only a missing exact package, verifies its Ed25519 signature and every file digest, then runs it with `shell:false`.
 7. When `remoteMcpExecution` is present, use only the named tools from the local `trelio-remote-skills` MCP server and pass the exact returned `identity` plus `releaseId`. Never connect the remote endpoint directly and never invent headers. The local host resolves the release before every action; `call_remote_agent_skill_tool` initializes the server, verifies protocol `2025-03-26`, requires exact equality with the published read-only allowlist, and only then calls the selected tool.
 
@@ -85,27 +85,19 @@ contract as MAX and has no separate annual/per-chat consent registry; local
 send mode plus the exact action confirmation rules remain authoritative.
 
 Do not call `request_plugin_install`, open another integration's authorization,
-or invoke an overlapping native connector until the Trelio catalog check above
-has resolved the selected company. If that catalog contains an enabled and
-usable skill covering the requested purpose, use the Trelio skill. Use another
-implementation only after the user explicitly chooses non-Trelio or one of the
-documented fallback conditions is actually established. When no relevant
-Trelio skill exists, a compatible personal skill or connector remains allowed.
+or invoke an overlapping native connector until skill search has resolved the
+selected company. If `search_agent_skills` returns no relevant assigned skill,
+a compatible personal skill or connector remains allowed. If it selects a
+skill that needs setup or access, report that exact blocker and required action;
+do not silently turn absence of readiness into permission to choose another
+source. Another implementation becomes eligible only after the user explicitly
+chooses it after seeing the blocker. The formal Telegram transport pair below
+is the only current catalog-declared automatic routing exception.
 
-Fallback is allowed only when the exact catalog has no relevant skill, the
-relevant skill or its required company or personal connection is not configured
-or is currently unusable (including when its runtime explicitly reports
-`no_access` or `needs_reconnect`), or its current release does not support the
-requested operation. State the exact reason before using the fallback.
-Confirmed skill absence or unusability is not a reason to refuse requested
-work: when an external source or another implementation is necessary to
-complete the request, use an otherwise allowed independent fallback. This is
-not permission to reach the same protected system through another route,
-weaken access controls, or substitute for missing rights. If
-`list_agent_skills` or `get_agent_skill` itself is unavailable, report an
+If `search_agent_skills` or `get_agent_skill` itself is unavailable, report an
 unavailable Trelio skill control plane instead of claiming that the integration
 is absent or opening Trelio in a browser. A transient network failure does not
-by itself establish `no_access`.
+by itself establish `no_access` or `setup_required`.
 
 Native Trelio MCP control-plane and Agent Workspace operations through Trelio
 MCP tools and the bundled `trelio-workspace` bridge are the primary workspace

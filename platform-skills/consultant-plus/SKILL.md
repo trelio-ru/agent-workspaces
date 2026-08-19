@@ -1,6 +1,6 @@
 ---
 name: consultant-plus
-description: Research Russian legislation, court practice, forms and legal commentary in an authenticated cloud.consultant.ru browser session; verify current or historical editions; quote narrowly; and preserve an exact article, chapter, form or law as DOCX, PDF or Unicode text. Use for ConsultantPlus access setup, legal-source lookup, edition checks, source downloads, or a documented fallback when the user has no ConsultantPlus access or the current agent surface cannot reach the user's browser.
+description: Research Russian legislation, court practice, forms and legal commentary in an authenticated cloud.consultant.ru browser session; verify current or historical editions; quote narrowly; and preserve an exact article, chapter, form or law as DOCX, PDF or Unicode text. Use for ConsultantPlus access setup, legal-source lookup, edition checks, source downloads, or an explicitly chosen public-source alternative when ConsultantPlus is unavailable.
 ---
 
 # КонсультантПлюс
@@ -26,12 +26,15 @@ surface. Follow the returned `accessState`:
   ConsultantPlus. If yes, select a supported browser surface and let the user
   sign in. After an authenticated page is visibly available, run
   `set-connected --browser SURFACE`. If no, run `set-no-access` and continue
-  through the independent-source fallback;
-- `no_access`: do not ask again for this device and Trelio identity. Use the
-  independent-source fallback automatically;
+  only after explicitly asking whether they want an independent public legal
+  source;
+- `no_access`: do not ask about ConsultantPlus access again for this device and
+  Trelio identity. State that this skill is unavailable and ask whether the
+  user wants an independent public legal source; do not start one automatically;
 - `needs_reconnect`: let the user restore the saved browser session. If the
   requested result does not require proprietary ConsultantPlus commentary,
-  the independent-source fallback may be used while access is unavailable.
+  offer an independent public legal source, but use it only after the user
+  explicitly chooses it.
 
 Use `set-needs-reconnect` when a previously working browser reaches a sign-in,
 expired-session or subscription-access page. Change `no_access` or clear the
@@ -103,10 +106,11 @@ the current attempt as `unavailable_on_surface` in the explanation only; do not
 write it into durable runtime state and do not convert an existing `connected`
 choice to `no_access`.
 
-When independent official sources can produce the requested result, continue
-with that fallback. When proprietary ConsultantPlus content or its exact
-export is essential, hand the task to a local Codex desktop or local Claude
-Code session and explain what must be resumed there.
+State that ConsultantPlus is unavailable on this surface and offer a choice:
+use an independent official source or hand the task to a local Codex desktop or
+local Claude Code session. Do not choose for the user. When proprietary
+ConsultantPlus content or its exact export is essential, explain what must be
+resumed in the local session.
 
 ### Verify the session
 
@@ -246,17 +250,17 @@ source into the task's authorized material directory when durable storage is
 needed; do not use the Downloads folder as permanent integration state. Report
 the final local or workspace path and chosen format.
 
-## Use a bounded independent fallback
+## Use a bounded independent source only after selection
 
-Use an independent legal source when `status` is `no_access`, a reconnect is
-not completed, the current cloud surface cannot reach the authenticated
-browser, the exact operation is unsupported, or no relevant Trelio skill is
-available. Prefer the official publication portal and issuing-body sources,
-then official court or regulator sites, then other configured legal research
-tools or normal web research. Cite the source actually used and state the
-precise availability reason: `no_access`, `needs_reconnect`,
-`unavailable_on_surface`, `unsupported_operation`, or no enabled relevant
-Trelio skill.
+Use an independent legal source only when the request already explicitly asks
+for a public/independent source, or after the user chooses it after seeing the
+exact ConsultantPlus blocker. `no_access`, an incomplete reconnect,
+`unavailable_on_surface`, or `unsupported_operation` is a reason to report the
+skill as unavailable and offer that choice; it is not permission to switch
+sources automatically. Prefer the official publication portal and issuing-body
+sources, then official court or regulator sites, then other configured legal
+research tools or normal web research. Cite the source actually used and state
+the precise availability reason.
 
 Never enter the same protected ConsultantPlus system through an alternate
 credential, scrape around a paywall, weaken access controls or imply that a

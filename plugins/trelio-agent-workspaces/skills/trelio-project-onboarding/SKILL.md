@@ -249,6 +249,9 @@ cancel a disposable result merely to test the connection.
 
 ## Offer the live Trelio skills
 
+This onboarding step is an explicit whole-catalog inventory; it does not
+replace `search_agent_skills` as the standard route for an ordinary task.
+
 1. Call `list_agent_skills` once for the exact effective scope. Use only
    `companySlug` for a company-wide working folder; include `projectSlug` for a
    deliberately project-bound setup. Do not scan every visible project to

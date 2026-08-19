@@ -130,7 +130,7 @@ test("skill keeps onboarding, browser handoff, workspace evidence, export and fa
   const instructions = await readInstructionBundle();
 
   assert.match(instructions, /ask once whether the user wants this skill and has access/u);
-  assert.match(instructions, /`no_access`: do not ask again/u);
+  assert.match(instructions, /`no_access`: do not ask about ConsultantPlus access again/u);
   assert.match(instructions, /`unavailable_on_surface`.*do not\s+overwrite/su);
   assert.match(instructions, /Codex in-app Browser/u);
   assert.match(instructions, /Claude in Chrome/u);
@@ -150,5 +150,7 @@ test("skill keeps onboarding, browser handoff, workspace evidence, export and fa
   assert.match(instructions, /Do not bulk\s+export/su);
   assert.match(instructions, /Never request, receive, store\s+or inspect a ConsultantPlus login/su);
   assert.match(instructions, /independent legal source/u);
+  assert.match(instructions, /do not start one automatically/u);
+  assert.match(instructions, /it is not permission to switch\s+sources automatically/su);
   assert.match(instructions, /Never enter the same protected ConsultantPlus system/u);
 });
