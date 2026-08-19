@@ -11,12 +11,11 @@ Workspace context discovery to the current project: relevant material may be
 linked across projects. Ask only when ambiguity remains after read-only
 discovery.
 
-Every discovery call still carries the exact current `runtimeAttestation`.
-Discovery relaxes only the company's minimum effort; a forbidden or disallowed
-unlisted model remains blocked. Exact content reads selected from discovery
-then enforce both model and minimum effort. A runtime without truthful
-Codex/Claude Code identity uses only `other/unknown/unavailable` with `null`
-model/effort; it never borrows a known client declaration.
+Discovery calls are intentionally available without runtime admission. Exact
+content reads selected from discovery are protected: the approved client hook
+injects a fresh one-use `runtimeSessionProof`. Never add or copy that field. If
+the hook is unavailable, stop before reading content and follow the explicit
+`TRELIO_RUNTIME_HOOK_REQUIRED` recovery steps.
 
 ## Resolve the work item
 

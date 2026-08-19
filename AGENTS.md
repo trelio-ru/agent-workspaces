@@ -66,20 +66,19 @@
 - Company/project rules, platform rules, личный профиль и checkpoint
   закрепляются за Run; новый publish не меняет активный Run.
 - Company model/reasoning policy действует во всей новой работе с Trelio.
-  Каждый non-recovery MCP request несёт self-reported `runtimeAttestation`
-  exact текущего client/model/effort; backend разрешает фактический объект в
-  company и применяет её current revision. Discovery allowlist проверяет
-  модель без minimum effort, context reads/mutations/Agent Workspace – оба
-  ограничения; новый неизвестный read считается context, write – mutation.
-  Agent Run закрепляет snapshot и initiating attestation, а exact bridge open
-  command повторяет её явными `--runtime-*` аргументами. Signed Agent Skill
-  получает те же аргументы и server admission до runtime. Plugin не определяет
-  модель через env/transcript и вообще не регистрирует agent hooks. Unknown
-  runtime использует только `other/unknown/unavailable` с `null` model/effort,
-  а не выдаёт себя за Codex/Claude Code. Login/doctor/pairing recovery не
-  блокируются. Это cooperative self-report, а не platform attestation. Старый
-  hook/rollout evidence не принимается: незавершённый Run с ним начинается
-  заново после обновления plugin, accepted Workspace revisions сохраняются.
+  Plugin регистрирует `SessionStart`, `PreToolUse` и `SessionEnd`: при первом
+  защищённом вызове hook локально наблюдает model/effort, создаёт Ed25519 key
+  pair и регистрирует public key через paired bridge. Каждый context,
+  mutation и Agent Workspace call получает через `updatedInput` одноразовый
+  `runtimeSessionProof`; backend проверяет подпись/freshness/user/session и
+  атомарно потребляет nonce. Агент не формирует model declaration или proof.
+  Discovery allowlist и login/doctor/pairing recovery доступны без admission;
+  неизвестный новый read считается context, write – mutation. Runtime
+  закрепляется при первом protected call максимум на 24 часа и не
+  пересматривается после смены model/effort внутри уже допущенной session.
+  Agent Run и signed Agent Skill переносят только `--runtime-session UUID`.
+  При отключённом/неодобренном hook enforcing company возвращает
+  `TRELIO_RUNTIME_HOOK_REQUIRED`; нельзя обходить gate другим MCP/HTTP/browser.
 - Новые material Agent Workspace и Run допускаются только для `task` и
   `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
   task/dossier связи читаются первыми, остальной контекст ищется каноническим
@@ -290,13 +289,12 @@
   обходятся и не подтверждаются агентом. После установки doctor повторяется в
   той же задаче, новый absolute path используется без restart; ambiguous
   installer result сначала проверяется doctor, а не повторяется вслепую.
-- Plugin не содержит `hooks.json` и hook entrypoint. Основной Trelio MCP после
-  runtime-policy текста даёт короткую Codex-only best-effort инструкцию: в явно
+- Runtime hooks живут в `hooks/hooks.json` и не переименовывают чат. Основной
+  Trelio MCP отдельно даёт короткую Codex-only best-effort инструкцию: в явно
   новом верхнеуровневом чате после исходного контекста вызвать native title
   tool не более одного раза. Fork, delegated/existing conversation и
   пользовательское название не меняются; отсутствие tool – тихий no-op.
-  Поскольку MCP не получает lifecycle event и thread id, это не строгая
-  гарантия «ровно один раз» и не должно участвовать в security policy.
+  Title workflow не участвует в runtime admission.
 - MAX browser adapter по умолчанию блокирует server-side `READ_MESSAGE` и
   `READ_REACTION` при discovery, чтении, unread polling, download и любых
   действиях, которые не являются ответом. Read receipt разрешается только

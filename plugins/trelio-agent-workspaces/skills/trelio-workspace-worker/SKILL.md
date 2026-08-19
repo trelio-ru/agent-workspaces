@@ -24,19 +24,18 @@ a credential in a prompt. The only prompt/MCP exception is the exact
 already-shared value and explicit company/user opt-in flow documented below;
 it does not permit copying the value anywhere else.
 
-## Report the current runtime on every Trelio call
+## Let the approved hook prove the runtime
 
-For every non-recovery Trelio MCP tool call, include `runtimeAttestation` for
-that exact request. Codex and Claude Code must report the real current
-`clientFamily`, `modelId`, and `effortLevel`, with `schemaVersion=1`,
-`source=agent_request`, `evidenceLevel=self_reported`, and a fresh ISO
-`observedAt`. Rebuild it after any model or effort change; never copy another
-model's declaration. Discovery tools still require an allowed model but ignore
-minimum effort. Context reads, mutations, and Agent Workspace tools require
-both. Pairing and bridge-session recovery tools are the only exemption. If the
-host does not expose a truthful Codex/Claude Code identity and model/effort,
-report `clientFamily=other`, `source=unknown`, `evidenceLevel=unavailable`,
-`modelId=null` and `effortLevel=null`; never guess a known client identity.
+Do not author, copy, preserve, or retry `runtimeSessionProof` or
+`runtimeAttestation`. Discovery and pairing/session recovery calls remain
+available without admission. For context reads, mutations, and Agent Workspace
+tools, the approved Codex/Claude Code `PreToolUse` hook transparently injects a
+fresh one-use proof after the tool call is authored. If Trelio returns
+`TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work, tell the user to
+install/update this plugin, enable and approve its hooks, run
+`trelio-workspace login` when pairing is missing, and start a new client
+task/session. Never bypass the gate with another MCP, direct HTTP, browser
+automation, or a shell script.
 
 ## Route the current scenario
 

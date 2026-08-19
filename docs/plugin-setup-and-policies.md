@@ -166,24 +166,21 @@ Claude обновляет marketplace своим plugin manager. После ус
 ## Политика моделей
 
 Компания может закрепить допустимые client/model/reasoning effort для всей
-работы с Trelio, включая обычные задачи без Agent Run. Каждый non-recovery MCP
-request содержит self-reported `runtimeAttestation` current model/effort, а
-backend применяет policy фактической company. Discovery проверяет разрешённость
-модели без minimum effort; context, mutation и Agent Workspace требуют оба
-ограничения.
+работы с Trelio, включая обычные задачи без Agent Run. Approved plugin hook
+наблюдает model/effort при первом protected call, регистрирует paired
+runtime-session и прозрачно добавляет одноразовый Ed25519 proof. Discovery и
+recovery доступны без admission; context, mutation и Agent Workspace требуют
+proof и полную company policy.
 
-Agent Run закрепляет snapshot и initiating declaration; exact open command
-передаёт её bridge в `--runtime-*`. Plugin не читает модель из env/transcript и
-не регистрирует никаких hooks. Неизвестный runtime использует только
-`other/unknown/unavailable` с `null` model/effort; неизвестные модели и клиенты
-управляются отдельными allow/deny правилами. Legacy hook/rollout evidence не
-принимается, поэтому незавершённый Run старого plugin начинается заново после
-обновления. Это cooperative `self_reported`, не криптографическая аттестация.
-Нельзя копировать attestation другой модели или редактировать
-`.trelio-run.json` для обхода.
+Agent Run закрепляет snapshot и hook-observed runtime; exact open command
+передаёт bridge только `--runtime-session UUID`. Сессия живёт до SessionEnd или
+24 часов и не пересматривает model/effort после первоначального допуска. При
+`TRELIO_RUNTIME_HOOK_REQUIRED` включите/одобрите hooks, восстановите
+`trelio-workspace login` при необходимости и начните новую задачу. Нельзя
+создавать/копировать proof или обходить gate через другой транспорт.
 
 Косметическое переименование нового Codex-чата выполняется best-effort по
-короткой инструкции основного MCP server, а не через lifecycle hook. Fork,
+короткой инструкции основного MCP server, а не runtime lifecycle hook. Fork,
 delegated/existing conversation и пользовательское название не меняются; без
 native title tool действие молча пропускается.
 

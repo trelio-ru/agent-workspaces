@@ -7,15 +7,11 @@ description: Discover and load current agent skills enabled by Trelio companies 
 
 Trelio skills are live, additive instructions supplied by a company or a project. They coexist with personal skills already installed by the user. A missing or disabled Trelio assignment means only that Trelio does not provide the skill in that context; it is not a company prohibition.
 
-Every non-recovery Trelio MCP call must include exact current
-`runtimeAttestation`. Codex/Claude Code report their real model and effort with
-`source=agent_request`, `evidenceLevel=self_reported`, and a fresh ISO
-`observedAt`. Catalog discovery checks whether the model is allowed but ignores
-minimum effort; `get_agent_skill` is a protected context read and checks both.
-Rebuild the declaration after a runtime change and never copy another model's
-values. A runtime that cannot truthfully identify as Codex or Claude Code uses
-only `clientFamily=other`, `source=unknown`, `evidenceLevel=unavailable` and
-`null` model/effort; it never impersonates a known client.
+Catalog discovery is available without runtime admission. `get_agent_skill` is
+a protected context read: the approved client hook injects its one-use
+`runtimeSessionProof` automatically. Never author or copy runtime fields. On
+`TRELIO_RUNTIME_HOOK_REQUIRED`, restore/approve the plugin hooks and pairing,
+start a new client session, and retry instead of bypassing the catalog.
 
 ## Separate operational use from source maintenance
 

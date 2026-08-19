@@ -47,11 +47,11 @@ task communication, handoff, submit, or final reporting.
    dossier-only migration may still be claimed, checkpointed and finished by
    its existing Run ID; this compatibility never permits preparing or starting
    another legacy-scope Run.
-4. Pass the exact current self-reported runtime attestation to the prepare
-   call. Execute the returned bridge `open` command unchanged through the
-   approved bundled launcher resolution from the main skill: its
-   `--runtime-*` arguments are the same declaration backend already checked.
-   The bridge does not discover or override model/effort from local hooks.
+4. Do not add runtime fields to the prepare call. The approved `PreToolUse`
+   hook injects a one-use proof, and the returned bridge `open` command carries
+   only the server-side `--runtime-session UUID`. Execute it unchanged through
+   the approved bundled launcher. On `TRELIO_RUNTIME_HOOK_REQUIRED`, restore
+   hook approval/pairing and start a new client session before retrying.
 5. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
    `deviceName`, then rerun the original bridge command. Do not show a code or

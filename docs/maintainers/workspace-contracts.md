@@ -34,10 +34,11 @@ exact diff → explicit confirmation → publish и действуют толь�
 Runs. Нельзя редактировать protected files или скрывать правило в
 `WORKSPACE_CONTEXT.md`.
 
-Каждый Trelio MCP request сообщает exact self-reported runtime; discovery
-проверяет модель, а context/mutation/Agent Workspace – также minimum effort.
-Run закрепляет initiating declaration и policy snapshot. Никогда не копировать
-attestation другой модели и не редактировать `.trelio-run.json` для обхода.
+Discovery и recovery Trelio MCP доступны без runtime admission. Context,
+mutation и Agent Workspace получают одноразовый `runtimeSessionProof` только
+из approved PreToolUse hook; агент не создаёт и не копирует proof. Run
+закрепляет hook-observed runtime и policy snapshot, а bridge получает только
+server runtime-session id. `.trelio-run.json` не редактировать для обхода.
 
 Локальный Git data plane не полагается на bare `git` из process PATH и не
 заимствует undocumented executable Codex plugin manager. Bridge разрешает

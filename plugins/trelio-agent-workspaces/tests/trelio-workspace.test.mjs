@@ -2260,7 +2260,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.10.6");
+  assert.equal(BRIDGE_VERSION, "1.10.7");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2342,11 +2342,11 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Company\/project rules не являются поисковыми документами.*exact `fetch`\/`get_task`\/`get_dossier`.*первым `effectiveInstructions`.*внутри Run используй pinned instruction\/profile snapshot/u,
     /не вызывай list_dossiers только ради discovery/u,
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
-    /В каждом MCP-вызове Trelio честно передавай runtimeAttestation exact текущего runtime/u,
-    /Codex\/Claude Code используют agent_request\/self_reported с реальными model\/effort/u,
-    /runtime без достоверной известной identity использует только other\/unknown\/unavailable с null model\/effort/u,
-    /Discovery проверяет модель без минимального effort.*context, mutation и Agent Workspace применяют оба ограничения/u,
-    /не копируй чужую attestation и не меняй `\.trelio-run\.json`/u,
+    /Политику модели применяет approved hook плагина/u,
+    /discovery и recovery доступны без допуска/u,
+    /hook сам подставляет одноразовый runtimeSessionProof/u,
+    /TRELIO_RUNTIME_HOOK_REQUIRED.*включить\/одобрить hooks/u,
+    /не обходи gate другим MCP, HTTP, browser или shell/u,
     /Fallback допустим, когда релевантного навыка нет/u,
     /`no_access` \/ `needs_reconnect`/u,
     /`telegram-mtproto` primary priority `100`/u,

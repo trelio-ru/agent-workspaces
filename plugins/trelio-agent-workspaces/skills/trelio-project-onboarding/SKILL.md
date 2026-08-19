@@ -10,15 +10,12 @@ a disposable Trelio workspace run. Keep the binding durable in that folder's
 instruction file, but always read the current skill catalog and connection
 state from Trelio.
 
-For every non-recovery Trelio MCP call, include exact current
-`runtimeAttestation`. Codex/Claude Code use `source=agent_request`,
-`evidenceLevel=self_reported`, their real model/effort and a fresh ISO
-`observedAt`; rebuild it after a runtime change. Discovery ignores only the
-minimum effort, not a model deny. Pairing/session recovery is exempt so setup
-can be repaired. A runtime that cannot truthfully identify as either client
-uses `clientFamily=other`, `source=unknown`, `evidenceLevel=unavailable` and
-`null` model/effort. Do not infer runtime from plugin env, impersonate a known
-client or reuse another model's declaration.
+Discovery and pairing/session recovery remain available without runtime
+admission so setup can be repaired. Protected context/mutation calls receive a
+one-use `runtimeSessionProof` from the approved client hook automatically;
+never author or copy runtime fields. On `TRELIO_RUNTIME_HOOK_REQUIRED`, ensure
+the plugin is current, enable/approve hooks, complete `trelio-workspace login`,
+start a new client session, and retry.
 
 ## Confirm the working folder first
 

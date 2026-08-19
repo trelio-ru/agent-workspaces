@@ -9,14 +9,11 @@ Use only the dedicated Trelio MCP tools. This flow changes one active company
 member's direct membership in one project; it does not invite people to the
 company, edit groups, or perform bulk membership replacement.
 
-Include exact current `runtimeAttestation` in every Trelio MCP call in this
-flow: real Codex/Claude Code model and effort, `source=agent_request`,
-`evidenceLevel=self_reported`, and a fresh ISO `observedAt`. Discovery checks
-the model without minimum effort; instruction/context reads and both plan/apply
-steps enforce the full policy. Rebuild the declaration after any runtime
-change and never reuse another model's values. A runtime that cannot truthfully
-identify as Codex or Claude Code uses `other/unknown/unavailable` with `null`
-model/effort and never impersonates a known client.
+Do not add runtime fields yourself. Discovery/recovery remains available, but
+instruction/context reads and both plan/apply steps rely on the approved
+client hook to inject a one-use `runtimeSessionProof`. On
+`TRELIO_RUNTIME_HOOK_REQUIRED`, stop this flow, restore the plugin hook/pairing,
+start a new client session, and retry; never bypass it through another route.
 
 ## Check authority and connection
 

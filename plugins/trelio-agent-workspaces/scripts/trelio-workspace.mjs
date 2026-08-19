@@ -32,7 +32,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.10.6";
+export const BRIDGE_VERSION = "1.10.7";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -53,7 +53,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
   "- Новый Run может записывать только в task или dossier Workspace. Если открыт уже существовавший до миграции legacy company/project Run, разрешено завершить только этот exact pinned Run через обычные checkpoint/finish; не начинай новый Run такой области. Company/project задают ACL и immutable правила, но не являются новыми material Workspace; дополнительный контекст приходит только через явно закреплённые related task/dossier heads. Не считай наличие legacy `context/company` или `context/project` отдельным разрешением на запись.",
   `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
-  "- В каждом MCP-вызове Trelio честно передавай runtimeAttestation exact текущего runtime. Codex/Claude Code используют agent_request/self_reported с реальными model/effort; runtime без достоверной известной identity использует только other/unknown/unavailable с null model/effort. Discovery проверяет модель без минимального effort; context, mutation и Agent Workspace применяют оба ограничения. При смене runtime используй новые значения, не копируй чужую attestation и не меняй `.trelio-run.json`.",
+  "- Политику модели применяет approved hook плагина: discovery и recovery доступны без допуска, а в context, mutation и Agent Workspace hook сам подставляет одноразовый runtimeSessionProof. Никогда не создавай и не копируй proof или model attestation вручную. При TRELIO_RUNTIME_HOOK_REQUIRED останови защищённую работу, попроси включить/одобрить hooks, при необходимости выполнить `trelio-workspace login`, затем начать новую задачу; не обходи gate другим MCP, HTTP, browser или shell.",
   "",
   "## Начало Run",
   "",
@@ -449,6 +449,15 @@ export const parseSelfReportedRuntimeAttestationOptions = (options = {}) => {
     source: "agent_request",
     observedAt,
   };
+};
+
+export const parseRuntimeSessionOption = (options = {}) => {
+  const runtimeSessionId = readSingleRuntimeOption(options, "runtime-session");
+  if (!runtimeSessionId) return null;
+  if (!UUID_PATTERN.test(runtimeSessionId)) {
+    throw new Error("Параметр --runtime-session должен содержать UUID runtime-сессии.");
+  }
+  return runtimeSessionId.toLowerCase();
 };
 
 export const normalizeOrigin = (value) => {
@@ -2285,6 +2294,7 @@ const fetchRuntimePolicyAdmission = async ({
   origin,
   token,
   target,
+  runtimeSessionId,
   runtimeAttestation,
   requestCommand = request,
   waitForRetry = wait,
@@ -2305,6 +2315,7 @@ const fetchRuntimePolicyAdmission = async ({
           body: JSON.stringify({
             ...(target.companySlug ? { companySlug: target.companySlug } : {}),
             ...(target.companyId ? { companyId: target.companyId } : {}),
+            ...(runtimeSessionId ? { runtimeSessionId } : {}),
             ...(runtimeAttestation ? { runtimeAttestation } : {}),
           }),
         },
@@ -2320,6 +2331,66 @@ const fetchRuntimePolicyAdmission = async ({
   }
 
   throw lastError ?? new Error("Не удалось проверить политику модели Trelio.");
+};
+
+const normalizeRuntimeHookSessionPayload = (value) => {
+  if (
+    !value
+    || typeof value !== "object"
+    || value.schemaVersion !== 1
+    || !UUID_PATTERN.test(String(value.runtimeSessionId || ""))
+    || Number.isNaN(Date.parse(String(value.expiresAt || "")))
+  ) {
+    throw new Error("Trelio вернул некорректную runtime-сессию hook.");
+  }
+  return {
+    schemaVersion: 1,
+    runtimeSessionId: String(value.runtimeSessionId).toLowerCase(),
+    expiresAt: String(value.expiresAt),
+    observation: value.observation,
+  };
+};
+
+/**
+ * Hook использует тот же paired device-session, что и bridge. Private key
+ * остаётся в локальном hook state; Trelio получает только публичный ключ и
+ * наблюдение runtime, сделанное самим клиентским hook.
+ */
+export const registerAgentRuntimeHookSession = async ({
+  origin = DEFAULT_ORIGIN,
+  clientSessionId,
+  observation,
+  publicKeySpki,
+}) => {
+  const normalizedOrigin = normalizeOrigin(origin);
+  const token = await requireToken(normalizedOrigin);
+  await ensureBridgeCompatibility(normalizedOrigin, token);
+  const response = await request(
+    normalizedOrigin,
+    token,
+    "/api/agent-workspaces/runtime-policy/sessions",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientSessionId, observation, publicKeySpki }),
+    },
+  );
+  return normalizeRuntimeHookSessionPayload(await response.json());
+};
+
+export const endAgentRuntimeHookSession = async ({
+  origin = DEFAULT_ORIGIN,
+  runtimeSessionId,
+}) => {
+  const normalizedOrigin = normalizeOrigin(origin);
+  const token = await requireToken(normalizedOrigin);
+  await ensureBridgeCompatibility(normalizedOrigin, token);
+  await request(
+    normalizedOrigin,
+    token,
+    `/api/agent-workspaces/runtime-policy/sessions/${requireUuid(runtimeSessionId, "runtime session")}/end`,
+    { method: "POST" },
+  );
 };
 
 const saveCredential = async (origin, field, accessToken, keychainService) => {
@@ -4087,6 +4158,7 @@ const assertOrdinaryRuntimePolicyForCompany = async ({
   origin,
   token,
   companyId,
+  runtimeSessionId,
   runtimeAttestation,
 }) => {
   const target = normalizeRuntimePolicyTarget({ companyId });
@@ -4097,6 +4169,7 @@ const assertOrdinaryRuntimePolicyForCompany = async ({
     origin,
     token,
     target,
+    runtimeSessionId,
     runtimeAttestation,
   });
   const evaluation = admission.evaluation;
@@ -4156,6 +4229,7 @@ const skillCommand = async (
     : null;
   const releaseId = requireUuid(options.release, "release");
   const skillId = String(options.skill || "");
+  const runtimeSessionId = parseRuntimeSessionOption(options);
   const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
 
   if (!SKILL_ID_PATTERN.test(skillId)) {
@@ -4168,6 +4242,7 @@ const skillCommand = async (
     origin,
     token,
     companyId,
+    runtimeSessionId,
     runtimeAttestation,
   });
   const response = await request(
@@ -5554,9 +5629,10 @@ const openWorkspace = async (origin, options) => {
     automatic: true,
   }).catch(() => undefined);
   const workspaceId = requireUuid(options.workspace, "workspace");
-  // Exact open-команду строит MCP после server-side policy check. Bridge
-  // повторяет переданную агентом self-attestation при claim/start и никогда не
-  // подменяет её локальным чтением env, transcript или hook.
+  // Exact open-команду строит уже допущенный MCP-вызов. Новая схема передаёт
+  // только server-side runtime-session id; legacy self-attestation остаётся на
+  // один rolling-upgrade цикл и не используется новым hook.
+  const runtimeSessionId = parseRuntimeSessionOption(options);
   const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
   let runPayload;
   let runOverview = null;
@@ -5599,6 +5675,7 @@ const openWorkspace = async (origin, options) => {
           expectedFencingToken: existingRun.fencingToken,
           clientKind: "workspace-bridge",
           clientVersion: BRIDGE_VERSION,
+          ...(runtimeSessionId ? { runtimeSessionId } : {}),
           ...(runtimeAttestation ? { runtimeAttestation } : {}),
           ...(activeAgentRules
             ? { platformRulesSha256: activeAgentRules.sha256 }
@@ -5623,6 +5700,7 @@ const openWorkspace = async (origin, options) => {
             body: JSON.stringify({
               clientKind: "workspace-bridge",
               clientVersion: BRIDGE_VERSION,
+              ...(runtimeSessionId ? { runtimeSessionId } : {}),
               ...(runtimeAttestation ? { runtimeAttestation } : {}),
               ...(activeAgentRules
                 ? { platformRulesSha256: activeAgentRules.sha256 }

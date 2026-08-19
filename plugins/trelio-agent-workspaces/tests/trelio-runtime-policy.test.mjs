@@ -3,23 +3,24 @@ import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { parseSelfReportedRuntimeAttestationOptions } from "../scripts/trelio-workspace.mjs";
+import {
+  parseRuntimeSessionOption,
+  parseSelfReportedRuntimeAttestationOptions,
+} from "../scripts/trelio-workspace.mjs";
 
 const hookScriptPath = fileURLToPath(
-  new URL("../scripts/trelio-runtime-policy.mjs", import.meta.url),
+  new URL("../scripts/trelio-runtime-session.mjs", import.meta.url),
 );
 const hookManifestPath = fileURLToPath(
   new URL("../hooks/hooks.json", import.meta.url),
 );
 
-test("plugin registers no agent hooks", async () => {
-  const isMissing = (error) => error?.code === "ENOENT";
-
-  await assert.rejects(access(hookManifestPath), isMissing);
-  await assert.rejects(access(hookScriptPath), isMissing);
+test("plugin ships the runtime session hook and manifest", async () => {
+  await access(hookManifestPath);
+  await access(hookScriptPath);
 });
 
-test("bridge reconstructs a Codex self-attestation only from explicit MCP argv", () => {
+test("bridge retains explicit Codex self-attestation only for rolling upgrade", () => {
   const attestation = parseSelfReportedRuntimeAttestationOptions({
     "runtime-client": "codex",
     "runtime-model": "gpt-5.6-sol",
@@ -38,7 +39,7 @@ test("bridge reconstructs a Codex self-attestation only from explicit MCP argv",
   });
 });
 
-test("bridge accepts Claude Code self-attestation in cloud-compatible argv", () => {
+test("bridge retains Claude Code self-attestation only for rolling upgrade", () => {
   const attestation = parseSelfReportedRuntimeAttestationOptions({
     "runtime-client": "claude-code",
     "runtime-model": "claude-opus-5-20260801",
@@ -82,5 +83,15 @@ test("bridge rejects partial or shell-shaped runtime declarations", () => {
       "runtime-observed-at": "2026-08-19T12:34:56.000Z",
     }),
     /безопасный model id/u,
+  );
+});
+
+test("bridge accepts only an exact runtime-session UUID", () => {
+  assert.equal(parseRuntimeSessionOption({
+    "runtime-session": "11111111-1111-4111-8111-111111111111",
+  }), "11111111-1111-4111-8111-111111111111");
+  assert.throws(
+    () => parseRuntimeSessionOption({ "runtime-session": "$(touch bad)" }),
+    /UUID/u,
   );
 });

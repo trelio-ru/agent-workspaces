@@ -96,11 +96,11 @@ macOS и `winget install --id Git.Git -e` на Windows. Обычное сист�
 approval/native installer окно остаётся за пользователем, после чего doctor
 повторяется и найденный absolute path используется без restart.
 
-Политика модели компании действует и без Agent Run. В связанном проекте hook
-закрепляет её при первом защищённом действии, а вне проекта – при scoped Trelio
-MCP-вызове с exact company. Перед следующими действиями текущие model/effort
-проверяются локально; отдельная команда агента или перезапуск не нужны. Agent
-Run сохраняет собственный pinned snapshot с приоритетом над обычной задачей.
+Политика модели компании действует и без Agent Run. При первом protected MCP
+call approved hook закрепляет наблюдаемые model/effort в paired runtime-session
+и затем добавляет одноразовый proof автоматически. Discovery/recovery остаются
+доступны без допуска. Agent Run сохраняет pinned policy/runtime snapshot; смена
+runtime позже не отзывает уже допущенную client session.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

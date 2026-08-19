@@ -157,39 +157,31 @@ exact hash.
 
 ## Model/runtime policy
 
-Каждый non-recovery Trelio MCP request передаёт self-reported
-`runtimeAttestation` exact текущего вызова. Для Codex/Claude Code обязательны
-`source=agent_request`, `evidenceLevel=self_reported`, real model/effort и ISO
-`observedAt`; после переключения runtime значения формируются заново. Backend
-сам разрешает фактическую company и применяет current revision, поэтому
-локальная binding, session cache и hook не являются частью admission.
+Plugin регистрирует lifecycle hooks. Первый protected `PreToolUse` наблюдает
+model/effort, создаёт Ed25519 key pair и через paired bridge регистрирует
+runtime-session. Private key хранится только в private config; каждый context,
+mutation и Agent Workspace call получает одноразовый `runtimeSessionProof`
+через full `updatedInput`. Backend проверяет подпись, freshness, exact user и
+живой bridge/OAuth, затем атомарно потребляет nonce.
 
-Discovery allowlist (`search`, lists, metadata/resolvers) проверяет, разрешена
-ли модель, но намеренно не minimum effort. Context reads, mutations и Agent
-Workspace tools проверяют оба ограничения. Неизвестный новый read по умолчанию
-context, write – mutation. Login/doctor/pairing recovery не блокируются.
+Discovery allowlist (`search`, lists, metadata/resolvers`) и
+login/doctor/pairing recovery не требуют admission. Неизвестный новый read по
+умолчанию context, write – mutation. В enforcing company отсутствие hook
+fail-closed возвращает `TRELIO_RUNTIME_HOOK_REQUIRED` с recovery-инструкцией.
 
-Agent Run закрепляет policy snapshot и initiating attestation. Возвращённая MCP
-open-команда переносит exact declaration в `--runtime-*`; bridge повторяет её
-при start/claim и не определяет модель из env/transcript. Signed Agent Skill
-получает те же argv и повторный server admission. Plugin не регистрирует hooks.
-Старый hook/rollout evidence не принимается даже при claim: незавершённая
-legacy работа начинается новым Run после обновления plugin, а accepted
-Workspace revisions сохраняются.
-
-Это cooperative self-report, а не криптографическая platform attestation.
-Unknown client/model управляется explicit allow/deny. Runtime без достоверной
-Codex/Claude Code identity использует только `clientFamily=other`,
-`source=unknown`, `evidenceLevel=unavailable`, `modelId=null` и
-`effortLevel=null`; не выдавать неизвестный cloud runtime за известный клиент и
-не копировать декларацию другой модели.
+Runtime закрепляется при первом protected call до `SessionEnd` или максимум на
+24 часа. Смена model/effort позже не отзывает уже допущенную session. Agent Run
+и signed Agent Skill используют `--runtime-session UUID`, не model argv. В
+rolling-upgrade окне старый backend получает hook-observed legacy payload
+только после 404 нового endpoint; повышение production minimum убирает этот
+fallback как рабочий путь.
 
 Best-effort переименование нового Codex-чата задаётся короткой инструкцией в
 основном Trelio MCP сразу после runtime-policy текста. Она вызывает native
 thread-title tool только для явно нового top-level conversation, не меняет
 fork/delegated/existing/user-named thread и молча пропускается без host tool.
-Это не hook и не lifecycle guarantee: cloud toolset может отличаться, а Claude
-Code использует собственное название с пользовательским `/rename`.
+Runtime lifecycle hook не содержит title logic. Cloud toolset может отличаться,
+а Claude Code использует собственное название с пользовательским `/rename`.
 
 ## Working-folder onboarding skill
 
