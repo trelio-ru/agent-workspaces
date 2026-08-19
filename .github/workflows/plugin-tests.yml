@@ -31,22 +31,18 @@ jobs:
         with:
           node-version: 22
 
-      # Keep the exact test paths explicit so both shells pass the same files
-      # to Node without relying on glob expansion. Telegram Web's deterministic
-      # runtime suite belongs in both POSIX lanes, including the injected exact
-      # macOS `open -n -a <verified .app> URL` consent argv, landing-admission,
-      # and terminal malformed-POST contracts. Real browser/account smoke is a
-      # separately recorded release qualification and is not inferred from
-      # these platform-neutral tests.
-      - name: Run plugin and platform runtime Node tests
+      # Keep exact paths explicit so every shell passes the same files to Node.
+      # The active Telegram Web adapter is a bundled plugin runtime, like MAX;
+      # the archived signed legacy source is intentionally absent from CI.
+      - name: Run plugin runtime Node tests
         run: >-
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-messaging.test.mjs
+          plugins/trelio-agent-workspaces/tests/trelio-telegram-web.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
-          platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
 
   windows-acl:
     name: Windows runtime and private ACL
@@ -61,18 +57,11 @@ jobs:
         with:
           node-version: 22
 
-      # Runtime 1.0.4 rejects Windows before creating profile/state. Exercise
-      # that real fail-closed gate plus pure parsing/environment/source
-      # contracts here; do not inject the macOS lane and then weaken the real
-      # Windows DACL verifier merely to run unreachable profile scenarios.
-      # The complete deterministic behavior suite remains mandatory on both
-      # POSIX runners above. A future Windows qualification must replace this
-      # narrow gate with dedicated live task-tree and private-state coverage.
-      - name: Run Telegram Web Windows gate regressions
-        run: >-
-          node --test
-          --test-name-pattern="unqualified Linux and Windows hosts fail before doctor, bootstrap, or profile state|account slots use the strict canonical safe subset|browser and opener child environment is an allowlist|source contains exact security contracts"
-          platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
+      # The compact adapter uses the same Node/Chrome contract on macOS,
+      # Windows and Linux. These tests cover its portable argument, policy,
+      # login-handoff and approval-hash behavior without a live account.
+      - name: Run Telegram Web runtime regressions
+        run: node --test plugins/trelio-agent-workspaces/tests/trelio-telegram-web.test.mjs
 
       # The broader bridge suite contains POSIX-specific fixtures. This job is
       # intentionally narrow: it exercises the command transport and the real

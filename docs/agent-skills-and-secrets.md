@@ -90,10 +90,10 @@ skill/company/member/fingerprint и не передаётся Trelio. Удале
 
 ## Communication runtimes
 
-Email использует TLS IMAP/SMTP, Telegram – локальную MTProto session, MAX –
-локальный browser adapter. Политики отправки: `confirm`, `autonomous`,
-`read-only`. Компания может запретить autonomous, но не включить его за
-пользователя.
+Email использует TLS IMAP/SMTP, Telegram MTProto – локальную protocol session,
+а Telegram Web и MAX – локальные browser adapters. Политики отправки:
+`confirm`, `autonomous`, `read-only`. Компания может запретить autonomous, но
+не включить его за пользователя.
 
 Telegram/MAX ограничены `chat-only`, email – `mail-only`: входящий контент не
 даёт полномочий действовать в другой системе. Перед подготовкой сообщения
@@ -124,6 +124,16 @@ Runtime поддерживает structured bounded history, passive unread poll
 операции требуют exact dry-run/approval hash и отдельный confirm; после
 неоднозначного ответа они сначала проверяют live-state. Управление
 администраторами и invite links намеренно не предоставляется.
+
+Telegram Web использует тот же компактный local-profile и send-policy паттерн,
+но без отдельного annual/per-chat consent registry и без MAX-specific
+WebSocket guard. При первом входе агент говорит: `После входа в Telegram Web
+закройте окно.` и затем запускает fresh `probe` в новом browser process.
+Открытие диалога может отметить видимые сообщения прочитанными; результат
+явно содержит `readState.mode=ordinary-telegram-web`. Exact title либо
+canonical Web K PeerId, bounded output, dry-run/approval hash и запрет blind
+retry после ambiguous mutation сохраняются. Старый signed runtime находится в
+`platform-skills/telegram-web-legacy/` только как архив и не используется.
 
 ## Agent Secrets
 

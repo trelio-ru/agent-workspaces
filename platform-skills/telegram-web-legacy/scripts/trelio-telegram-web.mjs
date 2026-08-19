@@ -70,7 +70,7 @@ const exactPathIdentity = async (targetPath) => {
   return { dev: metadata.dev, ino: metadata.ino };
 };
 
-export const SKILL_ID = "telegram-web";
+export const SKILL_ID = "telegram-web-legacy";
 export const ADAPTER_VERSION = "1";
 export const TELEGRAM_WEB_URL = "https://web.telegram.org/k/";
 export const TELEGRAM_WEB_ORIGIN = new URL(TELEGRAM_WEB_URL).origin;

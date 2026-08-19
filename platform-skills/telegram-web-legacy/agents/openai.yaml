@@ -1,0 +1,6 @@
+interface:
+  display_name: "Telegram Web Legacy"
+  short_description: "Архивная runtime-линия Telegram Web"
+  default_prompt: "Use $telegram-web-legacy only for explicit maintenance or audit of the archived signed runtime; use $telegram-web for ordinary Telegram Web work."
+policy:
+  allow_implicit_invocation: false

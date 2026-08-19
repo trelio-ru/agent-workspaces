@@ -142,47 +142,25 @@
   разрешён только после exact `not_configured`, `no_access`,
   `needs_reconnect` или `unsupported_operation` primary. Catalog/control-plane
   outage, timeout, transient/unknown error и ambiguous mutation не разрешают
-  transport fallback или автоматический повтор. Connections, sessions,
-  consent и policy навыков независимы.
-- Канонический Telegram Web skill и signed runtime находятся в
-  `platform-skills/telegram-web/`. Runtime `1.0.4` использует отдельный Web K
-  profile, visible owner login/consent и headless content-команды, а broad или
-  недоказуемые операции возвращает как unsupported до решающего side effect.
-  Login и logout owner handoff нельзя реализовывать одним долгим provider
-  `waitForFunction`: короткие структурные polls остаются под 30-секундным
-  renderer-stall fence, а полный видимый handoff – под exact `holdMs` и общий
-  referenced lifecycle. Login завершается только после стабильного видимого
-  authenticated surface, отсутствия exact visible `#auth-pages` и
-  password/passcode handoff и canonical account identity proof; пароль/код
-  runtime не читает и не вводит. До публичного login success headed Chrome
-  должен graceful-завершиться, а тот же профиль под непрерывно удерживаемым
-  profile lock – открыться новым headless process и доказать тот же private
-  account digest; logged-out/locked/mismatch/forced teardown не разрешают
-  success, auto-retry или transport fallback. Восстановленная canonical home
-  page сначала проходит bounded structural readiness proof: обычная готовая
-  content page не получает конкурирующий `goto`, но pre-content login/probe
-  обязан сделать один fresh canonical reload, чтобы не доверять restored DOM.
-  Probe bounded-poll-ит auth + identity до устойчивого результата и переводит native
-  browser/provider ошибки в `TELEGRAM_WEB_PROBE_FAILED` только с фиксированной
-  безопасной phase, не раскрывая raw error, URL, path, content или account
-  digest; deliberate runtime errors сохраняют исходный code.
-  Protected consent на macOS открывается только через exact machine-wide
-  Chrome/Chromium/Edge, который уже выбран и повторно проверен текущей browser-
-  сессией: generic/default URL handler и ChatGPT Browser для этого handoff
-  запрещены. `Referrer-Policy: origin` сохраняет normal Chrome Origin, но не
-  раскрывает one-use path; строгие Origin, Fetch Metadata, content-type и cookie
-  проверки POST не ослабляются, а runtime не нажимает consent за владельца.
-  Zero-exit opener не является delivery proof: exact landing GET должен
-  завершиться за 30 секунд. После admitted landing malformed protected POST
-  отдаёт явный HTTP error и terminal-завершает команду без десятиминутного lock.
-  Awaited command/browser/consent/download deadline timers должны оставаться
-  referenced до exact завершения или cleanup: `unref()` не может подменять
-  гарантированный timeout преждевременным выходом Node process.
-  Общий deterministic regression
-  `platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs` обязан
-  выполняться в Linux/macOS CI вместе с plugin suites. Этот прогон не заменяет
-  real Chrome/account qualification и не даёт права называть непроверенные
-  Codex/Claude/OS lanes live-tested.
+  transport fallback или автоматический повтор. Connections, sessions и policy
+  навыков независимы.
+- Текущий Telegram Web adapter находится в bundled plugin script
+  `plugins/trelio-agent-workspaces/scripts/trelio-telegram-web.mjs` и следует
+  компактному MAX-паттерну: один private profile на exact
+  company/member/connection, `confirm` / `autonomous` / `read-only`, exact
+  title либо canonical Web K PeerId, bounded output, dry-run + approval hash
+  для structural/destructive mutations и запрет blind retry после ambiguous
+  результата. Отдельного annual/per-chat consent registry нет. `login` –
+  owner handoff с точной подсказкой `После входа в Telegram Web закройте окно.`;
+  сохранённую сессию доказывает только один fresh `probe` в новом process.
+  Открытие exact диалога сохраняет обычную Telegram Web semantics и может
+  отметить видимые сообщения прочитанными; runtime явно возвращает
+  `readState.mode=ordinary-telegram-web` и не заявляет passive protection.
+  Адаптер и его deterministic tests обязаны работать в local Codex и Claude
+  Code на macOS/Windows/Linux; executable-изменение требует новой версии
+  plugin. Прежний большой signed runtime сохранён в
+  `platform-skills/telegram-web-legacy/`, исключён из CI и operational routing и
+  не используется без отдельной maintainer-задачи.
 - Agent Secrets передаются только exact executable через одноразовый grant;
   каждый контейнер неизменно выбирает `trelio` либо личный `local_device`.
   Перед созданием MCP читает company `storagePolicy` через

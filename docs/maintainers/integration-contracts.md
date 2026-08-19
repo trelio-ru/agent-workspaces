@@ -73,7 +73,8 @@ Telegram имеет формальный двухтранспортный routin
 primary. Недоступность catalog/control plane, timeout, transient/unknown error
 и ambiguous mutation outcome не являются fallback: сначала устанавливается
 live-результат либо пользователь решает, нужен ли повтор. Assignments,
-connections, local sessions, consent и policy двух навыков независимы.
+connections, local sessions и policy двух навыков независимы. Текущий Web
+adapter не имеет отдельного consent registry.
 
 Leading `trelio-workspace` – logical launcher текущего plugin. Проверить PATH
 без пробного запуска; если отсутствует, заменить только первый token на Node.js
@@ -293,9 +294,7 @@ safe-integer opaque `peerId` допустим только как
 exact routing/disambiguation identifier, не содержит access hash и для Saved
 Messages заменяется semantic identifier; raw current-account user ID также не
 возвращается как author PeerId в обычном чате, вместо него используется
-semantic `self`. Account-specific public result и
-mutation preview Telegram Web всегда показывают canonical `accountSlot` 1–4,
-не раскрывая raw account user ID/digest. `export` и совместимый alias
+semantic `self`. `export` и совместимый alias
 `daily-export` читают точный
 полуоткрытый период `since <= message.date < until`: naive границы получают
 явную IANA timezone (`Europe/Moscow` по умолчанию), а `until` передаётся
@@ -303,18 +302,24 @@ Telethon как server-side history cursor. Массовое чтение тре
 повторяемых `--chat` либо bounded `--all-dialogs`, фильтра broad chat type,
 per-chat/scan/global-message/JSON-byte limits и явных incomplete reasons для
 каждого достигнутого ограничения. Именно в MTProto export вложения остаются
-только метаданными, а структурированные ссылки включаются opt-in. Telegram Web
-`read` / `search`, напротив, всегда возвращают bounded `linkEntities` и
-bounded безопасные attachment metadata в общем message artifact. Перед обычным исходящим сообщением или
+только метаданными, а структурированные ссылки включаются opt-in. Перед обычным исходящим сообщением или
 file-caption читать последние 5–10 содержательных реплик exact dialog и reply
 target; сохранять tone/ты-вы, explicit instruction имеет приоритет. Узкое
 исключение – captionless document в собственные Saved Messages, включая
 release E2E: для него нельзя читать несвязанную self-history только ради этого
 tone-правила.
 
-Title-only Telegram Web discovery удаляет control/bidi символы из bounded
-display title и показывает title, opaque PeerId как отдельный code literal и
-`accountSlot` раздельно; display sanitizer никогда не преобразует сам PeerId.
+Текущий Telegram Web adapter повторяет компактный MAX contract: один private
+profile на exact company/member/connection, exact normalized title либо
+canonical safe-integer Web K PeerId, bounded history/output и local
+`confirm` / `autonomous` / `read-only`. Structural/destructive mutation всегда
+связывается с неизменным dry-run approval hash; ambiguous outcome запрещает
+blind retry. `login` заканчивается закрытием видимого окна владельцем, а
+сохранённую сессию доказывает только fresh `probe` в новом process. Открытие
+диалога может отметить видимые сообщения прочитанными; runtime возвращает
+`readState.mode=ordinary-telegram-web`, не обещая passive read. Архивный signed
+runtime находится только в `platform-skills/telegram-web-legacy/`, исключён из
+operational routing и plugin CI.
 
 MAX partial match допустим только discovery. Перед read/send нужен один exact
 normalized title; single partial не достаточно. После DOM load ждать
