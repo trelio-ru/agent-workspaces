@@ -125,7 +125,13 @@ test("Telegram Web parses bounded history, repeated files and exact member refer
   ]);
   assert.equal(options.title, "Проект Альфа");
   assert.deepEqual(options.members, ["@one", "https://t.me/two"]);
-  assert.deepEqual(options.files, ["/tmp/one.txt", "/tmp/two.txt"]);
+  // `parseArguments` intentionally resolves local files with the host path
+  // implementation. Keep the assertion portable instead of hard-coding a
+  // POSIX spelling that becomes `D:\\tmp\\...` on GitHub's Windows runner.
+  assert.deepEqual(options.files, [
+    path.resolve("/tmp/one.txt"),
+    path.resolve("/tmp/two.txt"),
+  ]);
   assert.equal(options.pages, 3);
   assert.throws(
     () => parseArguments([...identityArguments, "read", "--pages", "21"]),
