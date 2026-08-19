@@ -113,9 +113,14 @@ test("hook proof is Ed25519-bound to session, tool, timestamp and nonce", () => 
 test("plugin declares runtime lifecycle hooks without restoring the title hook", async () => {
   const hooksPath = fileURLToPath(new URL("../hooks/hooks.json", import.meta.url));
   const hooks = JSON.parse(await readFile(hooksPath, "utf8"));
+  const sessionEndHandlers = hooks.hooks.SessionEnd.flatMap((group) => group.hooks ?? []);
   assert.ok(hooks.hooks.SessionStart);
   assert.ok(hooks.hooks.PreToolUse);
   assert.ok(hooks.hooks.SessionEnd);
+  // Codex синхронно завершает SessionEnd и допускает для него не больше трёх
+  // секунд. Exact значение сохраняет всё доступное окно на cleanup без
+  // предупреждения `clamping SessionEnd hook timeout to 3s` при загрузке.
+  assert.deepEqual(sessionEndHandlers.map((handler) => handler.timeout), [3]);
   assert.match(JSON.stringify(hooks), /trelio-runtime-session\.mjs/u);
   assert.doesNotMatch(JSON.stringify(hooks), /title|rename/u);
 });

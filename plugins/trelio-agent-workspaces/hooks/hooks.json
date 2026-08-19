@@ -32,7 +32,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
-            "timeout": 10
+            "timeout": 3
           }
         ]
       }

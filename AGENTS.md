@@ -297,8 +297,11 @@
   обходятся и не подтверждаются агентом. После установки doctor повторяется в
   той же задаче, новый absolute path используется без restart; ambiguous
   installer result сначала проверяется doctor, а не повторяется вслепую.
-- Runtime hooks живут в `hooks/hooks.json` и не переименовывают чат. Основной
-  Trelio MCP отдельно даёт короткую Codex-only best-effort инструкцию: в явно
+- Runtime hooks живут в `hooks/hooks.json` и не переименовывают чат.
+  `SessionEnd` всегда сохраняет exact `timeout: 3`: это максимальное окно
+  Codex для синхронного завершающего hook, а большее значение создаёт ошибку
+  конфигурации `clamping SessionEnd hook timeout to 3s`. Основной Trelio MCP
+  отдельно даёт короткую Codex-only best-effort инструкцию: в явно
   новом верхнеуровневом чате после исходного контекста вызвать native title
   tool не более одного раза. Fork, delegated/existing conversation и
   пользовательское название не меняются; отсутствие tool – тихий no-op.
