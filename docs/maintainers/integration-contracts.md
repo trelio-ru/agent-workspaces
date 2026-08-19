@@ -233,6 +233,29 @@ session. Ноль или несколько совпадений, hidden/read-on
 окна или fallback. Universal browser tool, clipboard, secret values в argv,
 stdout и read-back запрещены.
 
+Resolver системного browser не объявляет group-writable installation
+«отсутствующей»: локальный browser уже является machine trust root, а обычная
+macOS admin-group или package-manager установка может иметь mode `0775`.
+POSIX candidate всё равно обязан быть exact canonical regular non-symlink
+executable и не быть world-writable. Windows сохраняет fixed standard paths.
+
+Личный вход пользователя – отдельный owner handoff, а не перенос Agent Secret.
+По прямому выбору пользователя либо после `browser_unavailable` агент может
+предложить видимый in-app Browser Codex или системный Chrome/Edge, открыть
+только страницу входа и ждать, пока пользователь сам завершит авторизацию.
+In-app Browser считается отдельной browser-поверхностью и не предполагается
+наследующим password manager системного Chrome; системный browser может
+использовать собственный.
+Агент не вводит, не читает и не снимает credential, после handoff проверяет
+только несекретное authenticated state. URL/origin/selector failure не открывает
+второе окно автоматически: сначала показывается причина и выбор пользователя.
+
+Прямая просьба показать Trelio-stored value маршрутизируется в browser reveal
+exact Agent Secret, а не в chat output. Агент проверяет safe `canReveal`, при
+необходимости создаёт обычный access request и отдаёт управление пользователю.
+Fresh auth и короткое время показа остаются browser-side; агент не управляет и
+не инспектирует reveal surface. Для `local_device` server reveal отсутствует.
+
 ## Browser-only ConsultantPlus
 
 `consultant-plus` не создаёт company connection и не получает credential.

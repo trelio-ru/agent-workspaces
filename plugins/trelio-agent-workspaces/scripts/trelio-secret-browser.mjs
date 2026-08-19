@@ -117,7 +117,14 @@ export const resolveTrustedSecretBrowserExecutable = async ({
     if (!canonical || !path.isAbsolute(canonical)) continue;
     const metadata = await filesystem.lstat(canonical).catch(() => null);
     if (!metadata || !metadata.isFile() || metadata.isSymbolicLink()) continue;
-    if (platform !== "win32" && ((metadata.mode & 0o111) === 0 || (metadata.mode & 0o022) !== 0)) continue;
+    // Системный browser уже является machine trust root всего локального
+    // browser-flow. На macOS обычная установка может быть writable для группы
+    // admin, а Homebrew/Linux packages тоже не обязаны иметь exact 0755.
+    // Запрет group-write поэтому создавал ложный «браузер не найден», не
+    // защищая от локального администратора, который и так может заменить app.
+    // Оставляем важные дешёвые проверки: exact canonical system path, regular
+    // non-symlink executable и запрет записи любому OS-пользователю.
+    if (platform !== "win32" && ((metadata.mode & 0o111) === 0 || (metadata.mode & 0o002) !== 0)) continue;
     return canonical;
   }
   throw new SecretBrowserFillError(

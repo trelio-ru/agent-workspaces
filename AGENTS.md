@@ -199,6 +199,18 @@
   чувствительной персональной session. Следующие команды используют эту копию
   и не запрашивают новый checkout, пока файл существует; значение по-прежнему
   не попадает в model/MCP/argv/stdout/workspace/log.
+  Dedicated browser resolver использует exact canonical system path, regular
+  non-symlink executable и на POSIX отклоняет только non-executable либо
+  world-writable файл. Group-writable macOS admin-group/package-manager
+  installation разрешена: локальный browser уже является machine trust root и
+  не должен ложно считаться отсутствующим из-за mode `0775`.
+  Пользователь может отдельно выбрать личный ручной вход: in-app Browser Codex
+  допустим как visible owner handoff, но не считается наследующим password
+  manager системного Chrome; системный Chrome/Edge может использовать свой.
+  Агент не вводит и не читает credential и после handoff проверяет только
+  несекретное состояние. Прямая просьба показать server-stored значение ведёт
+  в fresh-auth time-limited Trelio reveal, не в chat; агент не инспектирует эту
+  поверхность, а `local_device` reveal не получает.
 - ConsultantPlus показывает browser только для входа, CAPTCHA и другого exact
   действия пользователя. После подтверждённой авторизации Codex side panel
   сразу скрывается либо внешний browser перестаёт выводиться на передний план;

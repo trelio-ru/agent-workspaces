@@ -242,6 +242,26 @@ inside a cross-origin iframe, or the page changes to an unbound URL/origin,
 stop the complete session without a fallback window or value retry. Never read
 a field back or transfer a value to a universal browser tool.
 
+A user-controlled login is a separate safe handoff, not a literal-text secret
+fallback. When the user explicitly prefers to sign in personally, or the
+dedicated fill reports `browser_unavailable`, offer one visible browser surface
+and wait for the user to finish the login and say that it is ready. Codex's
+in-app Browser may be used for that manual handoff, but treat it as a separate
+browser surface and do not assume that it inherits the system Chrome password
+manager. A system Chrome or Edge window may use its own password manager. Never type, paste,
+inspect, screenshot, or read the credential for the user. Do not automatically
+open a second window after an exact URL/selector/origin failure; explain the
+failure first and let the user choose the manual handoff. After the user
+returns, verify only the non-sensitive authenticated state and continue.
+
+If the user explicitly asks to see a Trelio-stored value, route them to the
+protected Trelio reveal for the exact Agent Secret instead of echoing it in
+chat. Use safe metadata to check `canReveal`; request `reveal` access when it is
+missing. The user completes fresh authentication and sees the time-limited
+value locally. Do not operate or inspect the reveal surface through Browser,
+Chrome, or Computer Use. `local_device` has no browser reveal; its value remains
+only on the paired device.
+
 When one selected secret becomes a durable dependency of the task, dossier or
 other writable workspace, record only this safe reference in
 `WORKSPACE_CONTEXT.md`:

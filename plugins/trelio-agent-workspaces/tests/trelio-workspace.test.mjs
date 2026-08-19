@@ -71,6 +71,7 @@ import {
   createSecretBrowserControllerExpression,
   normalizeSecretBrowserFieldSelector,
   normalizeSecretBrowserTarget,
+  resolveTrustedSecretBrowserExecutable,
   runSecretBrowserFill,
 } from "../scripts/trelio-secret-browser.mjs";
 
@@ -2905,7 +2906,54 @@ test("workspace instructions keep a canonical safe Agent Secret reference and us
   assert.match(workspaceSkill, /merely\s+discovered but unused secrets/u);
   assert.match(workspaceSkill, /--format fields-json/u);
   assert.match(workspaceSkill, /Never\s+split one logical multi-field credential/u);
+  assert.match(workspaceSkill, /in-app Browser/u);
+  assert.match(workspaceSkill, /do not assume that it inherits the system Chrome password\s+manager/u);
+  assert.match(workspaceSkill, /explicitly asks to see/u);
+  assert.match(workspaceSkill, /protected Trelio reveal/u);
   assert.match(bridgeSource, /неиспользованных найденных секретов/u);
+  assert.match(bridgeSource, /не предполагай, что он наследует менеджер паролей Chrome/u);
+  assert.match(bridgeSource, /прямо просит показать значение/u);
+});
+
+test("Trelio Secret Browser accepts an executable writable by its trusted OS group", async () => {
+  const chromeExecutable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const filesystem = {
+    realpath: async (candidate) => {
+      if (candidate === chromeExecutable) return candidate;
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+    lstat: async () => ({
+      mode: 0o100775,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    }),
+  };
+
+  assert.equal(await resolveTrustedSecretBrowserExecutable({
+    platform: "darwin",
+    environment: {},
+    filesystem,
+  }), chromeExecutable);
+});
+
+test("Trelio Secret Browser still rejects a world-writable executable", async () => {
+  const filesystem = {
+    realpath: async (candidate) => candidate,
+    lstat: async () => ({
+      mode: 0o100777,
+      isFile: () => true,
+      isSymbolicLink: () => false,
+    }),
+  };
+
+  await assert.rejects(
+    resolveTrustedSecretBrowserExecutable({
+      platform: "darwin",
+      environment: {},
+      filesystem,
+    }),
+    (error) => error?.reasonCode === "browser_unavailable",
+  );
 });
 
 test("Trelio Secret Browser transports a value once through its isolated controller", {
