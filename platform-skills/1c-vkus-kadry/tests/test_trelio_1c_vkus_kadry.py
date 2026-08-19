@@ -51,8 +51,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.5")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.5")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.6")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.6")
         self.assertEqual(
             MODULE.provider.SUPPORTED_SKILL_IDS,
             {MODULE.HR_SKILL_ID},
@@ -331,6 +331,75 @@ class VkusHrRuntimeTests(unittest.TestCase):
         page = MODULE.provider.browser_prompt_app_page().decode("utf-8")
         self.assertIn("Сохранять данные в браузере не нужно", page)
         self.assertIn('autocomplete="off"', page)
+
+    def test_connect_probes_exact_signed_hr_source_without_broad_allowlist(self) -> None:
+        config = self._company_config()
+        credentials = MODULE.provider.Credentials("employee", "password")
+        identity = MODULE.provider.Identity(
+            company_id=MODULE.EXPECTED_COMPANY_ID,
+            member_id="11111111-1111-4111-8111-111111111111",
+            connection_id="22222222-2222-4222-8222-222222222222",
+        )
+        response = Response(
+            json.dumps(
+                {
+                    "value": [
+                        {MODULE.CONNECTION_PROBE_FIELD: identity.member_id},
+                    ],
+                },
+            ).encode("utf-8"),
+        )
+        opened_urls: list[str] = []
+
+        def fake_open(_: str, url: str, **__: object) -> Response:
+            opened_urls.append(url)
+            return response
+
+        with (
+            mock.patch.object(MODULE, "_current_identity", return_value=identity),
+            mock.patch.object(
+                MODULE.provider,
+                "load_company_config",
+                return_value=config,
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "prompt_credentials",
+                return_value=credentials,
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_require_x_odata",
+                return_value="x" * 32,
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_request_odata",
+                side_effect=AssertionError("broad provider allowlist must not run"),
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_http_open",
+                side_effect=fake_open,
+            ) as opened,
+            mock.patch.object(MODULE.provider, "save_credentials") as save_credentials,
+            mock.patch.object(MODULE.provider, "save_access_state") as save_access_state,
+        ):
+            result = MODULE.command_connect(mock.Mock(terminal_prompts=False))
+
+        self.assertEqual(result, {"status": "connected"})
+        decoded_url = __import__("urllib.parse").parse.unquote(opened_urls[0])
+        probe_source = next(
+            source
+            for source in self.registry["sources"]
+            if source["key"] == MODULE.CONNECTION_PROBE_SOURCE_KEY
+        )
+        self.assertIn(probe_source["entity"], decoded_url)
+        self.assertIn("$select=Ref_Key", decoded_url)
+        self.assertIn("$top=1", decoded_url)
+        self.assertEqual(opened.call_args.kwargs["x_odata"], "x" * 32)
+        save_credentials.assert_called_once_with(identity, config, credentials)
+        save_access_state.assert_called_once_with(identity, config, "connected")
 
     def test_parser_requires_explicit_unverified_download_flag(self) -> None:
         parsed = MODULE.build_parser().parse_args(

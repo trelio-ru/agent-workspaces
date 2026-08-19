@@ -116,6 +116,12 @@ OData `ФайлХранилище`: для `ХранилищеЗначения` 
 передаётся `X-OData`; личная Basic Auth-сессия и прежние ограничения размера,
 timeout, redirect и атомарной записи сохраняются.
 
+Runtime `1.0.6` исправляет `connect` и `doctor`: content-free проверка личного
+входа читает только один `Ref_Key` из exact кадрового source, закреплённого в
+signed registry, и больше не проходит через allowlist сущностей отдельного
+широкого навыка `1c-vkus`. HTTPS/SSRF/redirect/timeout, Basic Auth, X-OData,
+лимит ответа и fail-closed проверка фактического JSON/EDM контракта сохранены.
+
 По умолчанию несовпадение фактически полученных байт с полем `Размер` из
 metadata 1С остаётся fail-closed. Не добавлять
 `--allow-unverified-size-mismatch` автоматически. Использовать его только

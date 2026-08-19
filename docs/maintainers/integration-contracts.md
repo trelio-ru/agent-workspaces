@@ -432,7 +432,10 @@ P&L и не раскрывает запрещённые банковские/pay
 `1c-vkus-kadry` project-only, имеет independent credential namespace и скачивает
 exact attachment bytes только через fixed files service route; direct OData
 `ФайлХранилище` запрещён. Basic Auth files request не содержит X-OData; PDF,
-size, SHA-256 и quarantine rules проверяются fail-closed.
+size, SHA-256 и quarantine rules проверяются fail-closed. Его `connect` и
+`doctor` используют exact несекретное поле закреплённого signed-registry
+source и тот же bounded кадровый transport; broad `1c-vkus` entity allowlist
+не является authority для этого независимого probe.
 
 При явной maintainer-задаче отдельные development inventory/probe tools могут
 обращаться к reviewed `$metadata` или exact source, даже если production

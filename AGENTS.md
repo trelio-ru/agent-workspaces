@@ -129,6 +129,12 @@
   вывода и отдельное подтверждение внешних mutations. Наличие checkout само по
   себе не включает maintainer mode; обычное действие от имени компании снова
   проходит catalog/get/runtime routing.
+- Каждый 1С runtime сохраняет собственные connection, Agent Secret binding,
+  локальный credential namespace и signed entity contour. В частности,
+  `1c-vkus-kadry` проверяет `connect` / `doctor` только через exact несекретное
+  поле закреплённого signed-registry source и кадровый bounded transport;
+  отправлять этот source в allowlist сущностей отдельного broad runtime
+  `1c-vkus` нельзя.
 - Generic-запрос на подключение внешней интеграции сначала разрешает Trelio
   company context и проверяет `list_agent_skills`. До этой проверки нельзя
   устанавливать, авторизовывать или вызывать пересекающийся native/plugin

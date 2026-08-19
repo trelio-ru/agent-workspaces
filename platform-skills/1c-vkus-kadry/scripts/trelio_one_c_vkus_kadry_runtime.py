@@ -30,9 +30,10 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.0.5"
+RUNTIME_VERSION = "1.0.6"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_CONNECTION_PROBE_BYTES = 64 * 1024
 MAX_QUERY_CHARS = 200
 MAX_PAGE_SIZE = 10
 MAX_PAGES = 3
@@ -40,6 +41,8 @@ MAX_LINE_LIMIT = 100
 MAX_OUTPUT_FIELDS = 512
 MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
 SOURCE_KEY_RE = re.compile(r"^[a-z]+-[0-9a-f]{12}$")
+CONNECTION_PROBE_SOURCE_KEY = "people-873b10474c45"
+CONNECTION_PROBE_FIELD = "Ref_Key"
 ENTITY_RE = re.compile(
     r"^(?:Catalog|Document|InformationRegister|AccumulationRegister|"
     r"CalculationRegister|ChartOfCharacteristicTypes|"
@@ -217,26 +220,95 @@ def _probe_personal_connection(
     *,
     diagnostic_stage: str,
 ) -> None:
-    """Probe one fixed HR source without expanding the signed data contour."""
+    """Probe one fixed HR source without expanding the signed data contour.
+
+    The shared provider helper deliberately allows only entities owned by the
+    broad ``1c-vkus`` runtime. HR entities come from this runtime's separately
+    signed registry, so routing the probe through the provider's broad entity
+    allowlist would reject a valid HR source locally as ``entity_blocked``
+    before any authentication request reached 1C. Build only this exact
+    registry-backed GET here while retaining the provider's audited HTTPS,
+    SSRF, redirect, timeout, Basic Auth and X-OData boundaries.
+    """
 
     registry = _load_registry()
-    source = registry["sources"][0]
+    matches = [
+        source
+        for source in registry["sources"]
+        if source.get("key") == CONNECTION_PROBE_SOURCE_KEY
+    ]
+    if len(matches) != 1:
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Подписанный кадровый registry не содержит источник проверки доступа.",
+        )
+    source = matches[0]
     fields = source.get("fields")
-    if not isinstance(fields, list) or not fields:
+    probe_fields = [
+        field
+        for field in fields
+        if isinstance(field, dict)
+        and field.get("name") == CONNECTION_PROBE_FIELD
+        and field.get("sensitive") is False
+    ] if isinstance(fields, list) else []
+    if len(probe_fields) != 1:
         raise HrRuntimeError(
             "registry_invalid",
             "Подписанный кадровый registry не содержит поле для проверки доступа.",
         )
-    provider._request_odata(
-        config,
-        credentials,
-        source["entity"],
-        (
-            ("$select", fields[0]["name"]),
-            ("$top", 1),
-        ),
+    probe_field = probe_fields[0]
+    entity = str(source.get("entity") or "")
+    if not ENTITY_RE.fullmatch(entity):
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Источник проверки доступа повреждён.",
+        )
+    parameters = (
+        ("$select", CONNECTION_PROBE_FIELD),
+        ("$top", 1),
+    )
+    url = (
+        f"{config.odata_base_url}{urllib.parse.quote(entity, safe='_')}"
+        f"?{provider._odata_query(parameters)}"
+    )
+    response = provider._http_open(
+        "GET",
+        url,
+        credentials=credentials,
+        timeout=config.request_timeout_seconds,
+        x_odata=provider._require_x_odata(),
         diagnostic_stage=diagnostic_stage,
     )
+    with response:
+        raw = provider._read_limited(response, MAX_CONNECTION_PROBE_BYTES)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула некорректный ответ проверки кадрового доступа.",
+        ) from error
+    if not isinstance(payload, dict):
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула некорректный ответ проверки кадрового доступа.",
+        )
+    rows = provider._odata_rows(payload)
+    if len(rows) > 1:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С проигнорировала лимит проверки кадрового доступа.",
+        )
+    for row in rows:
+        value = row.get(CONNECTION_PROBE_FIELD)
+        if CONNECTION_PROBE_FIELD not in row or not _field_type_matches(
+            value,
+            str(probe_field.get("type") or ""),
+        ):
+            raise HrRuntimeError(
+                "source_contract_mismatch",
+                "1С вернула ответ вне подписанного контракта проверки доступа.",
+            )
 
 
 def command_connect(args: argparse.Namespace) -> dict[str, Any]:
