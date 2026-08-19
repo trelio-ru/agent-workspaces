@@ -343,6 +343,22 @@ target; сохранять tone/ты-вы, explicit instruction имеет пр�
 release E2E: для него нельзя читать несвязанную self-history только ради этого
 tone-правила.
 
+MTProto `export` может законно работать дольше одного окна ожидания command
+host. Если host вернул descriptor продолжающегося процесса (например,
+`session_id`) и пустой либо промежуточный stdout, агент сохраняет descriptor и
+дочитывает тот же процесс через штатный continuation primitive; в Codex это
+`write_stdin` с exact возвращённым `session_id`. Промежуточный chunk не является
+JSON-результатом; stdout chunks накапливаются в исходном порядке. JSON
+разбирается только после exact завершения исходного процесса с нулевым exit
+code и полным непустым stdout. Пока исходный процесс
+жив либо его результат не установлен, нельзя запускать второй Telegram process
+для той же local identity/session или повторять export из-за timeout ожидания.
+Сообщение о занятой Telegram session подтверждает существующего владельца lock,
+а не ошибку авторизации. Исчезновение PID само по себе не доказывает успешный
+export: завершение подтверждается exit code, валидным JSON и его completeness-
+полями. Потерянный descriptor сначала требует установить, что исходный process
+завершён; слепой параллельный retry запрещён даже для read-only команды.
+
 Текущий Telegram Web adapter повторяет компактный MAX contract: один private
 profile на exact company/member/connection, exact normalized title либо
 canonical safe-integer Web K PeerId, bounded history/output и local

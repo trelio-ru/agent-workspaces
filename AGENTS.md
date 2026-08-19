@@ -151,6 +151,13 @@
   outage, timeout, transient/unknown error и ambiguous mutation не разрешают
   transport fallback или автоматический повтор. Connections, sessions и policy
   навыков независимы.
+- Долгий MTProto `export` может пережить одно окно ожидания command host. Если
+  host вернул descriptor продолжающегося процесса, агент обязан дочитать exact
+  процесс штатным continuation primitive (`write_stdin` с возвращённым
+  `session_id` в Codex), накапливая stdout chunks, а не разбирать пустой либо
+  промежуточный stdout и не
+  запускать конкурирующий process на той же Telegram session. Успех доказывают
+  zero exit, полный JSON и completeness-поля; исчезновение PID недостаточно.
 - Текущий Telegram Web adapter находится в bundled plugin script
   `plugins/trelio-agent-workspaces/scripts/trelio-telegram-web.mjs` и следует
   компактному MAX-паттерну: один private profile на exact
