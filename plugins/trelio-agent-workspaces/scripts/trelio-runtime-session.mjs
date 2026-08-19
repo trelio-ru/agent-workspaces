@@ -188,7 +188,7 @@ const createRuntimeState = async ({
     && (!observation.modelId || observation.evidenceLevel !== "local_observed")
   ) {
     throw new Error(
-      "клиентский hook не смог определить модель. Обновите/одобрите plugin hooks и начните новую задачу",
+      "активный клиентский hook не смог определить модель. Повторите запрос; если ошибка сохранится, начните новую задачу",
     );
   }
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
@@ -347,11 +347,14 @@ const runHook = async () => {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runHook().catch((error) => {
+    // Эта ветка выполняется только после фактического запуска hook клиентом.
+    // Поэтому общий совет включить hooks, переустановить plugin или повторить
+    // pairing здесь вводил бы пользователя в заблуждение. Конкретная причина
+    // выше уже содержит точный recovery, если он действительно требуется.
     process.stderr.write(
       "TRELIO_RUNTIME_HOOK_REQUIRED: защищённая работа Trelio заблокирована. "
         + `${error instanceof Error ? error.message : String(error)}. `
-        + "Установите или обновите Trelio Agent Workspaces, включите и одобрите hooks, "
-        + "при необходимости выполните `trelio-workspace login`, затем начните новую задачу.\n",
+        + "Устраните указанную причину и повторите запрос.\n",
     );
     process.exitCode = 2;
   });

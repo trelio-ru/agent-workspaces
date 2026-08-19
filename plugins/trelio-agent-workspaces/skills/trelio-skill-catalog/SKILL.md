@@ -10,8 +10,15 @@ Trelio skills are live, additive instructions supplied by a company or a project
 Catalog discovery is available without runtime admission. `get_agent_skill` is
 a protected context read: the approved client hook injects its one-use
 `runtimeSessionProof` automatically. Never author or copy runtime fields. On
-`TRELIO_RUNTIME_HOOK_REQUIRED`, restore/approve the plugin hooks and pairing,
-start a new client session, and retry instead of bypassing the catalog.
+`TRELIO_RUNTIME_HOOK_REQUIRED`, stop the protected catalog read and give one
+host-specific action. In Codex tell the user only: `Откройте настройки плагина
+Trelio Agent Workspaces, включите Hooks и повторите запрос.` In Claude
+Code/Cowork tell the user only to enable/approve this plugin's hooks and retry.
+Do not initially suggest installing, updating or reinstalling the plugin,
+running `trelio-workspace login`, starting a new task/session, or restarting
+the app. Escalate only after Hooks are enabled and a retry still proves that
+the current session did not load them or returns a separate, specific version,
+installation, pairing, or session error. Never bypass the catalog gate.
 
 ## Separate operational use from source maintenance
 

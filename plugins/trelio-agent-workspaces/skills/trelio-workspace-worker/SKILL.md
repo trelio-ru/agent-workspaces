@@ -31,11 +31,16 @@ Do not author, copy, preserve, or retry `runtimeSessionProof` or
 available without admission. For context reads, mutations, and Agent Workspace
 tools, the approved Codex/Claude Code `PreToolUse` hook transparently injects a
 fresh one-use proof after the tool call is authored. If Trelio returns
-`TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work, tell the user to
-install/update this plugin, enable and approve its hooks, run
-`trelio-workspace login` when pairing is missing, and start a new client
-task/session. Never bypass the gate with another MCP, direct HTTP, browser
-automation, or a shell script.
+`TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work and give one host-specific
+action. In Codex tell the user only: `Откройте настройки плагина Trelio Agent
+Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell the
+user only to enable/approve this plugin's hooks and retry. Do not initially
+suggest installing, updating or reinstalling the plugin, running
+`trelio-workspace login`, starting a new task/session, or restarting the app.
+Escalate only after Hooks are enabled and a retry still proves that the current
+session did not load them or returns a separate, specific version,
+installation, pairing, or session error. Never bypass the gate with another
+MCP, direct HTTP, browser automation, or a shell script.
 
 ## Route the current scenario
 

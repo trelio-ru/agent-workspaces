@@ -167,7 +167,15 @@ mutation и Agent Workspace call получает одноразовый `runtim
 Discovery allowlist (`search`, lists, metadata/resolvers`) и
 login/doctor/pairing recovery не требуют admission. Неизвестный новый read по
 умолчанию context, write – mutation. В enforcing company отсутствие hook
-fail-closed возвращает `TRELIO_RUNTIME_HOOK_REQUIRED` с recovery-инструкцией.
+fail-closed возвращает `TRELIO_RUNTIME_HOOK_REQUIRED`. В Codex recovery
+начинается с одного действия: агент дословно говорит `Откройте настройки
+плагина Trelio Agent Workspaces, включите Hooks и повторите запрос.` и сначала
+повторяет текущий запрос. В Claude Code/Cowork используется эквивалентное
+enable/approve plugin hooks. Установка, обновление, переустановка,
+`trelio-workspace login`, новая задача/session и restart не перечисляются
+заранее: к ним переходят только после включения Hooks, когда повтор доказал,
+что текущая session их не подхватила, либо вернул отдельную конкретную ошибку
+version/install/pairing/session.
 
 Runtime закрепляется при первом protected call до `SessionEnd` или максимум на
 24 часа. Смена model/effort позже не отзывает уже допущенную session. Agent Run

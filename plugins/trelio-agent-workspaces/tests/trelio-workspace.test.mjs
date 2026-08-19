@@ -2345,8 +2345,8 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Политику модели применяет approved hook плагина/u,
     /discovery и recovery доступны без допуска/u,
     /hook сам подставляет одноразовый runtimeSessionProof/u,
-    /TRELIO_RUNTIME_HOOK_REQUIRED.*включить\/одобрить hooks/u,
-    /не обходи gate другим MCP, HTTP, browser или shell/u,
+    /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
+    /не обходи gate другим MCP, HTTP, browser или shell/iu,
     /Fallback допустим, когда релевантного навыка нет/u,
     /`no_access` \/ `needs_reconnect`/u,
     /`telegram-mtproto` primary priority `100`/u,
@@ -2526,6 +2526,35 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
   assert.match(workerAgentMetadata, /для работы с Trelio и безопасного сохранения результата/u);
   assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
+});
+
+test("bundled skills make hook activation the only initial recovery action", async () => {
+  const recoveryPhrase = /Откройте\s+настройки\s+плагина\s+Trelio\s+Agent\s+Workspaces,\s+включите\s+Hooks\s+и\s+повторите\s+запрос\./u;
+  const recoveryFiles = [
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
+    path.join(pluginDirectory, "skills", "trelio-project-access", "SKILL.md"),
+    path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-workspace-worker",
+      "references",
+      "agent-run.md",
+    ),
+  ];
+
+  for (const filePath of recoveryFiles) {
+    const instructions = await readFile(filePath, "utf8");
+    assert.match(instructions, recoveryPhrase);
+    assert.match(instructions, /Do not initially\s+suggest/u);
+    assert.match(instructions, /Escalate only/u);
+  }
+
+  assert.doesNotMatch(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /TRELIO_RUNTIME_HOOK_REQUIRED.*при необходимости выполнить `trelio-workspace login`/u,
+  );
 });
 
 test("workspace skill recovers stale OAuth grants without discarding existing scopes", async () => {

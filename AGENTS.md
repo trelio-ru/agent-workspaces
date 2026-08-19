@@ -78,7 +78,15 @@
   пересматривается после смены model/effort внутри уже допущенной session.
   Agent Run и signed Agent Skill переносят только `--runtime-session UUID`.
   При отключённом/неодобренном hook enforcing company возвращает
-  `TRELIO_RUNTIME_HOOK_REQUIRED`; нельзя обходить gate другим MCP/HTTP/browser.
+  `TRELIO_RUNTIME_HOOK_REQUIRED`. В Codex первый recovery-шаг всегда один:
+  агент дословно говорит `Откройте настройки плагина Trelio Agent Workspaces,
+  включите Hooks и повторите запрос.` и не добавляет update/reinstall,
+  `trelio-workspace login`, новую задачу или restart. К ним можно переходить
+  только после включения Hooks, если повтор доказал, что текущая session их не
+  подхватила, либо вернул отдельную конкретную ошибку
+  version/install/pairing/session. В Claude Code/Cowork используется
+  эквивалентное действие enable/approve plugin hooks. Обходить gate другим
+  MCP/HTTP/browser нельзя.
 - Новые material Agent Workspace и Run допускаются только для `task` и
   `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
   task/dossier связи читаются первыми, остальной контекст ищется каноническим

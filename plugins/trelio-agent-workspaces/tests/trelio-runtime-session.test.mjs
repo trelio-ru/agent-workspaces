@@ -120,6 +120,32 @@ test("plugin declares runtime lifecycle hooks without restoring the title hook",
   assert.doesNotMatch(JSON.stringify(hooks), /title|rename/u);
 });
 
+test("an active hook failure does not append unrelated setup steps", async () => {
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-error-"));
+  try {
+    const result = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
+      tool_name: "mcp__trelio__get_task",
+      tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
+    }, {
+      HOME: temporaryHome,
+      USERPROFILE: temporaryHome,
+      CODEX_HOME: temporaryHome,
+      CODEX_THREAD_ID: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
+      CLAUDE_CODE_ENTRYPOINT: "",
+      CLAUDE_EFFORT: "",
+    });
+
+    assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /активный клиентский hook не смог определить модель/u);
+    assert.match(result.stderr, /Устраните указанную причину и повторите запрос/u);
+    assert.doesNotMatch(result.stderr, /Установите|обновите|trelio-workspace login/u);
+  } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
 test("SessionStart pins the initial model and PreToolUse injects a verifiable proof", async () => {
   const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-e2e-"));
   const transcriptPath = path.join(temporaryHome, "rollout.jsonl");

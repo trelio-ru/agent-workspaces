@@ -13,9 +13,15 @@ state from Trelio.
 Discovery and pairing/session recovery remain available without runtime
 admission so setup can be repaired. Protected context/mutation calls receive a
 one-use `runtimeSessionProof` from the approved client hook automatically;
-never author or copy runtime fields. On `TRELIO_RUNTIME_HOOK_REQUIRED`, ensure
-the plugin is current, enable/approve hooks, complete `trelio-workspace login`,
-start a new client session, and retry.
+never author or copy runtime fields. On `TRELIO_RUNTIME_HOOK_REQUIRED`, stop
+protected setup and give one host-specific action. In Codex tell the user only:
+`Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и повторите
+запрос.` In Claude Code/Cowork tell the user only to enable/approve this
+plugin's hooks and retry. Do not initially suggest installing, updating or
+reinstalling the plugin, running `trelio-workspace login`, starting a new
+task/session, or restarting the app. Escalate only after Hooks are enabled and
+a retry still proves that the current session did not load them or returns a
+separate, specific version, installation, pairing, or session error.
 
 ## Confirm the working folder first
 
