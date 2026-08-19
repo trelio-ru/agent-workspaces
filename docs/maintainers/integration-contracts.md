@@ -233,6 +233,13 @@ session. Ноль или несколько совпадений, hidden/read-on
 окна или fallback. Universal browser tool, clipboard, secret values в argv,
 stdout и read-back запрещены.
 
+Перед новым checkout/fill выбранный service runtime использует свой
+content-free auth probe, если он существует. Подтверждённая authenticated
+session продолжает работу без нового доступа к Agent Secret. Dedicated profile
+остаётся persistent и сохраняет provider cookies/session между запусками;
+подготовка профиля меняет только password-manager preferences. Неясный probe не
+считается logout и не разрешает инспекцию credential fields.
+
 Resolver системного browser не объявляет group-writable installation
 «отсутствующей»: локальный browser уже является machine trust root, а обычная
 macOS admin-group или package-manager установка может иметь mode `0775`.
@@ -252,9 +259,13 @@ In-app Browser считается отдельной browser-поверхнос�
 
 Прямая просьба показать Trelio-stored value маршрутизируется в browser reveal
 exact Agent Secret, а не в chat output. Агент проверяет safe `canReveal`, при
-необходимости создаёт обычный access request и отдаёт управление пользователю.
-Fresh auth и короткое время показа остаются browser-side; агент не управляет и
-не инспектирует reveal surface. Для `local_device` server reveal отсутствует.
+необходимости создаёт обычный access request и передаёт пользователю exact
+value-free `publicUrl`, но сам его не открывает. Один fresh auth покрывает один
+batch выбранных полей; значения остаются видимыми 30 секунд. Copy является
+только прямым user gesture, а Trelio выполняет best-effort очистку неизменённого
+clipboard через 30 секунд и честно предупреждает о clipboard managers. Агент не
+управляет и не инспектирует reveal surface. Для `local_device` server reveal
+отсутствует.
 
 ## Browser-only ConsultantPlus
 

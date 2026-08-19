@@ -242,6 +242,15 @@ inside a cross-origin iframe, or the page changes to an unbound URL/origin,
 stop the complete session without a fallback window or value retry. Never read
 a field back or transfer a value to a universal browser tool.
 
+Before requesting a new checkout or browser fill, use the selected service
+runtime's content-free authentication probe when it provides one. If the probe
+confirms that the current browser/profile session is already authenticated,
+continue with that session and do not request or consume the Agent Secret.
+The dedicated Trelio browser profile intentionally preserves provider session
+state between runs; do not clear it merely to force another credential fill.
+An unavailable or ambiguous probe is not proof of logout and does not permit
+reading credential fields.
+
 A user-controlled login is a separate safe handoff, not a literal-text secret
 fallback. When the user explicitly prefers to sign in personally, or the
 dedicated fill reports `browser_unavailable`, offer one visible browser surface
@@ -257,10 +266,14 @@ returns, verify only the non-sensitive authenticated state and continue.
 If the user explicitly asks to see a Trelio-stored value, route them to the
 protected Trelio reveal for the exact Agent Secret instead of echoing it in
 chat. Use safe metadata to check `canReveal`; request `reveal` access when it is
-missing. The user completes fresh authentication and sees the time-limited
-value locally. Do not operate or inspect the reveal surface through Browser,
-Chrome, or Computer Use. `local_device` has no browser reveal; its value remains
-only on the paired device.
+missing. When `publicUrl` is present, give that exact value-free URL to the
+user, but do not open it through an agent-controlled browser. The user completes
+fresh authentication once, selects one or several fields, and sees them for a
+limited time. A copy action must remain a direct user gesture on that protected
+page; warn that the OS or a clipboard manager may retain copied text even after
+Trelio's best-effort clear. Do not operate or inspect the reveal surface through
+Browser, Chrome, or Computer Use. `local_device` has no browser reveal; its
+value remains only on the paired device.
 
 When one selected secret becomes a durable dependency of the task, dossier or
 other writable workspace, record only this safe reference in

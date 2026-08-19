@@ -150,6 +150,10 @@ export const buildSecretBrowserArguments = ({ profileDirectory }) => [
   "about:blank",
 ];
 
+// Профиль намеренно постоянный: provider cookies/session позволяют повторно
+// использовать уже подтверждённый вход, не извлекая Agent Secret снова.
+// Подготовка меняет только password-manager preferences и никогда не очищает
+// Cookies, Local Storage либо другие данные авторизованной сессии.
 const prepareSecretBrowserProfile = async ({ profileDirectory, ensurePrivateDirectory }) => {
   await ensurePrivateDirectory(profileDirectory);
   const defaultProfileDirectory = path.join(profileDirectory, "Default");

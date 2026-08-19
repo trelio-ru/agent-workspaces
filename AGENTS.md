@@ -209,8 +209,13 @@
   manager системного Chrome; системный Chrome/Edge может использовать свой.
   Агент не вводит и не читает credential и после handoff проверяет только
   несекретное состояние. Прямая просьба показать server-stored значение ведёт
-  в fresh-auth time-limited Trelio reveal, не в chat; агент не инспектирует эту
-  поверхность, а `local_device` reveal не получает.
+  в fresh-auth time-limited Trelio reveal по safe `publicUrl`, не в chat; один
+  запрос может открыть выбранные поля, а clipboard получает значение только по
+  user gesture с best-effort очисткой. Агент не открывает и не инспектирует эту
+  поверхность, а `local_device` reveal не получает. Перед новым checkout/fill
+  нужно использовать content-free auth probe сервиса: подтверждённая session
+  продолжает работу без Agent Secret, а persistent dedicated profile не
+  очищается только ради повторного входа.
 - ConsultantPlus показывает browser только для входа, CAPTCHA и другого exact
   действия пользователя. После подтверждённой авторизации Codex side panel
   сразу скрывается либо внешний browser перестаёт выводиться на передний план;

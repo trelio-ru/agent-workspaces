@@ -2908,11 +2908,17 @@ test("workspace instructions keep a canonical safe Agent Secret reference and us
   assert.match(workspaceSkill, /Never\s+split one logical multi-field credential/u);
   assert.match(workspaceSkill, /in-app Browser/u);
   assert.match(workspaceSkill, /do not assume that it inherits the system Chrome password\s+manager/u);
+  assert.match(workspaceSkill, /already authenticated,\s+continue with that session and do not request or consume the Agent Secret/u);
   assert.match(workspaceSkill, /explicitly asks to see/u);
   assert.match(workspaceSkill, /protected Trelio reveal/u);
+  assert.match(workspaceSkill, /publicUrl/u);
+  assert.match(workspaceSkill, /selects one or several fields/u);
+  assert.match(workspaceSkill, /direct user gesture/u);
   assert.match(bridgeSource, /неиспользованных найденных секретов/u);
   assert.match(bridgeSource, /не предполагай, что он наследует менеджер паролей Chrome/u);
+  assert.match(bridgeSource, /живую авторизованную сессию используй без запроса Agent Secret/u);
   assert.match(bridgeSource, /прямо просит показать значение/u);
+  assert.match(bridgeSource, /exact value-free `publicUrl`/u);
 });
 
 test("Trelio Secret Browser accepts an executable writable by its trusted OS group", async () => {
@@ -2966,6 +2972,9 @@ test("Trelio Secret Browser transports a value once through its isolated control
   const targetUrlSha256 = createHash("sha256").update(targetUrl).digest("hex");
   const fieldSelector = "form#login input[type=password]";
   const secretValue = "must-never-appear-in-browser-arguments";
+  const sessionMarkerPath = path.join(profileDirectory, "Default", "Cookies.session-test");
+  await mkdir(path.dirname(sessionMarkerPath), { recursive: true, mode: 0o700 });
+  await writeFile(sessionMarkerPath, "existing-provider-session", { mode: 0o600 });
   let observedArguments = [];
   const devToolsRequests = [];
   let clientClosed = false;
@@ -3030,6 +3039,7 @@ test("Trelio Secret Browser transports a value once through its isolated control
     const preferences = JSON.parse(await readFile(path.join(profileDirectory, "Default", "Preferences"), "utf8"));
     assert.equal(preferences.credentials_enable_service, false);
     assert.equal(preferences.profile.password_manager_enabled, false);
+    assert.equal(await readFile(sessionMarkerPath, "utf8"), "existing-provider-session");
     const controllerExpression = createSecretBrowserControllerExpression(targetOrigin, fieldSelector);
     assert.doesNotMatch(controllerExpression, new RegExp(secretValue, "u"));
     assert.match(controllerExpression, /form#login input\[type=password\]/u);
