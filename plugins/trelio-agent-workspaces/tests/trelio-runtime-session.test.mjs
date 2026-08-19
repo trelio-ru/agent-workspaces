@@ -161,10 +161,10 @@ test("SessionStart pins the initial model and PreToolUse injects a verifiable pr
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.9");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.10.10");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
-      response.end(JSON.stringify({ supported: true, minimumVersion: "1.10.9" }));
+      response.end(JSON.stringify({ supported: true, minimumVersion: "1.10.10" }));
       return;
     }
     if (request.url === "/api/agent-workspaces/runtime-policy/sessions") {
