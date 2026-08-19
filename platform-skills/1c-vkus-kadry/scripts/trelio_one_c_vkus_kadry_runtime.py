@@ -14,6 +14,7 @@ import contextlib
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -30,7 +31,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.0.6"
+RUNTIME_VERSION = "1.1.0"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_CONNECTION_PROBE_BYTES = 64 * 1024
@@ -43,6 +44,22 @@ MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024
 SOURCE_KEY_RE = re.compile(r"^[a-z]+-[0-9a-f]{12}$")
 CONNECTION_PROBE_SOURCE_KEY = "people-873b10474c45"
 CONNECTION_PROBE_FIELD = "Ref_Key"
+LEAVE_BALANCE_SOURCE_KEY = "time-7117b3ca40e7"
+# A generic sensitive read of ``РасчетРезерваОтпусков`` selects dozens of
+# payroll fields and can exceed the 1C/IIS query-string limit.  Keep the
+# dedicated balance route pinned to the smallest useful signed field set so a
+# leave question never pulls reserve amounts, payroll data or an oversized URL.
+LEAVE_BALANCE_FIELD_CONTRACT = (
+    ("Recorder", "Edm.String", False),
+    ("Period", "Edm.DateTime", False),
+    ("LineNumber", "Edm.Int64", False),
+    ("Active", "Edm.Boolean", False),
+    ("Сотрудник_Key", "Edm.Guid", False),
+    ("ФизическоеЛицо_Key", "Edm.Guid", False),
+    ("ПериодРасчета", "Edm.DateTime", True),
+    ("ОстатокОтпуска", "Edm.Double", True),
+    ("ОтпускАвансом", "Edm.Double", True),
+)
 ENTITY_RE = re.compile(
     r"^(?:Catalog|Document|InformationRegister|AccumulationRegister|"
     r"CalculationRegister|ChartOfCharacteristicTypes|"
@@ -449,6 +466,46 @@ def _source_by_key(registry: Mapping[str, Any], key: str) -> dict[str, Any]:
     return matches[0]
 
 
+def _leave_balance_source_and_fields(
+    registry: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Resolve the exact signed leave-balance source and minimal field set.
+
+    The command is intentionally semantic rather than caller-configurable:
+    accepting arbitrary field names would recreate the broad OData surface the
+    signed runtime is designed to avoid.  Every selected field, EDM type and
+    sensitivity marker must still match the packaged registry before a network
+    request is built.
+    """
+
+    source = _source_by_key(registry, LEAVE_BALANCE_SOURCE_KEY)
+    if source.get("title") != "РасчетРезерваОтпусков":
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Источник остатка отпусков не совпадает с подписанным контрактом.",
+        )
+
+    fields_by_name = {
+        str(field.get("name") or ""): field
+        for field in source.get("fields") or []
+        if isinstance(field, dict)
+    }
+    selected: list[dict[str, Any]] = []
+    for name, edm_type, sensitive in LEAVE_BALANCE_FIELD_CONTRACT:
+        field = fields_by_name.get(name)
+        if (
+            field is None
+            or field.get("type") != edm_type
+            or field.get("sensitive") is not sensitive
+        ):
+            raise HrRuntimeError(
+                "registry_invalid",
+                "Поля остатка отпусков не совпадают с подписанным контрактом.",
+            )
+        selected.append(field)
+    return source, selected
+
+
 def _attachment_source_by_key(
     registry: Mapping[str, Any],
     key: str,
@@ -661,6 +718,7 @@ def _request_rows(
     page: int,
     limit: int,
     collections: list[dict[str, Any]] | None = None,
+    order_by: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     config, credentials = _connected_context()
     entity = str(source["entity"])
@@ -681,7 +739,21 @@ def _request_rows(
     if filter_expression:
         parameters.append(("$filter", filter_expression))
     date_fields = list(source["filters"].get("dateFields") or [])
-    if date_fields:
+    if order_by:
+        selected_names = {
+            str(field["name"])
+            for field in fields
+        }
+        if any(field not in selected_names for field in order_by):
+            raise HrRuntimeError(
+                "registry_invalid",
+                "Сортировка кадрового запроса не входит в выбранный signed contract.",
+            )
+        parameters.append((
+            "$orderby",
+            ",".join(f"{field} desc" for field in order_by),
+        ))
+    elif date_fields:
         parameters.append(("$orderby", f"{date_fields[0]} desc"))
     url = (
         f"{config.odata_base_url}{urllib.parse.quote(entity, safe='_')}"
@@ -1396,6 +1468,276 @@ def command_get_capabilities(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _leave_balance_datetime(value: Any, label: str) -> dt.datetime:
+    """Parse one 1C OData datetime into a comparable naive UTC instant."""
+
+    if not isinstance(value, str):
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            f"1С вернула некорректное поле {label} остатка отпуска.",
+        )
+    microsoft = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", value)
+    if microsoft:
+        try:
+            return dt.datetime.fromtimestamp(
+                int(microsoft.group(1)) / 1000,
+                tz=dt.timezone.utc,
+            ).replace(tzinfo=None)
+        except (OverflowError, OSError, ValueError) as error:
+            raise HrRuntimeError(
+                "source_contract_mismatch",
+                f"1С вернула некорректное поле {label} остатка отпуска.",
+            ) from error
+
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            f"1С вернула некорректное поле {label} остатка отпуска.",
+        ) from error
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _leave_balance_number(
+    value: Any,
+    label: str,
+    *,
+    required: bool,
+) -> float | None:
+    """Normalize a finite numeric balance without accepting JSON NaN/null."""
+
+    if value is None and not required:
+        return None
+    if value is None or isinstance(value, bool):
+        raise HrRuntimeError(
+            "leave_balance_unavailable",
+            f"1С не вернула рассчитанное поле {label} остатка отпуска.",
+        )
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as error:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            f"1С вернула некорректное поле {label} остатка отпуска.",
+        ) from error
+    if not math.isfinite(normalized):
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            f"1С вернула неконечное поле {label} остатка отпуска.",
+        )
+    return normalized
+
+
+def _validated_leave_balance_row(
+    row: Mapping[str, Any],
+    *,
+    subject_id: str,
+    as_of: dt.date,
+) -> dict[str, Any]:
+    """Validate filters again so an ignored OData predicate fails closed."""
+
+    if row.get("Active") is not True:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула неактивную запись остатка отпуска.",
+        )
+    employee_id = str(row.get("Сотрудник_Key") or "").lower()
+    physical_person_id = str(row.get("ФизическоеЛицо_Key") or "").lower()
+    employee_match = subject_id.lower() == employee_id
+    physical_person_match = subject_id.lower() == physical_person_id
+    if not employee_match and not physical_person_match:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула остаток отпуска другого сотрудника.",
+        )
+    if employee_match and physical_person_match:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула неоднозначный вид кадрового идентификатора.",
+        )
+
+    recorded_at = row.get("Period")
+    recorded_instant = _leave_balance_datetime(recorded_at, "Period")
+    exclusive_end = dt.datetime.combine(
+        as_of + dt.timedelta(days=1),
+        dt.time.min,
+    )
+    if recorded_instant >= exclusive_end:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула остаток отпуска позже запрошенной даты.",
+        )
+
+    calculation_period = row.get("ПериодРасчета")
+    _leave_balance_datetime(calculation_period, "ПериодРасчета")
+    return {
+        "recordedAt": recorded_at,
+        "recordedInstant": recorded_instant,
+        "calculationPeriod": calculation_period,
+        "balanceDays": _leave_balance_number(
+            row.get("ОстатокОтпуска"),
+            "ОстатокОтпуска",
+            required=True,
+        ),
+        "advancedDays": _leave_balance_number(
+            row.get("ОтпускАвансом"),
+            "ОтпускАвансом",
+            required=False,
+        ),
+        "matchedSubjectKind": (
+            "employee" if employee_match else "physical_person"
+        ),
+        "employeeId": employee_id,
+        "recordKey": (row.get("Recorder"), row.get("LineNumber")),
+    }
+
+
+def command_get_leave_balance(args: argparse.Namespace) -> dict[str, Any]:
+    """Return the latest direct 1C leave balance at or before one date."""
+
+    if not args.include_sensitive:
+        raise HrRuntimeError(
+            "explicit_sensitive_access_required",
+            "Остаток отпуска требует --include-sensitive.",
+        )
+
+    registry = _load_registry()
+    source, fields = _leave_balance_source_and_fields(registry)
+    subject_id = _uuid(args.subject_id, "subject id")
+    as_of = _date(args.as_of, "as-of")
+    filter_expression = _build_filter(
+        source,
+        query="",
+        subject_id=subject_id,
+        date_from="",
+        date_to=as_of.isoformat(),
+    )
+    # Reserve recalculation can leave inactive register movements behind.  The
+    # specialized command must never surface a superseded balance merely
+    # because it has the newest timestamp.
+    active_filter = f"({filter_expression}) and Active eq true"
+    latest_rows: list[dict[str, Any]] = []
+    latest_instant: dt.datetime | None = None
+    previous_instant: dt.datetime | None = None
+    seen_record_keys: set[tuple[Any, Any]] = set()
+    latest_period_complete = False
+    for page in range(1, MAX_PAGES + 1):
+        page_rows = _request_rows(
+            source,
+            fields,
+            filter_expression=active_filter,
+            page=page,
+            limit=MAX_PAGE_SIZE,
+            order_by=("Period", "Recorder", "LineNumber"),
+        )
+        if not page_rows:
+            latest_period_complete = True
+            break
+
+        reached_older_period = False
+        for row in page_rows:
+            normalized = _validated_leave_balance_row(
+                row,
+                subject_id=subject_id,
+                as_of=as_of,
+            )
+            current_instant = normalized["recordedInstant"]
+            if previous_instant is not None and current_instant > previous_instant:
+                raise HrRuntimeError(
+                    "source_contract_mismatch",
+                    "1С нарушила сортировку записей остатка отпуска.",
+                )
+            previous_instant = current_instant
+            if latest_instant is None:
+                latest_instant = current_instant
+            if current_instant < latest_instant:
+                reached_older_period = True
+                break
+
+            record_key = normalized["recordKey"]
+            if record_key in seen_record_keys:
+                raise HrRuntimeError(
+                    "source_contract_mismatch",
+                    "1С повторила запись при чтении остатка отпуска.",
+                )
+            seen_record_keys.add(record_key)
+            latest_rows.append(normalized)
+
+        if reached_older_period or len(page_rows) < MAX_PAGE_SIZE:
+            latest_period_complete = True
+            break
+
+    if not latest_rows:
+        return {
+            "source": {
+                "sourceKey": source["key"],
+                "title": source["title"],
+            },
+            "subjectId": subject_id,
+            "asOfRequested": as_of.isoformat(),
+            "found": False,
+            "sensitiveFieldsIncluded": True,
+            "schema": _schema_summary(registry),
+        }
+    if not latest_period_complete:
+        raise HrRuntimeError(
+            "leave_balance_incomplete",
+            "1С вернула слишком много записей на последнюю дату остатка отпуска.",
+        )
+
+    subject_kinds = {row["matchedSubjectKind"] for row in latest_rows}
+    if len(subject_kinds) != 1:
+        raise HrRuntimeError(
+            "leave_balance_subject_ambiguous",
+            "1С неоднозначно сопоставила кадровый идентификатор остатка отпуска.",
+        )
+    matched_subject_kind = next(iter(subject_kinds))
+    matched_employee_ids = {row["employeeId"] for row in latest_rows}
+    if matched_subject_kind == "physical_person" and len(matched_employee_ids) != 1:
+        raise HrRuntimeError(
+            "leave_balance_subject_ambiguous",
+            "У физлица несколько карточек сотрудника с остатком на последнюю дату.",
+        )
+
+    signatures = {
+        (
+            row["calculationPeriod"],
+            row["balanceDays"],
+            row["advancedDays"],
+        )
+        for row in latest_rows
+    }
+    if len(signatures) != 1:
+        raise HrRuntimeError(
+            "leave_balance_ambiguous",
+            "1С вернула несколько разных остатков отпуска на последнюю дату расчёта.",
+        )
+
+    latest = latest_rows[0]
+    return {
+        "source": {
+            "sourceKey": source["key"],
+            "title": source["title"],
+        },
+        "subjectId": subject_id,
+        "asOfRequested": as_of.isoformat(),
+        "found": True,
+        "matchedSubjectKind": matched_subject_kind,
+        "matchedEmployeeId": next(iter(matched_employee_ids)),
+        "recordedAt": latest["recordedAt"],
+        "calculationPeriod": latest["calculationPeriod"],
+        "balanceDays": latest["balanceDays"],
+        "advancedDays": latest["advancedDays"],
+        "recordsAtLatestPeriod": len(latest_rows),
+        "basis": "one_c_leave_reserve_register",
+        "sensitiveFieldsIncluded": True,
+        "schema": _schema_summary(registry),
+    }
+
+
 def command_list_attachments(args: argparse.Namespace) -> dict[str, Any]:
     if not args.include_sensitive:
         raise HrRuntimeError(
@@ -1669,6 +2011,12 @@ def build_parser() -> argparse.ArgumentParser:
     capabilities.add_argument("--page", type=int, default=1)
     capabilities.add_argument("--limit", type=int, default=25)
     capabilities.set_defaults(handler=command_get_capabilities)
+
+    leave_balance = subparsers.add_parser("get-leave-balance")
+    leave_balance.add_argument("--subject-id", required=True)
+    leave_balance.add_argument("--as-of", required=True)
+    leave_balance.add_argument("--include-sensitive", action="store_true")
+    leave_balance.set_defaults(handler=command_get_leave_balance)
 
     search = subparsers.add_parser("search-records")
     search.add_argument(

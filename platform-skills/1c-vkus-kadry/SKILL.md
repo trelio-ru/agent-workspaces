@@ -1,6 +1,6 @@
 ---
 name: 1c-vkus-kadry
-description: Safely search, inspect, list attachments for, and download one exact file from the complete read-only Vkus HR and payroll contour published by 1C through Trelio's signed runtime. Use for employees and physical persons, employment events, staffing, schedules and time, leave and absence, sick leave and health-related HR documents, payroll, accruals, deductions, payments, NDFL and insurance contributions, qualifications, identity/passport details, contacts, employee banking details, and attached employment contracts or HR files.
+description: Safely search, inspect, get a current calculated leave balance, list attachments for, and download one exact file from the complete read-only Vkus HR and payroll contour published by 1C through Trelio's signed runtime. Use for employees and physical persons, employment events, staffing, schedules and time, leave and absence, sick leave and health-related HR documents, payroll, accruals, deductions, payments, NDFL and insurance contributions, qualifications, identity/passport details, contacts, employee banking details, and attached employment contracts or HR files.
 ---
 
 # 1С — Кадры Вкус
@@ -92,13 +92,16 @@ Signed registry содержит 278 кадровых источников да�
 - `access-status reset`
 - `forget-credentials`
 - `get-capabilities [--category employment|health|identity|organization|payroll|people|qualifications|taxes|time] [--query TEXT] [--page 1..3] [--limit 1..50]`
+- `get-leave-balance --subject-id UUID --as-of YYYY-MM-DD --include-sensitive`
 - `search-records --source-key SOURCE_KEY [--query TEXT] [--subject-id UUID] [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--page 1..3] [--limit 1..10] [--include-sensitive]`
 - `get-record --source-key SOURCE_KEY --id UUID [--include-sensitive] [--include-collections] [--line-limit 1..100]`
 - `list-attachments --attachment-source-key SOURCE_KEY --owner-id UUID [--page 1..3] [--limit 1..10] --include-sensitive`
 - `download-attachment --attachment-source-key SOURCE_KEY --owner-id UUID --file-id UUID --output ABSOLUTE_NEW_PATH --include-sensitive [--allow-unverified-size-mismatch]`
 
-Всегда сначала получать `sourceKey` из `get-capabilities`. Не угадывать ключ и
-не заменять отклонённый источник entity name.
+Для `search-records`, `get-record` и вложений всегда сначала получать
+`sourceKey` из `get-capabilities`. Не угадывать ключ и не заменять отклонённый
+источник entity name. У специализированной команды `get-leave-balance`
+source key закреплён runtime-ом и caller его не передаёт.
 
 Использовать `--subject-id` только когда пользователь или предыдущий
 нормализованный результат дал exact UUID сотрудника/физлица. Runtime применит
@@ -106,6 +109,33 @@ Signed registry содержит 278 кадровых источников да�
 
 Использовать `get-record` только для source с `filters.recordId=true`.
 Регистры без exact record id читать через ограниченный `search-records`.
+
+### Остаток отпуска
+
+На вопрос «сколько дней отпуска накоплено», «какой остаток отпуска» или
+равнозначный ему сначала использовать `get-leave-balance` для exact UUID
+сотрудника/физлица и exact даты среза. Команда читает только фиксированные поля
+регистра `РасчетРезерваОтпусков`: дату записи, период расчёта,
+`ОстатокОтпуска` и `ОтпускАвансом`. Зарплатные суммы резерва и средний заработок
+в запрос и результат не входят.
+
+Если поиск человека вернул несколько карточек сотрудника, не брать первую
+произвольно: исключить помеченные на удаление и архивные карточки, затем
+остановиться при нескольких оставшихся кандидатах. Предпочитать exact UUID
+актуальной карточки сотрудника. UUID физлица допустим, но команда сама
+остановится, если на последнюю дату ему соответствуют несколько карточек
+сотрудника; складывать их остатки нельзя. `matchedSubjectKind` показывает,
+какой вид идентификатора фактически совпал.
+
+`balanceDays` — прямая последняя рассчитанная 1С величина на или до
+`asOfRequested`, а не самостоятельное начисление runtime-а. Всегда сообщать
+пользователю `recordedAt` / `calculationPeriod`; если запись старше запрошенной
+даты, называть её последним расчётом 1С, а не точным остатком «на сегодня».
+`advancedDays` передавать отдельно и не вычитать повторно из `balanceDays`.
+
+Если `found=false`, не выдавать ручной расчёт `28 / 12 × месяцы − отпуска` за
+точный остаток 1С. Можно предложить такой расчёт только как отдельную оценку с
+явной оговоркой после сообщения, что прямой рассчитанной записи 1С нет.
 
 Для вложений всегда сначала получать `attachmentSourceKey` из
 `get-capabilities`, а `fileId` — из `list-attachments` того же exact
@@ -130,6 +160,15 @@ signed registry, и больше не проходит через allowlist су
 Та же версия возвращает единое `availability` для doctor/access/connect и
 ошибок отсутствующей либо устаревшей настройки.
 
+Runtime `1.1.0` добавляет узкую `get-leave-balance`. Она не использует общий
+широкий `--include-sensitive` select регистра резерва: он включал десятки
+зарплатных полей и мог превышать лимит длины OData URL. Команда выбирает только
+девять закреплённых signed-registry полей, включая технический ключ для
+стабильной bounded pagination, исключает неактивные движения, повторно
+проверяет exact сотрудника и дату ответа, возвращает последнюю
+непротиворечивую запись на или до exact даты и останавливается при разных
+остатках в одинаковом последнем периоде.
+
 По умолчанию несовпадение фактически полученных байт с полем `Размер` из
 metadata 1С остаётся fail-closed. Не добавлять
 `--allow-unverified-size-mismatch` автоматически. Использовать его только
@@ -152,6 +191,9 @@ metadata 1С остаётся fail-closed. Не добавлять
 зарплату, начисление, удержание, больничный, медицинскую/семейную информацию,
 паспорт, контакт, банковский реквизит, налоговые данные либо полный состав
 конкретной кадровой записи.
+
+Для `get-leave-balance` добавлять `--include-sensitive` только когда
+пользователь явно запросил остаток/накопленные дни конкретного сотрудника.
 
 Добавлять `--include-collections` только вместе с `--include-sensitive` и
 только для exact записи, когда пользователю нужны строки документа.

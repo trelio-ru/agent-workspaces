@@ -44,6 +44,11 @@ class VkusHrRuntimeTests(unittest.TestCase):
             for source in self.registry["sources"]
             if source["title"] == "\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a\u0438"
         )
+        self.leave_balance_source = next(
+            source
+            for source in self.registry["sources"]
+            if source["title"] == "РасчетРезерваОтпусков"
+        )
         self.attachment_source = next(
             source
             for source in self.registry["attachmentSources"]
@@ -51,8 +56,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.0.6")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.0.6")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.1.0")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.1.0")
         self.assertEqual(
             MODULE.provider.SUPPORTED_SKILL_IDS,
             {MODULE.HR_SKILL_ID},
@@ -96,6 +101,28 @@ class VkusHrRuntimeTests(unittest.TestCase):
             access_instructions=None,
             fingerprint="a" * 64,
         )
+
+    def _leave_balance_row(
+        self,
+        *,
+        subject_id: str = "11111111-1111-4111-8111-111111111111",
+        physical_person_id: str = "22222222-2222-4222-8222-222222222222",
+        line_number: int = 1,
+        **overrides: object,
+    ) -> dict[str, object]:
+        row: dict[str, object] = {
+            "Recorder": "Document_LeaveReserve",
+            "Period": "2026-07-31T23:59:59",
+            "LineNumber": line_number,
+            "Active": True,
+            "Сотрудник_Key": subject_id,
+            "ФизическоеЛицо_Key": physical_person_id,
+            "ПериодРасчета": "2026-07-01T00:00:00",
+            "ОстатокОтпуска": 64.0,
+            "ОтпускАвансом": 0.0,
+        }
+        row.update(overrides)
+        return row
 
     def _pdf_payload(self) -> bytes:
         prefix = (
@@ -144,6 +171,238 @@ class VkusHrRuntimeTests(unittest.TestCase):
         self.assertLess(len(safe), len(full))
         self.assertTrue(all(field["sensitive"] is False for field in safe))
         self.assertTrue(any(field["sensitive"] is True for field in full))
+
+    def test_leave_balance_uses_only_fixed_minimal_signed_fields(self) -> None:
+        self.assertEqual(
+            self.leave_balance_source["key"],
+            MODULE.LEAVE_BALANCE_SOURCE_KEY,
+        )
+        subject_id = "11111111-1111-4111-8111-111111111111"
+        row = self._leave_balance_row(subject_id=subject_id)
+        response = Response(
+            json.dumps({"value": [row]}, ensure_ascii=False).encode("utf-8"),
+        )
+        opened_urls: list[str] = []
+
+        def fake_open(_: str, url: str, **__: object) -> Response:
+            opened_urls.append(url)
+            return response
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "_connected_context",
+                return_value=(
+                    self._company_config(),
+                    MODULE.provider.Credentials("employee", "password"),
+                ),
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_require_x_odata",
+                return_value="x" * 32,
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_http_open",
+                side_effect=fake_open,
+            ),
+        ):
+            result = MODULE.command_get_leave_balance(mock.Mock(
+                subject_id=subject_id,
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["balanceDays"], 64.0)
+        self.assertEqual(result["advancedDays"], 0.0)
+        self.assertEqual(result["recordedAt"], "2026-07-31T23:59:59")
+        self.assertEqual(result["matchedSubjectKind"], "employee")
+        self.assertEqual(result["basis"], "one_c_leave_reserve_register")
+        self.assertEqual(len(opened_urls), 1)
+        url_tools = __import__("urllib.parse").parse
+        decoded_url = url_tools.unquote(opened_urls[0])
+        query = url_tools.parse_qs(url_tools.urlparse(opened_urls[0]).query)
+        self.assertEqual(
+            set(query["$select"][0].split(",")),
+            {name for name, _, _ in MODULE.LEAVE_BALANCE_FIELD_CONTRACT},
+        )
+        self.assertEqual(
+            query["$orderby"],
+            ["Period desc,Recorder desc,LineNumber desc"],
+        )
+        self.assertIn("InformationRegister_РасчетРезерваОтпусков_RecordType", decoded_url)
+        self.assertIn("Active eq true", decoded_url)
+        self.assertIn("Period lt datetime'2026-08-21T00:00:00'", decoded_url)
+        self.assertIn(subject_id, decoded_url)
+        self.assertNotIn("СуммаРезерва", decoded_url)
+        self.assertNotIn("СреднийЗаработок", decoded_url)
+        self.assertLess(len(opened_urls[0]), 2_000)
+
+    def test_leave_balance_requires_explicit_sensitive_access(self) -> None:
+        with self.assertRaises(MODULE.HrRuntimeError) as caught:
+            MODULE.command_get_leave_balance(mock.Mock(
+                subject_id="11111111-1111-4111-8111-111111111111",
+                as_of="2026-08-20",
+                include_sensitive=False,
+            ))
+
+        self.assertEqual(
+            caught.exception.code,
+            "explicit_sensitive_access_required",
+        )
+
+    def test_leave_balance_fails_closed_on_conflicting_latest_rows(self) -> None:
+        rows = [
+            self._leave_balance_row(line_number=1, ОстатокОтпуска=64.0),
+            self._leave_balance_row(line_number=2, ОстатокОтпуска=65.0),
+        ]
+        with mock.patch.object(MODULE, "_request_rows", return_value=rows):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_get_leave_balance(mock.Mock(
+                    subject_id="11111111-1111-4111-8111-111111111111",
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(caught.exception.code, "leave_balance_ambiguous")
+
+    def test_leave_balance_rejects_ignored_server_filters(self) -> None:
+        foreign_employee = "33333333-3333-4333-8333-333333333333"
+        cases = (
+            (
+                "foreign subject",
+                self._leave_balance_row(subject_id=foreign_employee),
+            ),
+            (
+                "inactive movement",
+                self._leave_balance_row(Active=False),
+            ),
+            (
+                "future movement",
+                self._leave_balance_row(Period="2026-08-21T00:00:00"),
+            ),
+        )
+        for label, row in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(MODULE, "_request_rows", return_value=[row]):
+                    with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                        MODULE.command_get_leave_balance(mock.Mock(
+                            subject_id="11111111-1111-4111-8111-111111111111",
+                            as_of="2026-08-20",
+                            include_sensitive=True,
+                        ))
+                self.assertEqual(caught.exception.code, "source_contract_mismatch")
+
+    def test_leave_balance_rejects_missing_or_non_finite_balance(self) -> None:
+        cases = (
+            (None, "leave_balance_unavailable"),
+            (float("nan"), "source_contract_mismatch"),
+            (float("inf"), "source_contract_mismatch"),
+        )
+        for balance, expected_code in cases:
+            with self.subTest(balance=balance):
+                row = self._leave_balance_row(ОстатокОтпуска=balance)
+                with mock.patch.object(MODULE, "_request_rows", return_value=[row]):
+                    with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                        MODULE.command_get_leave_balance(mock.Mock(
+                            subject_id="11111111-1111-4111-8111-111111111111",
+                            as_of="2026-08-20",
+                            include_sensitive=True,
+                        ))
+                self.assertEqual(caught.exception.code, expected_code)
+
+    def test_leave_balance_reads_conflict_beyond_first_page(self) -> None:
+        first_page = [
+            self._leave_balance_row(line_number=index)
+            for index in range(1, MODULE.MAX_PAGE_SIZE + 1)
+        ]
+        second_page = [
+            self._leave_balance_row(line_number=11, ОстатокОтпуска=65.0),
+        ]
+        with mock.patch.object(
+            MODULE,
+            "_request_rows",
+            side_effect=[first_page, second_page],
+        ) as request_rows:
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_get_leave_balance(mock.Mock(
+                    subject_id="11111111-1111-4111-8111-111111111111",
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(caught.exception.code, "leave_balance_ambiguous")
+        self.assertEqual(request_rows.call_count, 2)
+        self.assertEqual(request_rows.call_args_list[1].kwargs["page"], 2)
+
+    def test_leave_balance_fails_when_latest_period_exceeds_page_bound(self) -> None:
+        pages = [
+            [
+                self._leave_balance_row(
+                    line_number=(page * MODULE.MAX_PAGE_SIZE) + index,
+                )
+                for index in range(1, MODULE.MAX_PAGE_SIZE + 1)
+            ]
+            for page in range(MODULE.MAX_PAGES)
+        ]
+        with mock.patch.object(MODULE, "_request_rows", side_effect=pages):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_get_leave_balance(mock.Mock(
+                    subject_id="11111111-1111-4111-8111-111111111111",
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(caught.exception.code, "leave_balance_incomplete")
+
+    def test_leave_balance_rejects_multiple_employee_cards_for_physical_person(self) -> None:
+        physical_person_id = "22222222-2222-4222-8222-222222222222"
+        rows = [
+            self._leave_balance_row(
+                subject_id="11111111-1111-4111-8111-111111111111",
+                physical_person_id=physical_person_id,
+                line_number=1,
+            ),
+            self._leave_balance_row(
+                subject_id="33333333-3333-4333-8333-333333333333",
+                physical_person_id=physical_person_id,
+                line_number=2,
+            ),
+        ]
+        with mock.patch.object(MODULE, "_request_rows", return_value=rows):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_get_leave_balance(mock.Mock(
+                    subject_id=physical_person_id,
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(caught.exception.code, "leave_balance_subject_ambiguous")
+
+    def test_leave_balance_rejects_zero_subject_uuid(self) -> None:
+        with self.assertRaises(MODULE.provider.OneCEdoError) as caught:
+            MODULE.command_get_leave_balance(mock.Mock(
+                subject_id="00000000-0000-0000-0000-000000000000",
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertEqual(caught.exception.code, "invalid_identity")
+
+    def test_leave_balance_reports_missing_direct_calculation_without_estimate(self) -> None:
+        with mock.patch.object(MODULE, "_request_rows", return_value=[]):
+            result = MODULE.command_get_leave_balance(mock.Mock(
+                subject_id="11111111-1111-4111-8111-111111111111",
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertFalse(result["found"])
+        self.assertNotIn("balanceDays", result)
+        self.assertNotIn("estimatedBalanceDays", result)
+        self.assertEqual(result["asOfRequested"], "2026-08-20")
 
     def test_filters_escape_text_and_accept_only_signed_fields(self) -> None:
         expression = MODULE._build_filter(
@@ -331,6 +590,19 @@ class VkusHrRuntimeTests(unittest.TestCase):
         page = MODULE.provider.browser_prompt_app_page().decode("utf-8")
         self.assertIn("Сохранять данные в браузере не нужно", page)
         self.assertIn('autocomplete="off"', page)
+
+    def test_parser_exposes_dedicated_leave_balance_command(self) -> None:
+        parsed = MODULE.build_parser().parse_args([
+            "get-leave-balance",
+            "--subject-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--as-of",
+            "2026-08-20",
+            "--include-sensitive",
+        ])
+
+        self.assertIs(parsed.handler, MODULE.command_get_leave_balance)
+        self.assertTrue(parsed.include_sensitive)
 
     def test_connect_probes_exact_signed_hr_source_without_broad_allowlist(self) -> None:
         config = self._company_config()

@@ -434,7 +434,11 @@ exact attachment bytes только через fixed files service route; direct
 size, SHA-256 и quarantine rules проверяются fail-closed. Его `connect` и
 `doctor` используют exact несекретное поле закреплённого signed-registry
 source и тот же bounded кадровый transport; broad `1c-vkus` entity allowlist
-не является authority для этого независимого probe.
+не является authority для этого независимого probe. Текущий остаток отпуска
+читает отдельная fixed `get-leave-balance`: общий sensitive select регистра
+резерва не используется, потому что он одновременно раскрывает лишние
+зарплатные поля и может превысить лимит OData query string. Результат всегда
+содержит дату последнего расчёта 1С; runtime не доначисляет дни самостоятельно.
 
 При явной maintainer-задаче отдельные development inventory/probe tools могут
 обращаться к reviewed `$metadata` или exact source, даже если production
