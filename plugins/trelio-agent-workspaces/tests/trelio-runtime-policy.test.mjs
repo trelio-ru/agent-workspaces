@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { resolveInitialChatTitleReminder } from "../scripts/trelio-runtime-policy.mjs";
 import { parseSelfReportedRuntimeAttestationOptions } from "../scripts/trelio-workspace.mjs";
 
 const hookScriptPath = fileURLToPath(
@@ -14,62 +12,11 @@ const hookManifestPath = fileURLToPath(
   new URL("../hooks/hooks.json", import.meta.url),
 );
 
-const runSessionHook = async (hookInput, environment = {}) => new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, [hookScriptPath], {
-    env: { ...process.env, ...environment },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const stdout = [];
-  const stderr = [];
+test("plugin registers no agent hooks", async () => {
+  const isMissing = (error) => error?.code === "ENOENT";
 
-  child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-  child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-  child.once("error", reject);
-  child.once("exit", (exitCode) => resolve({
-    exitCode,
-    stdout: Buffer.concat(stdout).toString("utf8"),
-    stderr: Buffer.concat(stderr).toString("utf8"),
-  }));
-  child.stdin.end(JSON.stringify(hookInput));
-});
-
-test("plugin keeps only the unrelated SessionStart reminder hook", async () => {
-  const manifest = JSON.parse(await readFile(hookManifestPath, "utf8"));
-
-  assert.deepEqual(Object.keys(manifest.hooks), ["SessionStart"]);
-  assert.equal(manifest.hooks.PreToolUse, undefined);
-  assert.match(manifest.description, /backend-ом Trelio/u);
-});
-
-test("new Codex task receives the one-time title reminder", async () => {
-  const hookInput = {
-    hook_event_name: "SessionStart",
-    source: "startup",
-  };
-  const environment = {
-    CODEX_THREAD_ID: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
-  };
-  const reminder = resolveInitialChatTitleReminder({ hookInput, environment });
-  const result = await runSessionHook(hookInput, environment);
-
-  assert.match(reminder, /первый ход нового основного чата/u);
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stdout, `${reminder}\n`);
-  assert.equal(result.stderr, "");
-});
-
-test("hook never blocks or inspects PreToolUse", async () => {
-  const result = await runSessionHook({
-    hook_event_name: "PreToolUse",
-    tool_name: "mcp__trelio__get_task",
-    tool_input: { companySlug: "vkus" },
-    model: "gpt-5.6-luna",
-    effort: { level: "low" },
-  });
-
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stdout, "");
-  assert.equal(result.stderr, "");
+  await assert.rejects(access(hookManifestPath), isMissing);
+  await assert.rejects(access(hookScriptPath), isMissing);
 });
 
 test("bridge reconstructs a Codex self-attestation only from explicit MCP argv", () => {
@@ -102,6 +49,23 @@ test("bridge accepts Claude Code self-attestation in cloud-compatible argv", () 
   assert.equal(attestation.clientFamily, "claude-code");
   assert.equal(attestation.source, "agent_request");
   assert.equal(attestation.evidenceLevel, "self_reported");
+});
+
+test("bridge represents an unidentified runtime without impersonating a known client", () => {
+  const attestation = parseSelfReportedRuntimeAttestationOptions({
+    "runtime-client": "other",
+    "runtime-observed-at": "2026-08-19T12:34:56.000Z",
+  });
+
+  assert.deepEqual(attestation, {
+    schemaVersion: 1,
+    clientFamily: "other",
+    modelId: null,
+    effortLevel: null,
+    evidenceLevel: "unavailable",
+    source: "unknown",
+    observedAt: "2026-08-19T12:34:56.000Z",
+  });
 });
 
 test("bridge rejects partial or shell-shaped runtime declarations", () => {

@@ -34,8 +34,9 @@ that exact request. Codex and Claude Code must report the real current
 model's declaration. Discovery tools still require an allowed model but ignore
 minimum effort. Context reads, mutations, and Agent Workspace tools require
 both. Pairing and bridge-session recovery tools are the only exemption. If the
-host does not expose model/effort, report `other` only when that is truthful;
-never guess a known client identity.
+host does not expose a truthful Codex/Claude Code identity and model/effort,
+report `clientFamily=other`, `source=unknown`, `evidenceLevel=unavailable`,
+`modelId=null` and `effortLevel=null`; never guess a known client identity.
 
 ## Route the current scenario
 

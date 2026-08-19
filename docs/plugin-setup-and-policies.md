@@ -174,10 +174,18 @@ backend применяет policy фактической company. Discovery пр
 
 Agent Run закрепляет snapshot и initiating declaration; exact open command
 передаёт её bridge в `--runtime-*`. Plugin не читает модель из env/transcript и
-не регистрирует `PreToolUse` guard. Неизвестные модели и клиенты управляются
-отдельными allow/deny правилами. Это cooperative `self_reported`, не
-криптографическая аттестация. Нельзя копировать attestation другой модели или
-редактировать `.trelio-run.json` для обхода.
+не регистрирует никаких hooks. Неизвестный runtime использует только
+`other/unknown/unavailable` с `null` model/effort; неизвестные модели и клиенты
+управляются отдельными allow/deny правилами. Legacy hook/rollout evidence не
+принимается, поэтому незавершённый Run старого plugin начинается заново после
+обновления. Это cooperative `self_reported`, не криптографическая аттестация.
+Нельзя копировать attestation другой модели или редактировать
+`.trelio-run.json` для обхода.
+
+Косметическое переименование нового Codex-чата выполняется best-effort по
+короткой инструкции основного MCP server, а не через lifecycle hook. Fork,
+delegated/existing conversation и пользовательское название не меняются; без
+native title tool действие молча пропускается.
 
 ## Правила компании, проекта и пользователя
 

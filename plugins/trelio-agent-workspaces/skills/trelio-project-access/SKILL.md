@@ -14,7 +14,9 @@ flow: real Codex/Claude Code model and effort, `source=agent_request`,
 `evidenceLevel=self_reported`, and a fresh ISO `observedAt`. Discovery checks
 the model without minimum effort; instruction/context reads and both plan/apply
 steps enforce the full policy. Rebuild the declaration after any runtime
-change and never reuse another model's values.
+change and never reuse another model's values. A runtime that cannot truthfully
+identify as Codex or Claude Code uses `other/unknown/unavailable` with `null`
+model/effort and never impersonates a known client.
 
 ## Check authority and connection
 

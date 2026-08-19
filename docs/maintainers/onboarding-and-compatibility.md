@@ -172,12 +172,24 @@ context, write – mutation. Login/doctor/pairing recovery не блокирую
 Agent Run закрепляет policy snapshot и initiating attestation. Возвращённая MCP
 open-команда переносит exact declaration в `--runtime-*`; bridge повторяет её
 при start/claim и не определяет модель из env/transcript. Signed Agent Skill
-получает те же argv и повторный server admission. SessionStart hook остаётся
-только для несвязанного title reminder; `PreToolUse` отсутствует.
+получает те же argv и повторный server admission. Plugin не регистрирует hooks.
+Старый hook/rollout evidence не принимается даже при claim: незавершённая
+legacy работа начинается новым Run после обновления plugin, а accepted
+Workspace revisions сохраняются.
 
 Это cooperative self-report, а не криптографическая platform attestation.
-Unknown client/model управляется explicit allow/deny. Не выдавать неизвестный
-cloud runtime за Claude Code и не копировать декларацию другой модели.
+Unknown client/model управляется explicit allow/deny. Runtime без достоверной
+Codex/Claude Code identity использует только `clientFamily=other`,
+`source=unknown`, `evidenceLevel=unavailable`, `modelId=null` и
+`effortLevel=null`; не выдавать неизвестный cloud runtime за известный клиент и
+не копировать декларацию другой модели.
+
+Best-effort переименование нового Codex-чата задаётся короткой инструкцией в
+основном Trelio MCP сразу после runtime-policy текста. Она вызывает native
+thread-title tool только для явно нового top-level conversation, не меняет
+fork/delegated/existing/user-named thread и молча пропускается без host tool.
+Это не hook и не lifecycle guarantee: cloud toolset может отличаться, а Claude
+Code использует собственное название с пользовательским `/rename`.
 
 ## Working-folder onboarding skill
 

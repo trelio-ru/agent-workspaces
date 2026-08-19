@@ -13,7 +13,9 @@ Every non-recovery Trelio MCP call must include exact current
 `observedAt`. Catalog discovery checks whether the model is allowed but ignores
 minimum effort; `get_agent_skill` is a protected context read and checks both.
 Rebuild the declaration after a runtime change and never copy another model's
-values.
+values. A runtime that cannot truthfully identify as Codex or Claude Code uses
+only `clientFamily=other`, `source=unknown`, `evidenceLevel=unavailable` and
+`null` model/effort; it never impersonates a known client.
 
 ## Separate operational use from source maintenance
 

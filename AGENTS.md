@@ -74,10 +74,12 @@
   Agent Run закрепляет snapshot и initiating attestation, а exact bridge open
   command повторяет её явными `--runtime-*` аргументами. Signed Agent Skill
   получает те же аргументы и server admission до runtime. Plugin не определяет
-  модель через env, transcript или `PreToolUse`; hook остаётся только для
-  несвязанного SessionStart reminder. Login/doctor/pairing recovery не
-  блокируются. Это cooperative self-report, а не platform attestation;
-  `local_observed` разрешён только для продолжения уже закреплённого legacy Run.
+  модель через env/transcript и вообще не регистрирует agent hooks. Unknown
+  runtime использует только `other/unknown/unavailable` с `null` model/effort,
+  а не выдаёт себя за Codex/Claude Code. Login/doctor/pairing recovery не
+  блокируются. Это cooperative self-report, а не platform attestation. Старый
+  hook/rollout evidence не принимается: незавершённый Run с ним начинается
+  заново после обновления plugin, accepted Workspace revisions сохраняются.
 - Новые material Agent Workspace и Run допускаются только для `task` и
   `dossier`. Company/project остаются instruction/ACL/owner scopes. Явные
   task/dossier связи читаются первыми, остальной контекст ищется каноническим
@@ -293,13 +295,13 @@
   обходятся и не подтверждаются агентом. После установки doctor повторяется в
   той же задаче, новый absolute path используется без restart; ambiguous
   installer result сначала проверяется doctor, а не повторяется вслепую.
-- Codex `SessionStart` с `source=startup` один раз добавляет в первый model call
-  короткое напоминание проверить название текущего основного чата после сбора
-  исходного контекста. Это non-blocking reminder, а не проверка результата:
-  он не запускает второй model call, app-server, сеть или отдельный процесс и
-  молчит на `resume`, `clear`, `compact`, в Claude Code и на последующих ходах.
-  Уже понятное или пользовательское название не меняется, отсутствие прямого
-  безопасного инструмента остаётся тихим no-op.
+- Plugin не содержит `hooks.json` и hook entrypoint. Основной Trelio MCP после
+  runtime-policy текста даёт короткую Codex-only best-effort инструкцию: в явно
+  новом верхнеуровневом чате после исходного контекста вызвать native title
+  tool не более одного раза. Fork, delegated/existing conversation и
+  пользовательское название не меняются; отсутствие tool – тихий no-op.
+  Поскольку MCP не получает lifecycle event и thread id, это не строгая
+  гарантия «ровно один раз» и не должно участвовать в security policy.
 - MAX browser adapter по умолчанию блокирует server-side `READ_MESSAGE` и
   `READ_REACTION` при discovery, чтении, unread polling, download и любых
   действиях, которые не являются ответом. Read receipt разрешается только

@@ -14,7 +14,9 @@ discovery.
 Every discovery call still carries the exact current `runtimeAttestation`.
 Discovery relaxes only the company's minimum effort; a forbidden or disallowed
 unlisted model remains blocked. Exact content reads selected from discovery
-then enforce both model and minimum effort.
+then enforce both model and minimum effort. A runtime without truthful
+Codex/Claude Code identity uses only `other/unknown/unavailable` with `null`
+model/effort; it never borrows a known client declaration.
 
 ## Resolve the work item
 
