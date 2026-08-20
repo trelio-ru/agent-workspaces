@@ -1,6 +1,6 @@
 ---
 name: 1c-vkus-kadry
-description: Safely search, inspect, get a current calculated leave balance, list attachments for, and download one exact file from the complete read-only Vkus HR and payroll contour published by 1C through Trelio's signed runtime. Use for employees and physical persons, employment events, staffing, schedules and time, leave and absence, sick leave and health-related HR documents, payroll, accruals, deductions, payments, NDFL and insurance contributions, qualifications, identity/passport details, contacts, employee banking details, and attached employment contracts or HR files.
+description: Safely search, inspect, get a current calculated leave balance or locate a completed 1C leave-balance certificate, list attachments for, and download one exact file from the complete read-only Vkus HR and payroll contour published by 1C through Trelio's signed runtime. Use for employees and physical persons, employment events, staffing, schedules and time, leave and absence, sick leave and health-related HR documents, payroll, accruals, deductions, payments, NDFL and insurance contributions, qualifications, identity/passport details, contacts, employee banking details, and attached employment contracts or HR files.
 ---
 
 # 1С — Кадры Вкус
@@ -93,6 +93,7 @@ Signed registry содержит 278 кадровых источников да�
 - `forget-credentials`
 - `get-capabilities [--category employment|health|identity|organization|payroll|people|qualifications|taxes|time] [--query TEXT] [--page 1..3] [--limit 1..50]`
 - `get-leave-balance --subject-id UUID --as-of YYYY-MM-DD --include-sensitive`
+- `find-leave-balance-certificate --subject-id UUID --as-of YYYY-MM-DD --include-sensitive`
 - `search-records --source-key SOURCE_KEY [--query TEXT] [--subject-id UUID] [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--page 1..3] [--limit 1..10] [--include-sensitive]`
 - `get-record --source-key SOURCE_KEY --id UUID [--include-sensitive] [--include-collections] [--line-limit 1..100]`
 - `list-attachments --attachment-source-key SOURCE_KEY --owner-id UUID [--page 1..3] [--limit 1..10] --include-sensitive`
@@ -100,8 +101,11 @@ Signed registry содержит 278 кадровых источников да�
 
 Для `search-records`, `get-record` и вложений всегда сначала получать
 `sourceKey` из `get-capabilities`. Не угадывать ключ и не заменять отклонённый
-источник entity name. У специализированной команды `get-leave-balance`
-source key закреплён runtime-ом и caller его не передаёт.
+источник entity name. У специализированных `get-leave-balance` и
+`find-leave-balance-certificate` source keys закреплены runtime-ом и caller их
+не передаёт. Вторая команда также возвращает exact attachment source и
+нормализованный список файлов найденной заявки; повторно угадывать либо искать
+их через общий источник не нужно.
 
 Использовать `--subject-id` только когда пользователь или предыдущий
 нормализованный результат дал exact UUID сотрудника/физлица. Runtime применит
@@ -134,8 +138,29 @@ source key закреплён runtime-ом и caller его не передаё�
 `advancedDays` передавать отдельно и не вычитать повторно из `balanceDays`.
 
 Если `found=false`, не выдавать ручной расчёт `28 / 12 × месяцы − отпуска` за
-точный остаток 1С. Можно предложить такой расчёт только как отдельную оценку с
-явной оговоркой после сообщения, что прямой рассчитанной записи 1С нет.
+точный остаток 1С. Сначала вызвать
+`find-leave-balance-certificate` для того же exact subject и `as-of`.
+
+`find-leave-balance-certificate` ищет только последнюю на запрошенную дату
+проведённую и выполненную заявку
+`ЗаявкаСправкаОстаткиОтпусковКабинетСотрудника`, повторно проверяет subject и
+дату локально и сразу возвращает её exact вложения. `found=true` означает, что
+заявка завершена, а `certificateAvailable=true` — что у неё есть хотя бы один
+файл; это ещё не числовой остаток. Выбрать PDF, чьё описание относится к
+справке об остатках, скачать только его exact `fileId` и прочитать документ по
+правилам PDF-навыка. Сообщать дату строки `Сегодня` либо другую явную дату
+среза из самой справки и остатки по каждому виду отпуска отдельно. Не складывать
+основной и дополнительные виды без прямого запроса пользователя.
+
+Если готовой заявки или PDF нет, навык не может создать её: runtime остаётся
+read-only. Предложить сформировать стандартную справку об остатках отпусков в
+1С/кабинете сотрудника и затем повторить чтение. Записи
+`НачальныеОстаткиОтпусков`, `ПоложенныеВидыЕжегодныхОтпусков`,
+`ФактическиеОтпуска` и `ПериодыОтпусков` полезны как основания, но не заменяют
+расчёт 1С: рабочий год могут сдвигать отсутствия, а права, компенсации и
+корректировки меняют итог. Ручную формулу можно предложить только как отдельную
+оценку с явной оговоркой после сообщения, что ни прямой расчёт, ни готовая
+справка недоступны.
 
 Для вложений всегда сначала получать `attachmentSourceKey` из
 `get-capabilities`, а `fileId` — из `list-attachments` того же exact
@@ -169,6 +194,15 @@ Runtime `1.1.0` добавляет узкую `get-leave-balance`. Она не �
 непротиворечивую запись на или до exact даты и останавливается при разных
 остатках в одинаковом последнем периоде.
 
+Runtime `1.2.0` добавляет узкую
+`find-leave-balance-certificate` как fallback для пустого регистра резерва.
+Она выбирает только десять фиксированных полей готовой заявки, не возвращает
+email, комментарии или исполнителя, fail-closed проверяет subject, проведение,
+завершение, дату и неоднозначность и читает exact attachment source этой же
+заявки. Команда не создаёт заявку и не извлекает число из PDF: агент скачивает
+один явно найденный файл существующей справки и сообщает его собственную дату
+среза.
+
 По умолчанию несовпадение фактически полученных байт с полем `Размер` из
 metadata 1С остаётся fail-closed. Не добавлять
 `--allow-unverified-size-mismatch` автоматически. Использовать его только
@@ -194,6 +228,9 @@ metadata 1С остаётся fail-closed. Не добавлять
 
 Для `get-leave-balance` добавлять `--include-sensitive` только когда
 пользователь явно запросил остаток/накопленные дни конкретного сотрудника.
+
+Для `find-leave-balance-certificate` действует то же ограничение: вызывать её
+только как fallback после явного запроса остатка конкретного сотрудника.
 
 Добавлять `--include-collections` только вместе с `--include-sensitive` и
 только для exact записи, когда пользователю нужны строки документа.

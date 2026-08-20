@@ -49,6 +49,18 @@ class VkusHrRuntimeTests(unittest.TestCase):
             for source in self.registry["sources"]
             if source["title"] == "РасчетРезерваОтпусков"
         )
+        self.leave_certificate_source = next(
+            source
+            for source in self.registry["sources"]
+            if source["title"]
+            == "ЗаявкаСправкаОстаткиОтпусковКабинетСотрудника"
+        )
+        self.leave_certificate_attachment_source = next(
+            source
+            for source in self.registry["attachmentSources"]
+            if source["title"]
+            == "ЗаявкаСправкаОстаткиОтпусковКабинетСотрудника"
+        )
         self.attachment_source = next(
             source
             for source in self.registry["attachmentSources"]
@@ -56,8 +68,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.1.0")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.1.0")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.2.0")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.2.0")
         self.assertEqual(
             MODULE.provider.SUPPORTED_SKILL_IDS,
             {MODULE.HR_SKILL_ID},
@@ -73,7 +85,9 @@ class VkusHrRuntimeTests(unittest.TestCase):
         owner_id: str,
         file_id: str,
         declared_size: int,
+        source: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        selected_source = source or self.attachment_source
         return {
             field["name"]: (
                 file_id
@@ -84,9 +98,11 @@ class VkusHrRuntimeTests(unittest.TestCase):
                 if field["name"] == "Размер"
                 else False
                 if field["type"] == "Edm.Boolean"
+                else "2026-06-11T10:00:00"
+                if field["type"] in {"Edm.DateTime", "Edm.DateTimeOffset"}
                 else "pdf"
             )
-            for field in self.attachment_source["metadataFields"]
+            for field in selected_source["metadataFields"]
         }
 
     def _company_config(self) -> object:
@@ -120,6 +136,29 @@ class VkusHrRuntimeTests(unittest.TestCase):
             "ПериодРасчета": "2026-07-01T00:00:00",
             "ОстатокОтпуска": 64.0,
             "ОтпускАвансом": 0.0,
+        }
+        row.update(overrides)
+        return row
+
+    def _leave_certificate_row(
+        self,
+        *,
+        request_id: str = "44444444-4444-4444-8444-444444444444",
+        subject_id: str = "11111111-1111-4111-8111-111111111111",
+        physical_person_id: str = "22222222-2222-4222-8222-222222222222",
+        **overrides: object,
+    ) -> dict[str, object]:
+        row: dict[str, object] = {
+            "Ref_Key": request_id,
+            "Date": "2026-06-11T09:00:00",
+            "DeletionMark": False,
+            "Posted": True,
+            "Сотрудник_Key": subject_id,
+            "ФизическоеЛицо_Key": physical_person_id,
+            "ОтветПоЗаявке": "Справка об остатках отпусков готова",
+            "РезультатВыполнения": "Выполнена",
+            "Выполнена": True,
+            "ДатаИсполнения": "2026-06-11T10:00:00",
         }
         row.update(overrides)
         return row
@@ -404,6 +443,243 @@ class VkusHrRuntimeTests(unittest.TestCase):
         self.assertNotIn("estimatedBalanceDays", result)
         self.assertEqual(result["asOfRequested"], "2026-08-20")
 
+    def test_leave_certificate_uses_fixed_minimal_sources_and_lists_files(self) -> None:
+        subject_id = "11111111-1111-4111-8111-111111111111"
+        request_id = "44444444-4444-4444-8444-444444444444"
+        file_id = "55555555-5555-4555-8555-555555555555"
+        request_row = self._leave_certificate_row(
+            request_id=request_id,
+            subject_id=subject_id,
+        )
+        attachment_row = self._attachment_row(
+            owner_id=request_id,
+            file_id=file_id,
+            declared_size=57_393,
+            source=self.leave_certificate_attachment_source,
+        )
+        responses = [
+            Response(
+                json.dumps({"value": [request_row]}, ensure_ascii=False).encode(
+                    "utf-8",
+                ),
+            ),
+            Response(
+                json.dumps({"value": [attachment_row]}, ensure_ascii=False).encode(
+                    "utf-8",
+                ),
+            ),
+        ]
+        opened_urls: list[str] = []
+
+        def fake_open(_: str, url: str, **__: object) -> Response:
+            opened_urls.append(url)
+            return responses.pop(0)
+
+        with (
+            mock.patch.object(
+                MODULE,
+                "_connected_context",
+                return_value=(
+                    self._company_config(),
+                    MODULE.provider.Credentials("employee", "password"),
+                ),
+            ),
+            mock.patch.object(
+                MODULE.provider,
+                "_require_x_odata",
+                return_value="x" * 32,
+            ),
+            mock.patch.object(MODULE.provider, "_http_open", side_effect=fake_open),
+        ):
+            result = MODULE.command_find_leave_balance_certificate(mock.Mock(
+                subject_id=subject_id,
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertTrue(result["found"])
+        self.assertTrue(result["certificateAvailable"])
+        self.assertEqual(result["requestId"], request_id)
+        self.assertEqual(result["completedAt"], "2026-06-11T10:00:00")
+        self.assertEqual(result["matchedSubjectKind"], "employee")
+        self.assertEqual(result["attachmentCount"], 1)
+        self.assertEqual(result["attachments"][0]["fileId"], file_id)
+        self.assertEqual(
+            result["basis"],
+            "one_c_completed_leave_balance_certificate_request",
+        )
+        self.assertNotIn("ОтветПоЗаявке", result)
+        self.assertNotIn("РезультатВыполнения", result)
+
+        self.assertEqual(len(opened_urls), 2)
+        url_tools = __import__("urllib.parse").parse
+        decoded_request_url = url_tools.unquote(opened_urls[0])
+        request_query = url_tools.parse_qs(
+            url_tools.urlparse(opened_urls[0]).query,
+        )
+        self.assertEqual(
+            set(request_query["$select"][0].split(",")),
+            {
+                name
+                for name, _, _ in MODULE.LEAVE_CERTIFICATE_FIELD_CONTRACT
+            },
+        )
+        self.assertEqual(
+            request_query["$orderby"],
+            ["ДатаИсполнения desc,Date desc,Ref_Key desc"],
+        )
+        self.assertIn("DeletionMark eq false", decoded_request_url)
+        self.assertIn("Posted eq true", decoded_request_url)
+        self.assertIn("Выполнена eq true", decoded_request_url)
+        self.assertIn(
+            "ДатаИсполнения lt datetime'2026-08-21T00:00:00'",
+            decoded_request_url,
+        )
+        self.assertIn(subject_id, decoded_request_url)
+        self.assertNotIn("АдресEmail", decoded_request_url)
+        self.assertNotIn("КомментарийСотрудника", decoded_request_url)
+        self.assertLess(len(opened_urls[0]), 2_000)
+        decoded_attachment_url = url_tools.unquote(opened_urls[1])
+        self.assertIn(
+            self.leave_certificate_attachment_source["entity"],
+            decoded_attachment_url,
+        )
+        self.assertIn(request_id, decoded_attachment_url)
+
+    def test_leave_certificate_requires_explicit_sensitive_access(self) -> None:
+        with self.assertRaises(MODULE.HrRuntimeError) as caught:
+            MODULE.command_find_leave_balance_certificate(mock.Mock(
+                subject_id="11111111-1111-4111-8111-111111111111",
+                as_of="2026-08-20",
+                include_sensitive=False,
+            ))
+
+        self.assertEqual(
+            caught.exception.code,
+            "explicit_sensitive_access_required",
+        )
+
+    def test_leave_certificate_reports_no_completed_request(self) -> None:
+        with (
+            mock.patch.object(MODULE, "_request_rows", return_value=[]),
+            mock.patch.object(MODULE, "_request_attachment_rows") as attachments,
+        ):
+            result = MODULE.command_find_leave_balance_certificate(mock.Mock(
+                subject_id="11111111-1111-4111-8111-111111111111",
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertFalse(result["found"])
+        self.assertFalse(result["certificateAvailable"])
+        self.assertEqual(result["asOfRequested"], "2026-08-20")
+        attachments.assert_not_called()
+
+    def test_leave_certificate_rejects_ignored_server_filters(self) -> None:
+        foreign_employee = "33333333-3333-4333-8333-333333333333"
+        cases = (
+            (
+                "foreign subject",
+                self._leave_certificate_row(subject_id=foreign_employee),
+            ),
+            (
+                "deleted request",
+                self._leave_certificate_row(DeletionMark=True),
+            ),
+            (
+                "unposted request",
+                self._leave_certificate_row(Posted=False),
+            ),
+            (
+                "unfinished request",
+                self._leave_certificate_row(Выполнена=False),
+            ),
+            (
+                "future completion",
+                self._leave_certificate_row(
+                    ДатаИсполнения="2026-08-21T00:00:00",
+                ),
+            ),
+            (
+                "future request date",
+                self._leave_certificate_row(Date="2026-08-21T00:00:00"),
+            ),
+        )
+        for label, row in cases:
+            with self.subTest(label=label):
+                with mock.patch.object(MODULE, "_request_rows", return_value=[row]):
+                    with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                        MODULE.command_find_leave_balance_certificate(mock.Mock(
+                            subject_id="11111111-1111-4111-8111-111111111111",
+                            as_of="2026-08-20",
+                            include_sensitive=True,
+                        ))
+                self.assertEqual(caught.exception.code, "source_contract_mismatch")
+
+    def test_leave_certificate_fails_closed_on_same_latest_completion(self) -> None:
+        rows = [
+            self._leave_certificate_row(
+                request_id="44444444-4444-4444-8444-444444444444",
+            ),
+            self._leave_certificate_row(
+                request_id="55555555-5555-4555-8555-555555555555",
+            ),
+        ]
+        with mock.patch.object(MODULE, "_request_rows", return_value=rows):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_find_leave_balance_certificate(mock.Mock(
+                    subject_id="11111111-1111-4111-8111-111111111111",
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(caught.exception.code, "leave_certificate_ambiguous")
+
+    def test_leave_certificate_rejects_full_attachment_page(self) -> None:
+        request_id = "44444444-4444-4444-8444-444444444444"
+        attachments = [
+            self._attachment_row(
+                owner_id=request_id,
+                file_id=f"50000000-0000-4000-8000-{index:012d}",
+                declared_size=100,
+                source=self.leave_certificate_attachment_source,
+            )
+            for index in range(MODULE.MAX_PAGE_SIZE)
+        ]
+        with (
+            mock.patch.object(
+                MODULE,
+                "_request_rows",
+                return_value=[self._leave_certificate_row(request_id=request_id)],
+            ),
+            mock.patch.object(
+                MODULE,
+                "_request_attachment_rows",
+                return_value=attachments,
+            ),
+        ):
+            with self.assertRaises(MODULE.HrRuntimeError) as caught:
+                MODULE.command_find_leave_balance_certificate(mock.Mock(
+                    subject_id="11111111-1111-4111-8111-111111111111",
+                    as_of="2026-08-20",
+                    include_sensitive=True,
+                ))
+
+        self.assertEqual(
+            caught.exception.code,
+            "leave_certificate_attachments_incomplete",
+        )
+
+    def test_leave_certificate_rejects_zero_subject_uuid(self) -> None:
+        with self.assertRaises(MODULE.provider.OneCEdoError) as caught:
+            MODULE.command_find_leave_balance_certificate(mock.Mock(
+                subject_id="00000000-0000-0000-0000-000000000000",
+                as_of="2026-08-20",
+                include_sensitive=True,
+            ))
+
+        self.assertEqual(caught.exception.code, "invalid_identity")
+
     def test_filters_escape_text_and_accept_only_signed_fields(self) -> None:
         expression = MODULE._build_filter(
             self.employee_source,
@@ -603,6 +879,20 @@ class VkusHrRuntimeTests(unittest.TestCase):
 
         self.assertIs(parsed.handler, MODULE.command_get_leave_balance)
         self.assertTrue(parsed.include_sensitive)
+
+        certificate = MODULE.build_parser().parse_args([
+            "find-leave-balance-certificate",
+            "--subject-id",
+            "11111111-1111-4111-8111-111111111111",
+            "--as-of",
+            "2026-08-20",
+            "--include-sensitive",
+        ])
+        self.assertIs(
+            certificate.handler,
+            MODULE.command_find_leave_balance_certificate,
+        )
+        self.assertTrue(certificate.include_sensitive)
 
     def test_connect_probes_exact_signed_hr_source_without_broad_allowlist(self) -> None:
         config = self._company_config()

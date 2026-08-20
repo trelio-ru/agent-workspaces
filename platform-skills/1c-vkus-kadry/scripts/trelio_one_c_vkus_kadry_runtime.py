@@ -31,7 +31,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.1.0"
+RUNTIME_VERSION = "1.2.0"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_CONNECTION_PROBE_BYTES = 64 * 1024
@@ -45,6 +45,8 @@ SOURCE_KEY_RE = re.compile(r"^[a-z]+-[0-9a-f]{12}$")
 CONNECTION_PROBE_SOURCE_KEY = "people-873b10474c45"
 CONNECTION_PROBE_FIELD = "Ref_Key"
 LEAVE_BALANCE_SOURCE_KEY = "time-7117b3ca40e7"
+LEAVE_CERTIFICATE_SOURCE_KEY = "people-e563497df85d"
+LEAVE_CERTIFICATE_ATTACHMENT_SOURCE_KEY = "attachment-f740340efceb"
 # A generic sensitive read of ``РасчетРезерваОтпусков`` selects dozens of
 # payroll fields and can exceed the 1C/IIS query-string limit.  Keep the
 # dedicated balance route pinned to the smallest useful signed field set so a
@@ -59,6 +61,24 @@ LEAVE_BALANCE_FIELD_CONTRACT = (
     ("ПериодРасчета", "Edm.DateTime", True),
     ("ОстатокОтпуска", "Edm.Double", True),
     ("ОтпускАвансом", "Edm.Double", True),
+)
+# A completed employee-cabinet request is the only currently published route
+# that carries a generated 1C leave-balance certificate when the reserve
+# register has no rows.  Keep its lookup separate from generic sensitive
+# search: selecting only these fields avoids unrelated email, comments,
+# executor and template data while retaining enough information to verify the
+# exact subject, completion state and as-of boundary locally.
+LEAVE_CERTIFICATE_FIELD_CONTRACT = (
+    ("Ref_Key", "Edm.Guid", False),
+    ("Date", "Edm.DateTime", False),
+    ("DeletionMark", "Edm.Boolean", False),
+    ("Posted", "Edm.Boolean", False),
+    ("Сотрудник_Key", "Edm.Guid", False),
+    ("ФизическоеЛицо_Key", "Edm.Guid", False),
+    ("ОтветПоЗаявке", "Edm.String", True),
+    ("РезультатВыполнения", "Edm.String", True),
+    ("Выполнена", "Edm.Boolean", True),
+    ("ДатаИсполнения", "Edm.DateTime", True),
 )
 ENTITY_RE = re.compile(
     r"^(?:Catalog|Document|InformationRegister|AccumulationRegister|"
@@ -504,6 +524,60 @@ def _leave_balance_source_and_fields(
             )
         selected.append(field)
     return source, selected
+
+
+def _leave_certificate_sources_and_fields(
+    registry: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Resolve the fixed completed-request and attachment contracts.
+
+    The certificate fallback must not accept a caller-supplied source key:
+    otherwise a similarly named HR document could be substituted for the
+    employee-cabinet request that 1C actually completes with a generated PDF.
+    Both the request source and its attachment owner relation are therefore
+    pinned and revalidated against the signed package before network access.
+    """
+
+    source = _source_by_key(registry, LEAVE_CERTIFICATE_SOURCE_KEY)
+    if source.get("title") != "ЗаявкаСправкаОстаткиОтпусковКабинетСотрудника":
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Источник справок об остатках отпусков не совпадает с контрактом.",
+        )
+
+    fields_by_name = {
+        str(field.get("name") or ""): field
+        for field in source.get("fields") or []
+        if isinstance(field, dict)
+    }
+    selected: list[dict[str, Any]] = []
+    for name, edm_type, sensitive in LEAVE_CERTIFICATE_FIELD_CONTRACT:
+        field = fields_by_name.get(name)
+        if (
+            field is None
+            or field.get("type") != edm_type
+            or field.get("sensitive") is not sensitive
+        ):
+            raise HrRuntimeError(
+                "registry_invalid",
+                "Поля справки об остатках отпусков не совпадают с контрактом.",
+            )
+        selected.append(field)
+
+    attachment_source = _attachment_source_by_key(
+        registry,
+        LEAVE_CERTIFICATE_ATTACHMENT_SOURCE_KEY,
+    )
+    if (
+        attachment_source.get("title")
+        != "ЗаявкаСправкаОстаткиОтпусковКабинетСотрудника"
+        or attachment_source.get("ownerSourceKey") != source.get("key")
+    ):
+        raise HrRuntimeError(
+            "registry_invalid",
+            "Источник файлов справки об остатках отпусков повреждён.",
+        )
+    return source, attachment_source, selected
 
 
 def _attachment_source_by_key(
@@ -1468,13 +1542,18 @@ def command_get_capabilities(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _leave_balance_datetime(value: Any, label: str) -> dt.datetime:
+def _one_c_datetime(
+    value: Any,
+    label: str,
+    *,
+    context: str,
+) -> dt.datetime:
     """Parse one 1C OData datetime into a comparable naive UTC instant."""
 
     if not isinstance(value, str):
         raise HrRuntimeError(
             "source_contract_mismatch",
-            f"1С вернула некорректное поле {label} остатка отпуска.",
+            f"1С вернула некорректное поле {label} {context}.",
         )
     microsoft = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", value)
     if microsoft:
@@ -1486,7 +1565,7 @@ def _leave_balance_datetime(value: Any, label: str) -> dt.datetime:
         except (OverflowError, OSError, ValueError) as error:
             raise HrRuntimeError(
                 "source_contract_mismatch",
-                f"1С вернула некорректное поле {label} остатка отпуска.",
+                f"1С вернула некорректное поле {label} {context}.",
             ) from error
 
     try:
@@ -1494,11 +1573,44 @@ def _leave_balance_datetime(value: Any, label: str) -> dt.datetime:
     except ValueError as error:
         raise HrRuntimeError(
             "source_contract_mismatch",
-            f"1С вернула некорректное поле {label} остатка отпуска.",
+            f"1С вернула некорректное поле {label} {context}.",
         ) from error
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
     return parsed
+
+
+def _leave_balance_datetime(value: Any, label: str) -> dt.datetime:
+    """Parse a reserve-register timestamp with balance-specific errors."""
+
+    return _one_c_datetime(value, label, context="остатка отпуска")
+
+
+def _leave_certificate_datetime(value: Any, label: str) -> dt.datetime:
+    """Parse a completed certificate-request timestamp."""
+
+    return _one_c_datetime(
+        value,
+        label,
+        context="справки об остатках отпусков",
+    )
+
+
+def _response_uuid(value: Any, label: str) -> str:
+    """Normalize a non-zero UUID received from 1C as response data.
+
+    ``provider._uuid`` intentionally reports invalid caller identities.  Here
+    the value came from a server response, so the same malformed or zero UUID
+    is a signed-source contract failure instead of a user-input error.
+    """
+
+    try:
+        return _uuid(str(value or ""), label)
+    except provider.OneCEdoError as error:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            f"1С вернула некорректный {label} справки об остатках отпусков.",
+        ) from error
 
 
 def _leave_balance_number(
@@ -1735,6 +1847,239 @@ def command_get_leave_balance(args: argparse.Namespace) -> dict[str, Any]:
         "basis": "one_c_leave_reserve_register",
         "sensitiveFieldsIncluded": True,
         "schema": _schema_summary(registry),
+    }
+
+
+def _validated_leave_certificate_row(
+    row: Mapping[str, Any],
+    *,
+    subject_id: str,
+    as_of: dt.date,
+) -> dict[str, Any]:
+    """Recheck every fixed predicate on a completed certificate request."""
+
+    if row.get("DeletionMark") is not False:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула удалённую заявку на справку об остатках отпусков.",
+        )
+    if row.get("Posted") is not True or row.get("Выполнена") is not True:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула незавершённую заявку на справку об остатках отпусков.",
+        )
+
+    employee_id = (
+        _response_uuid(row.get("Сотрудник_Key"), "employee id")
+        if row.get("Сотрудник_Key") is not None
+        else ""
+    )
+    physical_person_id = (
+        _response_uuid(row.get("ФизическоеЛицо_Key"), "physical person id")
+        if row.get("ФизическоеЛицо_Key") is not None
+        else ""
+    )
+    employee_match = subject_id == employee_id
+    physical_person_match = subject_id == physical_person_id
+    if not employee_match and not physical_person_match:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула справку другого сотрудника.",
+        )
+    if employee_match and physical_person_match:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С неоднозначно сопоставила вид идентификатора справки.",
+        )
+    if not employee_id:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С не вернула карточку сотрудника для готовой справки.",
+        )
+
+    request_id = _response_uuid(row.get("Ref_Key"), "request id")
+    request_date = row.get("Date")
+    request_instant = _leave_certificate_datetime(request_date, "Date")
+    completed_at = row.get("ДатаИсполнения")
+    completed_instant = _leave_certificate_datetime(
+        completed_at,
+        "ДатаИсполнения",
+    )
+    exclusive_end = dt.datetime.combine(
+        as_of + dt.timedelta(days=1),
+        dt.time.min,
+    )
+    if request_instant >= exclusive_end or completed_instant >= exclusive_end:
+        raise HrRuntimeError(
+            "source_contract_mismatch",
+            "1С вернула справку позже запрошенной даты.",
+        )
+
+    return {
+        "requestId": request_id,
+        "requestDate": request_date,
+        "completedAt": completed_at,
+        "completedInstant": completed_instant,
+        "matchedSubjectKind": (
+            "employee" if employee_match else "physical_person"
+        ),
+        "employeeId": employee_id,
+        # Free-form response fields are intentionally reduced to presence
+        # booleans. Their text is not needed to locate the generated PDF and
+        # could contain unrelated internal comments.
+        "responseTextPresent": bool(str(row.get("ОтветПоЗаявке") or "").strip()),
+        "resultTextPresent": bool(str(row.get("РезультатВыполнения") or "").strip()),
+    }
+
+
+def command_find_leave_balance_certificate(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Locate the latest completed 1C leave-balance certificate request."""
+
+    if not args.include_sensitive:
+        raise HrRuntimeError(
+            "explicit_sensitive_access_required",
+            "Поиск справки об остатках отпусков требует --include-sensitive.",
+        )
+
+    registry = _load_registry()
+    source, attachment_source, fields = _leave_certificate_sources_and_fields(
+        registry,
+    )
+    subject_id = _uuid(args.subject_id, "subject id")
+    as_of = _date(args.as_of, "as-of")
+    subject_filter = _build_filter(
+        source,
+        query="",
+        subject_id=subject_id,
+        date_from="",
+        date_to="",
+    )
+    exclusive_end = as_of + dt.timedelta(days=1)
+    filter_expression = (
+        f"({subject_filter}) and DeletionMark eq false and Posted eq true "
+        "and Выполнена eq true and "
+        f"ДатаИсполнения lt datetime'{exclusive_end.isoformat()}T00:00:00'"
+    )
+
+    latest_rows: list[dict[str, Any]] = []
+    latest_instant: dt.datetime | None = None
+    previous_instant: dt.datetime | None = None
+    seen_request_ids: set[str] = set()
+    latest_completion_complete = False
+    for page in range(1, MAX_PAGES + 1):
+        page_rows = _request_rows(
+            source,
+            fields,
+            filter_expression=filter_expression,
+            page=page,
+            limit=MAX_PAGE_SIZE,
+            order_by=("ДатаИсполнения", "Date", "Ref_Key"),
+        )
+        if not page_rows:
+            latest_completion_complete = True
+            break
+
+        reached_older_completion = False
+        for row in page_rows:
+            normalized = _validated_leave_certificate_row(
+                row,
+                subject_id=subject_id,
+                as_of=as_of,
+            )
+            current_instant = normalized["completedInstant"]
+            if previous_instant is not None and current_instant > previous_instant:
+                raise HrRuntimeError(
+                    "source_contract_mismatch",
+                    "1С нарушила сортировку заявок на справку об остатках.",
+                )
+            previous_instant = current_instant
+            if latest_instant is None:
+                latest_instant = current_instant
+            if current_instant < latest_instant:
+                reached_older_completion = True
+                break
+
+            request_id = normalized["requestId"]
+            if request_id in seen_request_ids:
+                raise HrRuntimeError(
+                    "source_contract_mismatch",
+                    "1С повторила заявку при чтении справок об остатках.",
+                )
+            seen_request_ids.add(request_id)
+            latest_rows.append(normalized)
+
+        if reached_older_completion or len(page_rows) < MAX_PAGE_SIZE:
+            latest_completion_complete = True
+            break
+
+    base_result = {
+        "source": {
+            "sourceKey": source["key"],
+            "title": source["title"],
+        },
+        "attachmentSource": {
+            "attachmentSourceKey": attachment_source["key"],
+            "title": attachment_source["title"],
+            "ownerSourceKey": attachment_source["ownerSourceKey"],
+        },
+        "subjectId": subject_id,
+        "asOfRequested": as_of.isoformat(),
+        "sensitiveFieldsIncluded": True,
+        "schema": _schema_summary(registry),
+    }
+    if not latest_rows:
+        return {
+            **base_result,
+            "found": False,
+            "certificateAvailable": False,
+        }
+    if not latest_completion_complete:
+        raise HrRuntimeError(
+            "leave_certificate_incomplete",
+            "1С вернула слишком много заявок на последнюю дату справки.",
+        )
+    if len(latest_rows) != 1:
+        raise HrRuntimeError(
+            "leave_certificate_ambiguous",
+            "1С вернула несколько справок на одинаковую последнюю дату.",
+        )
+
+    latest = latest_rows[0]
+    attachments = _request_attachment_rows(
+        attachment_source,
+        owner_id=latest["requestId"],
+        page=1,
+        limit=MAX_PAGE_SIZE,
+    )
+    # Exactly a full page is not proof of exhaustion. Returning it as a
+    # complete certificate list could hide a PDF on the next page, so the
+    # specialized lookup stops instead of asking the caller to paginate a
+    # supposedly exact fallback.
+    if len(attachments) == MAX_PAGE_SIZE:
+        raise HrRuntimeError(
+            "leave_certificate_attachments_incomplete",
+            "У готовой справки слишком много вложений для точного выбора.",
+        )
+    normalized_attachments = [
+        _normalized_attachment(attachment_source, row)
+        for row in attachments
+    ]
+    return {
+        **base_result,
+        "found": True,
+        "certificateAvailable": bool(normalized_attachments),
+        "matchedSubjectKind": latest["matchedSubjectKind"],
+        "matchedEmployeeId": latest["employeeId"],
+        "requestId": latest["requestId"],
+        "requestDate": latest["requestDate"],
+        "completedAt": latest["completedAt"],
+        "responseTextPresent": latest["responseTextPresent"],
+        "resultTextPresent": latest["resultTextPresent"],
+        "attachments": normalized_attachments,
+        "attachmentCount": len(normalized_attachments),
+        "basis": "one_c_completed_leave_balance_certificate_request",
     }
 
 
@@ -2017,6 +2362,16 @@ def build_parser() -> argparse.ArgumentParser:
     leave_balance.add_argument("--as-of", required=True)
     leave_balance.add_argument("--include-sensitive", action="store_true")
     leave_balance.set_defaults(handler=command_get_leave_balance)
+
+    leave_certificate = subparsers.add_parser(
+        "find-leave-balance-certificate",
+    )
+    leave_certificate.add_argument("--subject-id", required=True)
+    leave_certificate.add_argument("--as-of", required=True)
+    leave_certificate.add_argument("--include-sensitive", action="store_true")
+    leave_certificate.set_defaults(
+        handler=command_find_leave_balance_certificate,
+    )
 
     search = subparsers.add_parser("search-records")
     search.add_argument(
