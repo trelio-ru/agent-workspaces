@@ -13,6 +13,12 @@ SMOKE_PATH = SKILL_ROOT / "development" / "smoke_finance_runtime_live.py"
 BUDGET_PROBE_PATH = (
     SKILL_ROOT / "development" / "probe_budget_drilldown_live.py"
 )
+PAYMENT_REQUEST_PROBE_PATH = (
+    SKILL_ROOT / "development" / "probe_payment_requests_live.py"
+)
+PAYMENT_REQUEST_SMOKE_PATH = (
+    SKILL_ROOT / "development" / "smoke_payment_requests_live.py"
+)
 
 
 def load_module(name: str, path: Path) -> object:
@@ -32,6 +38,14 @@ smoke = load_module("trelio_vkus_finance_smoke_test", SMOKE_PATH)
 budget_probe = load_module(
     "trelio_vkus_budget_drilldown_probe_test",
     BUDGET_PROBE_PATH,
+)
+payment_request_probe = load_module(
+    "trelio_vkus_payment_request_probe_test",
+    PAYMENT_REQUEST_PROBE_PATH,
+)
+payment_request_smoke = load_module(
+    "trelio_vkus_payment_request_smoke_test",
+    PAYMENT_REQUEST_SMOKE_PATH,
 )
 
 
@@ -141,6 +155,63 @@ class FinanceDevelopmentToolsTest(unittest.TestCase):
         self.assertIn("Period lt datetime'2026-07-01T00:00:00'", parameters["$filter"])
         self.assertIn("Подразделение_Key eq guid'77850bd5", parameters["$filter"])
         self.assertIn("СтатьяРасходов_Key eq guid'd8eec0da", parameters["$filter"])
+
+    def test_payment_request_probe_is_fixed_and_value_free(self) -> None:
+        self.assertEqual(
+            payment_request_probe.FIXED_ENTITY,
+            "Document_ЗаявкаНаРасходованиеДенежныхСредств",
+        )
+        self.assertIn("НазначениеПлатежа", payment_request_probe.FIXED_FIELDS)
+        self.assertIn("Комментарий", payment_request_probe.FIXED_FIELDS)
+        self.assertIn(
+            "РасшифровкаПлатежа",
+            payment_request_probe.FIXED_FIELDS,
+        )
+        self.assertEqual(
+            set(payment_request_probe.REFERENCE_PROFILE_FIELDS),
+            {"Catalog_Пользователи", "Catalog_Валюты"},
+        )
+
+        summary = payment_request_probe._structural_summary([
+            {
+                field: source_value
+                for field, source_value in (
+                    (name, None)
+                    for name in payment_request_probe.FIXED_FIELDS
+                )
+            },
+        ])
+
+        self.assertFalse(summary["businessValuesIncluded"])
+        self.assertNotIn("records", summary)
+
+    def test_payment_request_probe_exposes_no_arbitrary_odata_arguments(self) -> None:
+        parser_source = PAYMENT_REQUEST_PROBE_PATH.read_text(encoding="utf-8")
+
+        for allowed in (
+            'parser.add_argument("--date-from"',
+            'parser.add_argument("--date-to-exclusive"',
+            'scope.add_argument("--organization-id")',
+            'scope.add_argument("--business-unit-id")',
+        ):
+            self.assertIn(allowed, parser_source)
+        for forbidden in ("--entity", "--route", "--select", "--filter", "--orderby"):
+            self.assertNotIn(forbidden, parser_source)
+
+    def test_payment_request_smoke_output_contract_is_value_free(self) -> None:
+        source = PAYMENT_REQUEST_SMOKE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('"businessValuesIncluded": False', source)
+        self.assertNotIn('result["keyword"]', source)
+        self.assertNotIn('result["documentId"]', source)
+        self.assertEqual(
+            payment_request_smoke._document_args(
+                date_from="2026-07-01",
+                date_to="2026-07-31",
+                organization_id="44444444-4444-4444-8444-444444444444",
+            ).kind,
+            "payment_request",
+        )
 
 
 if __name__ == "__main__":

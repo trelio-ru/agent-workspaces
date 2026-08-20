@@ -132,7 +132,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
     def test_release_owns_credentials_and_has_no_metadata_code_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
 
-        self.assertEqual(runtime.RUNTIME_VERSION, "1.2.2")
+        self.assertEqual(runtime.RUNTIME_VERSION, "1.3.0")
         self.assertEqual(runtime.CREDENTIAL_PROVIDER_NAMESPACE, "1c-vkus")
         self.assertEqual(runtime.SUPPORTED_SKILL_IDS, {runtime.VKUS_SKILL_ID})
         self.assertNotIn("$metadata", source)
@@ -413,6 +413,26 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             ).handler,
             runtime.command_general_get_budget_turnover_details,
         )
+        payment_search = parser.parse_args([
+            "search-documents",
+            "--kind",
+            "payment_request",
+            "--date-from",
+            "2026-07-01",
+            "--date-to",
+            "2026-07-31",
+            "--organization-id",
+            REFERENCE_ID,
+            "--query",
+            "ремонт печи",
+            "--include-sensitive",
+        ])
+        self.assertIs(
+            payment_search.handler,
+            runtime.command_general_search_documents,
+        )
+        self.assertEqual(payment_search.query, "ремонт печи")
+        self.assertTrue(payment_search.include_sensitive)
         with self.assertRaises(SystemExit):
             parser.parse_args(["developer-inventory-metadata"])
 
@@ -458,7 +478,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         ):
             result = runtime.command_general_get_capabilities(Namespace())
 
-        self.assertEqual(result["registryVersion"], 5)
+        self.assertEqual(result["registryVersion"], 6)
         self.assertEqual(
             result["schema"]["profileSchemaDigest"],
             runtime.GENERAL_PROFILE_SCHEMA_DIGEST,
@@ -483,7 +503,7 @@ class OneCVkusRuntimeTest(unittest.TestCase):
             },
         )
         self.assertEqual(len(result["sections"]["references"]), 13)
-        self.assertEqual(len(result["sections"]["documents"]), 8)
+        self.assertEqual(len(result["sections"]["documents"]), 9)
         self.assertEqual(len(result["sections"]["financialTurnovers"]), 10)
         self.assertEqual(len(result["sections"]["financialRecords"]), 3)
         self.assertEqual(len(result["sections"]["balances"]), 2)
@@ -524,6 +544,18 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertEqual(
             result["reporting"],
             {"pnlAssembly": False, "sourceDataOnly": True},
+        )
+        payment_request = next(
+            item
+            for item in result["sections"]["documents"]
+            if item["kind"] == "payment_request"
+        )
+        self.assertTrue(payment_request["sensitiveConfirmationRequired"])
+        self.assertTrue(payment_request["periodAndScopeRequired"])
+        self.assertTrue(payment_request["splitLineRead"])
+        self.assertEqual(
+            payment_request["fullTextFields"],
+            ["paymentPurpose", "comment", "recipientInformation"],
         )
         self.assertEqual(
             result["limits"],
@@ -1027,6 +1059,248 @@ class OneCVkusRuntimeTest(unittest.TestCase):
         self.assertEqual(report["amount"], 37968.79)
         self.assertEqual(report["advancePurpose"], "Хозяйственные расходы")
         self.assertEqual(report["lines"][0]["sourceLineId"], "advance-line-1")
+
+    def test_payment_request_filter_requires_bounded_scope_and_escapes_query(self) -> None:
+        """Sensitive request search cannot degrade into a broad 1C browse."""
+
+        spec = runtime.GENERAL_DOCUMENT_SPECS["payment_request"][0]
+        args = Namespace(
+            date_from="2026-07-01",
+            date_to="2026-07-31",
+            organization_id=REFERENCE_ID,
+            destination_organization_id="",
+            business_unit_id="",
+            counterparty_id="",
+            contract_id="",
+            number="",
+            status="",
+            query="Печь 'Север'",
+        )
+
+        filter_value, matched = runtime._general_document_filter(args, spec)
+
+        self.assertIn("Организация_Key eq guid", filter_value)
+        self.assertNotIn("substringof", filter_value)
+        self.assertNotIn("Печь", filter_value)
+        self.assertTrue(filter_value.startswith("Date ge datetime"))
+        self.assertIn("query", matched)
+        for changed in (
+            Namespace(**{**vars(args), "date_from": ""}),
+            Namespace(
+                **{
+                    **vars(args),
+                    "organization_id": "",
+                    "business_unit_id": "",
+                },
+            ),
+        ):
+            with self.assertRaises(runtime.OneCEdoError) as caught:
+                runtime._general_document_filter(changed, spec)
+            self.assertIn(
+                caught.exception.code,
+                {"period_required", "scope_filter_required"},
+            )
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=AssertionError("sensitive gate must run first"),
+            ),
+            self.assertRaises(runtime.OneCEdoError) as caught,
+        ):
+            runtime.command_general_search_documents(
+                Namespace(
+                    **vars(args),
+                    kind="payment_request",
+                    page=1,
+                    limit=25,
+                    include_sensitive=False,
+                ),
+            )
+        self.assertEqual(
+            caught.exception.code,
+            "sensitive_data_confirmation_required",
+        )
+
+    def test_payment_request_full_text_and_lines_are_never_silently_cut(self) -> None:
+        """The dedicated adapter preserves long text and reconciles line sums."""
+
+        spec = runtime.GENERAL_DOCUMENT_SPECS["payment_request"][0]
+        raw = source_record(spec["fields"], record_id=DOCUMENT_ID)
+        raw.update({
+            "СуммаДокумента": 1250.75,
+            "НазначениеПлатежа": "Н" * 5_000,
+            "Комментарий": "К" * 4_500,
+            "ИнформацияПолучателюПлатежа": "П" * 4_250,
+        })
+        line = source_record(spec["lineFields"])
+        line.update({
+            "Ref_Key": DOCUMENT_ID,
+            "LineNumber": "1",
+            "Сумма": 1250.75,
+            "Комментарий": "С" * 4_100,
+            "СтатьяРасходов": ITEM_ID,
+            "СтатьяРасходов_Type": (
+                "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов"
+            ),
+        })
+        raw["РасшифровкаПлатежа"] = [line]
+
+        document = runtime._general_document_record(
+            "payment_request",
+            spec,
+            raw,
+            matched_by=["id"],
+            include_lines=True,
+            line_limit=10,
+        )
+        document["lines"][0]["sourceLineKey"] = (
+            f"payment_request:{DOCUMENT_ID}:1"
+        )
+        with mock.patch.object(
+            runtime,
+            "_general_reference_map_by_ids",
+            return_value={},
+        ):
+            document = runtime._general_enrich_payment_request_document(
+                self.config,
+                self.credentials,
+                document,
+            )
+
+        self.assertEqual(len(document["paymentPurpose"]), 5_000)
+        self.assertEqual(len(document["comment"]), 4_500)
+        self.assertEqual(len(document["recipientInformation"]), 4_250)
+        self.assertEqual(len(document["lines"][0]["comment"]), 4_100)
+        self.assertTrue(document["textCompleteness"]["complete"])
+        self.assertFalse(
+            document["textCompleteness"]["noteField"]["available"],
+        )
+        self.assertEqual(document["amountReconciliation"]["status"], "matched")
+        self.assertEqual(
+            document["managementAccounting"]["sourceBreakdown"][0][
+                "sourceLineKey"
+            ],
+            f"payment_request:{DOCUMENT_ID}:1",
+        )
+        self.assertEqual(
+            document["managementAccounting"]["pnlRecognition"]["status"],
+            "not_inferred",
+        )
+
+        raw["НазначениеПлатежа"] = "X" * (
+            runtime.MAX_GENERAL_FULL_TEXT_CHARS + 1
+        )
+        with self.assertRaises(runtime.OneCEdoError) as caught:
+            runtime._general_document_record(
+                "payment_request",
+                spec,
+                raw,
+                matched_by=["id"],
+                include_lines=True,
+                line_limit=10,
+            )
+        self.assertEqual(caught.exception.code, "source_contract_mismatch")
+        self.assertIsNone(
+            runtime._general_document_line_expense_item_id({
+                "expenseItemReference": runtime.ZERO_UUID,
+                "expenseItemType": (
+                    "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов"
+                ),
+            }),
+        )
+
+    def test_payment_request_exact_read_uses_two_fixed_projections(self) -> None:
+        """The live 404 combination is avoided without adding a fallback."""
+
+        spec = runtime.GENERAL_DOCUMENT_SPECS["payment_request"][0]
+        header = source_record(spec["fields"], record_id=DOCUMENT_ID)
+        header.pop("РасшифровкаПлатежа")
+        line = source_record(spec["lineFields"])
+        line["Ref_Key"] = DOCUMENT_ID
+        responses = (
+            {"value": [header]},
+            {
+                "value": [
+                    {
+                        "Ref_Key": DOCUMENT_ID,
+                        "РасшифровкаПлатежа": [line],
+                    },
+                ],
+            },
+        )
+
+        with mock.patch.object(
+            runtime,
+            "_request_odata",
+            side_effect=responses,
+        ) as request:
+            documents = runtime._general_documents_by_id(
+                self.config,
+                self.credentials,
+                "payment_request",
+                DOCUMENT_ID,
+                include_lines=True,
+                line_limit=50,
+            )
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(len(documents[0]["lines"]), 1)
+        first_select = dict(request.call_args_list[0].args[3])["$select"]
+        second_select = dict(request.call_args_list[1].args[3])["$select"]
+        self.assertNotIn("РасшифровкаПлатежа", first_select)
+        self.assertEqual(second_select, "Ref_Key,РасшифровкаПлатежа")
+        self.assertEqual(request.call_count, 2)
+
+    def test_payment_request_search_uses_bounded_local_keyword_scan(self) -> None:
+        """Proxy-safe search scans only the signed 150-row test contour."""
+
+        spec = runtime.GENERAL_DOCUMENT_SPECS["payment_request"][0]
+        header = source_record(spec["fields"], record_id=DOCUMENT_ID)
+        header.pop("РасшифровкаПлатежа")
+        args = Namespace(
+            kind="payment_request",
+            date_from="2026-07-01",
+            date_to="2026-07-31",
+            organization_id=REFERENCE_ID,
+            destination_organization_id="",
+            business_unit_id="",
+            counterparty_id="",
+            contract_id="",
+            number="",
+            query="Значение",
+            status="",
+            page=1,
+            limit=1,
+            include_sensitive=True,
+        )
+
+        with (
+            mock.patch.object(
+                runtime,
+                "_connected_context",
+                side_effect=self.connected_context,
+            ),
+            mock.patch.object(
+                runtime,
+                "_request_odata",
+                return_value={"value": [header]},
+            ) as request,
+            mock.patch.object(
+                runtime,
+                "_general_enrich_payment_request_documents",
+                side_effect=lambda _config, _credentials, documents: documents,
+            ),
+            mock.patch.object(runtime, "save_access_state"),
+        ):
+            result = runtime.command_general_search_documents(args)
+
+        parameters = dict(request.call_args.args[3])
+        self.assertEqual(parameters["$top"], 150)
+        self.assertNotIn("$skip", parameters)
+        self.assertNotIn("substringof", parameters["$filter"])
+        self.assertEqual(result["count"], 1)
 
     def test_line_reference_enrichment_builds_cross_period_deduplication_key(self) -> None:
         document = {
@@ -1799,7 +2073,11 @@ class OneCVkusRuntimeTest(unittest.TestCase):
 
     def test_entity_allowlist_and_read_only_method_guard_remain_closed(self) -> None:
         with self.assertRaisesRegex(runtime.OneCEdoError, "entity"):
-            runtime._odata_url(self.config, "Catalog_Пользователи")
+            runtime._odata_url(self.config, "Catalog_Сотрудники")
+        self.assertIn(
+            "Catalog_%D0%9F%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D0%B8",
+            runtime._odata_url(self.config, "Catalog_Пользователи"),
+        )
         with self.assertRaises(runtime.OneCEdoError) as caught:
             runtime._http_open(
                 "POST",

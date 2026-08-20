@@ -1,6 +1,6 @@
 ---
 name: 1c-vkus
-description: Safely read fixed Vkus 1C references, documents, financial turnovers, accounting and stock balances, bank-operation headers, taxes, payroll aggregates and relationships through Trelio's signed read-only runtime.
+description: Safely read fixed Vkus 1C references, documents, payment requests, financial turnovers, accounting and stock balances, bank-operation headers, taxes, payroll aggregates and relationships through Trelio's signed read-only runtime.
 ---
 
 # 1С — Вкус
@@ -28,8 +28,8 @@ Personal Basic Auth credentials are stored only under:
 Do not inspect another 1C namespace or migrate old credential files. Start
 with `access-status show`; when the state is `unknown` or `needs_reconnect`,
 offer this skill's own `connect` flow. Run `connect` only at the user's request.
-Changing only bounded connection limits does not require a new login: runtime
-1.2.1 migrates the reviewed former three-page policy to an endpoint-only local
+Changing only bounded connection limits does not require a new login: since
+runtime 1.2.1 the reviewed former three-page policy is migrated to an endpoint-only local
 credential binding. Changing either configured endpoint still invalidates the
 personal session and requires reconnection.
 It opens a protected one-time page in the default browser on `127.0.0.1`.
@@ -72,8 +72,8 @@ waiting. Never wrap a failed command in an additional automatic retry loop.
 - `get-capabilities`
 - `search-reference-items --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit [--query TEXT] [--page 1..10] [--limit 1..50]`
 - `get-reference-item --kind organization|business_unit|counterparty|partner|contract|item|warehouse|account|cash_flow_item|other_expense_item|expense_allocation_rule|budget_item|unit --id UUID`
-- `search-documents --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--status posted|unposted|deleted] [--page 1..10] [--limit 1..50]`
-- `get-document --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report --id UUID [--include-lines] [--line-limit 1..500]`
+- `search-documents --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report|payment_request [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--organization-id UUID] [--destination-organization-id UUID] [--business-unit-id UUID] [--counterparty-id UUID] [--contract-id UUID] [--number TEXT] [--query TEXT] [--status posted|unposted|deleted] [--page 1..10] [--limit 1..50] [--include-sensitive]`
+- `get-document --kind purchase|sale|receipt|return|transfer|internal_consumption|service_purchase|expense_report|payment_request --id UUID [--include-lines] [--line-limit 1..500] [--include-sensitive]`
 - `get-financial-turnovers --kind budget|sales_cost|other_income|other_expense|financial_result|payroll_accounting|insurance_contribution|depreciation|tax_settlement|tax_penalty --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--budget-item-id UUID] [--page 1..10] [--limit 1..50] --include-sensitive`
 - `get-budget-turnover-details --date-from YYYY-MM-DD --date-to YYYY-MM-DD --business-unit-id UUID --budget-item-id UUID [--limit 1..50] --include-sensitive`
 - `search-financial-records --kind account_entry|bank_receipt|bank_payment --date-from YYYY-MM-DD --date-to YYYY-MM-DD [--organization-id UUID] [--business-unit-id UUID] [--account-id UUID] [--page 1..10] [--limit 1..50] --include-sensitive`
@@ -93,6 +93,38 @@ Never substitute an organization-division UUID into that relation.
 `return` covers the two confirmed business source types
 `return_from_customer` and `return_to_supplier`. An exact UUID is probed only
 against those fixed entities and fails closed if it is ambiguous.
+
+`payment_request` is sensitive financial planning data. Every search and exact
+read requires a fresh `--include-sensitive`; the flag is never persisted.
+Search requires both period boundaries and at least one exact
+`organization-id`, `destination-organization-id` or `business-unit-id`. The
+period is limited to 366 calendar days. `--query` matches the complete payment
+purpose, request comment and recipient information inside the already selected
+signed contour. Because this 1C proxy rejects the longer substring URL, the
+runtime reads at most 500 fixed headers and applies the keyword locally; a
+saturated contour is reported as truncated and never described as complete.
+
+An exact payment-request read always includes the fixed payment breakdown,
+even when `--include-lines` is omitted. This deployment rejects a single long
+header-plus-lines `$select`, so the runtime performs exactly two reviewed GETs
+for the same UUID, validates both, and merges only the signed collection. It
+returns number/date, legal and recipient organizations, business unit,
+counterparty/partner recipient, applicant and author, amount/currency, source
+status, payment dates, cash-flow and expense classifications, full payment
+purpose/comment/recipient information, stable document/line keys, line VAT,
+and honest reconciliation metadata. The metadata publishes no separate
+`Заметка` field; `textCompleteness.noteField.available=false` reports that fact
+instead of relabelling or truncating another field. If an accountable-person
+UUID is present but its catalog shape has not been confirmed, its ID is kept
+with `source_catalog_not_confirmed` and no name is invented.
+
+`managementAccounting` groups request amounts only within their currency and
+classification dimensions and carries source document/line breakdown. A
+payment request is not proof of a recognized P&L expense, so
+`pnlRecognition.status=not_inferred`; use `get-budget-turnover-details` for the
+actual register-backed P&L source and control. Source saturation, line limits,
+missing amounts, unresolved labels or header/line mismatch remain explicit in
+the respective completeness/reconciliation blocks.
 
 ## Financial source-data rules
 
@@ -118,9 +150,11 @@ The finance output is normalized into semantic `dimensions` and `metrics`.
 `payroll_accounting` reads accrual/withholding turnovers by organization,
 business unit, funding/expense article and operation reference, deliberately
 aggregating without employee/person IDs.
-`insurance_contribution` exposes organization totals only. Bank results are
-posted, non-deleted document headers and deliberately omit account numbers,
-payment purpose, statement contents and requisites. Accounting entries omit
+`insurance_contribution` exposes organization totals only. Bank-operation
+results are posted, non-deleted document headers and deliberately omit account
+numbers, payment purpose, statement contents and requisites; this restriction
+does not apply to the separately gated `payment_request` adapter above.
+Accounting entries omit
 subconto/extended-dimension values. Never infer missing employee, bank or
 analytic detail from another field.
 

@@ -60,7 +60,7 @@ SUPPORTED_SKILL_IDS = frozenset({VKUS_SKILL_ID})
 # The broad Vkus surface owns its connection and local credentials. There is
 # intentionally no lookup or migration from the former 1c-edo namespace.
 CREDENTIAL_PROVIDER_NAMESPACE = "1c-vkus"
-RUNTIME_VERSION = "1.2.2"
+RUNTIME_VERSION = "1.3.0"
 X_ODATA_ENV = "TRELIO_1C_EDO_X_ODATA"
 CONNECTION_CONFIG_ENV = "TRELIO_SKILL_CONNECTION_CONFIG_JSON"
 ACCESS_STATES = ("unknown", "no_access", "connected", "needs_reconnect")
@@ -191,6 +191,11 @@ ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 MAX_ODATA_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_MESSAGE_CHARS = 300
 MAX_SEARCH_QUERY_CHARS = 256
+# Payment purposes and comments are contractually returned in full.  A large
+# but finite per-field ceiling protects the machine protocol from a corrupt or
+# unexpectedly repurposed source field; crossing it fails closed instead of
+# silently truncating business text.
+MAX_GENERAL_FULL_TEXT_CHARS = 65_536
 MAX_EDO_STATUS_CHARS = 512
 MAX_BUSINESS_MATCHES_PER_ENTITY = 5
 MAX_RELATED_BUSINESS_OBJECTS = 20
@@ -247,6 +252,12 @@ DIAGNOSTIC_STAGES = frozenset(
                 "expense_allocation_rule",
                 "budget_item",
                 "unit",
+                # These two catalogs are used only for exact payment-request
+                # enrichment. They are not exposed through public browse or
+                # search commands, but their fixed GET stages still belong to
+                # the transport allowlist.
+                "currency",
+                "user",
             )
             for action in ("search", "get")
         },
@@ -261,6 +272,7 @@ DIAGNOSTIC_STAGES = frozenset(
                 "internal_consumption",
                 "service_purchase",
                 "expense_report",
+                "payment_request",
             )
             for action in ("search", "get", "links")
         },
@@ -304,9 +316,9 @@ DIAGNOSTIC_STAGES = frozenset(
 # not fetch the source metadata document and instead validates every returned
 # record against the signed types below.
 GENERAL_PROFILE_SCHEMA_DIGEST = (
-    "sha256:24fdf38337a373147df742a235b9bc025f45616e4f0753fe06dc769bda45353b"
+    "sha256:701cb939ad8e8c57865f7d3656c04e633ddf65a1448f94c169cb4174210c0817"
 )
-GENERAL_REGISTRY_VERSION = 5
+GENERAL_REGISTRY_VERSION = 6
 # These ceilings still bound every read-only command, but allow a full annual
 # management-accounting pass without forcing the economist to split one
 # logical request into quarters or manually stitch tiny document pages.  The
@@ -565,6 +577,42 @@ GENERAL_REFERENCE_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                 "НаименованиеПолное",
                 "МеждународноеСокращение",
             ),
+        },
+    ),
+}
+
+# These catalogs are deliberately private to the payment-request adapter.
+# Currency is harmless, but exposing the user catalog through the generic
+# reference-search command would widen personal-data access beyond Anna's
+# task. The signed document registry includes these exact profiles and the
+# runtime may resolve only UUIDs already present on an authorized document.
+PAYMENT_REQUEST_RELATED_REFERENCE_SPECS: dict[
+    str,
+    tuple[dict[str, Any], ...],
+] = {
+    "currency": (
+        {
+            "entity": "Catalog_Валюты",
+            "sourceType": "currency",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "Code": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description", "Code"),
+        },
+    ),
+    "user": (
+        {
+            "entity": "Catalog_Пользователи",
+            "sourceType": "user",
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Description": "Edm.String",
+                "DeletionMark": "Edm.Boolean",
+            },
+            "searchFields": ("Description",),
         },
     ),
 }
@@ -920,6 +968,105 @@ GENERAL_DOCUMENT_SPECS: dict[str, tuple[dict[str, Any], ...]] = {
                 "business_unit",
                 "number",
                 "status",
+            ),
+        },
+    ),
+    "payment_request": (
+        {
+            "entity": "Document_ЗаявкаНаРасходованиеДенежныхСредств",
+            "sourceType": "payment_request",
+            "lineCollection": "РасшифровкаПлатежа",
+            # The live deployment returns 404 for one long select combining
+            # these headers and the nested collection. Exact-id reads must
+            # therefore fetch and validate the two fixed projections before
+            # merging them. This is a source quirk, not a fallback contract.
+            "splitLineRead": True,
+            # On this long projection, generic pagination's extra `$skip=0`
+            # pushes the proxy request over its accepted shape and returns
+            # HTTP 404. A single signed `$top` query stays bounded by the same
+            # page/row policy, after which pagination is applied locally.
+            "singleQueryPagination": True,
+            # With the long reviewed header projection, redundant parentheses
+            # around every AND clause cross this deployment's proxy URL
+            # threshold. The clauses themselves remain fixed and query ORs
+            # retain their own grouping.
+            "flatFilterClauses": True,
+            # Adding three substring predicates to the already long fixed
+            # projection exceeds the same proxy threshold. Read at most the
+            # signed 500-header contour, then match these already selected
+            # full-text fields locally and report source saturation honestly.
+            "localQueryFilter": True,
+            "sensitive": True,
+            "periodScopeRequired": True,
+            "queryFields": (
+                "НазначениеПлатежа",
+                "Комментарий",
+                "ИнформацияПолучателюПлатежа",
+            ),
+            "fullTextFields": (
+                "НазначениеПлатежа",
+                "Комментарий",
+                "ИнформацияПолучателюПлатежа",
+            ),
+            "fullLineTextFields": ("Комментарий",),
+            "relatedReferences": PAYMENT_REQUEST_RELATED_REFERENCE_SPECS,
+            "fields": {
+                "Ref_Key": "Edm.Guid",
+                "Number": "Edm.String",
+                "Date": "Edm.DateTime",
+                "DeletionMark": "Edm.Boolean",
+                "Posted": "Edm.Boolean",
+                "Организация_Key": "Edm.Guid",
+                "ОрганизацияПолучатель_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Партнер_Key": "Edm.Guid",
+                "ПодотчетноеЛицо_Key": "Edm.Guid",
+                "КтоЗаявил_Key": "Edm.Guid",
+                "Автор_Key": "Edm.Guid",
+                "СуммаДокумента": "Edm.Double",
+                "Валюта_Key": "Edm.Guid",
+                "Статус": "Edm.String",
+                "ХозяйственнаяОперация": "Edm.String",
+                "НазначениеПлатежа": "Edm.String",
+                "Комментарий": "Edm.String",
+                "ИнформацияПолучателюПлатежа": "Edm.String",
+                "ЖелательнаяДатаПлатежа": "Edm.DateTime",
+                "ДатаПлатежа": "Edm.DateTime",
+                "СтатьяДвиженияДенежныхСредств_Key": "Edm.Guid",
+                "СтатьяРасходов_Key": "Edm.Guid",
+                "РасшифровкаПлатежа": (
+                    "Collection(StandardODATA."
+                    "Document_ЗаявкаНаРасходованиеДенежныхСредств_"
+                    "РасшифровкаПлатежа_RowType)"
+                ),
+            },
+            "lineFields": {
+                "Ref_Key": "Edm.Guid",
+                "LineNumber": "Edm.Int64",
+                "Партнер_Key": "Edm.Guid",
+                "Контрагент_Key": "Edm.Guid",
+                "Организация_Key": "Edm.Guid",
+                "Подразделение_Key": "Edm.Guid",
+                "Сумма": "Edm.Double",
+                "СуммаНДС": "Edm.Double",
+                "ВалютаВзаиморасчетов_Key": "Edm.Guid",
+                "СтатьяРасходов": "Edm.String",
+                "СтатьяРасходов_Type": "Edm.String",
+                "АналитикаРасходов": "Edm.String",
+                "АналитикаРасходов_Type": "Edm.String",
+                "СтатьяДвиженияДенежныхСредств_Key": "Edm.Guid",
+                "Комментарий": "Edm.String",
+            },
+            "filters": (
+                "period",
+                "organization",
+                "destination_organization",
+                "business_unit",
+                "counterparty",
+                "number",
+                "status",
+                "query",
             ),
         },
     ),
@@ -1561,6 +1708,10 @@ GENERAL_BALANCE_SPECS: dict[str, dict[str, Any]] = {
 GENERAL_ODATA_ENTITIES = frozenset(
     spec["entity"]
     for specs in (*GENERAL_REFERENCE_SPECS.values(), *GENERAL_DOCUMENT_SPECS.values())
+    for spec in specs
+) | frozenset(
+    spec["entity"]
+    for specs in PAYMENT_REQUEST_RELATED_REFERENCE_SPECS.values()
     for spec in specs
 ) | frozenset(
     spec["entity"]
@@ -2883,6 +3034,8 @@ def _safe_scalar_record(value: dict[str, Any]) -> dict[str, Any]:
 def _safe_selected_record(
     value: dict[str, Any],
     allowed_fields: Iterable[str],
+    *,
+    full_text_fields: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Keep only fixed selected fields even if a remote server ignores `$select`.
 
@@ -2892,11 +3045,19 @@ def _safe_selected_record(
     """
 
     allowed = frozenset(allowed_fields)
-    return {
-        key: item
-        for key, item in _safe_scalar_record(value).items()
-        if key in allowed
-    }
+    full_text = frozenset(full_text_fields)
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in allowed or not isinstance(key, str) or len(key) > 128:
+            continue
+        if item is None or isinstance(item, (bool, int, float)):
+            result[key] = item
+        elif isinstance(item, str):
+            # Only explicitly signed payment-request fields bypass the legacy
+            # 4,000-character scalar projection. `_general_full_text` applies
+            # the separate fail-closed ceiling before the value is returned.
+            result[key] = item if key in full_text else item[:4_000]
+    return result
 
 
 def _record_uuid(value: dict[str, Any]) -> str | None:
@@ -4043,6 +4204,41 @@ def _general_registry_material(section: str, kind: str) -> dict[str, Any]:
                 "dimensions": list(spec.get("dimensions", ())),
                 "fields": dict(sorted(spec["fields"].items())),
                 "lineFields": dict(sorted(spec.get("lineFields", {}).items())),
+                "lineCollection": spec.get("lineCollection"),
+                "splitLineRead": bool(spec.get("splitLineRead", False)),
+                "singleQueryPagination": bool(
+                    spec.get("singleQueryPagination", False),
+                ),
+                "flatFilterClauses": bool(
+                    spec.get("flatFilterClauses", False),
+                ),
+                "localQueryFilter": bool(
+                    spec.get("localQueryFilter", False),
+                ),
+                "sensitive": bool(spec.get("sensitive", False)),
+                "periodScopeRequired": bool(
+                    spec.get("periodScopeRequired", False),
+                ),
+                "queryFields": list(spec.get("queryFields", ())),
+                "fullTextFields": list(spec.get("fullTextFields", ())),
+                "fullLineTextFields": list(
+                    spec.get("fullLineTextFields", ()),
+                ),
+                "relatedReferences": {
+                    related_kind: [
+                        {
+                            "entity": related_spec["entity"],
+                            "sourceType": related_spec["sourceType"],
+                            "fields": dict(
+                                sorted(related_spec["fields"].items()),
+                            ),
+                        }
+                        for related_spec in related_specs
+                    ]
+                    for related_kind, related_specs in sorted(
+                        spec.get("relatedReferences", {}).items(),
+                    )
+                },
                 "output": dict(sorted(spec.get("output", {}).items())),
                 "metrics": list(spec.get("metrics", ())),
                 "filters": (
@@ -4145,6 +4341,31 @@ def _general_uuid_value(value: Any, field_label: str) -> str | None:
 
 def _general_text(value: Any) -> str | None:
     return value[:4_000] if isinstance(value, str) else None
+
+
+def _general_full_text(value: Any, field_label: str) -> str | None:
+    """Return one reviewed business text exactly or fail closed on overflow.
+
+    Generic descriptive fields retain the historical 4,000-character output
+    bound. Payment purpose, request comment and recipient information have a
+    stronger public promise: the runtime never truncates them. A pathological
+    source value therefore produces an honest error rather than a plausible
+    but incomplete string.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise OneCEdoError(
+            "capability_schema_changed",
+            f"Фиксированный источник 1С вернул некорректный {field_label}.",
+        )
+    if len(value) > MAX_GENERAL_FULL_TEXT_CHARS:
+        raise OneCEdoError(
+            "source_contract_mismatch",
+            f"{field_label} превышает безопасный предел полного чтения.",
+        )
+    return value
 
 
 def _general_number(value: Any) -> int | float | None:
@@ -4372,6 +4593,18 @@ def command_general_get_capabilities(_: argparse.Namespace) -> dict[str, Any]:
             "types": [spec["sourceType"] for spec in specs],
             "filters": list(specs[0]["filters"]),
             "includeLines": True,
+            "sensitiveConfirmationRequired": bool(
+                specs[0].get("sensitive", False),
+            ),
+            "periodAndScopeRequired": bool(
+                specs[0].get("periodScopeRequired", False),
+            ),
+            "fullTextFields": (
+                ["paymentPurpose", "comment", "recipientInformation"]
+                if specs[0].get("fullTextFields")
+                else []
+            ),
+            "splitLineRead": bool(specs[0].get("splitLineRead", False)),
             "capabilityDigest": schema["capabilityDigests"][f"document.{kind}"],
         }
         for kind, specs in GENERAL_DOCUMENT_SPECS.items()
@@ -4591,10 +4824,13 @@ def _general_reference_map_by_ids(
     credentials: Credentials,
     kind: str,
     references: Iterable[str | None],
+    *,
+    specs: tuple[dict[str, Any], ...] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Resolve a bounded UUID set through one fixed catalog profile.
 
-    Document enrichment can contain up to ``GENERAL_MAX_LINES`` goods rows.
+    Document enrichment can contain up to ``GENERAL_MAX_LINES`` goods rows
+    plus one bounded search page of header references.
     Querying one catalog row at a time would be unnecessarily expensive, so
     the runtime builds small OR groups from already validated UUID literals.
     The entity, selected fields and operators remain fixed by the registry.
@@ -4607,18 +4843,18 @@ def _general_reference_map_by_ids(
             if reference
         },
     )
-    if len(normalized) > GENERAL_MAX_LINES:
+    if len(normalized) > GENERAL_MAX_LINES + GENERAL_MAX_PAGE_SIZE:
         raise OneCEdoError(
             "source_contract_mismatch",
             "Документ содержит слишком много уникальных ссылок для enrichment.",
         )
-    specs = GENERAL_REFERENCE_SPECS[kind]
-    if len(specs) != 1:
+    resolved_specs = specs or GENERAL_REFERENCE_SPECS[kind]
+    if len(resolved_specs) != 1:
         raise OneCEdoError(
             "query_builder_error",
             "Batch enrichment разрешён только для однозначного справочника.",
         )
-    spec = specs[0]
+    spec = resolved_specs[0]
     result: dict[str, dict[str, Any]] = {}
     # Twenty UUID clauses keep every fixed GET comfortably below ordinary URL
     # limits while bounding the number of requests to five for a 100-line doc.
@@ -4711,13 +4947,21 @@ def _general_document_filter(
     spec: dict[str, Any],
 ) -> tuple[str, list[str]]:
     requested: dict[str, Any] = {
-        "period": bool(args.date_from or args.date_to),
-        "organization": args.organization_id,
-        "business_unit": args.business_unit_id,
-        "counterparty": args.counterparty_id,
-        "contract": args.contract_id,
-        "number": args.number,
-        "status": args.status,
+        "period": bool(
+            getattr(args, "date_from", "") or getattr(args, "date_to", ""),
+        ),
+        "organization": getattr(args, "organization_id", ""),
+        "destination_organization": getattr(
+            args,
+            "destination_organization_id",
+            "",
+        ),
+        "business_unit": getattr(args, "business_unit_id", ""),
+        "counterparty": getattr(args, "counterparty_id", ""),
+        "contract": getattr(args, "contract_id", ""),
+        "number": getattr(args, "number", ""),
+        "status": getattr(args, "status", ""),
+        "query": getattr(args, "query", ""),
     }
     unsupported = [
         name
@@ -4732,13 +4976,36 @@ def _general_document_filter(
 
     clauses: list[str] = []
     matched: list[str] = []
-    date_from = _general_parse_date(args.date_from, "date-from")
-    date_to = _general_parse_date(args.date_to, "date-to")
+    date_from = _general_parse_date(getattr(args, "date_from", ""), "date-from")
+    date_to = _general_parse_date(getattr(args, "date_to", ""), "date-to")
     if date_from and date_to and date_from > date_to:
         raise OneCEdoError(
             "invalid_period",
             "date-from не может быть позже date-to.",
         )
+    if spec.get("periodScopeRequired"):
+        if date_from is None or date_to is None:
+            raise OneCEdoError(
+                "period_required",
+                "Для заявок нужны обе границы периода: date-from и date-to.",
+            )
+        if (date_to - date_from).days + 1 > GENERAL_MAX_FINANCIAL_PERIOD_DAYS:
+            raise OneCEdoError(
+                "period_too_wide",
+                "Период заявок не может превышать 366 календарных дней.",
+            )
+        if not any(
+            (
+                requested["organization"],
+                requested["destination_organization"],
+                requested["business_unit"],
+            ),
+        ):
+            raise OneCEdoError(
+                "scope_filter_required",
+                "Для заявок нужен organization-id, destination-organization-id "
+                "или business-unit-id.",
+            )
     if date_from:
         clauses.append(f"Date ge datetime'{date_from.isoformat()}T00:00:00'")
         matched.append("period")
@@ -4749,10 +5016,15 @@ def _general_document_filter(
             matched.append("period")
 
     uuid_filters = (
-        ("organization", args.organization_id, "Организация_Key"),
-        ("business_unit", args.business_unit_id, "Подразделение_Key"),
-        ("counterparty", args.counterparty_id, "Контрагент_Key"),
-        ("contract", args.contract_id, "Договор_Key"),
+        ("organization", requested["organization"], "Организация_Key"),
+        (
+            "destination_organization",
+            requested["destination_organization"],
+            "ОрганизацияПолучатель_Key",
+        ),
+        ("business_unit", requested["business_unit"], "Подразделение_Key"),
+        ("counterparty", requested["counterparty"], "Контрагент_Key"),
+        ("contract", requested["contract"], "Договор_Key"),
     )
     for label, value, field in uuid_filters:
         if not value:
@@ -4760,22 +5032,39 @@ def _general_document_filter(
         reference = _uuid(value, f"{label} id")
         clauses.append(f"{field} eq guid'{reference}'")
         matched.append(label)
-    number = _search_term(args.number)
+    number = _search_term(requested["number"])
     if number:
         clauses.append(f"substringof({_odata_string_literal(number)},Number)")
         matched.append("number")
-    if args.status == "deleted":
+    query = _search_term(requested["query"])
+    if query:
+        query_fields = tuple(spec.get("queryFields", ()))
+        if not query_fields:
+            raise OneCEdoError(
+                "filter_unsupported",
+                "Поиск по содержимому не поддержан для этого типа документа.",
+            )
+        if not spec.get("localQueryFilter"):
+            clauses.append(f"({_substring_filter(query, query_fields)})")
+        matched.append("query")
+    status = requested["status"]
+    if status == "deleted":
         clauses.append("DeletionMark eq true")
         matched.append("status.deleted")
     else:
         clauses.append("DeletionMark eq false")
-        if args.status == "posted":
+        if status == "posted":
             clauses.append("Posted eq true")
             matched.append("status.posted")
-        elif args.status == "unposted":
+        elif status == "unposted":
             clauses.append("Posted eq false")
             matched.append("status.unposted")
-    return " and ".join(f"({clause})" for clause in clauses), matched or ["recent"]
+    filter_value = (
+        " and ".join(clauses)
+        if spec.get("flatFilterClauses")
+        else " and ".join(f"({clause})" for clause in clauses)
+    )
+    return filter_value, matched or ["recent"]
 
 
 def _general_document_record(
@@ -4788,6 +5077,8 @@ def _general_document_record(
     line_limit: int,
 ) -> dict[str, Any]:
     line_collection = str(spec.get("lineCollection") or "Товары")
+    full_header_fields = frozenset(spec.get("fullTextFields", ()))
+    full_line_fields = frozenset(spec.get("fullLineTextFields", ()))
     selected_fields = tuple(
         field
         for field in spec["fields"]
@@ -4798,7 +5089,11 @@ def _general_document_record(
         spec["fields"],
         selected_fields=selected_fields,
     )
-    safe = _safe_selected_record(raw, selected_fields)
+    safe = _safe_selected_record(
+        raw,
+        selected_fields,
+        full_text_fields=full_header_fields,
+    )
     reference = _general_uuid_value(safe.get("Ref_Key"), "document id")
     if reference is None:
         raise OneCEdoError(
@@ -4806,6 +5101,26 @@ def _general_document_record(
             "Фиксированный документ 1С вернул пустой идентификатор.",
         )
     source_type = str(spec["sourceType"])
+    def header_text(field: str, label: str) -> str | None:
+        value = safe.get(field)
+        return (
+            _general_full_text(value, label)
+            if field in full_header_fields
+            else _general_text(value)
+        )
+
+    def line_text(
+        line: Mapping[str, Any],
+        field: str,
+        label: str,
+    ) -> str | None:
+        value = line.get(field)
+        return (
+            _general_full_text(value, label)
+            if field in full_line_fields
+            else _general_text(value)
+        )
+
     raw_lines = raw.get(line_collection) if include_lines else []
     if raw_lines is None:
         raw_lines = []
@@ -4817,8 +5132,22 @@ def _general_document_record(
     normalized_lines: list[dict[str, Any]] = []
     for raw_line in raw_lines[:line_limit]:
         _validate_general_source_record(raw_line, spec["lineFields"])
-        line = _safe_selected_record(raw_line, spec["lineFields"])
+        line = _safe_selected_record(
+            raw_line,
+            spec["lineFields"],
+            full_text_fields=full_line_fields,
+        )
+        source_document_id = _general_uuid_value(
+            line.get("Ref_Key"),
+            "line source document id",
+        )
+        if source_document_id and source_document_id != reference:
+            raise OneCEdoError(
+                "source_contract_mismatch",
+                "Строка 1С ссылается на другой документ.",
+            )
         normalized_lines.append({
+            "sourceDocumentId": source_document_id or reference,
             "lineNumber": _general_integer(line.get("LineNumber")),
             "itemId": _general_uuid_value(line.get("Номенклатура_Key"), "line item id"),
             "variantId": _general_uuid_value(
@@ -4840,6 +5169,12 @@ def _general_document_record(
             "expenseItemType": _general_text(
                 line.get("СтатьяРасходов_Type"),
             ),
+            "expenseAnalyticsReference": _general_text(
+                line.get("АналитикаРасходов"),
+            ),
+            "expenseAnalyticsType": _general_text(
+                line.get("АналитикаРасходов_Type"),
+            ),
             "expenseItemId": _general_uuid_value(
                 line.get("СтатьяРасходов_Key"),
                 "line expense item id",
@@ -4848,7 +5183,7 @@ def _general_document_record(
                 line.get("СписатьНаРасходы"),
             ),
             "content": _general_text(line.get("Содержание")),
-            "comment": _general_text(line.get("Комментарий")),
+            "comment": line_text(line, "Комментарий", "line comment"),
             "allocationComment": _general_text(
                 line.get("КомментарийРаспределения"),
             ),
@@ -4868,6 +5203,22 @@ def _general_document_record(
             "counterpartyId": _general_uuid_value(
                 line.get("Контрагент_Key"),
                 "line counterparty id",
+            ),
+            "partnerId": _general_uuid_value(
+                line.get("Партнер_Key"),
+                "line partner id",
+            ),
+            "organizationId": _general_uuid_value(
+                line.get("Организация_Key"),
+                "line organization id",
+            ),
+            "currencyId": _general_uuid_value(
+                line.get("ВалютаВзаиморасчетов_Key"),
+                "line currency id",
+            ),
+            "cashFlowItemId": _general_uuid_value(
+                line.get("СтатьяДвиженияДенежныхСредств_Key"),
+                "line cash flow item id",
             ),
             "isCancelled": _normalized_boolean(line.get("Отменено")),
             "cancellationReason": _general_text(line.get("ПричинаОтмены")),
@@ -4923,7 +5274,45 @@ def _general_document_record(
         "amount": _general_number(
             safe.get(str(spec.get("amountField") or "СуммаДокумента")),
         ),
-        "comment": _general_text(safe.get("Комментарий")),
+        "currencyId": _general_uuid_value(
+            safe.get("Валюта_Key"),
+            "currency id",
+        ),
+        "accountablePersonId": _general_uuid_value(
+            safe.get("ПодотчетноеЛицо_Key"),
+            "accountable person id",
+        ),
+        "applicantId": _general_uuid_value(
+            safe.get("КтоЗаявил_Key"),
+            "applicant id",
+        ),
+        "authorId": _general_uuid_value(safe.get("Автор_Key"), "author id"),
+        "cashFlowItemId": _general_uuid_value(
+            safe.get("СтатьяДвиженияДенежныхСредств_Key"),
+            "cash flow item id",
+        ),
+        "expenseItemId": _general_uuid_value(
+            safe.get("СтатьяРасходов_Key"),
+            "expense item id",
+        ),
+        "operation": _general_text(safe.get("ХозяйственнаяОперация")),
+        "paymentPurpose": header_text(
+            "НазначениеПлатежа",
+            "payment purpose",
+        ),
+        "recipientInformation": header_text(
+            "ИнформацияПолучателюПлатежа",
+            "recipient information",
+        ),
+        "desiredPaymentDate": _normalized_1c_datetime(
+            safe.get("ЖелательнаяДатаПлатежа"),
+            field_label="desired payment date",
+        ),
+        "paymentDate": _normalized_1c_datetime(
+            safe.get("ДатаПлатежа"),
+            field_label="payment date",
+        ),
+        "comment": header_text("Комментарий", "document comment"),
         "advancePurpose": _general_text(safe.get("НазначениеАванса")),
         "approvedAt": _normalized_1c_datetime(
             safe.get("ДатаУтверждения"),
@@ -4937,13 +5326,32 @@ def _general_document_record(
             "returned": len(normalized_lines),
             "limit": line_limit if include_lines else 0,
             "truncated": include_lines and len(raw_lines) > line_limit,
+            "complete": include_lines and len(raw_lines) <= line_limit,
         },
         "source": {
             "kind": "document",
             "type": source_type,
             "id": reference,
+            "stableKey": f"{source_type}:{reference}",
         },
     }
+    if full_header_fields:
+        document["textCompleteness"] = {
+            "complete": True,
+            "truncated": False,
+            "fullFields": [
+                "paymentPurpose",
+                "comment",
+                "recipientInformation",
+            ],
+            # Metadata review confirmed that this document has no separate
+            # note field. The adapter reports that limitation explicitly
+            # instead of relabeling another text as a note.
+            "noteField": {
+                "available": False,
+                "reason": "not_published_by_source",
+            },
+        }
     return document
 
 
@@ -4958,14 +5366,25 @@ def _general_document_select(spec: dict[str, Any], include_lines: bool) -> str:
 
 
 def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]:
-    identity, config, credentials = _connected_context()
     kind = str(args.kind)
     specs = GENERAL_DOCUMENT_SPECS[kind]
+    if specs[0].get("sensitive"):
+        _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
     page, limit = _general_page(args, config)
     target = min(
         (page * limit) + 1,
         min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
         * min(config.max_pages, GENERAL_MAX_PAGES),
+    )
+    local_query = (
+        _search_term(getattr(args, "query", ""))
+        if any(spec.get("localQueryFilter") for spec in specs)
+        else ""
+    )
+    source_capacity = (
+        min(config.max_rows, GENERAL_MAX_PAGE_SIZE)
+        * min(config.max_pages, GENERAL_MAX_PAGES)
     )
     schema = _general_signed_contract((("document", kind),))
     try:
@@ -4973,19 +5392,40 @@ def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]
         saturated = False
         for spec in specs:
             filter_value, matched_by = _general_document_filter(args, spec)
-            rows = _bounded_odata_rows(
-                config,
-                credentials,
-                spec["entity"],
-                parameters=(
-                    ("$select", _general_document_select(spec, False)),
-                    ("$filter", filter_value),
-                    ("$orderby", "Date desc"),
-                ),
-                limit=target,
-                diagnostic_stage=f"general.document.{kind}.search",
+            fixed_parameters = (
+                ("$select", _general_document_select(spec, False)),
+                ("$filter", filter_value),
+                ("$orderby", "Date desc"),
             )
-            saturated = saturated or len(rows) >= target
+            if spec.get("singleQueryPagination"):
+                # The reviewed long projection fails after generic pagination
+                # adds `$skip=0`, while the same fixed route works with only
+                # `$top`. Read the signed contour once so totals cover every
+                # matching header, then enforce its capacity locally even if
+                # a non-conforming server ignores `$top`.
+                source_target = source_capacity
+                remote_rows = _odata_rows(
+                    _request_odata(
+                        config,
+                        credentials,
+                        spec["entity"],
+                        (*fixed_parameters, ("$top", source_target)),
+                        diagnostic_stage=f"general.document.{kind}.search",
+                    ),
+                )
+                rows = remote_rows[:source_target]
+                source_saturated = len(remote_rows) >= source_target
+            else:
+                rows = _bounded_odata_rows(
+                    config,
+                    credentials,
+                    spec["entity"],
+                    parameters=fixed_parameters,
+                    limit=target,
+                    diagnostic_stage=f"general.document.{kind}.search",
+                )
+                source_saturated = len(rows) >= target
+            saturated = saturated or source_saturated
             combined.extend(
                 _general_document_record(
                     kind,
@@ -4997,10 +5437,24 @@ def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]
                 )
                 for row in rows
             )
-        save_access_state(identity, config, "connected")
     except AuthenticationError:
         _mark_auth_failure(identity, config)
         raise
+    if local_query:
+        normalized_query = local_query.casefold()
+        combined = [
+            document
+            for document in combined
+            if any(
+                normalized_query in value.casefold()
+                for value in (
+                    document.get("paymentPurpose"),
+                    document.get("comment"),
+                    document.get("recipientInformation"),
+                )
+                if isinstance(value, str)
+            )
+        ]
     combined.sort(
         key=lambda item: (
             str(item.get("date") or ""),
@@ -5011,22 +5465,41 @@ def command_general_search_documents(args: argparse.Namespace) -> dict[str, Any]
     )
     start = (page - 1) * limit
     end = start + limit
+    summary_documents = combined
     documents = combined[start:end]
-    return {
+    pagination = {
+        "page": page,
+        "limit": limit,
+        "truncated": saturated or len(combined) > end,
+    }
+    try:
+        if kind == "payment_request":
+            documents = _general_enrich_payment_request_documents(
+                config,
+                credentials,
+                documents,
+            )
+        save_access_state(identity, config, "connected")
+    except AuthenticationError:
+        _mark_auth_failure(identity, config)
+        raise
+    response = {
         "kind": kind,
         "documents": documents,
         "count": len(documents),
-        "pagination": {
-            "page": page,
-            "limit": limit,
-            "truncated": saturated or len(combined) > end,
-        },
+        "pagination": pagination,
         "schema": schema,
         "limits": {
             "maxPageSize": min(config.max_rows, GENERAL_MAX_PAGE_SIZE),
             "maxPages": min(config.max_pages, GENERAL_MAX_PAGES),
         },
     }
+    if kind == "payment_request":
+        response["managementAccounting"] = _payment_request_contour_summary(
+            summary_documents,
+            source_truncated=saturated,
+        )
+    return response
 
 
 def _general_documents_by_id(
@@ -5040,13 +5513,20 @@ def _general_documents_by_id(
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for spec in GENERAL_DOCUMENT_SPECS[kind]:
+        split_line_read = bool(spec.get("splitLineRead")) and include_lines
         rows = _odata_rows(
             _request_odata(
                 config,
                 credentials,
                 spec["entity"],
                 (
-                    ("$select", _general_document_select(spec, include_lines)),
+                    (
+                        "$select",
+                        _general_document_select(
+                            spec,
+                            include_lines and not split_line_read,
+                        ),
+                    ),
                     ("$filter", f"Ref_Key eq guid'{reference}'"),
                     ("$top", 2),
                 ),
@@ -5054,6 +5534,42 @@ def _general_documents_by_id(
             ),
         )
         for row in rows[:2]:
+            if split_line_read:
+                line_collection = str(
+                    spec.get("lineCollection") or "Товары",
+                )
+                line_rows = _odata_rows(
+                    _request_odata(
+                        config,
+                        credentials,
+                        spec["entity"],
+                        (
+                            ("$select", f"Ref_Key,{line_collection}"),
+                            ("$filter", f"Ref_Key eq guid'{reference}'"),
+                            ("$top", 2),
+                        ),
+                        diagnostic_stage=f"general.document.{kind}.get",
+                    ),
+                )
+                if (
+                    len(line_rows) != 1
+                    or _general_uuid_value(
+                        line_rows[0].get("Ref_Key"),
+                        "split document id",
+                    )
+                    != reference
+                ):
+                    raise OneCEdoError(
+                        "source_contract_mismatch",
+                        "1С не вернула одну exact расшифровку заявки.",
+                    )
+                # Merge only the one reviewed collection into the fixed
+                # header projection. Extra source properties never enter the
+                # normalized document.
+                row = {
+                    **row,
+                    line_collection: line_rows[0].get(line_collection),
+                }
             document = _general_document_record(
                 kind,
                 spec,
@@ -5072,28 +5588,35 @@ def _general_documents_by_id(
 
 
 def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
-    identity, config, credentials = _connected_context()
     kind = str(args.kind)
+    spec = GENERAL_DOCUMENT_SPECS[kind][0]
+    if spec.get("sensitive"):
+        _general_require_sensitive(args)
+    identity, config, credentials = _connected_context()
     reference = _uuid(args.id, "document id")
     line_limit = int(args.line_limit)
     if line_limit < 1 or line_limit > GENERAL_MAX_LINES:
         raise OneCEdoError(
             "line_limit_out_of_range",
             f"line-limit должен быть от 1 до {GENERAL_MAX_LINES}.",
-        )
+    )
     schema = _general_signed_contract((("document", kind),))
     try:
+        # A payment request is useful only with its complete fixed
+        # classification lines, so exact reads include them automatically.
+        # Other document kinds retain the existing opt-in behaviour.
+        include_lines = bool(args.include_lines) or kind == "payment_request"
         matches = _general_documents_by_id(
             config,
             credentials,
             kind,
             reference,
-            include_lines=bool(args.include_lines),
+            include_lines=include_lines,
             line_limit=line_limit,
         )
         if (
             kind == "internal_consumption"
-            and bool(args.include_lines)
+            and include_lines
             and len(matches) == 1
         ):
             matches[0] = _general_enrich_internal_consumption_document(
@@ -5101,8 +5624,14 @@ def command_general_get_document(args: argparse.Namespace) -> dict[str, Any]:
                 credentials,
                 matches[0],
             )
-        if bool(args.include_lines) and len(matches) == 1:
+        if include_lines and len(matches) == 1:
             matches[0] = _general_enrich_document_line_references(
+                config,
+                credentials,
+                matches[0],
+            )
+        if kind == "payment_request" and len(matches) == 1:
+            matches[0] = _general_enrich_payment_request_document(
                 config,
                 credentials,
                 matches[0],
@@ -5930,6 +6459,8 @@ def _general_document_line_expense_item_id(
         return _uuid(str(direct), "line expense item id")
     reference = line.get("expenseItemReference")
     reference_type = line.get("expenseItemType")
+    if reference in {None, "", ZERO_UUID}:
+        return None
     if reference and reference_type in {
         "ChartOfCharacteristicTypes_СтатьиРасходов",
         "StandardODATA.ChartOfCharacteristicTypes_СтатьиРасходов",
@@ -6009,6 +6540,464 @@ def _general_enrich_document_line_references(
             else None
         )
     return document
+
+
+def _payment_request_reference(
+    reference: str | None,
+    kind: str,
+    resolved: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Build one honest semantic reference without inventing a missing name."""
+
+    if not reference:
+        return None
+    normalized = _uuid(reference, f"payment request {kind} id")
+    item = resolved.get(normalized)
+    return {
+        "id": normalized,
+        "type": kind,
+        "name": item.get("name") if item else None,
+        "code": item.get("code") if item else None,
+        "resolutionStatus": "resolved" if item else "not_found",
+    }
+
+
+def _general_enrich_payment_request_documents(
+    config: CompanyConfig,
+    credentials: Credentials,
+    documents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve only fixed labels already referenced by payment requests.
+
+    Search results are at most one bounded page and an exact read has at most
+    ``GENERAL_MAX_LINES`` rows. Every catalog query is therefore an exact UUID
+    batch against a signed source; no description search or adjacent personal
+    catalog becomes available to the caller.
+    """
+
+    lines = [
+        line
+        for document in documents
+        for line in document.get("lines", [])
+        if isinstance(line, dict)
+    ]
+    organizations = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "organization",
+        [
+            *(
+                reference
+                for document in documents
+                for reference in (
+                    document.get("organizationId"),
+                    document.get("destinationOrganizationId"),
+                )
+            ),
+            *(line.get("organizationId") for line in lines),
+        ],
+    )
+    # Live review fixed payment-request Подразделение_Key to the enterprise
+    # structure catalog. Do not probe the similarly named organization-unit
+    # catalog at runtime or silently substitute its UUID namespace.
+    business_units = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "business_unit",
+        [
+            *(document.get("businessUnitId") for document in documents),
+            *(line.get("businessUnitId") for line in lines),
+        ],
+        specs=(GENERAL_REFERENCE_SPECS["business_unit"][0],),
+    )
+    counterparties = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "counterparty",
+        [
+            *(document.get("counterpartyId") for document in documents),
+            *(line.get("counterpartyId") for line in lines),
+        ],
+    )
+    partners = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "partner",
+        [
+            *(document.get("partnerId") for document in documents),
+            *(line.get("partnerId") for line in lines),
+        ],
+    )
+    currencies = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "currency",
+        [
+            *(document.get("currencyId") for document in documents),
+            *(line.get("currencyId") for line in lines),
+        ],
+        specs=PAYMENT_REQUEST_RELATED_REFERENCE_SPECS["currency"],
+    )
+    users = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "user",
+        [
+            *(document.get("applicantId") for document in documents),
+            *(document.get("authorId") for document in documents),
+        ],
+        specs=PAYMENT_REQUEST_RELATED_REFERENCE_SPECS["user"],
+    )
+    cash_flow_items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "cash_flow_item",
+        [
+            *(document.get("cashFlowItemId") for document in documents),
+            *(line.get("cashFlowItemId") for line in lines),
+        ],
+    )
+    expense_item_ids = {
+        reference
+        for reference in (
+            *(
+                document.get("expenseItemId")
+                for document in documents
+            ),
+            *(
+                _general_document_line_expense_item_id(line)
+                for line in lines
+            ),
+        )
+        if reference
+    }
+    expense_items = _general_reference_map_by_ids(
+        config,
+        credentials,
+        "budget_item",
+        expense_item_ids,
+    )
+
+    for document in documents:
+        document["organization"] = _payment_request_reference(
+            document.get("organizationId"),
+            "organization",
+            organizations,
+        )
+        document["destinationOrganization"] = _payment_request_reference(
+            document.get("destinationOrganizationId"),
+            "organization",
+            organizations,
+        )
+        document["businessUnit"] = _payment_request_reference(
+            document.get("businessUnitId"),
+            "enterprise_structure",
+            business_units,
+        )
+        document["counterparty"] = _payment_request_reference(
+            document.get("counterpartyId"),
+            "counterparty",
+            counterparties,
+        )
+        document["partner"] = _payment_request_reference(
+            document.get("partnerId"),
+            "partner",
+            partners,
+        )
+        document["currency"] = _payment_request_reference(
+            document.get("currencyId"),
+            "currency",
+            currencies,
+        )
+        document["applicant"] = _payment_request_reference(
+            document.get("applicantId"),
+            "user",
+            users,
+        )
+        document["author"] = _payment_request_reference(
+            document.get("authorId"),
+            "user",
+            users,
+        )
+        document["accountablePerson"] = (
+            {
+                "id": document["accountablePersonId"],
+                "type": "unresolved_person_reference",
+                "name": None,
+                "resolutionStatus": "source_catalog_not_confirmed",
+            }
+            if document.get("accountablePersonId")
+            else None
+        )
+        document["cashFlowItem"] = _payment_request_reference(
+            document.get("cashFlowItemId"),
+            "cash_flow_item",
+            cash_flow_items,
+        )
+        document["expenseItem"] = _payment_request_reference(
+            document.get("expenseItemId"),
+            "expense_item",
+            expense_items,
+        )
+        document["recipient"] = {
+            "organization": document["destinationOrganization"],
+            "counterparty": document["counterparty"],
+            "partner": document["partner"],
+            "information": document.get("recipientInformation"),
+        }
+
+        unresolved: list[dict[str, str]] = []
+        semantic_references = (
+            ("organization", document["organization"]),
+            ("destinationOrganization", document["destinationOrganization"]),
+            ("businessUnit", document["businessUnit"]),
+            ("counterparty", document["counterparty"]),
+            ("partner", document["partner"]),
+            ("currency", document["currency"]),
+            ("applicant", document["applicant"]),
+            ("author", document["author"]),
+            ("cashFlowItem", document["cashFlowItem"]),
+            ("expenseItem", document["expenseItem"]),
+        )
+        for field, item in semantic_references:
+            if item and item["resolutionStatus"] != "resolved":
+                unresolved.append({"field": field, "id": item["id"]})
+        if document["accountablePerson"]:
+            unresolved.append({
+                "field": "accountablePerson",
+                "id": document["accountablePerson"]["id"],
+            })
+
+        for line in document.get("lines", []):
+            line["organization"] = _payment_request_reference(
+                line.get("organizationId"),
+                "organization",
+                organizations,
+            )
+            line["businessUnit"] = _payment_request_reference(
+                line.get("businessUnitId"),
+                "enterprise_structure",
+                business_units,
+            )
+            line["counterparty"] = _payment_request_reference(
+                line.get("counterpartyId"),
+                "counterparty",
+                counterparties,
+            )
+            line["partner"] = _payment_request_reference(
+                line.get("partnerId"),
+                "partner",
+                partners,
+            )
+            line["currency"] = _payment_request_reference(
+                line.get("currencyId"),
+                "currency",
+                currencies,
+            )
+            line["cashFlowItem"] = _payment_request_reference(
+                line.get("cashFlowItemId"),
+                "cash_flow_item",
+                cash_flow_items,
+            )
+            expense_item_id = _general_document_line_expense_item_id(line)
+            line["expenseItem"] = _payment_request_reference(
+                expense_item_id,
+                "expense_item",
+                expense_items,
+            )
+            line_label = str(line.get("lineNumber") or "unknown")
+            for field, item in (
+                ("organization", line["organization"]),
+                ("businessUnit", line["businessUnit"]),
+                ("counterparty", line["counterparty"]),
+                ("partner", line["partner"]),
+                ("currency", line["currency"]),
+                ("cashFlowItem", line["cashFlowItem"]),
+                ("expenseItem", line["expenseItem"]),
+            ):
+                if item and item["resolutionStatus"] != "resolved":
+                    unresolved.append({
+                        "field": f"line.{line_label}.{field}",
+                        "id": item["id"],
+                    })
+        document["referenceCompleteness"] = {
+            "idsComplete": True,
+            "labelsComplete": not unresolved,
+            "unresolved": unresolved,
+        }
+    return documents
+
+
+def _payment_request_contour_summary(
+    documents: list[dict[str, Any]],
+    *,
+    source_truncated: bool,
+) -> dict[str, Any]:
+    """Group the bounded matching contour without presenting it as P&L actuals."""
+
+    grouped: dict[tuple[Any, ...], Decimal] = {}
+    grouped_ids: dict[tuple[Any, ...], list[str]] = {}
+    currency_totals: dict[str | None, Decimal] = {}
+    amount_complete = True
+    for document in documents:
+        amount = document.get("amount")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            amount_complete = False
+            continue
+        decimal_amount = Decimal(str(amount))
+        currency_id = document.get("currencyId")
+        currency_totals[currency_id] = (
+            currency_totals.get(currency_id, Decimal(0)) + decimal_amount
+        )
+        key = (
+            document.get("organizationId"),
+            document.get("businessUnitId"),
+            currency_id,
+            document.get("cashFlowItemId"),
+            document.get("expenseItemId"),
+            document.get("sourceStatus"),
+        )
+        grouped[key] = grouped.get(key, Decimal(0)) + decimal_amount
+        grouped_ids.setdefault(key, []).append(str(document["id"]))
+
+    return {
+        "basis": "bounded_matching_payment_request_contour",
+        "currencyTotals": [
+            {
+                "currencyId": currency_id,
+                "amount": _general_decimal_number(amount),
+            }
+            for currency_id, amount in sorted(
+                currency_totals.items(),
+                key=lambda item: str(item[0] or ""),
+            )
+        ],
+        "groups": [
+            {
+                "organizationId": key[0],
+                "businessUnitId": key[1],
+                "currencyId": key[2],
+                "cashFlowItemId": key[3],
+                "expenseItemId": key[4],
+                "sourceStatus": key[5],
+                "amount": _general_decimal_number(amount),
+                "sourceDocumentIds": grouped_ids[key],
+            }
+            for key, amount in sorted(
+                grouped.items(),
+                key=lambda item: tuple(str(value or "") for value in item[0]),
+            )
+        ],
+        "completeness": {
+            "complete": amount_complete and not source_truncated,
+            "scope": "bounded_matching_contour",
+            "sourceTruncated": source_truncated,
+            "allReturnedAmountsPresent": amount_complete,
+        },
+        "pnlRecognition": {
+            "status": "not_inferred",
+            "reason": "payment_request_is_not_a_recognized_expense",
+            "actualSourceCommand": "get-budget-turnover-details",
+        },
+    }
+
+
+def _general_enrich_payment_request_document(
+    config: CompanyConfig,
+    credentials: Credentials,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach fixed labels, line reconciliation and source-level breakdown."""
+
+    enriched = _general_enrich_payment_request_documents(
+        config,
+        credentials,
+        [document],
+    )[0]
+    lines = enriched.get("lines", [])
+    line_info = enriched.get("lineInfo", {})
+    amounts = [line.get("amount") for line in lines]
+    numeric_amounts = [
+        Decimal(str(value))
+        for value in amounts
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    complete_lines = bool(line_info.get("complete"))
+    complete_amounts = len(numeric_amounts) == len(amounts)
+    header_amount = enriched.get("amount")
+    header_decimal = (
+        Decimal(str(header_amount))
+        if isinstance(header_amount, (int, float))
+        and not isinstance(header_amount, bool)
+        else None
+    )
+    line_total = sum(numeric_amounts, Decimal(0))
+    difference = (
+        header_decimal - line_total
+        if header_decimal is not None and complete_lines and complete_amounts
+        else None
+    )
+    reconciliation_status = (
+        "matched"
+        if difference == 0
+        else "mismatch"
+        if difference is not None
+        else "incomplete"
+    )
+    enriched["amountReconciliation"] = {
+        "status": reconciliation_status,
+        "complete": difference is not None,
+        "headerAmount": header_amount,
+        "returnedLineAmount": _general_decimal_number(line_total),
+        "difference": (
+            _general_decimal_number(difference)
+            if difference is not None
+            else None
+        ),
+        "reason": (
+            None
+            if difference is not None
+            else "line_limit_or_missing_amount"
+        ),
+    }
+    enriched["managementAccounting"] = {
+        "basis": "payment_request_classification_lines",
+        "sourceBreakdown": [
+            {
+                "sourceDocumentId": enriched["id"],
+                "sourceLineKey": line.get("sourceLineKey"),
+                "lineNumber": line.get("lineNumber"),
+                "organizationId": (
+                    line.get("organizationId")
+                    or enriched.get("organizationId")
+                ),
+                "businessUnitId": (
+                    line.get("businessUnitId")
+                    or enriched.get("businessUnitId")
+                ),
+                "currencyId": line.get("currencyId") or enriched.get("currencyId"),
+                "cashFlowItemId": (
+                    line.get("cashFlowItemId")
+                    or enriched.get("cashFlowItemId")
+                ),
+                "expenseItemId": _general_document_line_expense_item_id(line),
+                "amount": line.get("amount"),
+                "vatAmount": line.get("vatAmount"),
+            }
+            for line in lines
+        ],
+        "completeness": {
+            "complete": complete_lines and complete_amounts,
+            "linesTruncated": bool(line_info.get("truncated")),
+            "allReturnedAmountsPresent": complete_amounts,
+        },
+        "pnlRecognition": {
+            "status": "not_inferred",
+            "reason": "payment_request_is_not_a_recognized_expense",
+            "actualSourceCommand": "get-budget-turnover-details",
+        },
+    }
+    return enriched
 
 
 def command_general_get_budget_turnover_details(
@@ -6763,10 +7752,12 @@ def build_general_parser() -> argparse.ArgumentParser:
     search_documents.add_argument("--date-from", default="")
     search_documents.add_argument("--date-to", default="")
     search_documents.add_argument("--organization-id", default="")
+    search_documents.add_argument("--destination-organization-id", default="")
     search_documents.add_argument("--business-unit-id", default="")
     search_documents.add_argument("--counterparty-id", default="")
     search_documents.add_argument("--contract-id", default="")
     search_documents.add_argument("--number", default="")
+    search_documents.add_argument("--query", default="")
     search_documents.add_argument(
         "--status",
         choices=["", "posted", "unposted", "deleted"],
@@ -6774,6 +7765,7 @@ def build_general_parser() -> argparse.ArgumentParser:
     )
     search_documents.add_argument("--page", type=int, default=1)
     search_documents.add_argument("--limit", type=int, default=25)
+    search_documents.add_argument("--include-sensitive", action="store_true")
     search_documents.set_defaults(handler=command_general_search_documents)
 
     get_document = subparsers.add_parser("get-document")
@@ -6781,6 +7773,7 @@ def build_general_parser() -> argparse.ArgumentParser:
     get_document.add_argument("--id", required=True)
     get_document.add_argument("--include-lines", action="store_true")
     get_document.add_argument("--line-limit", type=int, default=50)
+    get_document.add_argument("--include-sensitive", action="store_true")
     get_document.set_defaults(handler=command_general_get_document)
 
     def add_financial_arguments(
