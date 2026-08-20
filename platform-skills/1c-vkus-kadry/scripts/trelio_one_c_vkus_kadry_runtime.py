@@ -31,7 +31,7 @@ HR_SKILL_ID = (
     "company-33638f79-4d63-47f8-ab40-55ed70331592-1c-vkus-kadry"
 )
 EXPECTED_COMPANY_ID = "33638f79-4d63-47f8-ab40-55ed70331592"
-RUNTIME_VERSION = "1.2.0"
+RUNTIME_VERSION = "1.2.1"
 REGISTRY_PATH = Path(__file__).with_name("hr_registry.json")
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_CONNECTION_PROBE_BYTES = 64 * 1024
@@ -72,7 +72,6 @@ LEAVE_CERTIFICATE_FIELD_CONTRACT = (
     ("Ref_Key", "Edm.Guid", False),
     ("Date", "Edm.DateTime", False),
     ("DeletionMark", "Edm.Boolean", False),
-    ("Posted", "Edm.Boolean", False),
     ("Сотрудник_Key", "Edm.Guid", False),
     ("ФизическоеЛицо_Key", "Edm.Guid", False),
     ("ОтветПоЗаявке", "Edm.String", True),
@@ -1863,7 +1862,12 @@ def _validated_leave_certificate_row(
             "source_contract_mismatch",
             "1С вернула удалённую заявку на справку об остатках отпусков.",
         )
-    if row.get("Posted") is not True or row.get("Выполнена") is not True:
+    # This employee-cabinet request has its own completion flag and remains
+    # ``Posted=false`` even after 1C has generated the certificate.  Treating
+    # the generic document ``Posted`` bit as completion would therefore hide
+    # every real ready certificate.  ``Выполнена`` plus a valid completion
+    # timestamp is the source-specific terminal-state contract.
+    if row.get("Выполнена") is not True:
         raise HrRuntimeError(
             "source_contract_mismatch",
             "1С вернула незавершённую заявку на справку об остатках отпусков.",
@@ -1958,7 +1962,7 @@ def command_find_leave_balance_certificate(
     )
     exclusive_end = as_of + dt.timedelta(days=1)
     filter_expression = (
-        f"({subject_filter}) and DeletionMark eq false and Posted eq true "
+        f"({subject_filter}) and DeletionMark eq false "
         "and Выполнена eq true and "
         f"ДатаИсполнения lt datetime'{exclusive_end.isoformat()}T00:00:00'"
     )

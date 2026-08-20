@@ -68,8 +68,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
         )
 
     def test_release_versions_are_current(self) -> None:
-        self.assertEqual(MODULE.RUNTIME_VERSION, "1.2.0")
-        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.2.0")
+        self.assertEqual(MODULE.RUNTIME_VERSION, "1.2.1")
+        self.assertEqual(MODULE.provider.RUNTIME_VERSION, "1.2.1")
         self.assertEqual(
             MODULE.provider.SUPPORTED_SKILL_IDS,
             {MODULE.HR_SKILL_ID},
@@ -152,7 +152,10 @@ class VkusHrRuntimeTests(unittest.TestCase):
             "Ref_Key": request_id,
             "Date": "2026-06-11T09:00:00",
             "DeletionMark": False,
-            "Posted": True,
+            # This source-specific request is completed without becoming a
+            # posted 1C document.  The dedicated command must follow its own
+            # completion flag instead of the generic document bit.
+            "Posted": False,
             "Сотрудник_Key": subject_id,
             "ФизическоеЛицо_Key": physical_person_id,
             "ОтветПоЗаявке": "Справка об остатках отпусков готова",
@@ -529,7 +532,8 @@ class VkusHrRuntimeTests(unittest.TestCase):
             ["ДатаИсполнения desc,Date desc,Ref_Key desc"],
         )
         self.assertIn("DeletionMark eq false", decoded_request_url)
-        self.assertIn("Posted eq true", decoded_request_url)
+        self.assertNotIn("Posted", request_query["$select"][0])
+        self.assertNotIn("Posted eq", decoded_request_url)
         self.assertIn("Выполнена eq true", decoded_request_url)
         self.assertIn(
             "ДатаИсполнения lt datetime'2026-08-21T00:00:00'",
@@ -585,10 +589,6 @@ class VkusHrRuntimeTests(unittest.TestCase):
             (
                 "deleted request",
                 self._leave_certificate_row(DeletionMark=True),
-            ),
-            (
-                "unposted request",
-                self._leave_certificate_row(Posted=False),
             ),
             (
                 "unfinished request",
