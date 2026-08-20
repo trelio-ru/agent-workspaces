@@ -43,15 +43,13 @@ jobs:
         with:
           node-version: 22
 
-      # Keep exact paths explicit so every shell passes the same files to Node.
-      # The active Telegram Web adapter is a bundled plugin runtime, like MAX;
-      # the archived signed legacy source is intentionally absent from CI.
-      - name: Run plugin host and transitional runtime Node tests
+      # Keep exact paths explicit so every shell passes the same generic host
+      # files to Node. Provider runtimes have an independent workflow under
+      # platform-skills/** and cannot become plugin release inputs again.
+      - name: Run generic plugin host Node tests
         run: >-
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-messaging.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-telegram-web.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
@@ -69,12 +67,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-
-      # The compact adapter uses the same Node/Chrome contract on macOS,
-      # Windows and Linux. These tests cover its portable argument, policy,
-      # login-handoff and approval-hash behavior without a live account.
-      - name: Run Telegram Web runtime regressions
-        run: node --test plugins/trelio-agent-workspaces/tests/trelio-telegram-web.test.mjs
 
       # The broader bridge suite contains POSIX-specific fixtures. This job is
       # intentionally narrow: it exercises the command transport and the real

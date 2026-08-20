@@ -142,8 +142,13 @@ WebSocket guard. При первом входе агент говорит: `По
 Открытие диалога может отметить видимые сообщения прочитанными; результат
 явно содержит `readState.mode=ordinary-telegram-web`. Exact title либо
 canonical Web K PeerId, bounded output, dry-run/approval hash и запрет blind
-retry после ambiguous mutation сохраняются. Старый signed runtime находится в
-`platform-skills/telegram-web-legacy/` только как архив и не используется.
+retry после ambiguous mutation сохраняются. Канонический executable и tests
+находятся в `platform-skills/telegram-web/` и выпускаются отдельным signed
+runtime; изменение навыка не требует обновления plugin. Пока live release
+`2.0.0` ещё возвращает `plugin-script`, он остаётся только compatibility
+pointer до публикации подготовленного skill `2.0.1`. Старый большой signed
+runtime находится в `platform-skills/telegram-web-legacy/` только как архив и
+не используется.
 
 ## Agent Secrets
 

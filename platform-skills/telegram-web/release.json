@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "skillId": "telegram-web",
+    "version": "2.0.1",
+    "state": "planned",
+    "summary": "Перевести компактный Telegram Web adapter с plugin-script на независимый signed runtime без изменения local identity и policy."
+  },
+  "runtime": {
+    "version": "2.0.0",
+    "minimumHostVersion": "1.4.0",
+    "entrypoint": {
+      "path": "trelio-telegram-web.mjs",
+      "interpreter": "node"
+    },
+    "capabilities": [
+      "browser",
+      "local-session",
+      "network"
+    ],
+    "files": [
+      {
+        "source": "scripts/trelio-telegram-web.mjs",
+        "path": "trelio-telegram-web.mjs",
+        "mode": 493
+      }
+    ]
+  }
+}

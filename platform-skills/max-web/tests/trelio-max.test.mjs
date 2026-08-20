@@ -10,18 +10,20 @@ import {
   assertSendAllowed,
   buildMutationPreview,
   connectionRoot,
-  createReadState,
+  installPassiveReadGuard,
   loadPolicy,
   normalizeContactReference,
   normalizeDialogTitle,
   openHome,
   parseArguments,
+  passiveReadFrameMarker,
   policyPath,
   selectExactContactResult,
   selectExactDialogResult,
+  shouldBlockPassiveReadFrame,
   waitForLoginHandoff,
   writePrivateJson,
-} from "../scripts/trelio-telegram-web.mjs";
+} from "../scripts/trelio-max.mjs";
 
 const identityArguments = [
   "--company-id",
@@ -32,8 +34,8 @@ const identityArguments = [
   "33333333-3333-3333-3333-333333333333",
 ];
 
-test("Telegram Web local policy defaults to confirm and keeps state outside workspace", () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-telegram-web-test-"));
+test("MAX local policy defaults to confirm and keeps state outside workspace", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-max-test-"));
   const previousConfigHome = process.env.TRELIO_CONFIG_HOME;
   process.env.TRELIO_CONFIG_HOME = temporary;
   try {
@@ -41,7 +43,7 @@ test("Telegram Web local policy defaults to confirm and keeps state outside work
     assert.deepEqual(loadPolicy(options), { sendMode: "confirm" });
     assert.equal(
       connectionRoot(options).includes(
-        path.join("integrations", "telegram-web"),
+        path.join("integrations", "max-web"),
       ),
       true,
     );
@@ -53,13 +55,13 @@ test("Telegram Web local policy defaults to confirm and keeps state outside work
   }
 });
 
-test("Telegram Web exposes a versioned, content-free live probe command", () => {
+test("MAX exposes a versioned, content-free live probe command", () => {
   const options = parseArguments([...identityArguments, "probe"]);
   assert.equal(options.command, "probe");
   assert.equal(ADAPTER_VERSION, "2");
 });
 
-test("Telegram Web login handoff finishes as soon as the owner closes the visible window", async () => {
+test("MAX login handoff finishes as soon as the owner closes the visible window", async () => {
   let closed = false;
   let closeWindow = null;
   const page = {
@@ -82,7 +84,7 @@ test("Telegram Web login handoff finishes as soon as the owner closes the visibl
   assert.equal(await handoff, "window_closed");
 });
 
-test("Telegram Web login handoff keeps a bounded timeout when the window is not closed", async () => {
+test("MAX login handoff keeps a bounded timeout when the window is not closed", async () => {
   const page = {
     isClosed: () => false,
     waitForEvent: () => new Promise(() => undefined),
@@ -95,18 +97,18 @@ test("Telegram Web login handoff keeps a bounded timeout when the window is not 
   );
 });
 
-test("Telegram Web skill tells the owner to close the login window and requires a fresh probe", () => {
+test("MAX skill tells the owner to close the login window and requires a fresh probe", () => {
   const skillSource = fs.readFileSync(
-    new URL("../skills/trelio-skill-catalog/SKILL.md", import.meta.url),
+    new URL("../SKILL.md", import.meta.url),
     "utf8",
   );
 
-  assert.match(skillSource, /После входа в Telegram Web закройте окно\./u);
-  assert.match(skillSource, /immediately run one fresh\s+`probe`/u);
+  assert.match(skillSource, /После входа в MAX закройте окно\./u);
+  assert.match(skillSource, /сразу\s+выполни один (?:свежий|fresh) `probe`/u);
   assert.doesNotMatch(skillSource, /не закрывайте (?:его|окно)/iu);
 });
 
-test("Telegram Web parses bounded history, repeated files and exact member references", () => {
+test("MAX parses bounded history, repeated files and exact member references", () => {
   const options = parseArguments([
     ...identityArguments,
     "create-group",
@@ -115,7 +117,7 @@ test("Telegram Web parses bounded history, repeated files and exact member refer
     "--member",
     "@one",
     "--member",
-    "https://t.me/two",
+    "https://max.ru/u/two",
     "--file",
     "/tmp/one.txt",
     "--file",
@@ -124,14 +126,8 @@ test("Telegram Web parses bounded history, repeated files and exact member refer
     "3",
   ]);
   assert.equal(options.title, "Проект Альфа");
-  assert.deepEqual(options.members, ["@one", "https://t.me/two"]);
-  // `parseArguments` intentionally resolves local files with the host path
-  // implementation. Keep the assertion portable instead of hard-coding a
-  // POSIX spelling that becomes `D:\\tmp\\...` on GitHub's Windows runner.
-  assert.deepEqual(options.files, [
-    path.resolve("/tmp/one.txt"),
-    path.resolve("/tmp/two.txt"),
-  ]);
+  assert.deepEqual(options.members, ["@one", "https://max.ru/u/two"]);
+  assert.deepEqual(options.files, ["/tmp/one.txt", "/tmp/two.txt"]);
   assert.equal(options.pages, 3);
   assert.throws(
     () => parseArguments([...identityArguments, "read", "--pages", "21"]),
@@ -139,15 +135,15 @@ test("Telegram Web parses bounded history, repeated files and exact member refer
   );
   assert.throws(
     () => parseArguments([...identityArguments, "admin-add", "--chat", "Команда", "--member", "@one"]),
-    /Unsupported Telegram Web browser command/u,
+    /Unsupported MAX browser command/u,
   );
   assert.throws(
     () => parseArguments([...identityArguments, "invite-link", "--chat", "Команда"]),
-    /Unsupported Telegram Web browser command/u,
+    /Unsupported MAX browser command/u,
   );
 });
 
-test("Telegram Web retries one blank SPA shell before probing the authenticated UI", async () => {
+test("MAX retries one blank SPA shell before probing the authenticated UI", async () => {
   let readinessChecks = 0;
   let reloads = 0;
   const page = {
@@ -159,7 +155,7 @@ test("Telegram Web retries one blank SPA shell before probing the authenticated 
       readinessChecks += 1;
       if (readinessChecks === 1) throw new Error("blank shell");
     },
-    evaluate: async () => ({ authVisible: false, appVisible: true }),
+    evaluate: async () => "чаты поиск",
   };
 
   const result = await openHome(page, { timeoutMs: 60_000 });
@@ -168,7 +164,7 @@ test("Telegram Web retries one blank SPA shell before probing the authenticated 
   assert.equal(reloads, 1);
 });
 
-test("Telegram Web fails closed when the SPA stays blank after one controlled reload", async () => {
+test("MAX fails closed when the SPA stays blank after one controlled reload", async () => {
   let reloads = 0;
   const page = {
     goto: async () => undefined,
@@ -182,12 +178,12 @@ test("Telegram Web fails closed when the SPA stays blank after one controlled re
 
   await assert.rejects(
     () => openHome(page, { timeoutMs: 60_000 }),
-    /Telegram Web home rendered no visible interactive UI/u,
+    /MAX home rendered no visible interactive UI/u,
   );
   assert.equal(reloads, 1);
 });
 
-test("Telegram Web action selection requires one exact normalized dialog title", () => {
+test("MAX action selection requires one exact normalized dialog title", () => {
   const results = [
     { index: 0, title: "ООО Вкус моря" },
     { index: 1, title: "  ООО   ВКУС  " },
@@ -197,7 +193,7 @@ test("Telegram Web action selection requires one exact normalized dialog title",
   assert.equal(selectExactDialogResult(results, "ООО Вкус").index, 1);
   assert.throws(
     () => selectExactDialogResult([results[0]], "ООО Вкус"),
-    /No exact visible Telegram Web dialog matched/u,
+    /No exact visible MAX dialog matched/u,
   );
   assert.throws(
     () => selectExactDialogResult(
@@ -207,12 +203,12 @@ test("Telegram Web action selection requires one exact normalized dialog title",
       ],
       "ООО Вкус",
     ),
-    /Ambiguous exact Telegram Web dialog title/u,
+    /Ambiguous exact MAX dialog title/u,
   );
 });
 
-test("Telegram Web read-only and autonomous modes are enforced by runtime code", () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-telegram-web-test-"));
+test("MAX read-only and autonomous modes are enforced by runtime code", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-max-test-"));
   const previousConfigHome = process.env.TRELIO_CONFIG_HOME;
   process.env.TRELIO_CONFIG_HOME = temporary;
   try {
@@ -231,29 +227,56 @@ test("Telegram Web read-only and autonomous modes are enforced by runtime code",
   }
 });
 
-test("Telegram Web reports ordinary provider read semantics without a protocol interception claim", () => {
-  assert.deepEqual(createReadState(), {
-    mode: "ordinary-telegram-web",
-    mayMarkVisibleMessagesRead: true,
-    note: "Opening a Telegram Web dialog may mark its visible messages as read.",
-  });
+test("MAX passive read guard blocks binary read receipts and forwards other traffic", async () => {
+  let routeHandler = null;
+  const context = {
+    routeWebSocket: async (_pattern, handler) => {
+      routeHandler = handler;
+    },
+  };
+  const forwarded = [];
+  let clientMessageHandler = null;
+  const client = {
+    connectToServer: () => ({ send: (message) => forwarded.push(message) }),
+    onMessage: (handler) => {
+      clientMessageHandler = handler;
+    },
+  };
+  const state = await installPassiveReadGuard(context);
+  routeHandler(client);
+
+  const receipt = Buffer.from([0x81, ...Buffer.from("READ_MESSAGE", "utf8"), 0x01]);
+  assert.equal(passiveReadFrameMarker(receipt), "READ_MESSAGE");
+  assert.equal(shouldBlockPassiveReadFrame(receipt), true);
+  clientMessageHandler(receipt);
+  assert.equal(forwarded.length, 0);
+  assert.equal(state.blockedFrames, 1);
+
+  const historyRequest = Buffer.from("LOAD_MESSAGES", "utf8");
+  clientMessageHandler(historyRequest);
+  assert.deepEqual(forwarded, [historyRequest]);
+
+  state.allowReadReceipts = true;
+  clientMessageHandler(Buffer.from("READ_REACTION", "utf8"));
+  assert.equal(forwarded.length, 2);
+  assert.equal(state.forwardedReadFrames, 1);
 });
 
-test("Telegram Web exact contact resolver accepts t.me identity and rejects ambiguity", () => {
+test("MAX exact contact resolver prefers stable /u identity and rejects ambiguity", () => {
   const results = [
     { stableId: "ivan", title: "Иван", text: "Иван @ivan" },
     { stableId: "ivan-work", title: "Иван", text: "Иван @ivan-work" },
   ];
-  assert.equal(normalizeContactReference("https://t.me/Ivan/"), "ivan");
+  assert.equal(normalizeContactReference("https://max.ru/u/Ivan/"), "ivan");
   assert.equal(selectExactContactResult(results, "@ivan").stableId, "ivan");
   assert.throws(
     () => selectExactContactResult(results, "Иван"),
-    /Several exact Telegram Web contacts/u,
+    /Several exact MAX contacts/u,
   );
 });
 
-test("Telegram Web structural mutations bind confirmation to the exact dry-run payload", () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-telegram-web-test-"));
+test("MAX structural mutations bind confirmation to the exact dry-run payload", () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "trelio-max-test-"));
   const previousConfigHome = process.env.TRELIO_CONFIG_HOME;
   process.env.TRELIO_CONFIG_HOME = temporary;
   try {

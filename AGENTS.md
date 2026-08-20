@@ -47,6 +47,10 @@
   [`platform-skills/1c-vkus/SKILL.md`](platform-skills/1c-vkus/SKILL.md).
 - `platform-skills/1c-vkus-kadry/**`: дополнительно прочитай
   [`platform-skills/1c-vkus-kadry/SKILL.md`](platform-skills/1c-vkus-kadry/SKILL.md).
+- `platform-skills/<skill-id>/**`: instruction source находится в собственном
+  `SKILL.md`, а независимые skill/runtime версии, host minimum и exact package
+  inputs – в `release.json`. `release.state=planned` нельзя описывать как уже
+  опубликованный current release.
 
 ## Стабильные runtime-инварианты
 
@@ -216,9 +220,9 @@
   промежуточный stdout и не
   запускать конкурирующий process на той же Telegram session. Успех доказывают
   zero exit, полный JSON и completeness-поля; исчезновение PID недостаточно.
-- Текущий Telegram Web adapter находится в bundled plugin script
-  `plugins/trelio-agent-workspaces/scripts/trelio-telegram-web.mjs` и следует
-  компактному MAX-паттерну: один private profile на exact
+- Канонический Telegram Web adapter находится в
+  `platform-skills/telegram-web/` и следует компактному MAX-паттерну: один
+  private profile на exact
   company/member/connection, `confirm` / `autonomous` / `read-only`, exact
   title либо canonical Web K PeerId, bounded output, dry-run + approval hash
   для structural/destructive mutations и запрет blind retry после ambiguous
@@ -228,9 +232,13 @@
   Открытие exact диалога сохраняет обычную Telegram Web semantics и может
   отметить видимые сообщения прочитанными; runtime явно возвращает
   `readState.mode=ordinary-telegram-web` и не заявляет passive protection.
-  Адаптер и его deterministic tests обязаны работать в local Codex и Claude
-  Code на macOS/Windows/Linux; executable-изменение требует новой версии
-  plugin. Прежний большой signed runtime сохранён в
+  Адаптер, package manifest и deterministic tests обязаны работать в local
+  Codex и Claude Code на macOS/Windows/Linux; executable-изменение получает
+  новую signed runtime version и не меняет plugin без нового generic host ABI.
+  Live backend release `2.0.0` остаётся переходным `plugin-script` только до
+  публикации подготовленного `2.0.1` / runtime `2.0.0`; planned release нельзя
+  считать current до read-back через `get_agent_skill`. Прежний большой signed
+  runtime сохранён в
   `platform-skills/telegram-web-legacy/`, исключён из CI и operational routing и
   не используется без отдельной maintainer-задачи.
 - Agent Secrets передаются только exact executable через одноразовый grant;
@@ -440,8 +448,10 @@
 - После изменения bridge/host проверь синтаксис Node.js 22+ и релевантные
   regressions. Не заменяй реальный Git/network/security regression моковой
   проверкой строки.
-- После изменения Python runtime запусти его unit tests; не коммить
-  `__pycache__`.
+- После изменения provider runtime собери его `release.json` командой
+  `node platform-skills/tools/build-runtime-package.mjs --skill-dir ... --check`
+  и запусти собственные platform-skill tests на релевантных ОС. После
+  изменения Python runtime запусти его unit tests; не коммить `__pycache__`.
 - Перед коммитом запусти `git diff --check` и убедись, что staged scope не
   захватывает чужие изменения.
 - Коммиты, descriptions и release notes пиши по-русски.

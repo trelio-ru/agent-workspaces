@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram Web"
+  short_description: "Работает с чатами через отдельный профиль Telegram Web."
+  default_prompt: "Используй $telegram-web для безопасной работы с Telegram Web через текущий signed runtime."

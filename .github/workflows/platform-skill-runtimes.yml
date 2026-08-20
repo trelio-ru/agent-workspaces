@@ -1,0 +1,125 @@
+name: Platform skill runtimes
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/platform-skill-runtimes.yml"
+      - "platform-skills/**"
+  push:
+    branches:
+      - main
+    tags:
+      - "skill-*-v*"
+    paths:
+      - ".github/workflows/platform-skill-runtimes.yml"
+      - "platform-skills/**"
+
+permissions:
+  contents: read
+
+jobs:
+  package-tool:
+    name: Package builder regressions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test deterministic package builder
+        run: node --test platform-skills/tools/build-runtime-package.test.mjs
+
+  provider-tests:
+    name: ${{ matrix.skill }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+        skill:
+          - email-imap-smtp
+          - max-web
+          - telegram-mtproto
+          - telegram-web
+        include:
+          - skill: email-imap-smtp
+            language: python
+          - skill: max-web
+            language: node
+            test_file: platform-skills/max-web/tests/trelio-max.test.mjs
+          - skill: telegram-mtproto
+            language: python
+          - skill: telegram-web
+            language: node
+            test_file: platform-skills/telegram-web/tests/trelio-telegram-web.test.mjs
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Set up Python
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate deterministic runtime package
+        run: >-
+          node platform-skills/tools/build-runtime-package.mjs
+          --skill-dir platform-skills/${{ matrix.skill }}
+          --check
+      - name: Run Node runtime regressions
+        if: matrix.language == 'node'
+        run: node --test ${{ matrix.test_file }}
+      - name: Run Python runtime regressions
+        if: matrix.language == 'python'
+        run: >-
+          python -m unittest discover
+          -s platform-skills/${{ matrix.skill }}/tests
+          -p "test_*.py"
+
+  tagged-package:
+    name: Retain tagged skill package
+    if: startsWith(github.ref, 'refs/tags/skill-')
+    needs:
+      - package-tool
+      - provider-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve independent skill tag
+        id: tag
+        shell: bash
+        run: |
+          skill_and_version="${GITHUB_REF_NAME#skill-}"
+          skill_id="${skill_and_version%-v[0-9]*}"
+          skill_version="${skill_and_version##*-v}"
+          test -n "$skill_id"
+          test -n "$skill_version"
+          test -f "platform-skills/$skill_id/release.json"
+          echo "skill_id=$skill_id" >> "$GITHUB_OUTPUT"
+          echo "skill_version=$skill_version" >> "$GITHUB_OUTPUT"
+      - name: Build exact package bytes
+        run: >-
+          node platform-skills/tools/build-runtime-package.mjs
+          --skill-dir platform-skills/${{ steps.tag.outputs.skill_id }}
+          --expect-skill-version ${{ steps.tag.outputs.skill_version }}
+          --output ${{ runner.temp }}/${{ steps.tag.outputs.skill_id }}-${{ steps.tag.outputs.skill_version }}.skillpkg
+      - name: Upload package for backend signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.tag.outputs.skill_id }}-${{ steps.tag.outputs.skill_version }}
+          path: ${{ runner.temp }}/${{ steps.tag.outputs.skill_id }}-${{ steps.tag.outputs.skill_version }}.skillpkg
+          if-no-files-found: error

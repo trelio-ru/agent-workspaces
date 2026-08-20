@@ -17,6 +17,14 @@ plugin. Перед его очередным изменением сначала
 миграцию; срочное bundled исправление требует отдельного host-bound обоснования
 и следующего шага миграции.
 
+В этом repository independent contour состоит из собственного `SKILL.md`,
+`release.json`, `scripts/`, `tests/`, workflow
+`platform-skill-runtimes.yml` и детерминированного builder
+`platform-skills/tools/build-runtime-package.mjs`. `release.state=planned`
+фиксирует подготовленную, но ещё не опубликованную версию. Backend signing и
+current pointer остаются отдельным publication step; package builder не имеет
+signing key и не меняет live state.
+
 Не выпускать plugin и не менять `BRIDGE_VERSION` только потому, что изменились
 instruction, команды, adapter, зависимости или tests одного backend-managed
 навыка. Такой change получает собственные skill/runtime SemVer и подписанный
@@ -60,6 +68,11 @@ artifact или marketplace release и не запускает plugin test workf
 использует tag namespace `vX.Y.Z`; provider runtime tags, если они нужны в этом
 repository, обязаны использовать отдельный skill-specific namespace.
 
+Provider tag имеет форму `skill-<skill-id>-v<skill-version>`. Он запускает
+только platform-skill workflow и сохраняет exact `.skillpkg` для backend
+publication; plugin tag `vX.Y.Z`, marketplace artifact и plugin policy при этом
+не создаются и не меняются.
+
 Не перезаписывать опубликованный immutable runtime/version. Версию выбирать по
 SemVer: backward-compatible новая публичная команда или orchestration contract
 требуют minor, совместимое исправление существующего поведения – patch,
@@ -83,8 +96,9 @@ Stable manifest version и Git tag выпускаются вместе. Tag/titl
 1. `validate-skill` и `quick_validate.py` для каждого изменённого skill.
 2. `plugin-creator/scripts/validate_plugin.py` для plugin root.
 3. Node.js 22+ syntax checks изменённых `.mjs`.
-4. Полные Node regressions bridge/Remote MCP/runtime policy/messaging.
-5. Python tests Email/Telegram и изменённых platform runtimes.
+4. Полные Node regressions bridge/Remote MCP/runtime policy для generic plugin.
+5. Собственный package `--check` и Node/Python tests изменённых platform
+   runtimes на macOS/Windows/Linux по их отдельному workflow.
 6. `git diff --check` и audit staged scope.
 7. Проверка version synchronization test.
 8. Для изменённых agent instructions – forward scenarios без live side effects.

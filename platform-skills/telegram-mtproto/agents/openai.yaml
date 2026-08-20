@@ -1,0 +1,4 @@
+interface:
+  display_name: "Telegram"
+  short_description: "Работает с Telegram через личную MTProto-сессию."
+  default_prompt: "Используй $telegram-mtproto для безопасной работы с Telegram через текущий signed runtime."

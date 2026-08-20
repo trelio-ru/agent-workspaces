@@ -2789,7 +2789,9 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
 
   assert.match(skillMarkdown, /Do not publish automatically/u);
   assert.match(skillMarkdown, /After every substantive accepted task Run/u);
-  assert.match(skillMarkdown, /Call `propose_task_comment` once/u);
+  // The semantic contract matters here, not whether the sentence begins with
+  // an uppercase verb after a Markdown heading or continues after a clause.
+  assert.match(skillMarkdown, /call\s+`propose_task_comment` once/iu);
   assert.match(skillMarkdown, /system handoff is technical audit and agent-readable context/u);
   assert.match(skillMarkdown, /ordinary comment for\s+people/u);
   assert.match(skillMarkdown, /get_task_comment_proposal_context/u);
@@ -2797,7 +2799,9 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
   assert.match(skillMarkdown, /server reads the fresh public-comment snapshot/u);
-  assert.match(skillMarkdown, /do not make separate context\/hash calls on the normal path/u);
+  // Keep the invariant stable when the reference gives the normal path a more
+  // specific name such as "sole-card normal path".
+  assert.match(skillMarkdown, /do not make separate context\/hash calls on (?:the|this sole-card)\s+normal path/u);
   assert.match(skillMarkdown, /Never use `create_comment` as a workaround/u);
   assert.match(skillMarkdown, /not acceptance\s+of the durable workspace result/u);
   assert.match(skillMarkdown, /After acceptance/u);

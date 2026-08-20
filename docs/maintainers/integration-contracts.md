@@ -440,17 +440,23 @@ export: завершение подтверждается exit code, валид�
 полями. Потерянный descriptor сначала требует установить, что исходный process
 завершён; слепой параллельный retry запрещён даже для read-only команды.
 
-Текущий Telegram Web adapter повторяет компактный MAX contract: один private
-profile на exact company/member/connection, exact normalized title либо
+Канонический Telegram Web adapter в `platform-skills/telegram-web/` повторяет
+компактный MAX contract: один private profile на exact
+company/member/connection, exact normalized title либо
 canonical safe-integer Web K PeerId, bounded history/output и local
 `confirm` / `autonomous` / `read-only`. Structural/destructive mutation всегда
 связывается с неизменным dry-run approval hash; ambiguous outcome запрещает
 blind retry. `login` заканчивается закрытием видимого окна владельцем, а
 сохранённую сессию доказывает только fresh `probe` в новом process. Открытие
 диалога может отметить видимые сообщения прочитанными; runtime возвращает
-`readState.mode=ordinary-telegram-web`, не обещая passive read. Архивный signed
-runtime находится только в `platform-skills/telegram-web-legacy/`, исключён из
-operational routing и plugin CI.
+`readState.mode=ordinary-telegram-web`, не обещая passive read. Его
+`release.json` собирает отдельный package skill `2.0.1` / runtime `2.0.0` с
+minimum host `1.4.0`. Пока backend read-back ещё показывает release `2.0.0`
+вида `plugin-script`, это только переходный live pointer: source и tests уже не
+являются plugin inputs, а переключение выполняется отдельной публикацией signed
+artifact без plugin version/policy change. Архивный большой signed runtime
+находится только в `platform-skills/telegram-web-legacy/`, исключён из
+operational routing и active platform-skill CI.
 
 MAX partial match допустим только discovery. Перед read/send нужен один exact
 normalized title; single partial не достаточно. После DOM load ждать
