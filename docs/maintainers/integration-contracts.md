@@ -3,6 +3,7 @@
 ## Содержание
 
 - Skill-first routing
+- Plugin boundary and skill ownership
 - Signed packages
 - Remote MCP
 - Credentials и browser-first input
@@ -78,6 +79,70 @@ Leading `trelio-workspace` – logical launcher текущего plugin. Про�
 22+ и bundled bridge этой версии. Остальные args сохраняются literally. Нельзя
 сканировать cache, выбирать другую версию или сообщать о штатно отсутствующем
 PATH entry.
+
+## Plugin boundary and skill ownership
+
+Публичный `trelio-agent-workspaces` является стабильным универсальным host, а
+не каналом доставки provider-specific business runtime. В plugin bundle могут
+находиться только:
+
+- общий bridge/host для authenticated resolve, проверки package и безопасного
+  запуска процесса;
+- MCP registration и универсальные local MCP facades;
+- lifecycle hooks, runtime admission/attestation и pairing;
+- bootstrap/control-plane skills, без которых агент ещё не может подключить
+  Trelio, прочитать каталог или безопасно начать Workspace/Run workflow;
+- общие credential, browser, policy, cache и другие security primitives;
+- manifests, interface metadata и presentation assets самого plugin.
+
+Plugin образует отдельный source/build/release contour. Целевая топология –
+отдельный host-репозиторий и pipeline, которые не содержат канонические исходники
+provider skills и не запускаются их изменениями. Переходное совместное хранение
+в одном repository допустимо только вне plugin subtree, с независимыми build
+inputs, version/tag namespace и release job: commit в provider runtime не должен
+изменять plugin artifact, его версию или marketplace release.
+
+Bootstrap/control-plane skill описывает настройку и использование самого
+Trelio host. Он не содержит реализацию команд конкретного внешнего provider.
+Email, Telegram, MAX, 1C, ConsultantPlus и любой будущий integration skill не
+становятся bootstrap только потому, что их runtime запускается локально.
+
+Инструкция и executable provider-specific навыка обязаны выпускаться независимо
+через backend-managed instruction release, declarative Remote MCP либо
+immutable signed runtime artifact. Канонический runtime source располагается
+в `platform-skills/<skill-id>/`, другом явно выделенном runtime-каталоге вне
+`plugins/trelio-agent-workspaces/**` или отдельном каноническом репозитории.
+Изменение provider command, parser, adapter, dependency, policy или tests само
+по себе не меняет `BRIDGE_VERSION`, plugin manifests, marketplace version или
+global plugin policy.
+
+`minimumHostVersion` signed artifact означает самую старую реально совместимую
+версию generic host. Она подтверждается используемым host API/security
+primitive и compatibility regression, а не приравнивается к текущей версии
+plugin, skill release или runtime version. Если host ABI и security boundary не
+изменились, minimum сохраняется.
+
+Существующие provider-specific файлы внутри plugin и releases с
+`runtimeRequirements.kind = plugin-script` являются только переходными
+compatibility exceptions, а не шаблоном для новых навыков. Новый
+`plugin-script` provider runtime запрещён. Очередное изменение такого adapter
+должно сначала рассматривать перенос в signed package. Временное продолжение
+bundled path допустимо только для срочного host-bound исправления с явным
+описанием, почему generic signed host недостаточен, проверкой старых клиентов и
+зафиксированным следующим шагом миграции. Rollback может сохранять старый
+plugin-script release, но current backend pointer после миграции направляется
+на signed artifact.
+
+Даже срочная поломка одного provider не является основанием менять plugin, если
+её можно исправить instruction release, Remote MCP или signed artifact. Изменение
+plugin допускается только при дефекте либо новой потребности самого generic
+host/security boundary; критерии admission перечислены в
+[`release-process.md`](release-process.md#plugin-release-admission-gate).
+
+Локальные credentials, sessions, profiles и policy используют стабильный
+`skill/company/member/connection` namespace и не переносятся в plugin cache или
+runtime package. Поэтому независимый skill/runtime release не требует повторной
+авторизации и не должен вынуждать пользователя обновлять plugin.
 
 ## Signed packages
 

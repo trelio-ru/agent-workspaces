@@ -126,6 +126,20 @@ owner/ACL/mode/symlink path fail-closed. Failed local persistence после exc
 до start/claim. `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` запрещает продолжать
 старый network process или forge version/clientKind.
 
+Plugin policy разделяет `latestVersion` и `minimumVersion`. Первая обозначает
+последний опубликованный stable marketplace release, вторая – жёсткую нижнюю
+границу совместимого host. Установленная версия между ними остаётся supported:
+`updateAvailable=true` само по себе не запускает forced self-update. Hard gate
+и recovery применяются только ниже minimum либо когда exact selected signed
+runtime требует доказанно более новый host API/security primitive.
+
+Backend-managed instruction, Remote MCP declaration или signed runtime release
+никогда не повышают global plugin minimum сами по себе. Повышение minimum
+обязано ссылаться на конкретное изменение bridge/host/hooks/MCP/security ABI и
+regression, который показывает несовместимость прежней версии. Если такого
+изменения нет, новый plugin release обновляет только latest, сохраняя прежний
+minimum.
+
 Codex self-update:
 
 1. single-flight, не чаще установленного интервала;

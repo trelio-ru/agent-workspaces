@@ -2,9 +2,63 @@
 
 ## Когда нужен plugin release
 
-Release нужен для bundled MCP/bootstrap skills/bridge/host/manifest. Backend-
-managed Markdown, Remote MCP declaration или immutable internal runtime release
-могут публиковаться отдельно, пока bundled plugin contract не меняется.
+Release нужен только для bundled MCP/bootstrap/control-plane skills,
+bridge/host, hooks, manifest, общей security-инфраструктуры или presentation
+assets самого plugin. Backend-managed Markdown, Remote MCP declaration и
+immutable internal runtime release публикуются отдельно, пока generic host
+contract не меняется.
+
+Provider-specific runtime source не должен находиться внутри
+`plugins/trelio-agent-workspaces/**`: его каноническое место –
+`platform-skills/<skill-id>/`, отдельный runtime-каталог вне plugin bundle либо
+другой канонический репозиторий. Существующий `plugin-script` – временное
+compatibility exception, а не основание добавлять новый provider runtime в
+plugin. Перед его очередным изменением сначала планировать signed-package
+миграцию; срочное bundled исправление требует отдельного host-bound обоснования
+и следующего шага миграции.
+
+Не выпускать plugin и не менять `BRIDGE_VERSION` только потому, что изменились
+instruction, команды, adapter, зависимости или tests одного backend-managed
+навыка. Такой change получает собственные skill/runtime SemVer и подписанный
+artifact. Его `minimumHostVersion` остаётся на самой старой реально совместимой
+версии host; совпадение с текущей plugin version не считается доказательством
+новой зависимости.
+
+## Plugin release admission gate
+
+Plugin – отдельный консервативный release contour. До изменения файлов plugin
+автор обязан зафиксировать хотя бы одно допустимое основание:
+
+- security vulnerability или нарушение fail-closed invariant в общей
+  bridge/host/hooks/credential/package-verification инфраструктуре;
+- несовместимое изменение Codex/Claude plugin platform, MCP, OAuth, hooks или
+  onboarding, которое невозможно адаптировать на backend;
+- дефект generic host, затрагивающий безопасный запуск независимо от provider;
+- новый общий host/security primitive, который нужен нескольким навыкам или
+  классу будущих навыков и не может быть доставлен как Remote MCP либо signed
+  runtime без ослабления security boundary.
+
+Не являются допустимым основанием: изменение provider API/DOM, новая команда
+или parser, новая бизнес-политика, instruction/prompt, provider dependency,
+provider-specific browser automation, тесты одного навыка и срочность такого
+изменения. Всё это выпускается в контуре конкретного skill/runtime.
+
+Plugin release proposal обязан содержать:
+
+1. выбранное основание admission и точный generic contract, который меняется;
+2. почему backend instruction, Remote MCP или signed artifact недостаточны;
+3. regression для нового host/security поведения;
+4. совместимость со старым host и обоснование сохранения либо повышения
+   `minimumVersion`;
+5. rollout/rollback plan; для переходного `plugin-script` также owner и
+   следующий проверяемый шаг удаления из plugin.
+
+Если эти пункты заполнить нельзя, plugin path закрыт: изменение переносится в
+независимый skill/runtime contour. Независимость должна обеспечиваться не только
+расположением файлов, но и CI: provider-only change не создаёт plugin tag,
+artifact или marketplace release и не запускает plugin test workflow. Plugin
+использует tag namespace `vX.Y.Z`; provider runtime tags, если они нужны в этом
+repository, обязаны использовать отдельный skill-specific namespace.
 
 Не перезаписывать опубликованный immutable runtime/version. Версию выбирать по
 SemVer: backward-compatible новая публичная команда или orchestration contract
@@ -52,12 +106,14 @@ read-back seeded client можно публиковать manifest, которы
 3. Создать GitHub Release с title `vX.Y.Z`.
 4. Проверить published marketplace exact version/code.
 5. Сразу после проверки marketplace отдельным backend CAS установить live
-   `latestVersion=X.Y.Z` и `minimumVersion=X.Y.Z`. Обычный plugin release не
-   завершён, пока backend minimum остаётся на предыдущей версии. Отдельный
-   прежний minimum разрешён только по прямому решению о staged rollout.
+   `latestVersion=X.Y.Z`. `minimumVersion` поднять до `X.Y.Z` только когда exact
+   host/security change делает прежний host несовместимым; release-план обязан
+   назвать этот change и regression. Для совместимого plugin release сохранить
+   прежний minimum – это штатный rollout, а не исключение.
 6. Прочитать live policy обратно и проверить оба exact значения. В итоговом
-   сообщении о релизе явно указать подтверждённый backend `minimumVersion`, а
-   не только факт запуска CAS-команды.
+   сообщении о релизе явно указать подтверждённые `latestVersion` и
+   `minimumVersion`, а при их различии – что прежний host остаётся
+   поддерживаемым. Skill/runtime release global plugin policy не меняет.
 
 При network ambiguity сначала read-back remote ref/release; side-effect нельзя
 слепо повторять.

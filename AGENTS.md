@@ -51,6 +51,25 @@
 ## Стабильные runtime-инварианты
 
 - Trelio MCP – control plane; bundled bridge – локальный Git data plane.
+- Публичный plugin – стабильный generic host, а не канал доставки логики
+  конкретного provider. В bundle остаются общий bridge/host, MCP, hooks,
+  bootstrap/control-plane skills, общие security/credential/browser primitives,
+  manifests и assets. Email, Telegram, MAX, 1C, ConsultantPlus и любой новый
+  integration runtime выпускаются через backend-managed instruction,
+  declarative Remote MCP либо immutable signed package. Их канонический source
+  должен жить вне `plugins/trelio-agent-workspaces/**`, обычно в
+  `platform-skills/<skill-id>/`; существующие provider files и `plugin-script`
+  releases внутри plugin являются только переходными compatibility exceptions.
+  Новый `plugin-script` запрещён. Изменение такого навыка не меняет
+  `BRIDGE_VERSION`/manifests/plugin policy, пока не изменился generic host ABI
+  или security primitive. Plugin имеет отдельные source/build/release contour,
+  tag namespace и admission gate; provider-only commit не запускает его CI и не
+  создаёт marketplace release. Plugin change разрешён только для общей
+  security/fail-closed ошибки, несовместимости plugin platform/MCP/hooks/OAuth,
+  generic host defect либо действительно общего недоставляемого иначе
+  host/security primitive. Plugin tags имеют вид `vX.Y.Z`; skill/runtime tags
+  используют отдельный skill-specific namespace. Полный контракт – в
+  [`docs/maintainers/integration-contracts.md`](docs/maintainers/integration-contracts.md).
 - Общий `.mcp.json` задаёт для Codex и Claude Code predefined public client
   `trelio_agent_workspaces_v1`. Scopes клиенты получают из OAuth metadata
   Trelio, поэтому не дублируй их в manifest: полный текущий набор выдаёт сервер,
@@ -436,11 +455,16 @@
   известные immutable пути. Нельзя подставлять новую версию под старый путь,
   использовать symlink `current` или выбирать другую cache-версию.
 - Обычные изменения backend-managed instruction/runtime конкретного внутреннего
-  навыка не требуют plugin release, пока не меняется bundled plugin host или
-  bootstrap skill.
+  навыка не требуют plugin release, пока не меняется bundled generic host,
+  bootstrap/control-plane skill или общий security contract. Для signed
+  artifact `minimumHostVersion` равен самой старой реально совместимой версии,
+  подтверждённой используемым host primitive и regression; его нельзя
+  автоматически приравнивать к текущей plugin/skill/runtime version.
 - После публикации нового plugin сначала проверь официальный marketplace, а
-  затем в рамках того же release-flow сразу подними live `latestVersion` и
-  `minimumVersion` Trelio до новой версии. Обычный релиз не считается
-  завершённым, пока read-back backend policy не подтвердил оба exact значения.
-  В итоговом сообщении явно укажи подтверждённый `minimumVersion`; отдельный
-  прежний minimum допустим только при прямом решении о staged rollout.
+  затем в рамках того же release-flow подними live `latestVersion` Trelio.
+  `minimumVersion` поднимай только при доказанной несовместимости прежнего
+  bridge/host/hooks/MCP/security ABI; совместимый release штатно сохраняет
+  прежний minimum. Релиз не завершён, пока read-back policy не подтвердил оба
+  exact значения. В итоге явно укажи `latestVersion`, `minimumVersion` и причину
+  повышения либо сохранения minimum. Backend-managed skill/runtime release
+  global plugin policy не меняет.
