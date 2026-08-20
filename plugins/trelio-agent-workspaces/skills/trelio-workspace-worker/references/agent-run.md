@@ -144,7 +144,8 @@ task communication, handoff, submit, or final reporting.
    never force-update accepted history or blindly repeat an ambiguous submit.
 7. For a task Run, follow the status procedure in `task-run.md` and the
    separately routed proposal procedure in `task-comment-proposals.md` after
-   acceptance.
+   acceptance. Inventory every card before the first proposal write and follow
+   `task-proposal-bundles.md` whenever the same response needs two or more.
 8. Report in this order: outcome, important findings/validation, saved
    materials, open questions, and exact next action. For task scope, include the
    resulting status or transition blocker as required by `task-run.md`. Follow

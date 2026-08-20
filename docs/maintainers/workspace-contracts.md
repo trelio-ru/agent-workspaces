@@ -111,14 +111,26 @@ maintainer/integration/Run route, в том числе когда приходи
 
 Manual comment отделён от audit accepted Run. System handoff остаётся
 техническим аудитом и agent-readable контекстом. После каждого содержательного
-accepted task Run агент один раз вызывает `propose_task_comment`: tool сам
-читает fresh public snapshot/state revision и сохраняет обычный человеческий
-first-person proposal. Тот же one-call tool работает напрямую по exact task.
-Для nuanced correction или нового mention сохраняется legacy read → render
-flow с exact hash. Proposal не публикуется автоматически и не блокирует durable
-acceptance; text-only publish/dismiss требует явной команды. Указание «только
-предложи, не публикуй» подтверждает proposal route, а не разрешает заменить его
-обычным copywriting-блоком.
+accepted task Run агент готовит обычный человеческий first-person proposal.
+Когда это единственная интерактивная карточка текущего ответа,
+`propose_task_comment` сам читает fresh public snapshot/state revision; тот же
+one-call tool работает напрямую по exact task. Для nuanced correction или
+нового mention сохраняется read → `render_task_comment_proposal` flow с exact
+hash, также только для sole card. Proposal не публикуется автоматически и не
+блокирует durable acceptance; text-only publish/dismiss требует явной команды.
+Указание «только предложи, не публикуй» подтверждает proposal route, а не
+разрешает заменить его обычным copywriting-блоком.
+
+До первого proposal-write агент инвентаризирует все интерактивные карточки,
+которые должен вернуть в текущем ответе. При двух и более comment, whole-task
+status либо control-clear карточках, в том числе одного типа для разных задач,
+он отдельно читает matching context каждой exact цели и ровно один раз вызывает
+`render_task_proposals` со всеми карточками в display order. Несколько singular
+App-вызовов в одном ответе запрещены: host может сохранить все drafts на
+backend, но отобразить только один tool result. Карточки остаются независимыми:
+локальная ошибка подготовки не стирает соседние, а publish/apply/dismiss
+действует только на выбранную карточку. `render_task_comment_proposals` –
+compatibility route старых comment-only клиентов, не multi-card default.
 
 `create_comment` не используется для proposal. После accepted `filePaths`
 содержит только важные final deliverables и полезные intermediate материалы,
@@ -144,8 +156,9 @@ Task outcome оценивает готовность всей задачи, а �
 Accepted Run сохраняет outcome и recommendation, но никогда не вызывает status
 mutation. Comment proposal обязателен после каждого содержательного accepted
 task Run. Отдельный status proposal создаётся только после проверки готовности
-всей задачи через `get_task_status_proposal_context` →
-`render_task_status_proposal`; partial work его не создаёт. Apply/dismiss
+всей задачи и `get_task_status_proposal_context`; partial work его не создаёт.
+Sole-card ответ вызывает `render_task_status_proposal`, а multi-card ответ
+добавляет status block в единый `render_task_proposals`. Apply/dismiss
 выполняются только по действию человека в MCP App или явному решению по exact
 proposal, а optimistic revision/current-status CAS сохраняют более новую смену.
 

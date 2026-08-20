@@ -80,6 +80,12 @@ These references are additive; do not read unrelated files speculatively.
   read [`references/task-status-proposals.md`](references/task-status-proposals.md).
   Keep this decision independent from the required human comment proposal.
   Also read the scope reference when the exact task target is not already known.
+- **The current assistant response must show two or more comment, status, or
+  control-clear proposal cards, including several cards of the same kind:**
+  read [`references/task-proposal-bundles.md`](references/task-proposal-bundles.md)
+  and every proposal-kind reference that applies. Decide this before the first
+  proposal write; do not emit several single-card App calls and try to combine
+  them afterward.
 - **An Agent Workspace Run must be started, opened, continued, checkpointed,
   submitted, restored, cancelled, or recovered from concurrency:** read
   [`references/agent-run.md`](references/agent-run.md). Also read the scope

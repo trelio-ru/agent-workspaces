@@ -47,9 +47,14 @@ calendar day, while individual Run details remain available.
 
 After acceptance, follow the separately routed task-comment proposal procedure
 before final reporting. If and only if the whole task was assessed ready, also
-follow `task-status-proposals.md` and render an independent status proposal.
-Partial work produces no status proposal. The accepted workspace result remains
-valid even when either proposal is blocked by missing scope or permissions.
+follow `task-status-proposals.md` and prepare an independent status proposal.
+Before either proposal write, inventory all interactive cards required in the
+same response, including any inferred control-clear proposal. When two or more
+cards are needed, read `task-proposal-bundles.md` and return all of them through
+one `render_task_proposals` call; never issue the singular comment/status/control
+App calls sequentially. Partial work produces no status proposal. The accepted
+workspace result remains valid even when any proposal is blocked by missing
+scope or permissions.
 
 Report outcome first, then say that accepted Run left task status unchanged and
 whether a separate status proposal is awaiting a decision or was applied.

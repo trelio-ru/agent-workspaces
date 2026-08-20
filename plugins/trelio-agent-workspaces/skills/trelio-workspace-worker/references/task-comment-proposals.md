@@ -18,9 +18,19 @@ Agent Workspace Run solely to prepare a proposal. A direct exact-task proposal
 uses `companySlug`, `projectSlug`, and `taskNumber`; an accepted task Run uses
 its exact `runId`.
 
-## Prepare the editable draft
+## Inventory the response before writing
 
-Call `propose_task_comment` once on the normal path:
+Determine how many interactive task-proposal cards the current assistant
+response must show before calling a proposal write tool. Include comment,
+whole-task status, and control-clear proposals for every exact task. If the
+total is two or more, read `task-proposal-bundles.md` and use its single bundle
+route. Do not call a comment tool first and discover afterward that another
+card is needed.
+
+## Prepare one editable draft
+
+When this comment is the sole interactive proposal card, call
+`propose_task_comment` once on the normal path:
 
 - For a direct exact task, pass its locator and a concise first-person
   `proposalText`; direct proposals do not accept workspace `filePaths`.
@@ -31,13 +41,22 @@ Call `propose_task_comment` once on the normal path:
   Do not attach all workspace files.
 
 The server reads the fresh public-comment snapshot and optimistic proposal
-state internally, so do not make separate context/hash calls on the normal path.
-Use `get_task_comment_proposal_context` followed by
-`render_task_comment_proposal` only for a nuanced correction, comparison with
-earlier public discussion, or an intentional member mention whose exact
-`@username` is not already known. Use only a returned exact username; never
-guess one or replace it with a plain display name. Treat `currentDraft` as
-private and unpublished, never as an earlier public statement.
+state internally, so do not make separate context/hash calls on this sole-card
+normal path. Use `get_task_comment_proposal_context` followed by
+`render_task_comment_proposal` only for a sole-card nuanced correction,
+comparison with earlier public discussion, or an intentional member mention
+whose exact `@username` is not already known. Use only a returned exact
+username; never guess one or replace it with a plain display name. Treat
+`currentDraft` as private and unpublished, never as an earlier public
+statement.
+
+For a multi-card response, always read
+`get_task_comment_proposal_context` for this exact target and pass its exact
+snapshot/revision fields plus the proposed text into this card's
+`commentProposal` block in the one `render_task_proposals` call. This applies
+even to the otherwise-normal accepted-Run comment route. The older
+`render_task_comment_proposals` tool remains compatibility for comment-only
+clients and is not the default bundle route.
 
 ## Keep publication separate
 

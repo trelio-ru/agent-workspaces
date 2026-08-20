@@ -38,14 +38,19 @@ call `move_task_to_project` without the direct command.
    or the exact `companySlug`, `projectSlug`, and `taskNumber`.
 2. Choose one currently transitionable target returned by that context. Use
    the semantic `taskOutcome` only as a recommendation, never as authority.
-3. Call `render_task_status_proposal` with the exact `stateRevision`, current
-   status id, target status code, and a concise reason explaining why the whole
-   task is ready.
+3. Inventory every interactive comment, status, and control-clear card needed
+   in the current assistant response. If this status is the sole card, call
+   `render_task_status_proposal` with the exact `stateRevision`, current status
+   id, target status code, and a concise reason explaining why the whole task
+   is ready. If the response needs two or more cards, read
+   `task-proposal-bundles.md` and put these same exact fields in this card's
+   `statusProposal` block in the one `render_task_proposals` call.
 
 The rendered card is independent from the comment card. Do not merge one into
-the other and do not omit the comment proposal after a substantive accepted
-task Run. If status changed between read and render/apply, reread the context;
-never overwrite the newer decision.
+the other's text and do not omit the comment proposal after a substantive
+accepted task Run. Independence is represented by separate cards inside one
+bundle when both are needed. If status changed between read and render/apply,
+reread the context; never overwrite the newer decision.
 
 ## Keep apply and dismissal human-controlled
 

@@ -403,12 +403,20 @@
   относительно pinned base, поэтому чистый непустой draft завершается без
   искусственной правки; candidate head exact base остаётся запрещён.
 - Accepted task Run создаёт технический system handoff для аудита и агентов,
-  после чего `propose_task_comment` готовит обычный комментарий для людей.
-  Публикация и attachments остаются явным действием человека и не блокируют
-  durable acceptance. Ни accepted Run, ни `taskOutcome` не меняют статус:
-  outcome только рекомендует semantic target. Если вся задача готова, агент
-  отдельно вызывает `render_task_status_proposal`; partial work не создаёт
-  status proposal, но всё равно получает comment proposal.
+  после чего агент готовит обычный comment proposal для людей. Публикация и
+  attachments остаются явным действием человека и не блокируют durable
+  acceptance. Ни accepted Run, ни `taskOutcome` не меняют статус: outcome
+  только рекомендует semantic target. Если вся задача готова, агент также
+  готовит независимый status proposal; partial work его не создаёт, но всё
+  равно получает comment proposal. До любого proposal-write агент учитывает
+  все карточки, которые должен показать в текущем ответе. Одна карточка
+  использует свой singular tool; две и более comment/status/control-clear
+  карточки, включая несколько карточек одного типа, требуют отдельных fresh
+  context reads и ровно одного `render_task_proposals` в display order.
+  Последовательные single-card App calls запрещены: MCP host может сохранить
+  серверные drafts, но показать пользователю только один tool result.
+  `render_task_comment_proposals` остаётся compatibility path старых
+  comment-only клиентов, а не default multi-card route.
 - Immediate status mutation через `update_task_status`, task patch, batch patch
   или `move_task_to_project` разрешена только после прямой однозначной команды
   человека изменить exact задачу на exact статус сейчас и требует literal
