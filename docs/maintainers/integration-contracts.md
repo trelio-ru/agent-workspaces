@@ -39,6 +39,15 @@ Always-on `initialize.instructions`, runtime `AGENTS.md`,
    себе не доказывают отсутствие skill, `no_access` или `setup_required`.
 9. Native Trelio MCP/workspace operations – primary workflow, не fallback.
 
+Если catalog item содержит `integrationRouting`, plugin-owned поверхности
+интерпретируют только его общие поля: `family`, `role`, `priority`,
+`selectionRule`, `primarySkillId`, `fallbackSkillId`, `fallbackWhen` и
+`ambiguousMutationFallback`. Plugin не выводит маршрут из ID/title/order, не
+перечисляет provider skill IDs и не хранит текущие provider-specific fallback,
+cache, login или policy rules. Их authority – backend и свежий
+`get_agent_skill`; отсутствие, malformed или противоречие metadata означает
+fail-closed, а не догадку клиента.
+
 ### Maintainer/development route
 
 Skill-first routing выше управляет operational use подключённого сервиса от
@@ -62,8 +71,11 @@ bounded read-only diagnostics против уже разрешённого по�
 только цель снова становится обычным бизнес-действием через integration,
 применяется стандартный catalog → get → runtime flow.
 
-Telegram имеет формальный двухтранспортный routing поверх общего purpose
-выбора. Если назначен только один из `telegram-mtproto` / `telegram-web`,
+### Backend-owned provider routing
+
+Текущая backend policy Telegram имеет формальный двухтранспортный routing
+поверх общего purpose выбора. Если назначен только один из
+`telegram-mtproto` / `telegram-web`,
 используется он. Если назначены оба, lower numeric priority выбирает
 `telegram-mtproto` primary `100` перед `telegram-web` secondary `200` независимо
 от порядка catalog rows. Secondary допустим только после exact
@@ -73,6 +85,10 @@ primary. Недоступность catalog/control plane, timeout, transient/un
 live-результат либо пользователь решает, нужен ли повтор. Assignments,
 connections, local sessions и policy двух навыков независимы. Текущий Web
 adapter не имеет отдельного consent registry.
+
+Этот provider contract документирует backend/runtime contour и его собственные
+tests. Он не копируется в plugin instructions, bundled skills, README или
+plugin tests: generic host получает все значения через `integrationRouting`.
 
 Leading `trelio-workspace` – logical launcher текущего plugin. Проверить PATH
 без пробного запуска; если отсутствует, заменить только первый token на Node.js
@@ -106,6 +122,12 @@ Bootstrap/control-plane skill описывает настройку и испо�
 Trelio host. Он не содержит реализацию команд конкретного внешнего provider.
 Email, Telegram, MAX, 1C, ConsultantPlus и любой будущий integration skill не
 становятся bootstrap только потому, что их runtime запускается локально.
+
+Plugin-owned code, bundled instructions, README и tests не перечисляют
+конкретные provider skill IDs, текущие пары transport, provider cache/login
+exceptions или capability matrices. Regression tests generic host используют
+synthetic integration IDs и проверяют только protocol semantics. Конкретные
+fixtures и правила живут в backend/provider contour рядом с их source.
 
 Инструкция и executable provider-specific навыка обязаны выпускаться независимо
 через backend-managed instruction release, declarative Remote MCP либо

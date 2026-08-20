@@ -69,10 +69,10 @@
   skills, общие security/credential/browser primitives, manifests и assets.
   Bootstrap skill настраивает Trelio host/catalog/workspace и не реализует
   команды внешнего provider.
-- Email, Telegram, MAX, 1С, ConsultantPlus и любой новый provider выпускаются
-  независимо через backend-managed instruction, declarative Remote MCP либо
-  immutable signed package. Канонический executable не живёт в plugin subtree;
-  новый provider `plugin-script` запрещён.
+- Любой внешний provider выпускается независимо через backend-managed
+  instruction, declarative Remote MCP либо immutable signed package.
+  Канонический executable не живёт в plugin subtree; новый provider
+  `plugin-script` запрещён.
 - Provider change не меняет `BRIDGE_VERSION`, plugin manifests, marketplace
   release, `latestVersion`/`minimumVersion` или plugin CI, пока не изменился
   generic host ABI либо общий security primitive.

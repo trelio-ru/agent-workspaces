@@ -1213,10 +1213,12 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
       /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
     );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-mtproto` primary priority `100`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`telegram-web` secondary priority `200`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact `not_configured`, `no_access`, `needs_reconnect` или `unsupported_operation`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не разрешают переключение или автоматический повтор/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /formal `integrationRouting`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не выводи маршрут из skill ID, title, порядка массива или прошлого использования/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact возвращённые `role`, `primarySkillId`, `selectionRule` и semantics поля `priority`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact `fallbackSkillId`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /собственный `fallbackWhen`/u);
+    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоматический повтор/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
@@ -2358,9 +2360,11 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /не обходи gate другим MCP, HTTP, browser или shell/iu,
     /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
     /назови required action и останови текущий запрос к данным/u,
-    /`telegram-mtproto` primary priority `100`/u,
-    /`telegram-web` secondary priority `200`/u,
-    /не разрешают переключение или автоматический повтор/u,
+    /не выводи маршрут из skill ID, title, порядка массива или прошлого использования/u,
+    /exact возвращённые `role`, `primarySkillId`, `selectionRule` и semantics поля `priority`/u,
+    /exact `fallbackSkillId`/u,
+    /собственный `fallbackWhen`/u,
+    /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоматический повтор/u,
     /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
     /допустим только после явного выбора пользователя/u,
     /Недоступность search\/get control plane и transient network failure/u,
@@ -2910,26 +2914,6 @@ test("skills resolve the logical bridge launcher before runtime execution", asyn
   assert.match(catalogSkill, /Do not announce/u);
   assert.match(workspaceSkill, /announce a normally missing PATH entry/u);
   assert.match(bridgeSource, /не сообщай о штатно отсутствующем PATH/u);
-});
-
-test("1C EDO secret checkout instructions avoid a nested bridge executable", async () => {
-  const skillMarkdown = await readFile(
-    path.resolve(pluginDirectory, "..", "..", "platform-skills", "1c-edo", "SKILL.md"),
-    "utf8",
-  );
-
-  // prepare_agent_secret_checkout returns an argv prefix that already starts
-  // the bridge executable. Keeping this phrase under regression prevents an
-  // agent from appending the full runtime command and accidentally executing
-  // `trelio-workspace ... -- trelio-workspace skill run ...`.
-  assert.match(
-    skillMarkdown,
-    /without its first `trelio-workspace` token/,
-  );
-  assert.match(
-    skillMarkdown,
-    /trelio-workspace secret exec --grant \.\.\. -- skill run/,
-  );
 });
 
 test("workspace instructions keep a canonical safe Agent Secret reference and use browser-fill", async () => {
@@ -3929,14 +3913,14 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /reports `setup_required`, `no_access`, or\s+`needs_reconnect`/u);
   assert.match(workerSkill, /say that it is unavailable and name the required action/u);
   assert.match(workerSkill, /do not choose another source until the\s+user explicitly asks/u);
-  assert.match(workerSkill, /MTProto primary priority `100` first and Telegram Web secondary\s+priority `200`/u);
-  assert.match(workerSkill, /only after exact `not_configured`, `no_access`,\s+`needs_reconnect`, or `unsupported_operation`/u);
-  assert.match(workerSkill, /ambiguous mutation outcome never\s+permit transport fallback or an automatic retry/u);
+  assert.match(workerSkill, /When relevant catalog items return `integrationRouting`/u);
+  assert.match(workerSkill, /not skill IDs, titles, catalog order, or previous use/u);
+  assert.match(workerSkill, /exact returned\s+`role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
+  assert.match(workerSkill, /exact `fallbackSkillId`/u);
+  assert.match(workerSkill, /its\s+own `fallbackWhen`/u);
+  assert.match(workerSkill, /`ambiguousMutationFallback: forbidden` never permit fallback or\s+automatic retry/u);
   assert.match(workerSkill, /Native Trelio reads, task discovery and Agent Workspace control-plane\s+operations are the primary workflow/u);
   assert.match(workerSkill, /do not require a catalog or separate\s+skill lookup/u);
-  assert.match(workerSkill, /Telegram MTProto runtime is a narrow persistence exception/u);
-  assert.match(workerSkill, /reuse `apiHashCached=true` without a new\s+secret checkout/u);
-  assert.match(workerSkill, /Only a missing local `api_hash` cache permits/u);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
   assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill again once/u);
   assert.match(workerSkill, /durable rule identified by\s+the agent/);
@@ -3962,13 +3946,15 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
   assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);
-  assert.match(catalogSkill, /`telegram-mtproto` is primary with priority `100`/u);
-  assert.match(catalogSkill, /`telegram-web` is secondary with priority `200`/u);
-  assert.match(catalogSkill, /`not_configured`, `no_access`, `needs_reconnect`, or\s+`unsupported_operation`/u);
-  assert.match(catalogSkill, /ambiguous mutation outcome are not fallback reasons/u);
-  assert.match(catalogSkill, /first run its exact `doctor`\s+command without a secret wrapper/u);
-  assert.match(catalogSkill, /`apiHashCached=true`.*do not request another checkout/su);
-  assert.match(catalogSkill, /successful delivery initializes the private local cache/u);
+  assert.match(catalogSkill, /When relevant catalog items return `integrationRouting`/u);
+  assert.match(catalogSkill, /never infer precedence from skill IDs, titles, array order/u);
+  assert.match(catalogSkill, /exact\s+returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
+  assert.match(catalogSkill, /exact `fallbackSkillId`/u);
+  assert.match(catalogSkill, /its own `fallbackWhen`/u);
+  assert.match(catalogSkill, /`ambiguousMutationFallback: forbidden` never authorize fallback or automatic\s+retry/u);
+  assert.match(catalogSkill, /current skill instruction requires a content-free `doctor` or auth probe/u);
+  assert.match(catalogSkill, /runtime-owned local credential cache/u);
+  assert.match(catalogSkill, /Do not infer the exception from a skill ID/u);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {
@@ -4045,7 +4031,7 @@ test("connection-free skill runtime receives member identity without synthetic c
   const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const releaseId = "77777777-7777-4777-8777-777777777777";
   const artifactId = "88888888-8888-4888-8888-888888888888";
-  const skillId = "consultant-plus";
+  const skillId = "connection-free-runtime";
   const payload = {
     releaseId,
     localIdentity: {

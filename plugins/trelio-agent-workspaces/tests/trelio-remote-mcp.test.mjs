@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
@@ -29,10 +28,12 @@ const companyId = "11111111-1111-4111-8111-111111111111";
 const memberId = "22222222-2222-4222-8222-222222222222";
 const releaseId = "33333333-3333-4333-8333-333333333333";
 
-const dodoConfig = {
+// Provider-neutral fixture: the generic host must validate and isolate any
+// backend-declared Remote MCP without knowing which real integration supplied it.
+const remoteKnowledgeConfig = {
   schemaVersion: 1,
   transport: "streamable_http",
-  endpoint: "https://knowledgebase.dodois.io/mcp",
+  endpoint: "https://knowledge.example.com/mcp",
   protocolVersion: "2025-03-26",
   authentication: { type: "personal_bearer_pat" },
   allowedTools: [
@@ -46,33 +47,33 @@ const dodoConfig = {
   ],
   headers: {},
   credentialHelp: {
-    url: "https://dodopizza.info/next/settings/mcp-tokens",
+    url: "https://knowledge.example.com/settings/tokens",
     label: "Получить персональный токен",
     instructions: "Создайте токен и введите его в локальной защищённой форме.",
   },
 };
 
-const resolvedDodo = {
+const resolvedRemoteKnowledge = {
   releaseId,
   skill: {
-    id: "dodo-knowledge-base",
-    title: "База знаний Додо",
+    id: "remote-knowledge",
+    title: "Корпоративная база знаний",
     version: "1.0.0",
   },
   localIdentity: {
     companyId,
     projectId: null,
     memberId,
-    skillId: "dodo-knowledge-base",
+    skillId: "remote-knowledge",
   },
   remoteMcp: {
-    config: dodoConfig,
-    configFingerprint: fingerprintRemoteMcpConfig(dodoConfig),
+    config: remoteKnowledgeConfig,
+    configFingerprint: fingerprintRemoteMcpConfig(remoteKnowledgeConfig),
     minimumHostVersion: "1.4.3",
   },
 };
 
-const dodoTools = dodoConfig.allowedTools.map((name) => ({
+const remoteKnowledgeTools = remoteKnowledgeConfig.allowedTools.map((name) => ({
   name,
   description: `${name} description`,
   inputSchema: { type: "object" },
@@ -82,12 +83,12 @@ const dodoTools = dodoConfig.allowedTools.map((name) => ({
   },
 }));
 
-const TELEGRAM_TRANSPORT_FALLBACK_REASONS = new Set([
+const routedFallbackReasons = [
   "not_configured",
   "no_access",
   "needs_reconnect",
   "unsupported_operation",
-]);
+];
 
 /**
  * Evaluate one relevant catalog item without assuming that every failure can
@@ -127,10 +128,9 @@ const resolveCatalogFixtureSkill = (skill, purpose) => {
 };
 
 /**
- * Small catalog fixture evaluator used only to make the routing contract
- * concrete in regression tests. Generic integrations remain purpose-based.
- * Telegram additionally consumes the backend's formal priority metadata, so
- * reversing catalog order cannot accidentally make Web primary.
+ * Small provider-neutral catalog evaluator used only to make the generic
+ * routing contract concrete in regression tests. It intentionally consumes
+ * every route from backend metadata instead of recognizing a skill or family.
  */
 const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
   const relevantSkills = catalog.filter(
@@ -140,53 +140,104 @@ const resolveCatalogFixtureRoute = ({ catalog, purpose }) => {
     return { type: "fallback", reason: "no_relevant_skill" };
   }
 
-  const telegramSkills = relevantSkills
-    .filter((skill) => skill.integrationRouting?.family === "telegram")
-    .sort((left, right) => (
-      Number(left.integrationRouting.priority)
-      - Number(right.integrationRouting.priority)
-    ));
-  if (telegramSkills.length > 0) {
-    for (let index = 0; index < telegramSkills.length; index += 1) {
-      const route = resolveCatalogFixtureSkill(telegramSkills[index], purpose);
-
-      if (route.type !== "fallback") return route;
-      if (
-        index + 1 < telegramSkills.length
-        && TELEGRAM_TRANSPORT_FALLBACK_REASONS.has(route.reason)
-      ) {
-        continue;
-      }
-      return route.type === "fallback"
-        ? { type: "blocked", reason: route.reason }
-        : route;
+  const routedSkills = relevantSkills.filter((skill) => skill.integrationRouting);
+  if (routedSkills.length > 0) {
+    const family = routedSkills[0]?.integrationRouting?.family;
+    const primarySkillIds = new Set(
+      routedSkills.map((skill) => skill.integrationRouting.primarySkillId),
+    );
+    const priorities = new Set();
+    const metadataIsValid = (
+      routedSkills.length === relevantSkills.length
+      && typeof family === "string"
+      && family.length > 0
+      && primarySkillIds.size === 1
+      && routedSkills.every((skill) => {
+        const routing = skill.integrationRouting;
+        const priority = Number(routing.priority);
+        const validPriority = Number.isFinite(priority) && !priorities.has(priority);
+        priorities.add(priority);
+        return (
+          routing.family === family
+          && typeof routing.role === "string"
+          && validPriority
+          && typeof routing.selectionRule === "string"
+          && routing.selectionRule.length > 0
+          && typeof routing.primarySkillId === "string"
+          && routing.primarySkillId.length > 0
+          && (
+            routing.fallbackSkillId === null
+            || (typeof routing.fallbackSkillId === "string" && routing.fallbackSkillId.length > 0)
+          )
+          && Array.isArray(routing.fallbackWhen)
+          && routing.fallbackWhen.every((reason) => typeof reason === "string")
+          && routing.ambiguousMutationFallback === "forbidden"
+        );
+      })
+    );
+    if (!metadataIsValid) {
+      return { type: "blocked", reason: "routing_metadata_invalid" };
     }
+
+    const selectedSkill = routedSkills.length === 1
+      ? routedSkills[0]
+      : routedSkills.find((skill) => skill.id === [...primarySkillIds][0]);
+    if (!selectedSkill) {
+      return { type: "blocked", reason: "routing_metadata_invalid" };
+    }
+    const selectedRoute = resolveCatalogFixtureSkill(selectedSkill, purpose);
+    if (selectedRoute.type !== "fallback") return selectedRoute;
+
+    const routing = selectedSkill.integrationRouting;
+    if (
+      !routing.fallbackWhen.includes(selectedRoute.reason)
+      || typeof routing.fallbackSkillId !== "string"
+    ) {
+      return { type: "blocked", reason: selectedRoute.reason };
+    }
+    const fallbackSkill = routedSkills.find(
+      (skill) => skill.id === routing.fallbackSkillId,
+    );
+    if (!fallbackSkill) {
+      return { type: "blocked", reason: selectedRoute.reason };
+    }
+    const fallbackRoute = resolveCatalogFixtureSkill(fallbackSkill, purpose);
+    return fallbackRoute.type === "fallback"
+      ? { type: "blocked", reason: fallbackRoute.reason }
+      : fallbackRoute;
   }
 
   const selectedRoute = resolveCatalogFixtureSkill(relevantSkills[0], purpose);
   // A generic selected skill remains the chosen source until the user sees
-  // its blocker and explicitly requests another one. Only formal transport
-  // routing above may consume fallback reasons automatically.
+  // its blocker and explicitly requests another one. Only a valid formal
+  // routing contract above may consume fallback reasons automatically.
   return selectedRoute.type === "fallback"
     ? { type: "blocked", reason: selectedRoute.reason }
     : selectedRoute;
 };
 
-const buildTelegramCatalogFixture = ({
+const buildRoutedCatalogFixture = ({
   id,
   priority,
   role,
+  primarySkillId = "team-messages-primary",
+  fallbackSkillId = role === "primary" ? "team-messages-secondary" : null,
   ...overrides
 }) => ({
   id,
-  purposes: ["read_team_chat"],
-  supportedOperations: ["read_team_chat"],
+  purposes: ["read_workspace_messages"],
+  supportedOperations: ["read_workspace_messages"],
   configured: true,
   runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
   integrationRouting: {
-    family: "telegram",
+    family: "team-messages",
     priority,
     role,
+    selectionRule: "use_declared_primary_then_exact_fallback",
+    primarySkillId,
+    fallbackSkillId,
+    fallbackWhen: routedFallbackReasons,
+    ambiguousMutationFallback: "forbidden",
   },
   ...overrides,
 });
@@ -377,7 +428,7 @@ test("Remote MCP connect closes the loopback listener when browser opening fails
   let listenerPort = null;
 
   await assert.rejects(
-    collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+    collectCredentialThroughLoopback("https://trelio.test", resolvedRemoteKnowledge, {
       browserPlatform: "linux",
       handoffTimeoutMs: 1,
       openBrowserFn: async () => {
@@ -411,7 +462,7 @@ const submitAcceptedLoopbackCredential = async (originMode) => {
   const doctorCalls = [];
   const persistedCredentials = [];
 
-  await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+  await collectCredentialThroughLoopback("https://trelio.test", resolvedRemoteKnowledge, {
     browserPlatform: "darwin",
     handoffTimeoutMs: 100,
     setupTimeoutMs: 500,
@@ -488,7 +539,7 @@ test("stdio connect returns only after submit doctor and local persistence compl
     { signal },
   ) => {
     assert.equal(toolName, "connect_remote_agent_skill");
-    await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+    await collectCredentialThroughLoopback("https://trelio.test", resolvedRemoteKnowledge, {
       browserPlatform: "darwin",
       handoffTimeoutMs: 100,
       setupTimeoutMs: 1_000,
@@ -561,7 +612,7 @@ test("cancelled connect aborts an in-flight doctor before persistence", async ()
 
   const connection = collectCredentialThroughLoopback(
     "https://trelio.test",
-    resolvedDodo,
+    resolvedRemoteKnowledge,
     {
       browserPlatform: "darwin",
       handoffTimeoutMs: 100,
@@ -637,7 +688,7 @@ test("stdio doctor is not blocked by connect and cancellation closes its listene
       );
     }
     assert.equal(toolName, "connect_remote_agent_skill");
-    await collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+    await collectCredentialThroughLoopback("https://trelio.test", resolvedRemoteKnowledge, {
       browserPlatform: "darwin",
       handoffTimeoutMs: 100,
       setupTimeoutMs: 10_000,
@@ -718,7 +769,7 @@ test("stdio transport EOF aborts connect and closes its listener", async () => {
     { signal },
   ) => collectCredentialThroughLoopback(
     "https://trelio.test",
-    resolvedDodo,
+    resolvedRemoteKnowledge,
     {
       browserPlatform: "darwin",
       handoffTimeoutMs: 100,
@@ -760,7 +811,7 @@ const assertRejectedLoopbackCredential = async ({
   let protectedNonce = "";
 
   await assert.rejects(
-    collectCredentialThroughLoopback("https://trelio.test", resolvedDodo, {
+    collectCredentialThroughLoopback("https://trelio.test", resolvedRemoteKnowledge, {
       browserPlatform: "darwin",
       handoffTimeoutMs: 100,
       setupTimeoutMs: 500,
@@ -871,44 +922,44 @@ test("Remote MCP loopback rejects null/absent Origin without strict Fetch Metada
   }
 });
 
-test("Remote MCP declaration accepts the exact Dodo read-only contract", () => {
-  const validated = validateResolvedRemoteMcp(resolvedDodo);
+test("Remote MCP declaration accepts the provider-neutral read-only contract", () => {
+  const validated = validateResolvedRemoteMcp(resolvedRemoteKnowledge);
 
-  assert.deepEqual(validated.remoteMcp.config.allowedTools, dodoConfig.allowedTools);
+  assert.deepEqual(validated.remoteMcp.config.allowedTools, remoteKnowledgeConfig.allowedTools);
   assert.equal(
     validated.remoteMcp.config.credentialHelp.url,
-    "https://dodopizza.info/next/settings/mcp-tokens",
+    "https://knowledge.example.com/settings/tokens",
   );
   assert.deepEqual(
-    assertExactReadOnlyToolList(validated.remoteMcp.config, dodoTools),
-    dodoTools,
+    assertExactReadOnlyToolList(validated.remoteMcp.config, remoteKnowledgeTools),
+    remoteKnowledgeTools,
   );
 });
 
 test("Remote MCP fingerprint matches the backend canonical JSON contract", () => {
   assert.equal(
     fingerprintRemoteMcpConfig({
-      ...dodoConfig,
+      ...remoteKnowledgeConfig,
       allowedTools: ["current_user", "get_spaces", "search_content"],
       credentialHelp: {
-        ...dodoConfig.credentialHelp,
+        ...remoteKnowledgeConfig.credentialHelp,
         instructions: "Создайте токен и сохраните его через локальную защищённую форму.",
       },
     }),
-    "7e4071d98b348290661d51fd3100cebb53e7186930efeeb6c1ab8ebab17068c8",
+    "34662296f34b8d9c8a32871bf84a943c2db1d13de3d6ed702e3a2c1284a21c5a",
   );
 });
 
 test("Remote MCP declaration blocks unsafe headers and write-like tools", () => {
   const unsafeConfig = {
-    ...dodoConfig,
+    ...remoteKnowledgeConfig,
     headers: { "Mcp-Mode": "Write" },
   };
   assert.throws(
     () => validateResolvedRemoteMcp({
-      ...resolvedDodo,
+      ...resolvedRemoteKnowledge,
       remoteMcp: {
-        ...resolvedDodo.remoteMcp,
+        ...resolvedRemoteKnowledge.remoteMcp,
         config: unsafeConfig,
         configFingerprint: fingerprintRemoteMcpConfig(unsafeConfig),
       },
@@ -922,10 +973,10 @@ test("Remote MCP declaration blocks unsafe headers and write-like tools", () => 
   assert.throws(
     () => assertExactReadOnlyToolList(
       {
-        ...dodoConfig,
-        allowedTools: [...dodoConfig.allowedTools, "update_content"],
+        ...remoteKnowledgeConfig,
+        allowedTools: [...remoteKnowledgeConfig.allowedTools, "update_content"],
       },
-      [...dodoTools, {
+      [...remoteKnowledgeTools, {
         name: "update_content",
         inputSchema: { type: "object" },
         annotations: { readOnlyHint: false },
@@ -965,7 +1016,7 @@ test("Remote MCP doctor fails closed on an extra server tool", async () => {
           jsonrpc: "2.0",
           id: request.payload.id,
           result: {
-            tools: [...dodoTools, {
+            tools: [...remoteKnowledgeTools, {
               name: "delete_content",
               inputSchema: { type: "object" },
               annotations: { destructiveHint: true, readOnlyHint: false },
@@ -978,7 +1029,7 @@ test("Remote MCP doctor fails closed on an extra server tool", async () => {
   };
 
   await assert.rejects(
-    doctorWithCredential(resolvedDodo, "personal-test-token", {
+    doctorWithCredential(resolvedRemoteKnowledge, "personal-test-token", {
       httpRequest: fakeHttpRequest,
     }),
     (error) => (
@@ -1014,17 +1065,17 @@ test("Remote MCP doctor verifies initialize and exact allowlist", async () => {
       message: {
         jsonrpc: "2.0",
         id: request.payload.id,
-        result: { tools: dodoTools },
+        result: { tools: remoteKnowledgeTools },
       },
     };
   };
 
-  const result = await doctorWithCredential(resolvedDodo, "personal-test-token", {
+  const result = await doctorWithCredential(resolvedRemoteKnowledge, "personal-test-token", {
     httpRequest: fakeHttpRequest,
   });
 
   assert.equal(result.ok, true);
-  assert.deepEqual(result.tools.map(({ name }) => name), dodoConfig.allowedTools);
+  assert.deepEqual(result.tools.map(({ name }) => name), remoteKnowledgeConfig.allowedTools);
   assert.deepEqual(methods, [
     "initialize",
     "notifications/initialized",
@@ -1035,7 +1086,7 @@ test("Remote MCP doctor verifies initialize and exact allowlist", async () => {
 
 test("SSRF guard allows public IPv4 and rejects private or mismatched IPv4 answers", async () => {
   const safe = await resolveSafeRemoteMcpEndpoint(
-    "https://knowledgebase.dodois.io/mcp",
+    "https://knowledge.example.com/mcp",
     {
       lookup: async () => [{ address: "91.221.165.34", family: 4 }],
     },
@@ -1044,7 +1095,7 @@ test("SSRF guard allows public IPv4 and rejects private or mismatched IPv4 answe
   assert.equal(safe.family, 4);
 
   await assert.rejects(
-    resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
+    resolveSafeRemoteMcpEndpoint("https://knowledge.example.com/mcp", {
       lookup: async () => [{ address: "10.20.30.40", family: 4 }],
     }),
     (error) => (
@@ -1054,7 +1105,7 @@ test("SSRF guard allows public IPv4 and rejects private or mismatched IPv4 answe
   );
 
   await assert.rejects(
-    resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
+    resolveSafeRemoteMcpEndpoint("https://knowledge.example.com/mcp", {
       lookup: async () => [{ address: "91.221.165.34", family: 6 }],
     }),
     (error) => (
@@ -1074,7 +1125,7 @@ test("SSRF guard rejects IPv4-mapped, NAT64 and 6to4 IPv6 answers", async () => 
 
   for (const address of blockedAddresses) {
     await assert.rejects(
-      resolveSafeRemoteMcpEndpoint("https://knowledgebase.dodois.io/mcp", {
+      resolveSafeRemoteMcpEndpoint("https://knowledge.example.com/mcp", {
         lookup: async () => [{ address, family: 6 }],
       }),
       (error) => (
@@ -1100,7 +1151,7 @@ test("SSRF guard still permits explicit insecure test endpoints", async () => {
 test("request headers add only bearer auth and host-controlled MCP metadata", () => {
   const headers = buildRemoteMcpRequestHeaders({
     config: {
-      ...dodoConfig,
+      ...remoteKnowledgeConfig,
       headers: { "x-client-name": "trelio" },
     },
     credential: "personal-test-token",
@@ -1142,7 +1193,7 @@ test("Remote MCP request completes on a matching SSE response without waiting fo
     const startedAt = Date.now();
     const result = await remoteMcpHttpRequest({
       config: {
-        ...dodoConfig,
+        ...remoteKnowledgeConfig,
         endpoint: `http://remote-mcp.test:${port}/mcp`,
       },
       credential: "personal-test-token",
@@ -1196,7 +1247,7 @@ test("Remote MCP absolute deadline is not extended by SSE heartbeats", {
     await assert.rejects(
       remoteMcpHttpRequest({
         config: {
-          ...dodoConfig,
+          ...remoteKnowledgeConfig,
           endpoint: `http://remote-mcp.test:${port}/mcp`,
         },
         credential: "personal-test-token",
@@ -1251,7 +1302,7 @@ test("Remote MCP external cancellation destroys a heartbeat SSE request", {
     const controller = new AbortController();
     const pendingRequest = remoteMcpHttpRequest({
       config: {
-        ...dodoConfig,
+        ...remoteKnowledgeConfig,
         endpoint: `http://remote-mcp.test:${port}/mcp`,
       },
       credential: "personal-test-token",
@@ -1286,14 +1337,14 @@ test("Remote MCP external cancellation destroys a heartbeat SSE request", {
 });
 
 test("personal credential path follows the stable local integration namespace", () => {
-  const identity = resolvedDodo.localIdentity;
+  const identity = resolvedRemoteKnowledge.localIdentity;
   assert.equal(
     resolveRemoteMcpCredentialFile(identity, {
       platform: "linux",
       environment: {},
       homeDirectory: "/home/alice",
     }),
-    `/home/alice/.config/trelio/integrations/dodo-knowledge-base/${companyId}/${memberId}/remote-mcp/secrets/personal-credential.json`,
+    `/home/alice/.config/trelio/integrations/remote-knowledge/${companyId}/${memberId}/remote-mcp/secrets/personal-credential.json`,
   );
   assert.equal(
     resolveRemoteMcpCredentialFile(identity, {
@@ -1301,7 +1352,7 @@ test("personal credential path follows the stable local integration namespace", 
       environment: { LOCALAPPDATA: "C:\\Users\\Alice\\AppData\\Local" },
       homeDirectory: "C:\\Users\\Alice",
     }),
-    `C:\\Users\\Alice\\AppData\\Local\\Trelio\\integrations\\dodo-knowledge-base\\${companyId}\\${memberId}\\remote-mcp\\secrets\\personal-credential.json`,
+    `C:\\Users\\Alice\\AppData\\Local\\Trelio\\integrations\\remote-knowledge\\${companyId}\\${memberId}\\remote-mcp\\secrets\\personal-credential.json`,
   );
 });
 
@@ -1340,10 +1391,12 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /state that this skill is currently unavailable and name the required setup action/u);
   assert.match(instructions, /reports `setup_required`, `no_access`, or `needs_reconnect`/u);
   assert.match(instructions, /do not search for or use another implementation automatically/u);
-  assert.match(instructions, /`telegram-mtproto` as primary priority `100`/u);
-  assert.match(instructions, /`telegram-web` as secondary priority `200`/u);
-  assert.match(instructions, /exactly established `not_configured`, `no_access`, `needs_reconnect`, or `unsupported_operation`/u);
-  assert.match(instructions, /ambiguous mutation outcome never permit transport fallback or an automatic repeat/u);
+  assert.match(instructions, /formal `integrationRouting` contract/u);
+  assert.match(instructions, /never infer routing from skill IDs, titles, array order, or prior use/u);
+  assert.match(instructions, /exact returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
+  assert.match(instructions, /exact `fallbackSkillId`/u);
+  assert.match(instructions, /its own `fallbackWhen`/u);
+  assert.match(instructions, /`ambiguousMutationFallback: forbidden` never permit fallback or an automatic repeat/u);
   assert.match(instructions, /only after the user explicitly chooses it after seeing the blocker/u);
   assert.match(instructions, /transient network failure does not itself establish skill absence, `no_access`, or `setup_required`/u);
   assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
@@ -1351,55 +1404,50 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /does not weaken secret, personal-session, approval, or confirmation boundaries/u);
 });
 
-test("platform routing sends 1c-edo through runtimeExecution", async () => {
+test("platform routing sends a provider-neutral signed skill through runtimeExecution", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
-  const oneCEdoSkill = await readFile(
-    path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../../../platform-skills/1c-edo/SKILL.md",
-    ),
-    "utf8",
-  );
   const route = resolveCatalogFixtureRoute({
-    purpose: "search_edo_documents",
+    purpose: "reconcile_inventory",
     catalog: [{
-      id: "1c-edo",
-      purposes: ["search_edo_documents"],
-      supportedOperations: ["search_edo_documents"],
+      id: "signed-inventory-runtime",
+      purposes: ["reconcile_inventory"],
+      supportedOperations: ["reconcile_inventory"],
       configured: true,
       runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
     }],
   });
 
-  assert.deepEqual(route, { type: "runtimeExecution", skillId: "1c-edo" });
+  assert.deepEqual(route, {
+    type: "runtimeExecution",
+    skillId: "signed-inventory-runtime",
+  });
   assert.match(instructions, /Use only an exact `runtimeExecution` command/u);
-  assert.match(oneCEdoSkill, /Use only the signed `runtimeExecution\.command`/u);
 });
 
-test("platform routing sends the Dodo knowledge base through remoteMcpExecution", async () => {
+test("platform routing sends a provider-neutral knowledge service through remoteMcpExecution", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
   const route = resolveCatalogFixtureRoute({
     purpose: "search_company_knowledge",
     catalog: [{
-      id: resolvedDodo.skill.id,
+      id: resolvedRemoteKnowledge.skill.id,
       purposes: ["search_company_knowledge"],
       supportedOperations: ["search_company_knowledge"],
       configured: true,
       remoteMcpExecution: {
-        identity: resolvedDodo.localIdentity,
-        releaseId: resolvedDodo.releaseId,
+        identity: resolvedRemoteKnowledge.localIdentity,
+        releaseId: resolvedRemoteKnowledge.releaseId,
       },
     }],
   });
 
   assert.deepEqual(route, {
     type: "remoteMcpExecution",
-    skillId: "dodo-knowledge-base",
+    skillId: "remote-knowledge",
   });
   assert.match(instructions, /declared `trelio-remote-skills` tools with returned identity\/release/u);
 });
 
-test("platform routing discovers Telegram even without a separate Telegram tool", async () => {
+test("platform routing discovers a runtime even without an integration-specific tool", async () => {
   const instructions = await readRoutingInstructionsFromInitialize();
   const toolsResponse = await handleLocalMcpMessage({
     jsonrpc: "2.0",
@@ -1409,60 +1457,60 @@ test("platform routing discovers Telegram even without a separate Telegram tool"
   });
   const activeToolNames = toolsResponse.result.tools.map(({ name }) => name);
   const route = resolveCatalogFixtureRoute({
-    purpose: "read_team_chat",
+    purpose: "read_workspace_messages",
     catalog: [{
-      id: "telegram-mtproto",
-      purposes: ["read_team_chat"],
-      supportedOperations: ["read_team_chat"],
+      id: "team-messages-single",
+      purposes: ["read_workspace_messages"],
+      supportedOperations: ["read_workspace_messages"],
       configured: true,
       runtimeExecution: { command: ["trelio-workspace", "skill", "run"] },
     }],
   });
 
-  assert.equal(activeToolNames.some((name) => /telegram/iu.test(name)), false);
+  assert.equal(activeToolNames.some((name) => /team[_-]messages/iu.test(name)), false);
   assert.deepEqual(route, {
     type: "runtimeExecution",
-    skillId: "telegram-mtproto",
+    skillId: "team-messages-single",
   });
   assert.match(instructions, /even when no integration-specific tool appears in the active tool list/u);
 });
 
-test("Telegram routing uses MTProto 100 before Web 200 regardless of catalog order", () => {
-  const web = buildTelegramCatalogFixture({
-    id: "telegram-web",
-    priority: 200,
+test("formal routing uses the returned primary skill regardless of catalog order", () => {
+  const secondary = buildRoutedCatalogFixture({
+    id: "team-messages-secondary",
+    priority: 10,
     role: "secondary",
   });
-  const mtproto = buildTelegramCatalogFixture({
-    id: "telegram-mtproto",
-    priority: 100,
+  const primary = buildRoutedCatalogFixture({
+    id: "team-messages-primary",
+    priority: 900,
     role: "primary",
   });
 
   assert.deepEqual(resolveCatalogFixtureRoute({
-    purpose: "read_team_chat",
-    catalog: [web, mtproto],
+    purpose: "read_workspace_messages",
+    catalog: [secondary, primary],
   }), {
     type: "runtimeExecution",
-    skillId: "telegram-mtproto",
+    skillId: "team-messages-primary",
   });
   assert.deepEqual(resolveCatalogFixtureRoute({
-    purpose: "read_team_chat",
-    catalog: [web],
+    purpose: "read_workspace_messages",
+    catalog: [secondary],
   }), {
     type: "runtimeExecution",
-    skillId: "telegram-web",
+    skillId: "team-messages-secondary",
   });
 });
 
-test("Telegram secondary is used only for the four exact primary fallback reasons", () => {
-  const web = buildTelegramCatalogFixture({
-    id: "telegram-web",
+test("formal routing uses only the declared fallback skill and reasons", () => {
+  const secondary = buildRoutedCatalogFixture({
+    id: "team-messages-secondary",
     priority: 200,
     role: "secondary",
   });
   const primaryBase = {
-    id: "telegram-mtproto",
+    id: "team-messages-primary",
     priority: 100,
     role: "primary",
   };
@@ -1474,25 +1522,25 @@ test("Telegram secondary is used only for the four exact primary fallback reason
   ];
 
   for (const overrides of primaryCases) {
-    const mtproto = buildTelegramCatalogFixture({ ...primaryBase, ...overrides });
+    const primary = buildRoutedCatalogFixture({ ...primaryBase, ...overrides });
     assert.deepEqual(resolveCatalogFixtureRoute({
-      purpose: "read_team_chat",
-      catalog: [web, mtproto],
+      purpose: "read_workspace_messages",
+      catalog: [secondary, primary],
     }), {
       type: "runtimeExecution",
-      skillId: "telegram-web",
+      skillId: "team-messages-secondary",
     });
   }
 });
 
-test("Telegram never falls back after transient, control-plane, or ambiguous mutation outcomes", () => {
-  const web = buildTelegramCatalogFixture({
-    id: "telegram-web",
+test("formal routing never falls back after transient, control-plane, or ambiguous outcomes", () => {
+  const secondary = buildRoutedCatalogFixture({
+    id: "team-messages-secondary",
     priority: 200,
     role: "secondary",
   });
   const primaryBase = {
-    id: "telegram-mtproto",
+    id: "team-messages-primary",
     priority: 100,
     role: "primary",
   };
@@ -1512,18 +1560,40 @@ test("Telegram never falls back after transient, control-plane, or ambiguous mut
   ];
 
   for (const blockedCase of blockedCases) {
-    const mtproto = buildTelegramCatalogFixture({
+    const primary = buildRoutedCatalogFixture({
       ...primaryBase,
       ...blockedCase.overrides,
     });
     assert.deepEqual(resolveCatalogFixtureRoute({
-      purpose: "read_team_chat",
-      catalog: [web, mtproto],
+      purpose: "read_workspace_messages",
+      catalog: [secondary, primary],
     }), {
       type: "blocked",
       reason: blockedCase.reason,
     });
   }
+});
+
+test("formal routing fails closed on malformed or inconsistent metadata", () => {
+  const primary = buildRoutedCatalogFixture({
+    id: "team-messages-primary",
+    priority: 100,
+    role: "primary",
+  });
+  const malformedSecondary = buildRoutedCatalogFixture({
+    id: "team-messages-secondary",
+    priority: 200,
+    role: "secondary",
+  });
+  delete malformedSecondary.integrationRouting.selectionRule;
+
+  assert.deepEqual(resolveCatalogFixtureRoute({
+    purpose: "read_workspace_messages",
+    catalog: [malformedSecondary, primary],
+  }), {
+    type: "blocked",
+    reason: "routing_metadata_invalid",
+  });
 });
 
 test("platform routing is purpose-based and works for an unknown future skill", async () => {
@@ -1549,7 +1619,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
   assert.match(instructions, /Select a compact ranked result/u);
   assert.doesNotMatch(
     instructions,
-    /1c-edo|dodo-knowledge-base|future-orbital-inventory/iu,
+    /signed-inventory-runtime|remote-knowledge|future-orbital-inventory/iu,
   );
 });
 
