@@ -2274,6 +2274,21 @@ test("bridge release version stays synchronized across executable and manifests"
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
+  // Marketplace copy must describe only the stable host contract. Provider
+  // capability lists and delivery details come from the live catalog instead.
+  for (const description of [
+    codexManifest.description,
+    claudeManifest.description,
+    claudeMarketplaceEntry?.description,
+  ]) {
+    assert.match(description, /live skill catalogs/u);
+    assert.match(description, /backend-managed signed runtimes/u);
+    assert.doesNotMatch(description, /local communication runtimes/u);
+  }
+  assert.match(
+    codexManifest.interface.longDescription,
+    /backend-managed навыками.*декларативный Remote MCP.*signed runtimes/u,
+  );
   assert.equal(codexManifest.mcpServers, "./.mcp.json");
   assert.deepEqual(
     {

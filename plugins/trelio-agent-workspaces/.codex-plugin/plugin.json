@@ -1,7 +1,7 @@
 {
   "name": "trelio-agent-workspaces",
   "version": "1.11.0",
-  "description": "Production integration for private Trelio meetings, guided working-folder onboarding, guarded project access management, scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and local communication runtimes.",
+  "description": "Production integration for private Trelio meetings, guided working-folder onboarding, guarded project access management, scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and backend-managed signed runtimes.",
   "author": {
     "name": "Trelio"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",
-    "longDescription": "Помогает настроить Trelio в текущей рабочей папке Codex или Claude Code, подключает Trelio MCP, сохраняет private-встречи, безопасно управляет доступом к проектам, поиском задач и рабочими пространствами, закреплённым контекстом, одноразовым локальным применением Agent Secrets и актуальными навыками компаний и проектов, включая декларативный Remote MCP, email, Telegram и MAX.",
+    "longDescription": "Помогает настроить Trelio в текущей рабочей папке Codex или Claude Code, подключает Trelio MCP, сохраняет private-встречи, безопасно управляет доступом к проектам, поиском задач и рабочими пространствами, закреплённым контекстом, одноразовым локальным применением Agent Secrets и актуальными backend-managed навыками компаний и проектов через декларативный Remote MCP и независимо выпускаемые signed runtimes.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],
