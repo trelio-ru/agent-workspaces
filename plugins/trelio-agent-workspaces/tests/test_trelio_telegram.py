@@ -602,6 +602,292 @@ class TrelioTelegramTests(unittest.TestCase):
         for forbidden in ("phone", "access_hash", "peer", "session", "api_hash", "forbidden"):
             self.assertNotIn(forbidden, serialized)
 
+    def test_public_entity_serializes_exact_and_coarse_last_activity_without_guessing(self):
+        UserStatusOffline = type("UserStatusOffline", (), {})
+        offline = UserStatusOffline()
+        offline.was_online = datetime(2026, 8, 20, 12, 30, tzinfo=timezone.utc)
+        exact = MODULE.public_entity(
+            SimpleNamespace(
+                id=17,
+                first_name="Илья",
+                last_name="Крылов",
+                username="ilya",
+                status=offline,
+            )
+        )
+        self.assertEqual(
+            exact["lastActivity"],
+            {
+                "kind": "offline",
+                "exact": True,
+                "lastSeenAt": "2026-08-20T12:30:00Z",
+            },
+        )
+
+        for telegram_type, expected_kind in (
+            ("UserStatusRecently", "recently"),
+            ("UserStatusLastWeek", "last_week"),
+            ("UserStatusLastMonth", "last_month"),
+        ):
+            status = type(telegram_type, (), {})()
+            # Telegram may expose a by_me privacy hint on coarse statuses. It
+            # must not be promoted to a guessed date or leaked as raw state.
+            status.by_me = True
+            payload = MODULE.public_entity(
+                SimpleNamespace(
+                    id=18,
+                    first_name="Мария",
+                    last_name=None,
+                    username=None,
+                    status=status,
+                )
+            )
+            self.assertEqual(
+                payload["lastActivity"],
+                {"kind": expected_kind, "exact": False},
+            )
+            self.assertNotIn("by_me", json.dumps(payload))
+
+    def test_public_entity_keeps_online_expiry_and_fails_closed_for_unknown_status(self):
+        UserStatusOnline = type("UserStatusOnline", (), {})
+        online = UserStatusOnline()
+        online.expires = 1_777_777_777
+        payload = MODULE.public_entity(
+            SimpleNamespace(
+                id=19,
+                first_name="Олег",
+                last_name=None,
+                username="oleg",
+                status=online,
+            )
+        )
+        self.assertEqual(payload["lastActivity"]["kind"], "online")
+        self.assertTrue(payload["lastActivity"]["exact"])
+        self.assertRegex(payload["lastActivity"]["expiresAt"], r"Z$")
+
+        unknown = MODULE.public_entity(
+            SimpleNamespace(
+                id=20,
+                first_name="Новая версия",
+                last_name=None,
+                username=None,
+                status=type("UserStatusFuture", (), {"raw": "private"})(),
+            )
+        )
+        self.assertNotIn("lastActivity", unknown)
+        self.assertNotIn("private", json.dumps(unknown))
+
+    def test_phone_lookup_requires_one_normalized_international_number(self):
+        self.assertEqual(
+            MODULE.normalize_phone_lookup("＋7 (999) 000-00-00"),
+            "79990000000",
+        )
+        for invalid in (
+            "89990000000",
+            "+01234",
+            "+7 999 000 00 00 доб. 5",
+            "+1234",
+            "+1234567890123456",
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(MODULE.TelegramRuntimeError) as raised:
+                    MODULE.normalize_phone_lookup(invalid)
+                self.assertNotIn(invalid, str(raised.exception))
+
+    def test_phone_lookup_rate_limit_persists_only_a_timestamp(self):
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+            MODULE.os.environ,
+            {"TRELIO_CONFIG_HOME": temporary},
+            clear=True,
+        ), mock.patch.object(
+            MODULE.time,
+            "time",
+            side_effect=[100.0, 101.0, 103.0],
+        ), mock.patch.object(MODULE.time, "sleep") as sleep:
+            self.assertEqual(MODULE.reserve_resolve_phone_slot(self.identity()), 0.0)
+            self.assertEqual(MODULE.reserve_resolve_phone_slot(self.identity()), 2.0)
+            state_path = MODULE.resolve_phone_rate_state_path(self.identity())
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        sleep.assert_called_once()
+        self.assertAlmostEqual(sleep.call_args.args[0], 2.0)
+        self.assertEqual(
+            state,
+            {
+                "schemaVersion": MODULE.RESOLVE_PHONE_RATE_STATE_VERSION,
+                "lastAttemptAt": 103.0,
+            },
+        )
+        self.assertNotIn("phone", json.dumps(state).lower())
+
+    def test_resolve_phone_returns_only_allowlisted_user_and_last_activity(self):
+        class ResolvePhoneRequest:
+            def __init__(self, phone):
+                self.phone = phone
+
+        class PhoneNotOccupiedError(Exception):
+            pass
+
+        UserStatusOffline = type("UserStatusOffline", (), {})
+        status = UserStatusOffline()
+        status.was_online = datetime(2026, 8, 20, 15, 45, tzinfo=timezone.utc)
+        user = SimpleNamespace(
+            id=42,
+            first_name="Анна",
+            last_name="Иванова",
+            username="anna",
+            phone="+79990000000",
+            access_hash=987654321,
+            status=status,
+        )
+        response = SimpleNamespace(
+            peer=SimpleNamespace(user_id=42, access_hash=987654321),
+            users=[user],
+            chats=[],
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.requests = []
+                self.disconnect = mock.AsyncMock()
+
+            async def __call__(self, request):
+                self.requests.append(request)
+                return response
+
+        client = FakeClient()
+        args = SimpleNamespace(phone="+7 (999) 000-00-00")
+        with mock.patch.object(
+            MODULE,
+            "import_telethon_phone_resolver",
+            return_value=(ResolvePhoneRequest, PhoneNotOccupiedError),
+        ), mock.patch.object(
+            MODULE,
+            "build_client",
+            return_value=client,
+        ), mock.patch.object(
+            MODULE,
+            "ensure_authorized",
+            new=mock.AsyncMock(),
+        ), mock.patch.object(MODULE, "reserve_resolve_phone_slot", return_value=0.0):
+            result = asyncio.run(
+                MODULE.command_resolve_phone_async(args, self.identity())
+            )
+
+        self.assertEqual(client.requests[0].phone, "79990000000")
+        self.assertEqual(
+            result,
+            {
+                "found": True,
+                "user": {
+                    "id": 42,
+                    "title": "Анна Иванова",
+                    "username": "anna",
+                    "lastActivity": {
+                        "kind": "offline",
+                        "exact": True,
+                        "lastSeenAt": "2026-08-20T15:45:00Z",
+                    },
+                },
+                "securityBoundary": "chat-only",
+            },
+        )
+        serialized = json.dumps(result)
+        for forbidden in ("79990000000", "phone", "access_hash", "987654321"):
+            self.assertNotIn(forbidden, serialized)
+        client.disconnect.assert_awaited_once()
+
+    def test_resolve_phone_reports_private_or_missing_without_raw_rpc_details(self):
+        class ResolvePhoneRequest:
+            def __init__(self, phone):
+                self.phone = phone
+
+        class PhoneNotOccupiedError(Exception):
+            pass
+
+        class FakeClient:
+            def __init__(self, error):
+                self.error = error
+                self.disconnect = mock.AsyncMock()
+
+            async def __call__(self, _request):
+                raise self.error
+
+        common_patches = (
+            mock.patch.object(
+                MODULE,
+                "import_telethon_phone_resolver",
+                return_value=(ResolvePhoneRequest, PhoneNotOccupiedError),
+            ),
+            mock.patch.object(
+                MODULE,
+                "ensure_authorized",
+                new=mock.AsyncMock(),
+            ),
+            mock.patch.object(MODULE, "reserve_resolve_phone_slot", return_value=0.0),
+        )
+
+        private_client = FakeClient(PhoneNotOccupiedError())
+        with common_patches[0], common_patches[1], common_patches[2], mock.patch.object(
+            MODULE,
+            "build_client",
+            return_value=private_client,
+        ):
+            result = asyncio.run(
+                MODULE.command_resolve_phone_async(
+                    SimpleNamespace(phone="+79990000000"),
+                    self.identity(),
+                )
+            )
+        self.assertEqual(result["reason"], "not_found_or_private")
+        self.assertFalse(result["found"])
+        self.assertNotIn("79990000000", json.dumps(result))
+
+        ambiguous_client = FakeClient(
+            RuntimeError("raw RPC failure for +79990000000 access_hash=secret")
+        )
+        with mock.patch.object(
+            MODULE,
+            "import_telethon_phone_resolver",
+            return_value=(ResolvePhoneRequest, PhoneNotOccupiedError),
+        ), mock.patch.object(
+            MODULE,
+            "ensure_authorized",
+            new=mock.AsyncMock(),
+        ), mock.patch.object(
+            MODULE,
+            "reserve_resolve_phone_slot",
+            return_value=0.0,
+        ), mock.patch.object(MODULE, "build_client", return_value=ambiguous_client):
+            with self.assertRaises(MODULE.TelegramRuntimeError) as raised:
+                asyncio.run(
+                    MODULE.command_resolve_phone_async(
+                        SimpleNamespace(phone="+79990000000"),
+                        self.identity(),
+                    )
+                )
+        self.assertNotIn("79990000000", str(raised.exception))
+        self.assertNotIn("access_hash", str(raised.exception))
+
+    def test_resolve_phone_parser_accepts_exactly_one_phone_argument(self):
+        args = MODULE.build_parser().parse_args(
+            [
+                "--company-id",
+                self.identity().company_id,
+                "--member-id",
+                self.identity().member_id,
+                "--connection-id",
+                self.identity().connection_id,
+                "--api-id",
+                "12345",
+                "resolve-phone",
+                "--phone",
+                "+79990000000",
+            ]
+        )
+        self.assertEqual(args.command, "resolve-phone")
+        self.assertEqual(args.phone, "+79990000000")
+
     def test_link_entities_allowlist_and_utf16_offsets(self):
         class MessageEntityUrl:
             def __init__(self, offset, length):

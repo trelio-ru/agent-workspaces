@@ -327,7 +327,24 @@ safe-integer opaque `peerId` допустим только как
 exact routing/disambiguation identifier, не содержит access hash и для Saved
 Messages заменяется semantic identifier; raw current-account user ID также не
 возвращается как author PeerId в обычном чате, вместо него используется
-semantic `self`. `export` и совместимый alias
+semantic `self`.
+
+MTProto `resolve-phone` принимает один явно переданный международный номер и
+использует read-only `contacts.resolvePhone`; импорт или добавление контакта не
+выполняются. Runtime нормализует только common formatting, не угадывает код
+страны и сохраняет для exact company/member/connection только timestamp
+provider throttle. Перед каждой попыткой slot резервируется под session lock и
+до сетевого вызова; между попытками выдерживается минимум три секунды, поэтому
+ошибка или прерванный process не разрешают немедленный retry. Номер, найденный
+peer и результат lookup в rate-state не сохраняются. Telegram privacy
+сохраняется без обхода: недоступный или незарегистрированный номер возвращает
+единый `not_found_or_private`. Успех сериализует только `id`, `title`,
+`username` и privacy-aware `lastActivity`. Реальный online/offline timestamp
+может быть exact; privacy-obscured `recently`, `last_week`, `last_month`
+остаются coarse и не превращаются в предполагаемую дату. Phone, `access_hash`,
+raw peer/status, `by_me` и raw RPC diagnostic не попадают в output.
+
+`export` и совместимый alias
 `daily-export` читают точный
 полуоткрытый период `since <= message.date < until`: naive границы получают
 явную IANA timezone (`Europe/Moscow` по умолчанию), а `until` передаётся

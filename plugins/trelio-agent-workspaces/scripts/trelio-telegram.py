@@ -17,6 +17,7 @@ import getpass
 import http.server
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 import venv
 import webbrowser
@@ -53,6 +55,15 @@ MAX_LINK_ENTITIES = 32
 MAX_LINK_TEXT_CHARS = 512
 MAX_LINK_URL_CHARS = 2_048
 MAX_REPLY_RESOLUTION_CONCURRENCY = 8
+# Telegram explicitly requires client-side throttling for contacts.resolvePhone.
+# Persisting the timestamp below the exact connection identity keeps separate
+# runtime processes from accidentally exceeding the provider's one-call-per-
+# three-seconds contract without storing the searched phone number itself.
+RESOLVE_PHONE_MIN_INTERVAL_SECONDS = 3.0
+RESOLVE_PHONE_RATE_STATE_VERSION = 1
+MAX_RESOLVE_PHONE_RATE_STATE_BYTES = 256
+MIN_INTERNATIONAL_PHONE_DIGITS = 5
+MAX_INTERNATIONAL_PHONE_DIGITS = 15
 # Period exports can cover many dialogs, so they need an aggregate ceiling in
 # addition to the per-dialog history limits. The reserved metadata allowance
 # keeps the final JSON wrapper, chat summaries and truncation warnings inside
@@ -116,6 +127,37 @@ def normalize_identity_part(value: str, label: str) -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", normalized):
         raise TelegramRuntimeError(f"{label} must contain only lowercase letters, digits and hyphens.")
     return normalized
+
+
+def normalize_phone_lookup(value: Any) -> str:
+    """Normalize one explicit international number without echoing it.
+
+    ``contacts.resolvePhone`` expects an international number. The runtime
+    accepts common human formatting but never guesses a country code or turns a
+    domestic leading digit into another country. Returning digits only matches
+    Telegram's canonical phone representation and keeps the provider request
+    deterministic.
+    """
+
+    if not isinstance(value, str):
+        raise TelegramRuntimeError(
+            "Phone lookup requires one international number beginning with +."
+        )
+    normalized = unicodedata.normalize("NFKC", value).strip()
+    if not re.fullmatch(r"\+[0-9 ().-]+", normalized):
+        raise TelegramRuntimeError(
+            "Phone lookup requires one international number beginning with + and containing no extension."
+        )
+    digits = re.sub(r"[^0-9]", "", normalized)
+    if not re.fullmatch(
+        rf"[1-9][0-9]{{{MIN_INTERNATIONAL_PHONE_DIGITS - 1},{MAX_INTERNATIONAL_PHONE_DIGITS - 1}}}",
+        digits,
+    ):
+        raise TelegramRuntimeError(
+            f"Phone lookup requires from {MIN_INTERNATIONAL_PHONE_DIGITS} to "
+            f"{MAX_INTERNATIONAL_PHONE_DIGITS} international digits after +."
+        )
+    return digits
 
 
 def identity_from_args(args: argparse.Namespace) -> Identity:
@@ -213,6 +255,69 @@ def write_private_json(path: Path, value: dict[str, Any]) -> None:
 
 def policy_path(identity: Identity) -> Path:
     return connection_root(identity) / "config" / "policy.json"
+
+
+def resolve_phone_rate_state_path(identity: Identity) -> Path:
+    return connection_root(identity) / "state" / "resolve-phone-rate-limit.json"
+
+
+def load_resolve_phone_last_attempt(identity: Identity) -> float | None:
+    """Read only the bounded timestamp used for cross-process throttling."""
+
+    path = resolve_phone_rate_state_path(identity)
+    if not path.exists():
+        return None
+    ensure_private_file(path)
+    if path.stat().st_size > MAX_RESOLVE_PHONE_RATE_STATE_BYTES:
+        raise TelegramRuntimeError("Local Telegram phone lookup rate state is invalid.")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise TelegramRuntimeError(
+            "Cannot read the local Telegram phone lookup rate state."
+        ) from error
+    timestamp = data.get("lastAttemptAt") if isinstance(data, dict) else None
+    if (
+        not isinstance(data, dict)
+        or data.get("schemaVersion") != RESOLVE_PHONE_RATE_STATE_VERSION
+        or isinstance(timestamp, bool)
+        or not isinstance(timestamp, (int, float))
+        or not math.isfinite(timestamp)
+        or timestamp < 0
+    ):
+        raise TelegramRuntimeError("Local Telegram phone lookup rate state is invalid.")
+    return float(timestamp)
+
+
+def reserve_resolve_phone_slot(identity: Identity) -> float:
+    """Reserve one provider lookup no sooner than three seconds after the last.
+
+    The surrounding session lock serializes all processes for this exact local
+    Telegram identity. The timestamp is written *before* the network request,
+    so a failed or interrupted request still consumes its provider rate slot.
+    No searched number or returned identity is ever persisted here.
+    """
+
+    last_attempt = load_resolve_phone_last_attempt(identity)
+    now = time.time()
+    waited = 0.0
+    if last_attempt is not None:
+        elapsed = max(0.0, now - last_attempt)
+        waited = max(0.0, RESOLVE_PHONE_MIN_INTERVAL_SECONDS - elapsed)
+        if waited > 0:
+            time.sleep(waited)
+            now = time.time()
+    # If the wall clock moved backwards, retaining the later timestamp keeps
+    # subsequent invocations conservative instead of accidentally bursting.
+    attempted_at = max(now, last_attempt or 0.0)
+    write_private_json(
+        resolve_phone_rate_state_path(identity),
+        {
+            "schemaVersion": RESOLVE_PHONE_RATE_STATE_VERSION,
+            "lastAttemptAt": attempted_at,
+        },
+    )
+    return waited
 
 
 def load_policy(identity: Identity) -> dict[str, Any]:
@@ -966,6 +1071,19 @@ def import_telethon():
     return TelegramClient, SessionPasswordNeededError, GetPasswordRequest
 
 
+def import_telethon_phone_resolver():
+    """Load only the fixed MTProto request and its conclusive miss error."""
+
+    try:
+        from telethon.errors import PhoneNotOccupiedError
+        from telethon.tl.functions.contacts import ResolvePhoneRequest
+    except ImportError as error:
+        raise TelegramRuntimeError(
+            "Telegram phone lookup is unavailable. Run bootstrap to repair the local runtime."
+        ) from error
+    return ResolvePhoneRequest, PhoneNotOccupiedError
+
+
 def import_qrcode():
     """Load QR rendering only for QR login after bootstrap installed it."""
 
@@ -1320,7 +1438,7 @@ def public_entity(entity: Any) -> dict[str, Any]:
             MAX_ENTITY_TITLE_CHARS,
         )
     )
-    return {
+    result = {
         "id": entity_id,
         "title": title,
         "username": optional_bounded_string(
@@ -1328,6 +1446,62 @@ def public_entity(entity: Any) -> dict[str, Any]:
             MAX_ENTITY_USERNAME_CHARS,
         ),
     }
+    last_activity = public_last_activity(getattr(entity, "status", None))
+    if last_activity is not None:
+        result["lastActivity"] = last_activity
+    return result
+
+
+def telegram_status_timestamp(value: Any) -> str | None:
+    """Serialize only a real Telegram timestamp as normalized UTC ISO 8601."""
+
+    if isinstance(value, datetime):
+        timestamp = value
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+    elif isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        try:
+            timestamp = datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    else:
+        return None
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def public_last_activity(status: Any) -> dict[str, Any] | None:
+    """Map Telegram's privacy-aware status union to a small safe contract.
+
+    Telegram itself decides whether a precise timestamp is visible. Exact
+    online/offline values are preserved only when present; privacy-obscured
+    variants remain coarse categories and are never converted into guessed
+    dates. Unknown future constructors fail closed by returning no field.
+    """
+
+    if status is None:
+        return None
+    status_type = status.__class__.__name__
+    if status_type == "UserStatusOnline":
+        result: dict[str, Any] = {"kind": "online", "exact": True}
+        expires_at = telegram_status_timestamp(getattr(status, "expires", None))
+        if expires_at is not None:
+            result["expiresAt"] = expires_at
+        return result
+    if status_type == "UserStatusOffline":
+        last_seen_at = telegram_status_timestamp(getattr(status, "was_online", None))
+        if last_seen_at is None:
+            return {"kind": "unknown", "exact": False}
+        return {"kind": "offline", "exact": True, "lastSeenAt": last_seen_at}
+    coarse_statuses = {
+        "UserStatusRecently": "recently",
+        "UserStatusLastWeek": "last_week",
+        "UserStatusLastMonth": "last_month",
+    }
+    if status_type in coarse_statuses:
+        return {"kind": coarse_statuses[status_type], "exact": False}
+    if status_type == "UserStatusEmpty":
+        return {"kind": "unknown", "exact": False}
+    return None
 
 
 def utf16_slice(text: str, offset: int, length: int) -> str:
@@ -1946,6 +2120,74 @@ async def command_dialogs_async(args: argparse.Namespace, identity: Identity) ->
         await client.disconnect()
 
 
+def resolved_phone_user(result: Any) -> Any:
+    """Select the exact resolved user without exposing raw peer structures."""
+
+    peer = getattr(result, "peer", None)
+    user_id = getattr(peer, "user_id", None)
+    users = getattr(result, "users", None)
+    if (
+        isinstance(user_id, bool)
+        or not isinstance(user_id, int)
+        or not isinstance(users, (list, tuple))
+    ):
+        raise TelegramRuntimeError(
+            "Telegram returned an unsupported phone lookup result."
+        )
+    matches = [
+        user
+        for user in users
+        if not isinstance(getattr(user, "id", None), bool)
+        and getattr(user, "id", None) == user_id
+    ]
+    if len(matches) != 1:
+        raise TelegramRuntimeError(
+            "Telegram returned an ambiguous phone lookup result."
+        )
+    return matches[0]
+
+
+async def command_resolve_phone_async(
+    args: argparse.Namespace,
+    identity: Identity,
+) -> dict[str, Any]:
+    """Resolve one phone without importing it or returning private MTProto data."""
+
+    normalized_phone = normalize_phone_lookup(args.phone)
+    ResolvePhoneRequest, PhoneNotOccupiedError = import_telethon_phone_resolver()
+    client = build_client(args, identity)
+    try:
+        await ensure_authorized(client)
+        # Reserve before the request so provider failures and process
+        # interruptions cannot be retried immediately through a fresh process.
+        reserve_resolve_phone_slot(identity)
+        try:
+            resolved = await client(ResolvePhoneRequest(phone=normalized_phone))
+        except PhoneNotOccupiedError:
+            # Telegram applies the target user's phone-discovery privacy before
+            # returning a peer. Do not claim whether the number is unregistered
+            # or simply unavailable to this account.
+            return {
+                "found": False,
+                "reason": "not_found_or_private",
+                "securityBoundary": "chat-only",
+            }
+        except Exception as error:
+            raise TelegramRuntimeError(
+                "Telegram phone lookup failed without a conclusive result. "
+                "Do not retry automatically; the local rate limit still applies."
+            ) from error
+
+        user = resolved_phone_user(resolved)
+        return {
+            "found": True,
+            "user": public_entity(user),
+            "securityBoundary": "chat-only",
+        }
+    finally:
+        await client.disconnect()
+
+
 async def command_read_async(args: argparse.Namespace, identity: Identity) -> dict[str, Any]:
     client = build_client(args, identity)
     await ensure_authorized(client)
@@ -2074,6 +2316,8 @@ def run_async_command(args: argparse.Namespace) -> dict[str, Any]:
             return asyncio.run(command_login_async(args, identity))
         if args.command == "dialogs":
             return asyncio.run(command_dialogs_async(args, identity))
+        if args.command == "resolve-phone":
+            return asyncio.run(command_resolve_phone_async(args, identity))
         if args.command == "read":
             return asyncio.run(command_read_async(args, identity))
         if args.command == "search":
@@ -2213,6 +2457,15 @@ def build_parser() -> argparse.ArgumentParser:
     dialogs = commands.add_parser("dialogs", help="List or narrowly search dialogs")
     dialogs.add_argument("--query")
     dialogs.add_argument("--limit", type=int, choices=range(1, 101), default=20, metavar="1..100")
+    resolve_phone = commands.add_parser(
+        "resolve-phone",
+        help="Resolve one international phone number when Telegram privacy allows it",
+    )
+    resolve_phone.add_argument(
+        "--phone",
+        required=True,
+        help="One international number beginning with +; never returned in JSON",
+    )
     read = commands.add_parser("read", help="Read recent messages in one exact chat")
     read.add_argument("--chat", required=True)
     read.add_argument("--limit", type=int, choices=range(1, 201), default=20, metavar="1..200")

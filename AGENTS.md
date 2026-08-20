@@ -179,6 +179,17 @@
   outage, timeout, transient/unknown error и ambiguous mutation не разрешают
   transport fallback или автоматический повтор. Connections, sessions и policy
   навыков независимы.
+- Telegram MTProto `resolve-phone` принимает один явно переданный международный
+  номер, вызывает read-only `contacts.resolvePhone` и никогда не импортирует и
+  не добавляет контакт. Exact local identity имеет persistent provider throttle:
+  между попытками проходит не меньше трёх секунд, slot фиксируется до сетевого
+  вызова, а state хранит только timestamp без искомого номера. Privacy и
+  доступность Telegram применяются как есть: отрицательный ответ объединяет
+  `not_found_or_private`. Agent-visible user остаётся allowlist из `id`, `title`,
+  `username` и privacy-aware `lastActivity`: exact online/offline timestamp
+  возвращается только при наличии у Telegram, скрытый статус остаётся coarse
+  `recently` / `last_week` / `last_month`, без вычисления даты. Phone,
+  `access_hash`, raw peer, `by_me` и исходный RPC diagnostic не сериализуются.
 - Долгий MTProto `export` может пережить одно окно ожидания command host. Если
   host вернул descriptor продолжающегося процесса, агент обязан дочитать exact
   процесс штатным continuation primitive (`write_stdin` с возвращённым
