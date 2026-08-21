@@ -273,9 +273,19 @@ test("bridge doctor exposes machine-readable local prerequisite status", async (
   const report = JSON.parse(stdout.trim());
 
   assert.equal(report.status, "ready", JSON.stringify(report));
+  assert.equal(report.schemaVersion, 1);
   assert.equal(report.node.status, "ready");
   assert.equal(report.git.status, "ready");
   assert.equal(report.git.smokeTest, "ready");
+  assert.equal(report.plugin.status, "ready");
+  assert.equal(report.plugin.loadedVersion, "1.13.0");
+  assert.equal(report.plugin.hooks.status, "ready");
+  assert.equal(report.plugin.hooks.preToolUseScope, "trelio_mcp");
+  assert.equal(report.plugin.hooks.approvalStatus, "client_managed_unknown");
+  assert.equal(typeof report.plugin.hooks.definitionSha256, "string");
+  assert.equal(report.runtimeSessions.activeCount >= 0, true);
+  assert.equal(typeof report.connection.deviceSessionConfigured, "boolean");
+  assert.doesNotMatch(JSON.stringify(report), /bridgeSessionToken|privateKeyPkcs8|pairingId/u);
 });
 
 test("workspace bridge never invokes a bare Git command", async () => {

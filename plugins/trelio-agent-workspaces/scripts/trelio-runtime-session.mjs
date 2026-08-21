@@ -38,6 +38,10 @@ const PLUGIN_UPGRADE_CODES = new Set([
   "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
 ]);
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/u;
+const RUNTIME_STATE_LOCK_WAIT_MILLISECONDS = 5_000;
+const RUNTIME_STATE_LOCK_STALE_MILLISECONDS = 15_000;
+const RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS = 11_000;
+const RUNTIME_END_TIMEOUT_MILLISECONDS = 1_500;
 let workspaceBridgeModulePromise;
 
 // PreToolUse вызывается и для нетрелиевских инструментов. Большой bridge
@@ -71,9 +75,11 @@ const resolveClientSessionId = (hookInput, environment = process.env) => {
 
 export const resolveTrelioMcpToolName = (hookInput) => {
   const rawName = String(hookInput?.tool_name || hookInput?.toolName || "");
-  const doubleUnderscore = rawName.match(/(?:^|__)trelio__([a-z0-9_]+)$/iu);
+  const doubleUnderscore = rawName.match(/^(?:mcp__)?trelio__([a-z0-9_]+)$/iu);
   if (doubleUnderscore) return doubleUnderscore[1].toLowerCase();
-  const separated = rawName.match(/(?:^|[:./-])trelio[:./-]([a-z0-9_]+)$/iu);
+  const separated = rawName.match(
+    /^(?:mcp[:./-])?trelio[:./-]([a-z0-9_]+)$/iu,
+  );
   return separated ? separated[1].toLowerCase() : null;
 };
 
@@ -100,6 +106,54 @@ const statePathFor = async (clientSessionId, origin) => {
     "runtime-sessions",
     `${crypto.createHash("sha256").update(`${origin}\n${clientSessionId}`).digest("hex")}.json`,
   );
+};
+
+const wait = (milliseconds) => new Promise((resolve) => {
+  setTimeout(resolve, milliseconds);
+});
+
+/**
+ * The first two protected calls may be authored almost simultaneously. An
+ * atomic private lock ensures they register one server session and then share
+ * its local key. Without it, the last writer would orphan the other session
+ * and one of the already-created proofs could fail nondeterministically.
+ */
+const withRuntimeStateLock = async (filePath, operation) => {
+  const lockPath = `${filePath}.lock`;
+  const { ensurePrivateDirectory } = await loadWorkspaceBridgeModule();
+  await ensurePrivateDirectory(path.dirname(filePath));
+  const startedAt = Date.now();
+
+  for (;;) {
+    try {
+      await fs.mkdir(lockPath, { mode: 0o700 });
+      if (process.platform !== "win32") {
+        await fs.chmod(lockPath, 0o700);
+      }
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const metadata = await fs.lstat(lockPath).catch(() => null);
+      if (!metadata) continue;
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error("локальная блокировка runtime-сессии имеет небезопасный тип");
+      }
+      if (Date.now() - metadata.mtimeMs > RUNTIME_STATE_LOCK_STALE_MILLISECONDS) {
+        await fs.rmdir(lockPath).catch(() => undefined);
+        continue;
+      }
+      if (Date.now() - startedAt >= RUNTIME_STATE_LOCK_WAIT_MILLISECONDS) {
+        throw new Error("другая runtime-регистрация не завершилась вовремя");
+      }
+      await wait(40);
+    }
+  }
+
+  try {
+    return await operation();
+  } finally {
+    await fs.rmdir(lockPath).catch(() => undefined);
+  }
 };
 
 const readStoredState = async (filePath) => {
@@ -206,12 +260,16 @@ const createRuntimeState = async ({
     writePrivateJsonFile,
   } = await loadWorkspaceBridgeModule();
 
+  const registrationSignal = AbortSignal.timeout(
+    RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS,
+  );
   const registration = await retryIdempotentRequest(() => (
     registerAgentRuntimeHookSession({
       origin,
       clientSessionId,
       observation,
       publicKeySpki,
+      signal: registrationSignal,
     })
   ));
   const state = {
@@ -270,15 +328,21 @@ const runPreToolUse = async (hookInput) => {
   const filePath = await statePathFor(clientSessionId, origin);
   let state = await readRuntimeState(filePath);
   if (!state) {
-    const initialObservation = await readPendingObservation(filePath);
-    await fs.rm(filePath, { force: true }).catch(() => undefined);
     try {
-      state = await createRuntimeState({
-        hookInput,
-        clientSessionId,
-        origin,
-        filePath,
-        initialObservation,
+      state = await withRuntimeStateLock(filePath, async () => {
+        // The winner may have completed while this process waited. Always
+        // re-read after acquiring the lock before creating a second session.
+        const registeredState = await readRuntimeState(filePath);
+        if (registeredState) return registeredState;
+        const initialObservation = await readPendingObservation(filePath);
+        await fs.rm(filePath, { force: true }).catch(() => undefined);
+        return createRuntimeState({
+          hookInput,
+          clientSessionId,
+          origin,
+          filePath,
+          initialObservation,
+        });
       });
     } catch (error) {
       // The plugin is released before the backend in the production sequence.
@@ -308,21 +372,37 @@ const runPreToolUse = async (hookInput) => {
 };
 
 const runSessionStart = async (hookInput) => {
-  if (hookInput.source && hookInput.source !== "startup") return;
   const clientSessionId = resolveClientSessionId(hookInput);
   if (!clientSessionId) return;
   const origin = process.env.TRELIO_WORKSPACE_ORIGIN || "https://trelio.ru";
   const filePath = await statePathFor(clientSessionId, origin);
-  const existing = await readRuntimeState(filePath);
-  if (existing) return;
-  const observation = await detectAgentRuntimeAttestation({ hookInput });
-  const { writePrivateJsonFile } = await loadWorkspaceBridgeModule();
-  await writePrivateJsonFile(filePath, {
-    schemaVersion: 1,
-    pending: true,
-    observation,
-    createdAt: new Date().toISOString(),
+  const source = typeof hookInput.source === "string" ? hookInput.source : "startup";
+  let stateToEnd = null;
+
+  await withRuntimeStateLock(filePath, async () => {
+    const existing = await readRuntimeState(filePath);
+    if (source !== "clear" && existing) return;
+    if (source !== "clear" && await readPendingObservation(filePath)) return;
+    if (source === "clear") stateToEnd = existing;
+    await fs.rm(filePath, { force: true }).catch(() => undefined);
+    const observation = await detectAgentRuntimeAttestation({ hookInput });
+    const { writePrivateJsonFile } = await loadWorkspaceBridgeModule();
+    await writePrivateJsonFile(filePath, {
+      schemaVersion: 1,
+      pending: true,
+      observation,
+      createdAt: new Date().toISOString(),
+    });
   });
+
+  if (stateToEnd) {
+    const { endAgentRuntimeHookSession } = await loadWorkspaceBridgeModule();
+    await endAgentRuntimeHookSession({
+      origin,
+      runtimeSessionId: stateToEnd.runtimeSessionId,
+      signal: AbortSignal.timeout(RUNTIME_END_TIMEOUT_MILLISECONDS),
+    }).catch(() => undefined);
+  }
 };
 
 const runSessionEnd = async (hookInput) => {
@@ -331,13 +411,20 @@ const runSessionEnd = async (hookInput) => {
   const origin = process.env.TRELIO_WORKSPACE_ORIGIN || "https://trelio.ru";
   const filePath = await statePathFor(clientSessionId, origin);
   const state = await readRuntimeState(filePath);
+  // Local key removal is the privacy boundary and must complete before a slow
+  // network cleanup can consume Codex's three-second SessionEnd budget. The
+  // server session also expires independently if the best-effort request fails.
+  await fs.rm(filePath, { force: true }).catch(() => undefined);
   if (state) {
     const { endAgentRuntimeHookSession } = await loadWorkspaceBridgeModule();
-    await retryIdempotentRequest(() => endAgentRuntimeHookSession({
+    await endAgentRuntimeHookSession({
       origin,
       runtimeSessionId: state.runtimeSessionId,
-    })).catch(() => undefined);
+      signal: AbortSignal.timeout(RUNTIME_END_TIMEOUT_MILLISECONDS),
+    }).catch(() => undefined);
   }
+  // Close a narrow race with a first registration that began just before the
+  // end event and completed while the bounded remote request was in flight.
   await fs.rm(filePath, { force: true }).catch(() => undefined);
 };
 

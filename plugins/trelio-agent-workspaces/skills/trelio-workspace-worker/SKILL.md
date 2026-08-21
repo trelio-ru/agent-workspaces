@@ -9,8 +9,9 @@ description: >-
   Run; asks to change a task status or prepare a separate editable status
   proposal; needs durable dossier context, a dossier transfer, or task controls;
   requests personal/company/project agent-rule changes; or needs recovery from
-  missing MCP tools, stale OAuth scopes, local Git prerequisites,
-  plugin-version gates, blockers, or concurrent Agent Runs.
+  a blocker or concurrent Agent Runs encountered during that work. Use the
+  dedicated trelio-diagnostics skill for a direct setup health check or a
+  standalone plugin, hook, MCP, OAuth, Git, Node, pairing, or version failure.
 ---
 
 # Trelio Workspace Worker

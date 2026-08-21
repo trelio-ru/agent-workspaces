@@ -1,0 +1,4 @@
+interface:
+  display_name: "Диагностика Trelio"
+  short_description: "Проверяет plugin, hooks, MCP и local bridge"
+  default_prompt: "Используй $trelio-diagnostics, чтобы проверить установку Trelio Agent Workspaces и назвать точную причину сбоя."

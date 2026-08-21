@@ -32,7 +32,7 @@ import {
 } from "./trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.12.1";
+export const BRIDGE_VERSION = "1.13.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -208,6 +208,35 @@ const CODEX_MARKETPLACE_NAME = "trelio-plugins";
 const CODEX_PLUGIN_ID = "trelio-agent-workspaces@trelio-plugins";
 const CODEX_OFFICIAL_MARKETPLACE_SOURCE =
   "https://github.com/trelio-ru/agent-workspaces.git";
+const MINIMUM_NODE_MAJOR_VERSION = 22;
+const RUNTIME_SESSION_DIAGNOSTIC_LIMIT = 256;
+const RUNTIME_SESSION_LOCK_STALE_MILLISECONDS = 15_000;
+const EXPECTED_RUNTIME_HOOK_COMMAND =
+  'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+// Lifecycle matchers remain intentionally broad. Client event sources may grow
+// without changing the trusted hook definition; the script itself decides how
+// to handle each source. PreToolUse is scoped to every supported Trelio MCP
+// naming form so unrelated tool calls do not pay a process-startup cost.
+const EXPECTED_RUNTIME_HOOK_CONTRACT = Object.freeze({
+  SessionStart: Object.freeze({
+    matcher: "*",
+    type: "command",
+    command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    timeout: 10,
+  }),
+  PreToolUse: Object.freeze({
+    matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$",
+    type: "command",
+    command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    timeout: 15,
+  }),
+  SessionEnd: Object.freeze({
+    matcher: "*",
+    type: "command",
+    command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    timeout: 3,
+  }),
+});
 const CODEX_MARKETPLACE_LIST_ARGUMENTS = Object.freeze([
   "plugin",
   "marketplace",
@@ -582,36 +611,333 @@ const runGit = async (args, options = {}) => {
   );
 };
 
-export const diagnoseLocalPrerequisites = async (options = {}) => {
-  const git = await verifyGitRuntime(options);
+const readDiagnosticJsonFile = async (filePath) => {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return { raw, value: JSON.parse(raw) };
+  } catch {
+    // Doctor reports only a stable code. Parser and filesystem details may
+    // include a private local path and are not needed for the repair decision.
+    return { raw: null, value: null };
+  }
+};
+
+const readObservedRuntimeHookContract = (hooksManifest, eventName) => {
+  const groups = hooksManifest?.hooks?.[eventName];
+  if (!Array.isArray(groups) || groups.length !== 1) return null;
+  const [group] = groups;
+  if (!Array.isArray(group?.hooks) || group.hooks.length !== 1) return null;
+  const [handler] = group.hooks;
+  return {
+    matcher: group.matcher,
+    type: handler?.type,
+    command: handler?.command,
+    timeout: handler?.timeout,
+  };
+};
+
+/**
+ * Inspect only the exact bundle that loaded this bridge. Cache scanning could
+ * accidentally diagnose another installed version and recreate the stale-task
+ * confusion this command is meant to resolve.
+ */
+export const inspectBundledPlugin = async ({
+  pluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+} = {}) => {
+  const [codexManifest, claudeManifest, hooksManifest] = await Promise.all([
+    readDiagnosticJsonFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json")),
+    readDiagnosticJsonFile(path.join(pluginDirectory, ".claude-plugin", "plugin.json")),
+    readDiagnosticJsonFile(path.join(pluginDirectory, "hooks", "hooks.json")),
+  ]);
+  const issues = [];
+  const codexVersion = typeof codexManifest.value?.version === "string"
+    ? codexManifest.value.version
+    : null;
+  const claudeVersion = typeof claudeManifest.value?.version === "string"
+    ? claudeManifest.value.version
+    : null;
+
+  if (codexVersion !== BRIDGE_VERSION) {
+    issues.push("CODEX_MANIFEST_VERSION_MISMATCH");
+  }
+  if (claudeVersion !== BRIDGE_VERSION) {
+    issues.push("CLAUDE_MANIFEST_VERSION_MISMATCH");
+  }
+
+  const observedEvents = Object.fromEntries(
+    Object.keys(EXPECTED_RUNTIME_HOOK_CONTRACT).map((eventName) => [
+      eventName,
+      readObservedRuntimeHookContract(hooksManifest.value, eventName),
+    ]),
+  );
+  const hooksReady = Object.entries(EXPECTED_RUNTIME_HOOK_CONTRACT).every(
+    ([eventName, expected]) => (
+      JSON.stringify(observedEvents[eventName]) === JSON.stringify(expected)
+    ),
+  );
+  if (!hooksReady) {
+    issues.push("RUNTIME_HOOK_CONTRACT_MISMATCH");
+  }
 
   return {
-    status: git.status === "ready" ? "ready" : "action_required",
-    platform: options.platform || process.platform,
-    node: {
-      status: "ready",
-      nodePath: process.execPath,
-      version: process.version,
+    status: issues.length === 0 ? "ready" : "action_required",
+    loadedVersion: BRIDGE_VERSION,
+    manifests: {
+      codexVersion,
+      claudeVersion,
     },
+    hooks: {
+      status: hooksReady ? "ready" : "action_required",
+      definitionSha256: hooksManifest.raw
+        ? crypto.createHash("sha256").update(hooksManifest.raw).digest("hex")
+        : null,
+      preToolUseScope: "trelio_mcp",
+      approvalStatus: "client_managed_unknown",
+      events: Object.fromEntries(
+        Object.entries(observedEvents).map(([eventName, observed]) => [
+          eventName,
+          observed
+            ? { matcher: observed.matcher, timeout: observed.timeout }
+            : null,
+        ]),
+      ),
+    },
+    issues,
+  };
+};
+
+const classifyRuntimeSessionRecord = (record, nowMilliseconds) => {
+  if (
+    record?.schemaVersion === 1
+    && record.pending === true
+    && record.observation
+    && typeof record.observation === "object"
+  ) {
+    return "pending";
+  }
+  if (
+    record?.schemaVersion !== 1
+    || !UUID_PATTERN.test(String(record.runtimeSessionId || ""))
+    || typeof record.privateKeyPkcs8 !== "string"
+    || Number.isNaN(Date.parse(String(record.expiresAt || "")))
+  ) {
+    return "invalid";
+  }
+  return Date.parse(record.expiresAt) > nowMilliseconds + 30_000
+    ? "active"
+    : "expired";
+};
+
+/**
+ * Runtime-session diagnostics expose counts only. Private signing keys, IDs,
+ * origin hashes and filenames never enter stdout or model-visible output.
+ */
+export const inspectLocalRuntimeSessions = async ({
+  configDirectory = CONFIG_DIRECTORY,
+  nowMilliseconds = Date.now(),
+} = {}) => {
+  const runtimeDirectory = path.join(configDirectory, "runtime-sessions");
+  let entries;
+  try {
+    entries = await fs.readdir(runtimeDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {
+        status: "ready",
+        activeCount: 0,
+        pendingCount: 0,
+        expiredCount: 0,
+        invalidCount: 0,
+        registrationLockCount: 0,
+        staleRegistrationLockCount: 0,
+        omittedCount: 0,
+      };
+    }
+    return {
+      status: "attention",
+      activeCount: 0,
+      pendingCount: 0,
+      expiredCount: 0,
+      invalidCount: 1,
+      registrationLockCount: 0,
+      staleRegistrationLockCount: 0,
+      omittedCount: 0,
+    };
+  }
+
+  const stateFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"));
+  const selectedStateFiles = stateFiles.slice(0, RUNTIME_SESSION_DIAGNOSTIC_LIMIT);
+  const counts = {
+    active: 0,
+    pending: 0,
+    expired: 0,
+    invalid: 0,
+  };
+  await Promise.all(selectedStateFiles.map(async (entry) => {
+    try {
+      const record = await readPrivateJsonFile(path.join(runtimeDirectory, entry.name));
+      counts[classifyRuntimeSessionRecord(record, nowMilliseconds)] += 1;
+    } catch {
+      counts.invalid += 1;
+    }
+  }));
+
+  const lockEntries = entries.filter(
+    (entry) => entry.isDirectory() && entry.name.endsWith(".json.lock"),
+  );
+  let staleRegistrationLockCount = 0;
+  await Promise.all(lockEntries.map(async (entry) => {
+    try {
+      const metadata = await fs.stat(path.join(runtimeDirectory, entry.name));
+      if (nowMilliseconds - metadata.mtimeMs > RUNTIME_SESSION_LOCK_STALE_MILLISECONDS) {
+        staleRegistrationLockCount += 1;
+      }
+    } catch {
+      staleRegistrationLockCount += 1;
+    }
+  }));
+
+  const needsAttention = counts.expired > 0
+    || counts.invalid > 0
+    || staleRegistrationLockCount > 0;
+  return {
+    status: needsAttention ? "attention" : "ready",
+    activeCount: counts.active,
+    pendingCount: counts.pending,
+    expiredCount: counts.expired,
+    invalidCount: counts.invalid,
+    registrationLockCount: lockEntries.length,
+    staleRegistrationLockCount,
+    omittedCount: Math.max(0, stateFiles.length - selectedStateFiles.length),
+  };
+};
+
+/**
+ * Pairing diagnostics deliberately inspect presence only. They never return a
+ * device-session token, verifier, pairing ID or legacy OAuth credential.
+ */
+export const inspectLocalBridgeConnection = async ({
+  origin = DEFAULT_ORIGIN,
+  configDirectory = CONFIG_DIRECTORY,
+  nowMilliseconds = Date.now(),
+} = {}) => {
+  const normalizedOrigin = normalizeOrigin(origin);
+  let credentials;
+  let pairings;
+  try {
+    [credentials, pairings] = await Promise.all([
+      readPrivateJsonFile(path.join(configDirectory, "credentials.json")),
+      readPrivateJsonFile(path.join(configDirectory, "pairings.json")),
+    ]);
+  } catch {
+    return {
+      status: "attention",
+      origin: normalizedOrigin,
+      deviceSessionConfigured: false,
+      pendingPairing: false,
+      issue: "LOCAL_CONNECTION_STATE_UNREADABLE",
+    };
+  }
+
+  const credential = credentials?.[normalizedOrigin];
+  const pairing = pairings?.[normalizedOrigin];
+  const deviceSessionConfigured = typeof credential?.bridgeSessionToken === "string"
+    && credential.bridgeSessionToken.length > 0;
+  const pendingPairing = typeof pairing?.expiresAt === "string"
+    && Date.parse(pairing.expiresAt) > nowMilliseconds;
+  return {
+    status: deviceSessionConfigured
+      ? "ready"
+      : pendingPairing
+        ? "pairing_pending"
+        : "not_configured",
+    origin: normalizedOrigin,
+    deviceSessionConfigured,
+    pendingPairing,
+    issue: null,
+  };
+};
+
+export const diagnoseLocalPrerequisites = async (options = {}) => {
+  const {
+    pluginDirectory = LOADED_CODEX_PLUGIN_DIRECTORY,
+    configDirectory = CONFIG_DIRECTORY,
+    origin = DEFAULT_ORIGIN,
+    nodePath = process.execPath,
+    nodeVersion = process.version,
+    nowMilliseconds = Date.now(),
+    ...gitOptions
+  } = options;
+  const [git, plugin, runtimeSessions, connection] = await Promise.all([
+    verifyGitRuntime(gitOptions),
+    inspectBundledPlugin({ pluginDirectory }),
+    inspectLocalRuntimeSessions({ configDirectory, nowMilliseconds }),
+    inspectLocalBridgeConnection({ origin, configDirectory, nowMilliseconds }),
+  ]);
+  const nodeMajorVersion = Number.parseInt(
+    String(nodeVersion).replace(/^v/u, "").split(".")[0],
+    10,
+  );
+  const node = {
+    status: Number.isInteger(nodeMajorVersion) && nodeMajorVersion >= MINIMUM_NODE_MAJOR_VERSION
+      ? "ready"
+      : "action_required",
+    nodePath,
+    version: nodeVersion,
+    minimumMajorVersion: MINIMUM_NODE_MAJOR_VERSION,
+  };
+  const issues = [
+    ...(node.status === "ready" ? [] : ["TRELIO_NODE_22_REQUIRED"]),
+    ...(git.status === "ready" ? [] : [git.code || "TRELIO_GIT_REQUIRED"]),
+    ...plugin.issues,
+  ];
+
+  return {
+    schemaVersion: 1,
+    status: issues.length === 0 ? "ready" : "action_required",
+    platform: gitOptions.platform || process.platform,
+    node,
     git,
+    plugin,
+    runtimeSessions,
+    connection,
+    issues,
   };
 };
 
 const doctor = async (options) => {
-  const report = await diagnoseLocalPrerequisites();
+  const report = await diagnoseLocalPrerequisites({
+    origin: options.origin || DEFAULT_ORIGIN,
+  });
 
   if (options.json === true) {
     process.stdout.write(`${JSON.stringify(report)}\n`);
     return report;
   }
 
-  if (report.status !== "ready") {
+  if (report.git.status !== "ready") {
     throw new GitPrerequisiteError(report.git);
+  }
+  if (report.node.status !== "ready") {
+    throw new Error(
+      `TRELIO_NODE_22_REQUIRED: требуется Node.js ${report.node.minimumMajorVersion}+.`,
+    );
+  }
+  if (report.plugin.status !== "ready") {
+    throw new Error(
+      `TRELIO_PLUGIN_DIAGNOSTIC_FAILED: ${report.plugin.issues.join(", ")}.`,
+    );
   }
 
   process.stdout.write(
     `Локальный компонент готов: Node.js ${report.node.version}, `
-      + `Git ${report.git.version} (${report.git.gitPath}).\n`,
+      + `Git ${report.git.version} (${report.git.gitPath}).\n`
+      + `Плагин v${report.plugin.loadedVersion}; hooks ${report.plugin.hooks.status}, `
+      + "их одобрение проверяет клиент.\n"
+      + `Bridge session: ${report.connection.status}; runtime sessions: `
+      + `${report.runtimeSessions.activeCount} active, `
+      + `${report.runtimeSessions.pendingCount} pending.\n`,
   );
   return report;
 };
@@ -2361,16 +2687,18 @@ export const registerAgentRuntimeHookSession = async ({
   clientSessionId,
   observation,
   publicKeySpki,
+  signal,
 }) => {
   const normalizedOrigin = normalizeOrigin(origin);
   const token = await requireToken(normalizedOrigin);
-  await ensureBridgeCompatibility(normalizedOrigin, token);
+  await ensureBridgeCompatibility(normalizedOrigin, token, { signal });
   const response = await request(
     normalizedOrigin,
     token,
     "/api/agent-workspaces/runtime-policy/sessions",
     {
       method: "POST",
+      signal,
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ clientSessionId, observation, publicKeySpki }),
     },
@@ -2381,15 +2709,16 @@ export const registerAgentRuntimeHookSession = async ({
 export const endAgentRuntimeHookSession = async ({
   origin = DEFAULT_ORIGIN,
   runtimeSessionId,
+  signal,
 }) => {
   const normalizedOrigin = normalizeOrigin(origin);
   const token = await requireToken(normalizedOrigin);
-  await ensureBridgeCompatibility(normalizedOrigin, token);
+  await ensureBridgeCompatibility(normalizedOrigin, token, { signal });
   await request(
     normalizedOrigin,
     token,
     `/api/agent-workspaces/runtime-policy/sessions/${requireUuid(runtimeSessionId, "runtime session")}/end`,
-    { method: "POST" },
+    { method: "POST", signal },
   );
 };
 
@@ -8232,7 +8561,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
 const printHelp = () => {
   process.stdout.write(`Trelio Agent Workspace Bridge ${BRIDGE_VERSION}\n\n`);
   process.stdout.write("Команды:\n");
-  process.stdout.write("  trelio-workspace doctor [--json]\n");
+  process.stdout.write("  trelio-workspace doctor [--json] [--origin URL]\n");
   process.stdout.write("  trelio-workspace login [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace login --legacy-oauth [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace open --workspace UUID [--run UUID] [--dir PATH]\n");

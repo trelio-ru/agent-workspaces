@@ -2270,7 +2270,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.12.1");
+  assert.equal(BRIDGE_VERSION, "1.13.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2489,6 +2489,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
 
   assert.deepEqual(codexManifest.interface.defaultPrompt, [
     "Настрой Trelio Agent Workspaces для текущей рабочей папки.",
+    "Проверь установку Trelio Agent Workspaces и объясни, что мешает работе.",
     "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат и сохрани материалы в рабочем пространстве.",
   ]);
   const folderGateIndex = onboardingSkill.indexOf("## Confirm the working folder first");
@@ -2559,9 +2560,48 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
 });
 
+test("plugin exposes focused value-free diagnostics for setup and hook failures", async () => {
+  const diagnosticsDirectory = path.join(
+    pluginDirectory,
+    "skills",
+    "trelio-diagnostics",
+  );
+  const diagnosticsSkill = await readFile(
+    path.join(diagnosticsDirectory, "SKILL.md"),
+    "utf8",
+  );
+  const diagnosticsAgentMetadata = await readFile(
+    path.join(diagnosticsDirectory, "agents", "openai.yaml"),
+    "utf8",
+  );
+  const workerSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
+    "utf8",
+  );
+
+  assert.match(diagnosticsSkill, /^---\nname: trelio-diagnostics\n/u);
+  assert.match(diagnosticsSkill, /loaded plugin version, hooks,\s+MCP\/OAuth/u);
+  assert.match(diagnosticsSkill, /Keep\s+the first pass read-only/u);
+  assert.match(diagnosticsSkill, /plugin\.loadedVersion/u);
+  assert.match(diagnosticsSkill, /approvalStatus=client_managed_unknown/u);
+  assert.match(diagnosticsSkill, /codex plugin list --json/u);
+  assert.match(diagnosticsSkill, /codex mcp list --json/u);
+  assert.match(diagnosticsSkill, /Do not infer Claude Code only\s+from `CLAUDE_PLUGIN_ROOT`/u);
+  assert.match(diagnosticsSkill, /Do not create or mutate an\s+object just to test a hook/u);
+  assert.match(diagnosticsSkill, /installed version already satisfies the requirement/u);
+  assert.match(diagnosticsSkill, /do not update again/u);
+  assert.match(diagnosticsSkill, /definition hash may require one\s+client review/u);
+  assert.match(diagnosticsSkill, /behavior-only fixes[\s\S]{0,100}do not require another/u);
+  assert.match(diagnosticsSkill, /never exposes session IDs or keys/u);
+  assert.match(diagnosticsAgentMetadata, /Диагностика Trelio/u);
+  assert.match(diagnosticsAgentMetadata, /\$trelio-diagnostics/u);
+  assert.match(workerSkill, /dedicated trelio-diagnostics skill/u);
+});
+
 test("bundled skills reserve hook activation for Trelio's missing-proof signal", async () => {
   const recoveryPhrase = /Откройте\s+настройки\s+плагина\s+Trelio\s+Agent\s+Workspaces,\s+включите\s+Hooks\s+и\s+повторите\s+запрос\./u;
   const recoveryFiles = [
+    path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
     path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
     path.join(pluginDirectory, "skills", "trelio-workspace-worker", "SKILL.md"),
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
@@ -5603,7 +5643,7 @@ test("bridge resumes external object registration from durable per-file progress
 test("bridge help advertises the related context sync command", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
   assert.match(result.stdout, new RegExp(`Bridge ${BRIDGE_VERSION.replaceAll(".", "\\.")}`));
-  assert.match(result.stdout, /trelio-workspace doctor \[--json\]/);
+  assert.match(result.stdout, /trelio-workspace doctor \[--json\] \[--origin URL\]/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);

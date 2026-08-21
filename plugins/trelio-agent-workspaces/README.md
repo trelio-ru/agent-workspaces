@@ -6,6 +6,8 @@
 Плагин подключает:
 
 - Trelio MCP с личной OAuth 2.1-авторизацией;
+- отдельную value-free диагностику plugin, hooks, MCP/OAuth, Node.js, Git,
+  pairing и runtime sessions;
 - Agent Workspaces компании, проекта, досье и задачи с ACL и Git-версиями;
 - локальный bridge с `pause` для переносимого blocker и `finish` для единого
   handoff/heartbeat/submit;
@@ -84,6 +86,12 @@ Bundled `trelio-workspace doctor --json` отдельно разрешает abs
 из Homebrew/system/Program Files и durable Windows PATH и проверяет настоящий
 временный `init → add → commit`. Произвольный executable из process PATH,
 включая private Git, которым Codex мог скачать marketplace, bridge не использует.
+Doctor также проверяет exact загруженную версию обоих manifests, стабильный
+hook contract, Node.js 22+, локальное pairing-состояние и только агрегированные
+счётчики runtime sessions. Он не выводит tokens, pairing IDs, session IDs или
+private keys. Значение `plugin.hooks.approvalStatus=client_managed_unknown`
+означает, что целостность definition подтверждена, но его одобрение нужно
+проверять в самом клиенте.
 Если standalone Git отсутствует,
 onboarding сразу запускает `brew install git` либо `xcode-select --install` на
 macOS и `winget install --id Git.Git -e` на Windows. Обычное системное
@@ -95,6 +103,13 @@ call approved hook закрепляет наблюдаемые model/effort в p
 и затем добавляет одноразовый proof автоматически. Discovery/recovery остаются
 доступны без допуска. Agent Run сохраняет pinned policy/runtime snapshot; смена
 runtime позже не отзывает уже допущенную client session.
+
+В v1.13 hook запускает `PreToolUse` только для Trelio MCP, защищает параллельную
+первую регистрацию локальной блокировкой и удаляет private key до bounded
+сетевого cleanup на `SessionEnd`. Lifecycle matcher остаётся wildcard: новые
+client event sources обрабатываются скриптом без изменения `hooks.json`.
+Поэтому переход с v1.12 может потребовать одно новое одобрение definition, а
+дальнейшие behavior-only исправления – нет.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

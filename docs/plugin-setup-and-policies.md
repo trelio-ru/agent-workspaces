@@ -108,6 +108,15 @@ Windows machine/user PATH, exact version и временный `init → add →
 текущему процессу. Все дальнейшие workspace-команды используют один проверенный
 absolute Git path без shell. Найденный после установки Git не требует restart.
 
+Начиная с v1.13 тот же JSON-report независимо показывает exact загруженную
+версию плагина, согласованность Codex/Claude manifests, SHA-256 bundled hook
+definition, value-free pairing status и агрегированные количества active,
+pending, expired и invalid runtime sessions. Поля с token, pairing ID,
+runtime-session ID или private key в отчёт не попадают. Doctor проверяет
+целостность hook-файла, но не может увидеть client trust; поэтому
+`approvalStatus=client_managed_unknown` нельзя трактовать как включённые или
+выключенные Hooks.
+
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 
 - macOS – `brew install git`, если Homebrew уже установлен, иначе
@@ -171,6 +180,16 @@ Claude обновляет marketplace своим plugin manager. После ус
 runtime-session и прозрачно добавляет одноразовый Ed25519 proof. Discovery и
 recovery доступны без admission; context, mutation и Agent Workspace требуют
 proof и полную company policy.
+
+В v1.13 `PreToolUse` matcher ограничен всеми поддерживаемыми формами имени
+Trelio MCP и больше не запускает Node.js для посторонних tools. `SessionStart`
+и `SessionEnd` остаются wildcard lifecycle matchers, а обработка startup,
+resume, compact, clear и будущих source значений живёт в runtime-скрипте.
+Изменение definition при переходе с v1.12 может потребовать один client review;
+дальнейшие behavior-only исправления скрипта не требуют менять `hooks.json`.
+Параллельные первые protected calls разделяют одну регистрацию, а SessionEnd
+сначала удаляет локальный private key и только затем делает bounded best-effort
+server cleanup.
 
 Agent Run закрепляет snapshot и hook-observed runtime; exact open command
 передаёт bridge только `--runtime-session UUID`. Сессия живёт до SessionEnd или

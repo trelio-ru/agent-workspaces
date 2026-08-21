@@ -64,6 +64,16 @@ provider-tag workflow или внутренние release playbooks в этот 
   одного provider не являются основанием менять plugin.
 - Runtime admission proof создаёт только approved hook. Агент не формирует, не
   копирует и не обходит proof другим MCP, HTTP, browser или script.
+- `hooks/hooks.json` является стабильной client-trust границей: lifecycle
+  matchers остаются wildcard, а `PreToolUse` охватывает только все формы имени
+  Trelio MCP. Behavior-only recovery и lifecycle-улучшения вноси в
+  `trelio-runtime-session.mjs`; definition меняй только при реальной
+  несовместимости host contract, потому что новый hash требует повторного
+  review пользователя.
+- Bundled doctor диагностирует только exact загруженный plugin и выводит
+  value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
+  ID или private key и не объявляет Hooks включёнными: client approval остаётся
+  `client_managed_unknown` до отдельного client/live-read подтверждения.
 - Secret передаётся только exact executable через scoped one-use delivery и не
   попадает в model-visible output, argv, ambient environment, workspace,
   comments, checkpoints, handoff или logs.
