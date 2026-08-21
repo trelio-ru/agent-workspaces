@@ -147,6 +147,7 @@ class TrelioTelegramTests(unittest.TestCase):
                 MODULE.os.environ,
                 {
                     "TRELIO_CONFIG_HOME": temporary,
+                    "TRELIO_CACHE_HOME": temporary,
                     MODULE.API_HASH_ENV: "a" * 32,
                 },
                 clear=True,
@@ -170,7 +171,10 @@ class TrelioTelegramTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with mock.patch.dict(
                 MODULE.os.environ,
-                {"TRELIO_CONFIG_HOME": temporary},
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    "TRELIO_CACHE_HOME": temporary,
+                },
                 clear=True,
             ):
                 with self.assertRaisesRegex(MODULE.TelegramRuntimeError, "not cached"):
@@ -216,6 +220,7 @@ class TrelioTelegramTests(unittest.TestCase):
                 MODULE.os.environ,
                 {
                     "TRELIO_CONFIG_HOME": temporary,
+                    "TRELIO_CACHE_HOME": temporary,
                     MODULE.API_HASH_ENV: "a" * 32,
                 },
                 clear=True,
@@ -228,7 +233,10 @@ class TrelioTelegramTests(unittest.TestCase):
 
             with mock.patch.dict(
                 MODULE.os.environ,
-                {"TRELIO_CONFIG_HOME": temporary},
+                {
+                    "TRELIO_CONFIG_HOME": temporary,
+                    "TRELIO_CACHE_HOME": temporary,
+                },
                 clear=True,
             ):
                 result = MODULE.command_doctor(args)
