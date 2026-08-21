@@ -3,7 +3,7 @@
   "release": {
     "skillId": "telegram-mtproto",
     "version": "1.2.1",
-    "state": "planned",
+    "state": "current",
     "summary": "Добавить переносимую IANA timezone database для экспорта Telegram на Windows."
   },
   "runtime": {

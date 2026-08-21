@@ -3,7 +3,7 @@
   "release": {
     "skillId": "email-imap-smtp",
     "version": "1.2.1",
-    "state": "planned",
+    "state": "current",
     "summary": "Перевести настройку почтового пароля на защищённый browser-first flow и закрепить независимый signed runtime."
   },
   "runtime": {

@@ -3,7 +3,7 @@
   "release": {
     "skillId": "telegram-web",
     "version": "2.0.1",
-    "state": "planned",
+    "state": "current",
     "summary": "Перевести компактный Telegram Web adapter с plugin-script на независимый signed runtime без изменения local identity и policy."
   },
   "runtime": {
