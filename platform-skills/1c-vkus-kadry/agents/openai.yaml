@@ -1,4 +1,0 @@
-interface:
-  display_name: "1С — Кадры Вкус"
-  short_description: "Read-only кадровые данные и вложения 1С"
-  default_prompt: "Используй $1c-vkus-kadry для точечной работы с кадровыми данными и файлами 1С в рамках моих прав."

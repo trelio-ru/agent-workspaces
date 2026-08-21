@@ -1,4 +1,0 @@
-interface:
-  display_name: "Почта IMAP/SMTP"
-  short_description: "Ищет, читает и отправляет почту через локальный ящик."
-  default_prompt: "Используй $email-imap-smtp для безопасной работы с подключённой почтой через текущий signed runtime."

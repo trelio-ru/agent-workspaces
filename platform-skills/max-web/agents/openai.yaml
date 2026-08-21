@@ -1,4 +1,0 @@
-interface:
-  display_name: "MAX"
-  short_description: "Работает с чатами MAX через локальную web-сессию."
-  default_prompt: "Используй $max-web для безопасной работы с чатами MAX через текущий signed runtime."

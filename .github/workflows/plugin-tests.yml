@@ -13,7 +13,8 @@ on:
     tags:
       - "v*"
     # Path filtering applies to branch pushes. Plugin tags retain full release
-    # verification, while provider runtime tags use their own namespace.
+    # verification. New provider tags are created in the private provider
+    # repository; historical public provider tags remain immutable.
     paths:
       - ".github/scripts/run-windows-acl-standard-user.ps1"
       - ".github/workflows/plugin-tests.yml"
@@ -44,8 +45,8 @@ jobs:
           node-version: 22
 
       # Keep exact paths explicit so every shell passes the same generic host
-      # files to Node. Provider runtimes have an independent workflow under
-      # platform-skills/** and cannot become plugin release inputs again.
+      # files to Node. Provider source and CI live in the private backend/provider
+      # contour and cannot become public plugin release inputs again.
       - name: Run generic plugin host Node tests
         run: >-
           node --test
