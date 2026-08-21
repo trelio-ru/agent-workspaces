@@ -2270,7 +2270,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.12.0");
+  assert.equal(BRIDGE_VERSION, "1.12.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2371,7 +2371,10 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Политику модели применяет approved hook плагина/u,
     /discovery и recovery доступны без допуска/u,
     /hook сам подставляет одноразовый runtimeSessionProof/u,
-    /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
+    /Только если сам Trelio возвращает TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
+    /активным PreToolUse hook.*Hooks запущены.*не заменяй их на TRELIO_RUNTIME_HOOK_REQUIRED.*не советуй включать Hooks/u,
+    /AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED.*AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED.*требуемая версия уже установлена.*новую задачу\/session/u,
+    /TRELIO_RUNTIME_HOOK_FAILED.*повтори запрос в текущей задаче/u,
     /не обходи gate другим MCP, HTTP, browser или shell/iu,
     /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
     /назови required action и останови текущий запрос к данным/u,
@@ -2556,7 +2559,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
 });
 
-test("bundled skills make hook activation the only initial recovery action", async () => {
+test("bundled skills reserve hook activation for Trelio's missing-proof signal", async () => {
   const recoveryPhrase = /Откройте\s+настройки\s+плагина\s+Trelio\s+Agent\s+Workspaces,\s+включите\s+Hooks\s+и\s+повторите\s+запрос\./u;
   const recoveryFiles = [
     path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
@@ -2575,7 +2578,13 @@ test("bundled skills make hook activation the only initial recovery action", asy
   for (const filePath of recoveryFiles) {
     const instructions = await readFile(filePath, "utf8");
     assert.match(instructions, recoveryPhrase);
-    assert.match(instructions, /Do not initially\s+suggest/u);
+    assert.match(instructions, /Trelio itself\s+returns\s+`TRELIO_RUNTIME_HOOK_REQUIRED`/u);
+    assert.match(
+      instructions,
+      /A `PreToolUse` failure[\s\S]{0,160}proves[\s\S]{0,80}(?:hook is active|hook ran)/u,
+    );
+    assert.match(instructions, /AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED/u);
+    assert.match(instructions, /Do not\s+initially\s+suggest/u);
     assert.match(instructions, /Escalate only/u);
   }
 

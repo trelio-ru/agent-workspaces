@@ -30,7 +30,7 @@ Do not author, copy, preserve, or retry `runtimeSessionProof` or
 `runtimeAttestation`. Discovery and pairing/session recovery calls remain
 available without admission. For context reads, mutations, and Agent Workspace
 tools, the approved Codex/Claude Code `PreToolUse` hook transparently injects a
-fresh one-use proof after the tool call is authored. If Trelio returns
+fresh one-use proof after the tool call is authored. If Trelio itself returns
 `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work and give one host-specific
 action. In Codex tell the user only: `Откройте настройки плагина Trelio Agent
 Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell the
@@ -41,6 +41,15 @@ Escalate only after Hooks are enabled and a retry still proves that the current
 session did not load them or returns a separate, specific version,
 installation, pairing, or session error. Never bypass the gate with another
 MCP, direct HTTP, browser automation, or a shell script.
+
+A `PreToolUse` failure is different: it proves that the hook ran. Preserve its
+exact code and reason instead of reclassifying it as missing Hooks. On
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, read
+[`references/setup-and-recovery.md`](references/setup-and-recovery.md) and use
+the required-version recovery; never tell the user to enable Hooks for that
+failure. `TRELIO_RUNTIME_HOOK_FAILED` likewise follows its exact reason and a
+single current-task retry, not the missing-hook response.
 
 ## Route the current scenario
 

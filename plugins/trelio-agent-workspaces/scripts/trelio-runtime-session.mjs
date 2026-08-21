@@ -31,6 +31,13 @@ const RECOVERY_TOOLS = new Set([
   "revoke_agent_workspace_bridge_session",
 ]);
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const HOOK_REQUIRED_CODE = "TRELIO_RUNTIME_HOOK_REQUIRED";
+const HOOK_FAILED_CODE = "TRELIO_RUNTIME_HOOK_FAILED";
+const PLUGIN_UPGRADE_CODES = new Set([
+  "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED",
+  "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
+]);
+const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/u;
 let workspaceBridgeModulePromise;
 
 // PreToolUse вызывается и для нетрелиевских инструментов. Большой bridge
@@ -345,17 +352,45 @@ const runHook = async () => {
   }
 };
 
+/**
+ * Ошибка из этой ветки доказывает, что lifecycle hook уже был запущен
+ * клиентом. Поэтому нельзя маркировать любой его внутренний отказ как
+ * `TRELIO_RUNTIME_HOOK_REQUIRED`: этот код зарезервирован для ответа Trelio,
+ * когда proof не пришёл из-за действительно выключенного/неодобренного hook.
+ *
+ * Структурированные recovery-коды bridge/backend сохраняются, чтобы skill мог
+ * выбрать точное действие. Неизвестные и противоречивые коды сворачиваются в
+ * отдельный fail-closed `TRELIO_RUNTIME_HOOK_FAILED`.
+ */
+export const formatRuntimeHookFailure = (error) => {
+  const rawCode = typeof error?.code === "string" ? error.code.trim() : "";
+  const code = rawCode
+    && rawCode !== HOOK_REQUIRED_CODE
+    && SAFE_ERROR_CODE_PATTERN.test(rawCode)
+    ? rawCode
+    : HOOK_FAILED_CODE;
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = /[.!?]$/u.test(rawMessage.trim())
+    ? rawMessage.trim()
+    : `${rawMessage.trim()}.`;
+  const recovery = PLUGIN_UPGRADE_CODES.has(code)
+    ? (
+        "Проверьте установленную версию плагина. Если требуемая версия уже установлена, "
+        + "повторите запрос в новой задаче; иначе сначала обновите плагин. Полный "
+        + "перезапуск нужен только если новая задача всё ещё видит старую версию."
+      )
+    : "Устраните указанную причину и повторите запрос в текущей задаче.";
+
+  return `${code}: активный hook остановил защищённую работу Trelio. ${message} ${recovery}\n`;
+};
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   runHook().catch((error) => {
     // Эта ветка выполняется только после фактического запуска hook клиентом.
     // Поэтому общий совет включить hooks, переустановить plugin или повторить
     // pairing здесь вводил бы пользователя в заблуждение. Конкретная причина
     // выше уже содержит точный recovery, если он действительно требуется.
-    process.stderr.write(
-      "TRELIO_RUNTIME_HOOK_REQUIRED: защищённая работа Trelio заблокирована. "
-        + `${error instanceof Error ? error.message : String(error)}. `
-        + "Устраните указанную причину и повторите запрос.\n",
-    );
+    process.stderr.write(formatRuntimeHookFailure(error));
     process.exitCode = 2;
   });
 }

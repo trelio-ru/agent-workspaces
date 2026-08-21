@@ -108,24 +108,37 @@ not missing setup or a Trelio ACL denial.
 
 ## Required plugin version
 
-Trelio requires the latest published stable plugin for bridge operations. On
-`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, never retry the old network process
-or bypass the gate.
+Trelio rejects a plugin below the live `minimumVersion`. On
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, never retry the old protected
+process or bypass the gate. When the code comes from an active `PreToolUse`
+failure, it proves that Hooks are enabled; never replace it with the
+`TRELIO_RUNTIME_HOOK_REQUIRED` response.
 
-1. In Codex, let the bridge update first. It uses the exact official
-   `trelio-plugins` marketplace, bounds transient-network retries, validates the
-   installed manifest and entrypoint, and can re-dispatch the new bridge in the
-   same task. Do not ask the user to update before this path finishes and do
-   not scan plugin caches.
-2. If re-dispatch succeeds, continue without an update notice.
-3. If the bridge updated but the current task cannot reload safely, ask only
-   for a new task and preserve the Run directory. There execute the same
-   `trelio-workspace open --workspace <uuid> --run <uuid>` command.
-4. Require a full Codex restart only if the new task still reports the old
+1. When a bridge command reports the code in Codex, let its guarded updater run
+   first. It uses the exact official `trelio-plugins` marketplace, bounds
+   transient-network retries, validates the installed manifest and entrypoint,
+   and can re-dispatch the new bridge in the same task. Do not ask the user to
+   update before this path finishes and do not scan plugin caches.
+2. When an active Codex `PreToolUse` hook reports the code, inspect
+   `codex plugin list --json`. If the required version is already installed and
+   enabled, do not update again: the current task retained the old hook, so ask
+   only for a new task and repeat the original protected call there. If the
+   installed version is still below the returned minimum, run the exact
+   official update command from the error or
+   `codex plugin marketplace upgrade trelio-plugins`, verify the installed
+   version, and then retry once in the current task before moving to a new one.
+3. If bridge re-dispatch or that one current-task retry succeeds, continue
+   without an update notice.
+4. If the plugin updated but the current task cannot reload safely, ask only
+   for a new task and preserve any Run directory. There execute the same
+   original call or `trelio-workspace open --workspace <uuid> --run <uuid>`
+   command.
+5. Require a full Codex restart only if the new task still reports the old
    version or lacks MCP tools. If automatic update failed, show the exact
    fallback command returned by the bridge and keep the order: current task,
    new task, full restart.
-5. Claude does not use the Codex updater. Refresh `trelio-plugins` through its
+6. Claude does not use the Codex updater. Refresh `trelio-plugins` through its
    plugin manager, use `/reload-plugins` when available or start a new task,
    and reserve a full restart as the last fallback.
 

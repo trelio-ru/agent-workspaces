@@ -181,15 +181,25 @@ mutation и Agent Workspace call получает одноразовый `runtim
 Discovery allowlist (`search`, lists, metadata/resolvers`) и
 login/doctor/pairing recovery не требуют admission. Неизвестный новый read по
 умолчанию context, write – mutation. В enforcing company отсутствие hook
-fail-closed возвращает `TRELIO_RUNTIME_HOOK_REQUIRED`. В Codex recovery
-начинается с одного действия: агент дословно говорит `Откройте настройки
-плагина Trelio Agent Workspaces, включите Hooks и повторите запрос.` и сначала
-повторяет текущий запрос. В Claude Code/Cowork используется эквивалентное
-enable/approve plugin hooks. Установка, обновление, переустановка,
-`trelio-workspace login`, новая задача/session и restart не перечисляются
-заранее: к ним переходят только после включения Hooks, когда повтор доказал,
-что текущая session их не подхватила, либо вернул отдельную конкретную ошибку
-version/install/pairing/session.
+fail-closed возвращает server-сигнал `TRELIO_RUNTIME_HOOK_REQUIRED`. Только для
+этого сигнала Codex recovery начинается с одного действия: агент дословно
+говорит `Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и
+повторите запрос.` и сначала повторяет текущий запрос. В Claude Code/Cowork
+используется эквивалентное enable/approve plugin hooks. Установка, обновление,
+переустановка, `trelio-workspace login`, новая задача/session и restart не
+перечисляются заранее: к ним переходят только когда повтор вернул отдельную
+конкретную ошибку version/install/pairing/session.
+
+Ошибка, которую вернул уже запущенный `PreToolUse`, не является отсутствием
+hook. Hook сохраняет безопасный structured code причины, включая
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`; неизвестный внутренний отказ получает
+отдельный `TRELIO_RUNTIME_HOOK_FAILED`. `TRELIO_RUNTIME_HOOK_REQUIRED` этой
+веткой не генерируется и остаётся только server-сигналом отсутствующего proof.
+При version mismatch Codex сначала проверяет installed plugin: уже установленная
+требуемая версия означает stale hook текущей задачи и переход в новую задачу
+без повторного update; старая installed version проходит guarded update, один
+current-task retry и только затем новую задачу. Full restart остаётся последней
+ступенью, если новая задача по-прежнему видит старую версию.
 
 Runtime закрепляется при первом protected call до `SessionEnd` или максимум на
 24 часа. Смена model/effort позже не отзывает уже допущенную session. Agent Run

@@ -11,8 +11,8 @@ company, edit groups, or perform bulk membership replacement.
 
 Do not add runtime fields yourself. Discovery/recovery remains available, but
 instruction/context reads and both plan/apply steps rely on the approved
-client hook to inject a one-use `runtimeSessionProof`. On
-`TRELIO_RUNTIME_HOOK_REQUIRED`, stop this flow and give one host-specific
+client hook to inject a one-use `runtimeSessionProof`. When Trelio itself
+returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop this flow and give one host-specific
 action. In Codex tell the user only: `Откройте настройки плагина Trelio Agent
 Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell the
 user only to enable/approve this plugin's hooks and retry. Do not initially
@@ -22,6 +22,15 @@ Escalate only after Hooks are enabled and a retry still proves that the current
 session did not load them or returns a separate, specific version,
 installation, pairing, or session error; never bypass the gate through another
 route.
+
+A `PreToolUse` failure proves that the hook is active. Preserve its exact code
+and reason. On `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, update the plugin only when the
+required version is not installed, then retry in a new task if the current task
+cannot reload it; reserve a full restart for a new task that still sees the old
+version. Never answer that version failure with the missing-Hooks instruction.
+On `TRELIO_RUNTIME_HOOK_FAILED`, resolve the stated cause and retry once in the
+current task.
 
 ## Check authority and connection
 

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { detectAgentRuntimeAttestation } from "../scripts/trelio-runtime-attestation.mjs";
 import {
   buildRuntimeSessionProof,
+  formatRuntimeHookFailure,
   isProtectedTrelioToolName,
   resolveTrelioMcpToolName,
 } from "../scripts/trelio-runtime-session.mjs";
@@ -75,6 +76,16 @@ test("hook protects context and mutation but leaves discovery and recovery open"
   assert.equal(isProtectedTrelioToolName("search_agent_skills"), false);
   assert.equal(isProtectedTrelioToolName("list_my_tasks"), false);
   assert.equal(isProtectedTrelioToolName("approve_agent_workspace_bridge_pairing"), false);
+});
+
+test("active hook formatting reserves the missing-proof code for Trelio", () => {
+  const contradictoryError = new Error("hook already ran, but an inner layer reused the server code");
+  contradictoryError.code = "TRELIO_RUNTIME_HOOK_REQUIRED";
+
+  const formatted = formatRuntimeHookFailure(contradictoryError);
+
+  assert.match(formatted, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
+  assert.doesNotMatch(formatted, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
 });
 
 test("hook proof is Ed25519-bound to session, tool, timestamp and nonce", () => {
@@ -144,10 +155,85 @@ test("an active hook failure does not append unrelated setup steps", async () =>
     });
 
     assert.equal(result.exitCode, 2);
+    assert.match(result.stderr, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
     assert.match(result.stderr, /активный клиентский hook не смог определить модель/u);
-    assert.match(result.stderr, /Устраните указанную причину и повторите запрос/u);
+    assert.match(result.stderr, /Устраните указанную причину и повторите запрос в текущей задаче/u);
+    assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
     assert.doesNotMatch(result.stderr, /Установите|обновите|trelio-workspace login/u);
   } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
+test("an active hook preserves the plugin upgrade code instead of claiming Hooks are disabled", async () => {
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-upgrade-"));
+  const transcriptPath = path.join(temporaryHome, "rollout.jsonl");
+  const configDirectory = path.join(temporaryHome, ".config", "trelio", "workspace-bridge");
+  const threadId = "019f9fcd-899a-72b3-91f6-fdf3134381bb";
+  let compatibilityRequests = 0;
+  const server = createServer((request, response) => {
+    assert.equal(request.headers.authorization, "Bearer test-bridge-session");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.12.1");
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+      compatibilityRequests += 1;
+      response.end(JSON.stringify({ supported: false, minimumVersion: "1.12.2" }));
+      return;
+    }
+    response.statusCode = 500;
+    response.end(JSON.stringify({ message: "runtime registration must not follow a rejected version" }));
+  });
+
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await mkdir(configDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      path.join(configDirectory, "credentials.json"),
+      `${JSON.stringify({ [origin]: { bridgeSessionToken: "test-bridge-session" } })}\n`,
+      { mode: 0o600 },
+    );
+    if (process.platform !== "win32") {
+      await chmod(configDirectory, 0o700);
+      await chmod(path.join(configDirectory, "credentials.json"), 0o600);
+    }
+    await writeFile(
+      transcriptPath,
+      `${JSON.stringify({
+        type: "turn_context",
+        payload: { model: "gpt-5.6-sol", effort: "high" },
+      })}\n`,
+    );
+
+    const result = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      model: "gpt-5.6-sol",
+      transcript_path: transcriptPath,
+      tool_name: "mcp__trelio__get_task",
+      tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
+    }, {
+      HOME: temporaryHome,
+      USERPROFILE: temporaryHome,
+      CODEX_HOME: temporaryHome,
+      CODEX_THREAD_ID: threadId,
+      TRELIO_WORKSPACE_ORIGIN: origin,
+      TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+      CLAUDE_CODE_ENTRYPOINT: "",
+      CLAUDE_EFFORT: "",
+    });
+
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.stdout, "");
+    assert.equal(compatibilityRequests, 1);
+    assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
+    assert.match(result.stderr, /v1\.12\.1 больше не поддерживается; требуется v1\.12\.2/u);
+    assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
+    assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
     await rm(temporaryHome, { recursive: true, force: true });
   }
 });
@@ -161,7 +247,7 @@ test("SessionStart pins the initial model and PreToolUse injects a verifiable pr
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.12.0");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.12.1");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));

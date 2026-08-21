@@ -51,15 +51,22 @@ task communication, handoff, submit, or final reporting.
 4. Do not add runtime fields to the prepare call. The approved `PreToolUse`
    hook injects a one-use proof, and the returned bridge `open` command carries
    only the server-side `--runtime-session UUID`. Execute it unchanged through
-   the approved bundled launcher. On `TRELIO_RUNTIME_HOOK_REQUIRED`, stop and
-   give one host-specific action. In Codex tell the user only: `Откройте
-   настройки плагина Trelio Agent Workspaces, включите Hooks и повторите
-   запрос.` In Claude Code/Cowork tell the user only to enable/approve this
-   plugin's hooks and retry. Do not initially suggest plugin installation or
-   update, `trelio-workspace login`, a new task/session, or an app restart.
+   the approved bundled launcher. When Trelio itself returns
+   `TRELIO_RUNTIME_HOOK_REQUIRED`, stop and give one host-specific action. In
+   Codex tell the user only: `Откройте настройки плагина Trelio Agent
+   Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell
+   the user only to enable/approve this plugin's hooks and retry. Do not
+   initially suggest plugin installation or update, `trelio-workspace login`,
+   a new task/session, or an app restart.
    Escalate only when the retry after enabling Hooks still proves that the
    current session did not load them or returns a separate, specific version,
    installation, pairing, or session error.
+   A `PreToolUse` failure instead proves that the hook ran. Preserve its exact
+   code and reason. Route `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` and
+   `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` through
+   `setup-and-recovery.md`; never answer either with the missing-Hooks action.
+   Resolve `TRELIO_RUNTIME_HOOK_FAILED` from its stated cause and retry once in
+   the current task.
 5. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
    `deviceName`, then rerun the original bridge command. Do not show a code or

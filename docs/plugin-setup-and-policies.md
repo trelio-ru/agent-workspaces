@@ -174,15 +174,24 @@ proof и полную company policy.
 
 Agent Run закрепляет snapshot и hook-observed runtime; exact open command
 передаёт bridge только `--runtime-session UUID`. Сессия живёт до SessionEnd или
-24 часов и не пересматривает model/effort после первоначального допуска. При
-`TRELIO_RUNTIME_HOOK_REQUIRED` в Codex сначала требуется только открыть
-настройки плагина Trelio Agent Workspaces, включить Hooks и повторить запрос.
-Для Claude Code/Cowork применяется эквивалентное enable/approve plugin hooks.
-Обновление, переустановка, `trelio-workspace login`, новая задача/session и
-restart нужны только тогда, когда повтор после включения Hooks доказал, что
-текущая session их не подхватила, либо вернул отдельную конкретную ошибку
-соответствующего типа. Нельзя создавать/копировать proof или обходить gate
-через другой транспорт.
+24 часов и не пересматривает model/effort после первоначального допуска.
+Только когда сам Trelio возвращает `TRELIO_RUNTIME_HOOK_REQUIRED` из-за
+отсутствующего proof, в Codex требуется открыть настройки плагина Trelio Agent
+Workspaces, включить Hooks и повторить запрос. Для Claude Code/Cowork
+применяется эквивалентное enable/approve plugin hooks. Ошибка, уже возвращённая
+активным `PreToolUse`, доказывает, что hook запущен: её structured code и
+причина сохраняются, а неизвестный внутренний отказ получает отдельный
+`TRELIO_RUNTIME_HOOK_FAILED`.
+
+При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` Codex сначала проверяет
+установленную версию. Если требуемая версия уже установлена, текущая задача
+удержала старый hook и запрос повторяется в новой задаче без повторного update.
+Старая установленная версия обновляется официальным способом, после проверки
+получает один повтор в текущей задаче и только затем новую задачу. Полный
+restart остаётся последним fallback, если новая задача всё ещё видит старую
+версию. Нельзя создавать/копировать proof или обходить gate через другой
+транспорт.
 
 Косметическое переименование нового Codex-чата выполняется best-effort по
 короткой инструкции основного MCP server, а не runtime lifecycle hook. Fork,

@@ -14,8 +14,10 @@ discovery.
 Discovery calls are intentionally available without runtime admission. Exact
 content reads selected from discovery are protected: the approved client hook
 injects a fresh one-use `runtimeSessionProof`. Never add or copy that field. If
-the hook is unavailable, stop before reading content and follow the explicit
-`TRELIO_RUNTIME_HOOK_REQUIRED` recovery steps.
+Trelio itself reports that the hook is unavailable, stop before reading content
+and follow the explicit `TRELIO_RUNTIME_HOOK_REQUIRED` recovery steps. An
+active `PreToolUse` failure preserves its separate exact code and reason; never
+reclassify it as missing Hooks.
 
 ## Resolve the work item
 
