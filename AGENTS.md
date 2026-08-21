@@ -85,6 +85,15 @@
 - Plugin tags используют `vX.Y.Z`; provider tags –
   `skill-<skill-id>-v<skill-version>`. Published immutable runtime/version не
   перезаписывай.
+- Existing signed runtime после успешного exact provider-tag workflow
+  публикуется guarded CLI из актуального Trelio checkout: первый запуск
+  `publish_agent_skill_release.mjs` только строит plan из tag/commit/workflow,
+  live current release, publisher и package/instruction hashes; второй требует
+  literal `--apply <planSha256>`. Signing key остаётся только на production
+  backend, GitHub Actions хранит unsigned `.skillpkg` и не двигает current
+  pointer. Browser upload – fallback, не штатный повторяемый release path.
+  После apply обязательны exact read-back, безопасный provider smoke и только
+  затем `release.state=current` в main.
 - Local credentials, sessions, profiles и policy сохраняют стабильный
   `skill/company/member/connection` namespace вне workspace, plugin cache и
   runtime package, поэтому независимый runtime release не требует повторного

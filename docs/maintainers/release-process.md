@@ -132,39 +132,53 @@ read-back seeded client можно публиковать manifest, которы
 При network ambiguity сначала read-back remote ref/release; side-effect нельзя
 слепо повторять.
 
-## Публикация internal runtime через Codex in-app Browser
+## Guarded публикация internal runtime
 
-Новый signed runtime публикуется в `/internal-admin/skills/` через встроенный
-Browser Codex с уже авторизованной сессией администратора. Рабочая
-последовательность:
+Tag `skill-<skill-id>-v<skill-version>` запускает
+`platform-skill-runtimes.yml`. Только успешный exact tag run и его единственный
+artifact допускаются к backend publication; локально заново собранный либо
+произвольно выбранный `.skillpkg` production authority не является.
 
-1. Собрать `.skillpkg`, проверить его SHA-256 и держать по точному абсолютному
-   локальному пути. В форме exact навыка заполнить новую версию, полную
-   инструкцию, minimum host и краткое описание изменений; для нового пакета
-   снять `Если новый файл не выбран, оставить текущий runtime`.
-2. После свежего DOM snapshot разрешить exact `input[type="file"]` внутри
-   article навыка. Сначала создать ожидание
-   `tab.playwright.waitForEvent("filechooser")`, затем нажать input и передать
-   chooser-у абсолютный путь через `setFiles(...)`.
-3. Проверять выбор файла по непустому `input.value`: встроенный Browser
-   возвращает значение вида
-   `C:\\fakepath\\<точное-имя-пакета>.skillpkg`. Read-only DOM scope может
-   вернуть `input.files` как `null` или пустой список даже после успешного
-   выбора, поэтому `files.length`, `Array.from(files)` и `File.size` здесь не
-   являются надёжной проверкой. Если `input.value` пуст или basename не
-   совпадает, публикацию не запускать.
-4. Перед submit ещё раз проверить version, instruction marker, minimum host,
-   выключенный reuse, summary и basename пакета. После клика дождаться heading
-   новой версии и сообщения `Версия навыка ... опубликована`.
-5. Через `list_agent_skills` перечитать live skill и проверить skill/runtime
-   version, новый release ID, package SHA-256, size, minimum host и manifest.
-   Затем непосредственно перед smoke-командой вызвать `get_agent_skill` и
-   запустить только возвращённый exact signed runtime. Для runtime с Agent
-   Secret использовать новый одноразовый checkout текущего активного Run.
+В актуальном Trelio checkout оператор сначала запускает read-only plan:
 
-Обычная настройка Chrome extension `Allow access to file URLs` не относится к
-этому flow: публикация выполняется в отдельном профиле Codex in-app Browser, а
-локальный файл передаётся поддерживаемым file chooser API.
+```bash
+node ops/scripts/publish_agent_skill_release.mjs \
+  --tag skill-email-imap-smtp-v1.2.1 \
+  --publisher-user-id <production-super-admin-user-uuid>
+```
+
+CLI разрешает tag до exact commit, проверяет успешный workflow, скачивает
+artifact, читает tagged `release.json` и `SKILL.md`, затем добавляет live
+current release и publisher в один SHA-256 plan. Первый запуск не меняет
+production. После проверки полного JSON оператор повторяет команду с exact
+digest:
+
+```bash
+node ops/scripts/publish_agent_skill_release.mjs \
+  --tag skill-email-imap-smtp-v1.2.1 \
+  --publisher-user-id <production-super-admin-user-uuid> \
+  --apply <exact-plan-sha256>
+```
+
+Apply заново получает все immutable inputs. Любое изменение tag/commit,
+workflow run, live current release, package, инструкции, summary, minimum host
+или publisher меняет digest и инвалидирует подтверждение. Package передаётся
+bounded SSH-командой production backend; signing key не покидает сервер и не
+попадает в GitHub Actions. Backend повторно валидирует plan, super-admin actor,
+package manifest/files и CAS, подписывает exact bytes и возвращает read-back.
+После неоднозначного ответа mutation можно повторить только если безопасное
+чтение подтвердило прежний current release; полное совпадение target и audit
+provenance считается идемпотентным успехом.
+
+После публикации свежий `get_agent_skill` обязан подтвердить skill/runtime
+version, release ID, package SHA-256, size, minimum host и manifest. Затем
+запускается только exact безопасный provider smoke; runtime с Agent Secret
+использует новый одноразовый checkout. Лишь после этого `release.state` в main
+меняется с `planned` на `current`.
+
+`/internal-admin/skills/` остаётся fallback для создания catalog item,
+instruction-only releases, rollback/revoke и аварийной ручной операции. Upload
+обычного tagged runtime через Browser больше не является каноническим flow.
 
 ## Release notes
 
