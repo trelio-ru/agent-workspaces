@@ -42,6 +42,15 @@ API_HASH_ENV = "TRELIO_TELEGRAM_API_HASH"
 API_HASH_FILE_NAME = "api_hash"
 RUNTIME_VERSION = "1"
 POLICY_MODES = ("confirm", "autonomous", "read-only")
+# Windows Python does not ship the IANA timezone database used by export.
+# Pinning tzdata beside the other bootstrap dependencies keeps the same named
+# timezone contract on every supported OS without falling back to guessed UTC
+# offsets or platform-specific timezone names.
+RUNTIME_PYTHON_PACKAGES = (
+    "telethon>=1.38,<2",
+    "qrcode[pil]>=8,<9",
+    "tzdata>=2025.2,<2027",
+)
 MAX_MESSAGE_CHARS = 4096
 # Telegram already bounds ordinary messages, but keeping explicit output caps
 # makes the JSON contract safe even when a future MTProto object or test double
@@ -1034,8 +1043,7 @@ def command_bootstrap(_args: argparse.Namespace) -> dict[str, Any]:
             "pip",
             "install",
             "--disable-pip-version-check",
-            "telethon>=1.38,<2",
-            "qrcode[pil]>=8,<9",
+            *RUNTIME_PYTHON_PACKAGES,
         ],
         check=False,
         text=True,

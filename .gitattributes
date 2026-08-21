@@ -1,0 +1,5 @@
+platform-skills/**/*.json text eol=lf
+platform-skills/**/*.md text eol=lf
+platform-skills/**/*.mjs text eol=lf
+platform-skills/**/*.py text eol=lf
+platform-skills/**/*.yaml text eol=lf

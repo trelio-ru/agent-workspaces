@@ -127,7 +127,13 @@ test("MAX parses bounded history, repeated files and exact member references", (
   ]);
   assert.equal(options.title, "Проект Альфа");
   assert.deepEqual(options.members, ["@one", "https://max.ru/u/two"]);
-  assert.deepEqual(options.files, ["/tmp/one.txt", "/tmp/two.txt"]);
+  // parseArguments intentionally canonicalizes local paths for the current OS.
+  // Resolve the fixtures the same way so this regression describes the
+  // cross-platform contract instead of hard-coding POSIX separators.
+  assert.deepEqual(options.files, [
+    path.resolve("/tmp/one.txt"),
+    path.resolve("/tmp/two.txt"),
+  ]);
   assert.equal(options.pages, 3);
   assert.throws(
     () => parseArguments([...identityArguments, "read", "--pages", "21"]),

@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "release": {
     "skillId": "telegram-mtproto",
-    "version": "1.2.0",
-    "state": "current",
-    "summary": "Добавить privacy-safe поиск Telegram по номеру и нормализованную активность пользователя."
+    "version": "1.2.1",
+    "state": "planned",
+    "summary": "Добавить переносимую IANA timezone database для экспорта Telegram на Windows."
   },
   "runtime": {
-    "version": "1.1.0",
+    "version": "1.1.1",
     "minimumHostVersion": "1.11.0",
     "entrypoint": {
       "path": "trelio-telegram.py",

@@ -22,6 +22,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class TrelioTelegramTests(unittest.TestCase):
+    def test_bootstrap_installs_portable_iana_timezone_data(self):
+        """Keep named export timezones available on Windows as well as POSIX."""
+
+        self.assertIn("tzdata>=2025.2,<2027", MODULE.RUNTIME_PYTHON_PACKAGES)
+
     def identity(self):
         return MODULE.Identity(
             company_id="11111111-1111-1111-1111-111111111111",

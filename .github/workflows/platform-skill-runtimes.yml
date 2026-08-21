@@ -78,6 +78,12 @@ jobs:
       - name: Run Node runtime regressions
         if: matrix.language == 'node'
         run: node --test ${{ matrix.test_file }}
+      - name: Install Python runtime test dependencies
+        if: matrix.language == 'python'
+        run: >-
+          python -m pip install
+          --disable-pip-version-check
+          "tzdata>=2025.2,<2027"
       - name: Run Python runtime regressions
         if: matrix.language == 'python'
         run: >-
