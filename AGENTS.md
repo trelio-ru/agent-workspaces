@@ -62,6 +62,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   общего primitive, который нельзя безопасно доставить независимым runtime.
 - Provider API/DOM, provider-команда, parser, dependency, instruction или тест
   одного provider не являются основанием менять plugin.
+- Generic routing обязан считать один успешный `get_agent_skill` свежим для
+  связанной непрерывной последовательности текущего пользовательского хода с
+  теми же company/project, skill, implementation и intent. Нельзя требовать
+  повтор перед каждым runtime/Remote MCP subcommand: host всё равно делает
+  live resolve каждого действия. Новое чтение требуется в следующем
+  пользовательском ходе, после смены exact route, после снятия ранее
+  возвращённого setup/access blocker либо один раз на
+  `AGENT_SKILL_RELEASE_CHANGED`.
 - Runtime admission proof создаёт только approved hook. Агент не формирует, не
   копирует и не обходит proof другим MCP, HTTP, browser или script.
 - `hooks/hooks.json` является стабильной client-trust границей: lifecycle

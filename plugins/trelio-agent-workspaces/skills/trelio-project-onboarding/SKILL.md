@@ -308,11 +308,15 @@ replace `search_agent_skills` as the standard route for an ordinary task.
    checklist. Explain that only strict project-only skills missing from the
    company-wide response will be offered just in time when a concrete Trelio
    project or task is selected.
-5. Immediately before configuring each selected skill, call
-   `get_agent_skill` with the same exact scope and follow its current
-   `instructionsMarkdown`, `runtimeExecution`, or `remoteMcpExecution`.
-   Configure and verify one selected skill at a time so an incomplete login
-   cannot be mistaken for another skill's readiness.
+5. Before configuring each selected skill, call `get_agent_skill` once with the
+   same exact scope and follow its current `instructionsMarkdown`,
+   `runtimeExecution`, or `remoteMcpExecution`. That read covers the complete
+   uninterrupted configure/doctor sequence for this skill; do not repeat it
+   before each subcommand. Read it again after a user handoff resumes in a
+   later turn, after the exact route changes, or on
+   `AGENT_SKILL_RELEASE_CHANGED`. Configure and verify one selected skill at a
+   time so an incomplete login cannot be mistaken for another skill's
+   readiness.
 
 ## Protect personal credentials
 

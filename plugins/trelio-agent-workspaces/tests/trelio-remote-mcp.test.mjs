@@ -1382,7 +1382,18 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /Use `list_agent_skills` only for explicit whole-catalog inventory/u);
   assert.match(instructions, /Do not call `request_plugin_install`/u);
   assert.match(instructions, /compatible personal skills and connectors remain available/u);
-  assert.match(instructions, /immediately before the action call `get_agent_skill`/u);
+  assert.match(
+    instructions,
+    /call `get_agent_skill` once before the first external action in the current user turn/u,
+  );
+  assert.match(
+    instructions,
+    /do not repeat it immediately or before each subcommand/u,
+  );
+  assert.match(
+    instructions,
+    /Read it again in a later user turn,[^\n]+`AGENT_SKILL_RELEASE_CHANGED`/u,
+  );
   assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
   assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
   assert.match(instructions, /separate maintainer route/u);
@@ -1703,7 +1714,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.13.0");
+  assert.equal(frames[0].result.serverInfo.version, "1.13.1");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);

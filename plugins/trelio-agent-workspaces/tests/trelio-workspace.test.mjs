@@ -2270,7 +2270,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.13.0");
+  assert.equal(BRIDGE_VERSION, "1.13.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2526,6 +2526,18 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkillNormalized, /Пропускай обращение к Trelio только/u);
   assert.match(onboardingSkillNormalized, /его контекст не проверен/u);
   assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
+  assert.match(
+    onboardingSkillNormalized,
+    /Before configuring each selected skill, call `get_agent_skill` once/u,
+  );
+  assert.match(
+    onboardingSkillNormalized,
+    /complete uninterrupted configure\/doctor sequence/u,
+  );
+  assert.match(
+    onboardingSkillNormalized,
+    /do not repeat it before each subcommand/u,
+  );
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
@@ -3984,15 +3996,43 @@ test("workspace worker gates external services but not native Trelio work", asyn
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
     "utf8",
   );
+  const workerSkillNormalized = workerSkill.replace(/\s+/gu, " ");
+  const catalogSkillNormalized = catalogSkill.replace(/\s+/gu, " ");
+  const runtimeAgentsNormalized = AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN.replace(/\s+/gu, " ");
 
   assert.match(workerSkill, /Before a connected service or external system/u);
   assert.match(workerSkill, /`search_agent_skills` with the task and compact concept hints/u);
   assert.match(workerSkill, /Reserve\s+`list_agent_skills` for explicit catalog inventory/u);
-  assert.match(workerSkill, /call `get_agent_skill` immediately\s+before acting/u);
+  for (const instruction of [
+    workerSkillNormalized,
+    catalogSkillNormalized,
+    runtimeAgentsNormalized,
+  ]) {
+    assert.match(
+      instruction,
+      /(?:call|вызови) `get_agent_skill` (?:once|один раз)/u,
+    );
+    assert.match(
+      instruction,
+      /(?:do not repeat|не повторяй)[^.]+(?:before each|перед каждым) subcommand/iu,
+    );
+    assert.match(instruction, /AGENT_SKILL_RELEASE_CHANGED/u);
+  }
+  assert.match(
+    catalogSkillNormalized,
+    /successful response already satisfies the fresh-read requirement/u,
+  );
+  assert.match(
+    catalogSkillNormalized,
+    /Do not repeat `get_agent_skill` immediately/u,
+  );
   assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
   assert.match(workerSkill, /do not bypass it while it is\s+usable/u);
   assert.match(workerSkill, /reports `setup_required`, `no_access`, or\s+`needs_reconnect`/u);
-  assert.match(workerSkill, /say that it is unavailable and name the required action/u);
+  assert.match(
+    workerSkill,
+    /say that it is\s+unavailable and name the required action/u,
+  );
   assert.match(workerSkill, /do not choose another source until the\s+user explicitly asks/u);
   assert.match(workerSkill, /When relevant catalog items return `integrationRouting`/u);
   assert.match(workerSkill, /not skill IDs, titles, catalog order, or previous use/u);

@@ -136,19 +136,26 @@ ordinary company actions.
 Before a connected service or external system in an exact company/project
 context, use the current `trelio-skill-catalog` flow: call
 `search_agent_skills` with the task and compact concept hints, choose a ranked
-result, then call `get_agent_skill` immediately before acting. Reserve
-`list_agent_skills` for explicit catalog inventory. Use an assigned skill's
-exact `runtimeExecution` or `remoteMcpExecution`; do not bypass it while it is
-usable. If the selected skill reports `setup_required`, `no_access`, or
-`needs_reconnect`, say that it is unavailable and name the required action.
-Outside formal `integrationRouting`, do not choose another source until the
-user explicitly asks after seeing that blocker.
+result, then call `get_agent_skill` once before the first external action in
+the current user turn. That successful read covers the related uninterrupted
+operation while the exact context, skill, selected implementation, and user
+intent stay unchanged; do not repeat it immediately or before each subcommand.
+Read it again in a later user turn, after the exact route changes, after a
+previously returned setup/access blocker is resolved, or on
+`AGENT_SKILL_RELEASE_CHANGED`.
+Reserve `list_agent_skills` for explicit catalog inventory. Use an assigned
+skill's exact `runtimeExecution` or
+`remoteMcpExecution`; do not bypass it while it is usable. If the selected skill
+reports `setup_required`, `no_access`, or `needs_reconnect`, say that it is
+unavailable and name the required action. Outside formal `integrationRouting`,
+do not choose another source until the user explicitly asks after seeing that
+blocker.
 Native Trelio reads, task discovery and Agent Workspace control-plane
 operations are the primary workflow and do not require a catalog or separate
 skill lookup.
 
 On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill again once before
-retrying the operation.
+retrying the operation; do not force the stale release.
 
 When relevant catalog items return `integrationRouting`, follow only its
 current fields, not skill IDs, titles, catalog order, or previous use. Within

@@ -20,10 +20,17 @@ exact Trelio company/project context. Затем он вызывает `search_a
 `list_agent_skills` используется для явной инвентаризации всего каталога и
 onboarding, а не как стандартный путь ordinary operation.
 
-Из compact ranked результатов агент выбирает релевантный навык и
-непосредственно перед действием вызывает `get_agent_skill`. Инструкции навыка
-не пинятся к Run и могут обновиться между вызовами; executable release всегда
-разрешается заново.
+Из compact ranked результатов агент выбирает релевантный навык и один раз до
+первого внешнего действия текущего пользовательского хода вызывает
+`get_agent_skill`. Успешное чтение покрывает связанную непрерывную
+последовательность с теми же company/project, skill, implementation и intent:
+его не повторяют сразу либо перед каждым `bootstrap`, `doctor`, `search`,
+`export` или другим subcommand. Навык читается заново в следующем
+пользовательском ходе, после смены exact route, после снятия ранее
+возвращённого setup/access blocker либо один раз на
+`AGENT_SKILL_RELEASE_CHANGED`. Это не постоянный cache: инструкции не пинятся к
+Run, а executable release всё равно разрешается host-ом перед каждым
+действием.
 
 Availability и readiness различаются. Company `setup_required` или возвращённые
 навыком `setup_required`, `no_access`, `needs_reconnect` останавливают текущий
