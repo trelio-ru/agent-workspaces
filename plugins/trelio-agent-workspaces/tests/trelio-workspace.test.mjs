@@ -2486,6 +2486,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
     ),
     "utf8",
   );
+  const onboardingSkillNormalized = onboardingSkill.replace(/\s+/gu, " ");
 
   assert.deepEqual(codexManifest.interface.defaultPrompt, [
     "Настрой Trelio Agent Workspaces для текущей рабочей папки.",
@@ -2509,6 +2510,22 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
   assert.match(onboardingAgentMetadata, /\$trelio-project-onboarding/u);
   assert.match(onboardingSkill, /<!-- trelio-agent-workspaces:start -->/u);
+  assert.match(
+    onboardingSkillNormalized,
+    /Перед первым содержательным ответом по работе в этой папке/u,
+  );
+  assert.match(onboardingSkillNormalized, /получи из Trelio актуальные правила/u);
+  assert.match(
+    onboardingSkillNormalized,
+    /проверь относящийся к запросу контекст в доступных задачах, досье и рабочих материалах/u,
+  );
+  assert.match(
+    onboardingSkillNormalized,
+    /По умолчанию считай любой содержательный запрос в этой папке связанным/u,
+  );
+  assert.match(onboardingSkillNormalized, /Пропускай обращение к Trelio только/u);
+  assert.match(onboardingSkillNormalized, /его контекст не проверен/u);
+  assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
