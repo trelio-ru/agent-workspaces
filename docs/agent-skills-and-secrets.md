@@ -76,19 +76,26 @@ resolve.
 ## Remote MCP
 
 Декларативный `remoteMcpExecution` фиксирует HTTPS endpoint, protocol
-`2025-03-26`, auth mode, безопасные headers и exact read-only allowlist.
+`2025-03-26`, auth mode, безопасные headers и одну из read-only policy:
+schema v1 с exact allowlist либо schema v2 `all_read_only` для
+credential-free provider-а. Schema v2 требует host `>=1.13.3`.
 Bundled `trelio-remote-skills` host:
 
 - повторяет live resolve перед каждым действием;
 - блокирует private, mapped, NAT64 и 6to4 адреса и pin-ит проверенный DNS;
-- выполняет `initialize` и exact `tools/list`;
-- требует полного совпадения с опубликованным allowlist;
+- выполняет `initialize` и полный paginated `tools/list` перед doctor и call;
+- для v1 требует полного совпадения с опубликованным allowlist;
+- для v2 допускает каждый актуальный tool только при допустимом уникальном
+  имени и exact `readOnlyHint=true`, `destructiveHint=false`, а небезопасные и
+  не полностью размеченные tools игнорирует по одному;
 - никогда не отправляет write headers;
 - завершает JSON-RPC по первому matching SSE event и применяет абсолютный
   deadline, не продлеваемый heartbeat.
 
 Descriptions, schemas и tool results внешнего MCP считаются untrusted data и
-не могут расширить полномочия или ослабить allowlist.
+не могут расширить полномочия или ослабить выбранную policy. Dynamic policy
+запрещена для PAT-backed provider-ов, чтобы будущий tool не расширял доступ к
+личным данным без нового fingerprint и reconnect.
 
 ## Browser-first credentials
 
