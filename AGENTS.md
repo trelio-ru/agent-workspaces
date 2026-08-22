@@ -49,6 +49,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   capability matrices не добавляются в plugin instructions, README или tests.
   Generic regression использует synthetic integration identity и проверяет
   только host protocol/security semantics.
+- Remote MCP schema v1 сохраняет exact allowlist. Schema v2
+  `toolPolicy.mode=all_read_only` допустима только с `authentication.type=none`
+  и требует host `>=1.13.3`: перед doctor и каждым call host заново читает
+  bounded `tools/list`, допускает tool только при валидном уникальном имени,
+  отсутствии write-like имени и exact annotations `readOnlyHint=true`,
+  `destructiveHint=false`. Остальные tools игнорируются по одному; если
+  безопасных нет, операция fail closed. V1 fingerprint и поведение не менять.
 - Local credentials, sessions, profiles и policy живут вне workspace, plugin
   cache и runtime package в стабильном `skill/company/member/connection`
   namespace.

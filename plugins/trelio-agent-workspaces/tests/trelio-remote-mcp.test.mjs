@@ -21,6 +21,7 @@ import {
   resolveRemoteMcpCredentialFile,
   resolveSafeRemoteMcpEndpoint,
   runStdioHost,
+  selectRemoteToolsForPolicy,
   validateResolvedRemoteMcp,
 } from "../scripts/trelio-remote-mcp.mjs";
 
@@ -82,6 +83,50 @@ const remoteKnowledgeTools = remoteKnowledgeConfig.allowedTools.map((name) => ({
     destructiveHint: false,
   },
 }));
+
+// Schema v2 is intentionally provider-neutral as well. It is valid only for
+// credential-free endpoints and delegates the current tool inventory to the
+// host's strict, local read-only selector.
+const liveReadOnlyConfig = {
+  schemaVersion: 2,
+  transport: "streamable_http",
+  endpoint: "https://stats.example.com/mcp",
+  protocolVersion: "2025-03-26",
+  authentication: { type: "none" },
+  toolPolicy: { mode: "all_read_only" },
+  headers: {},
+  credentialHelp: null,
+};
+
+const resolvedLiveReadOnly = {
+  releaseId,
+  skill: {
+    id: "remote-metrics",
+    title: "Публичные метрики",
+    version: "2.0.0",
+  },
+  localIdentity: {
+    companyId,
+    projectId: null,
+    memberId,
+    skillId: "remote-metrics",
+  },
+  remoteMcp: {
+    config: liveReadOnlyConfig,
+    configFingerprint: fingerprintRemoteMcpConfig(liveReadOnlyConfig),
+    minimumHostVersion: "1.13.3",
+  },
+};
+
+const strictReadOnlyTool = (name) => ({
+  name,
+  description: `${name} description`,
+  inputSchema: { type: "object" },
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+  },
+});
 
 const routedFallbackReasons = [
   "not_configured",
@@ -950,6 +995,107 @@ test("Remote MCP fingerprint matches the backend canonical JSON contract", () =>
   );
 });
 
+test("Remote MCP declaration accepts credential-free live read-only discovery", () => {
+  const validated = validateResolvedRemoteMcp(resolvedLiveReadOnly);
+
+  assert.deepEqual(validated.remoteMcp.config.toolPolicy, {
+    mode: "all_read_only",
+  });
+  assert.equal("allowedTools" in validated.remoteMcp.config, false);
+  assert.equal(validated.remoteMcp.minimumHostVersion, "1.13.3");
+  // The same value is pinned by backend tests so v2 declarations cannot drift
+  // between production normalization and the local trusted host.
+  assert.equal(
+    validated.remoteMcp.configFingerprint,
+    "c2389bfa549e411c1b4277cf6fcd061e97a1b3889571b2e6db675a2853dbc1a8",
+  );
+});
+
+test("Remote MCP live discovery rejects credentials and embedded allowlists", () => {
+  for (const invalidConfig of [
+    {
+      ...liveReadOnlyConfig,
+      authentication: { type: "personal_bearer_pat" },
+    },
+    {
+      ...liveReadOnlyConfig,
+      allowedTools: ["get_summary"],
+    },
+  ]) {
+    assert.throws(
+      () => validateResolvedRemoteMcp({
+        ...resolvedLiveReadOnly,
+        remoteMcp: {
+          ...resolvedLiveReadOnly.remoteMcp,
+          config: invalidConfig,
+          configFingerprint: fingerprintRemoteMcpConfig(invalidConfig),
+        },
+      }),
+      (error) => (
+        error instanceof RemoteMcpHostError
+        && error.code === "REMOTE_MCP_INVALID_TOOL_POLICY"
+      ),
+    );
+  }
+});
+
+test("Remote MCP live discovery admits newly published strict reads", () => {
+  const existingTool = strictReadOnlyTool("get_summary");
+  const newlyPublishedTool = strictReadOnlyTool("get_city_breakdown");
+  const selection = selectRemoteToolsForPolicy(liveReadOnlyConfig, [
+    existingTool,
+    newlyPublishedTool,
+  ]);
+
+  assert.deepEqual(selection.tools, [existingTool, newlyPublishedTool]);
+  assert.deepEqual(selection.ignoredTools, []);
+});
+
+test("Remote MCP live discovery isolates unsafe and under-annotated tools", () => {
+  const safeTool = strictReadOnlyTool("get_summary");
+  const selection = selectRemoteToolsForPolicy(liveReadOnlyConfig, [
+    safeTool,
+    {
+      ...strictReadOnlyTool("update_summary"),
+      annotations: { readOnlyHint: true, destructiveHint: false },
+    },
+    {
+      ...strictReadOnlyTool("get_destructive_preview"),
+      annotations: { readOnlyHint: true, destructiveHint: true },
+    },
+    {
+      ...strictReadOnlyTool("get_unconfirmed_read"),
+      annotations: { destructiveHint: false },
+    },
+    {
+      ...strictReadOnlyTool("get_unconfirmed_safety"),
+      annotations: { readOnlyHint: true },
+    },
+  ]);
+
+  assert.deepEqual(selection.tools, [safeTool]);
+  assert.deepEqual(selection.ignoredTools, [
+    { name: "update_summary", reason: "write_like_name" },
+    { name: "get_destructive_preview", reason: "non_destructive_not_explicit" },
+    { name: "get_unconfirmed_read", reason: "read_only_not_explicit" },
+    { name: "get_unconfirmed_safety", reason: "non_destructive_not_explicit" },
+  ]);
+});
+
+test("Remote MCP live discovery fails when no strict read remains", () => {
+  assert.throws(
+    () => selectRemoteToolsForPolicy(liveReadOnlyConfig, [{
+      name: "get_unconfirmed_summary",
+      inputSchema: { type: "object" },
+      annotations: {},
+    }]),
+    (error) => (
+      error instanceof RemoteMcpHostError
+      && error.code === "REMOTE_MCP_NO_READ_ONLY_TOOLS"
+    ),
+  );
+});
+
 test("Remote MCP declaration blocks unsafe headers and write-like tools", () => {
   const unsafeConfig = {
     ...remoteKnowledgeConfig,
@@ -1082,6 +1228,65 @@ test("Remote MCP doctor verifies initialize and exact allowlist", async () => {
     "tools/list",
     "DELETE",
   ]);
+});
+
+test("Remote MCP doctor reports the current live read-only selection", async () => {
+  const safeTools = [
+    strictReadOnlyTool("get_summary"),
+    strictReadOnlyTool("get_new_breakdown"),
+  ];
+  const fakeHttpRequest = async (request) => {
+    if (request.method === "DELETE") {
+      return { message: null, sessionId: request.sessionId };
+    }
+    if (request.payload?.method === "initialize") {
+      return {
+        sessionId: "session-live",
+        message: {
+          jsonrpc: "2.0",
+          id: request.payload.id,
+          result: { protocolVersion: "2025-03-26", capabilities: {} },
+        },
+      };
+    }
+    if (request.payload?.method === "notifications/initialized") {
+      return { sessionId: "session-live", message: null };
+    }
+    if (request.payload?.method === "tools/list") {
+      return {
+        sessionId: "session-live",
+        message: {
+          jsonrpc: "2.0",
+          id: request.payload.id,
+          result: {
+            tools: [
+              ...safeTools,
+              {
+                ...strictReadOnlyTool("delete_snapshot"),
+                annotations: { readOnlyHint: false, destructiveHint: true },
+              },
+            ],
+          },
+        },
+      };
+    }
+    throw new Error(`Unexpected request: ${JSON.stringify(request)}`);
+  };
+
+  const result = await doctorWithCredential(resolvedLiveReadOnly, null, {
+    httpRequest: fakeHttpRequest,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.toolPolicy, "all_read_only");
+  assert.deepEqual(result.tools.map(({ name }) => name), [
+    "get_summary",
+    "get_new_breakdown",
+  ]);
+  assert.deepEqual(result.ignoredTools, [{
+    name: "delete_snapshot",
+    reason: "write_like_name",
+  }]);
 });
 
 test("SSRF guard allows public IPv4 and rejects private or mismatched IPv4 answers", async () => {
@@ -1714,7 +1919,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.13.2");
+  assert.equal(frames[0].result.serverInfo.version, "1.13.3");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
