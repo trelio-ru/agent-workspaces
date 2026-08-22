@@ -29,8 +29,12 @@ card is needed.
 
 ## Prepare one editable draft
 
-When this comment is the sole interactive proposal card, call
-`propose_task_comment` once on the normal path:
+When this comment is the sole interactive proposal card and no earlier private
+proposal for the same task is known in the current conversation, call
+`propose_task_comment` once on the create-only normal path. Its `proposalText`
+must already be one standalone publication-ready cumulative update. Never
+write it as an addition, correction, strengthening, or update of an earlier
+unpublished proposal or the automatic system handoff:
 
 - For a direct exact task, pass its locator and a concise first-person
   `proposalText`; direct proposals do not accept workspace `filePaths`.
@@ -42,13 +46,23 @@ When this comment is the sole interactive proposal card, call
 
 The server reads the fresh public-comment snapshot and optimistic proposal
 state internally, so do not make separate context/hash calls on this sole-card
-normal path. Use `get_task_comment_proposal_context` followed by
-`render_task_comment_proposal` only for a sole-card nuanced correction,
+normal path. This normal path is create-only. Skip the compact tool and use
+`get_task_comment_proposal_context` followed by
+`render_task_comment_proposal` when the current conversation already contains
+an earlier proposal for the exact task, or for a sole-card nuanced correction,
 comparison with earlier public discussion, or an intentional member mention
 whose exact `@username` is not already known. Use only a returned exact
-username; never guess one or replace it with a plain display name. Treat
-`currentDraft` as private and unpublished, never as an earlier public
-statement.
+username; never guess one or replace it with a plain display name.
+
+If hidden state from another device, restored context, or compaction means a
+private draft exists anyway, `propose_task_comment` returns exact
+`UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`. Do not retry the compact tool. Read the
+context once, treat `currentDraft` as private and unpublished, and synthesize a
+complete replacement from the current accepted task/workspace result and
+`publicCommentsSnapshot`; do not concatenate, patch, retract, or narrate the
+old draft. Then call `render_task_comment_proposal` with the exact returned
+revision and snapshot hash. The resulting card replaces the private draft but
+must make sense if it is the only human comment eventually published.
 
 For a multi-card response, always read
 `get_task_comment_proposal_context` for this exact target and pass its exact

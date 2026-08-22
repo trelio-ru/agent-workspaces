@@ -70,6 +70,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   пользовательском ходе, после смены exact route, после снятия ранее
   возвращённого setup/access blocker либо один раз на
   `AGENT_SKILL_RELEASE_CHANGED`.
+- Compact `propose_task_comment` является create-only маршрутом первого
+  известного private draft exact задачи. Если в текущей переписке уже был
+  proposal или backend возвращает `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, агент
+  обязан один раз прочитать `get_task_comment_proposal_context` и заменить
+  draft через `render_task_comment_proposal`. Новый текст заново синтезируется
+  как самостоятельный cumulative human update из актуального результата и
+  `publicCommentsSnapshot`; `currentDraft` нельзя склеивать, исправлять или
+  считать предыдущей публичной репликой.
 - Runtime admission proof создаёт только approved hook. Агент не формирует, не
   копирует и не обходит proof другим MCP, HTTP, browser или script.
 - `hooks/hooks.json` является стабильной client-trust границей: lifecycle

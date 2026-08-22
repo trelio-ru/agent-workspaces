@@ -2270,7 +2270,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.13.1");
+  assert.equal(BRIDGE_VERSION, "1.13.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2896,6 +2896,22 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
   assert.match(skillMarkdown, /server reads the fresh public-comment snapshot/u);
+  assert.match(skillMarkdown, /standalone publication-ready cumulative update/u);
+  assert.match(skillMarkdown, /UNPUBLISHED_DRAFT_REQUIRES_CONTEXT/u);
+  assert.match(skillMarkdown, /Do not retry the compact tool/u);
+  assert.match(skillMarkdown, /do not concatenate, patch, retract, or narrate the\s+old draft/u);
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /`propose_task_comment` используй только для первого известного private draft/u,
+  );
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /при exact `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT` не повторяй compact tool/u,
+  );
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /`currentDraft` — private\/unpublished/u,
+  );
   // Keep the invariant stable when the reference gives the normal path a more
   // specific name such as "sole-card normal path".
   assert.match(skillMarkdown, /do not make separate context\/hash calls on (?:the|this sole-card)\s+normal path/u);
