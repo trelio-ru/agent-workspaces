@@ -83,6 +83,16 @@ provider-tag workflow или внутренние release playbooks в этот 
   незавершённостью: если требования задачи и transition policy выполнены,
   агент обязан подготовить отдельный status proposal, не подменяя его вопросом
   про пустое metadata-поле либо comment proposal.
+- Начало task-scoped Run имеет отдельный one-shot intent `work_started`: сразу
+  после успешного bridge `open` агент один раз читает server
+  `workStartProposal` и только при `state=eligible` показывает exact semantic
+  `queue -> active` карточку, не ожидая решения перед продолжением. Durable
+  marker уже показанного start, pending и dismiss в той же status epoch
+  подавляют повторы даже после замены completion-карточкой; checkpoint,
+  очередной tool, новый ход или новый Run не являются новым поводом.
+  `whole_task_ready` после
+  завершения заменяет pending start draft, поэтому одновременно существует
+  только одна status proposal карточка exact task+member.
 - Compact `propose_task_comment` является create-only маршрутом первого
   известного private draft exact задачи. Если в текущей переписке уже был
   proposal или backend возвращает `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, агент

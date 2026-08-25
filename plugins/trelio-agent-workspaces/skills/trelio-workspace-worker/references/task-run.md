@@ -3,8 +3,9 @@
 Read this file completely whenever the writable Agent Workspace Run is scoped
 to a task. It supplements `agent-run.md` and governs handoff, status outcome,
 submit behavior, and reporting. The main skill separately requires
-`task-comment-proposals.md` for the human update and conditionally routes
-`task-status-proposals.md` for a separate whole-task status decision.
+`task-comment-proposals.md` for the human update and
+`task-status-proposals.md` for both the one-shot work-start decision after open
+and the separate whole-task status decision after acceptance.
 
 ## Choose the handoff outcome
 

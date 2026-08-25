@@ -7,7 +7,8 @@ description: >-
   for, complete, restore, or preserve OCR/vision output for work tied to Trelio;
   asks for an editable task-comment proposal or reply with or without an Agent
   Run; asks to change a task status or prepare a separate editable status
-  proposal; needs durable dossier context, a dossier transfer, or task controls;
+  proposal, including the one-shot start-of-work decision for a task Run; needs
+  durable dossier context, a dossier transfer, or task controls;
   requests personal/company/project agent-rule changes; or needs recovery from
   a blocker or concurrent Agent Runs encountered during that work. Use the
   dedicated trelio-diagnostics skill for a direct setup health check or a
@@ -85,8 +86,9 @@ These references are additive; do not read unrelated files speculatively.
   Treat a follow-up as its own native Trelio route even during maintainer work,
   after context compaction, or while another operation is already in progress.
   Also read the scope reference when the exact task target is not already known.
-- **The user asks to change a task status, status readiness is inferred from
-  completed work, or an accepted task Run assessed the whole task as ready:**
+- **A task-scoped Run is about to be opened, the user asks to change a task
+  status, status readiness is inferred from completed work, or an accepted task
+  Run assessed the whole task as ready:**
   read [`references/task-status-proposals.md`](references/task-status-proposals.md).
   At the end of every substantive task-scoped Run, make this whole-task
   readiness decision before any optional follow-up question or final response;
@@ -105,8 +107,9 @@ These references are additive; do not read unrelated files speculatively.
   reference unless the exact workspace and Run are already known.
 - **The writable Run is task-scoped:** additionally read
   [`references/task-run.md`](references/task-run.md) before handoff, task
-  outcome, submit, or final report. Read the status-proposal reference only if
-  the whole task is ready or the user separately addresses its status.
+  outcome, submit, or final report. Always read the status-proposal reference
+  before opening the Run: it governs the one-shot work-start decision as well
+  as the later whole-task completion decision.
 - **OCR or vision output will be stored in a workspace:** additionally read
   [`references/ocr-and-vision.md`](references/ocr-and-vision.md) before writing
   the extracted artifact or manifest.

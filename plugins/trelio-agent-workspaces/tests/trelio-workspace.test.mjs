@@ -2387,11 +2387,13 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /допустим только после явного выбора пользователя/u,
     /Недоступность search\/get control plane и transient network failure/u,
     /обычный proposal — коммуникация для людей/u,
-    /Статус — отдельное решение по всей задаче.*accepted Run и `taskOutcome` его не меняют/u,
+    /Статус — отдельное решение: открытие и accepted Run сами его не меняют/u,
+    /после успешного `trelio-workspace open`.*ровно один раз.*`workStartProposal\.state=eligible`.*`intent=work_started`/u,
+    /Не повторяй уже показанное start-предложение после действий, checkpoint, pause, нового хода, pending draft, отклонения или замены completion-карточкой/u,
     /Перед финальным ответом после каждого содержательного task Run обязательно заново оцени всю задачу.*не жди отдельного вопроса пользователя о статусе/u,
     /Отсутствующий необязательный срок, исполнитель, контроль или будущая профилактика.*не являются unresolved question.*не переводят готовую задачу в `no_status_change`/u,
-    /даже при уже записанном `no_status_change`.*`get_task_status_proposal_context`.*`render_task_status_proposal`/u,
-    /Для partial work используй `no_status_change`.*не создавай status proposal/u,
+    /даже при уже записанном `no_status_change`.*`intent=whole_task_ready`.*заменяет pending `work_started`/u,
+    /Для partial work используй `no_status_change`.*не создавай completion proposal/u,
     /Immediate `update_task_status`.*exact задачу на exact статус сейчас.*`userExplicitlyRequestedImmediateStatusChange=true`/u,
     /условное «когда закончишь» этого права не дают/u,
     /Не публикуй автоматически/u,
@@ -2934,7 +2936,7 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.doesNotMatch(bridgeSource, /task-comment/u);
 });
 
-test("workspace skill keeps status proposal separate from Run acceptance and comment proposal", async () => {
+test("workspace skill offers work start once and keeps completion status separate", async () => {
   const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
   const mainSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
   const statusProposalReference = await readFile(
@@ -2945,15 +2947,30 @@ test("workspace skill keeps status proposal separate from Run acceptance and com
     path.join(workerDirectory, "references", "task-run.md"),
     "utf8",
   );
+  const agentRunReference = await readFile(
+    path.join(workerDirectory, "references", "agent-run.md"),
+    "utf8",
+  );
 
   assert.match(mainSkill, /asks to change a task status or prepare a separate editable status\s+proposal/u);
+  assert.match(mainSkill, /one-shot start-of-work decision for a task Run/u);
+  assert.match(mainSkill, /Always read the status-proposal reference\s+before opening the Run/u);
   assert.match(mainSkill, /Keep this decision independent from the required human comment proposal/u);
-  assert.match(statusProposalReference, /independent from both Agent Run acceptance and the human\s+comment proposal/u);
+  assert.match(statusProposalReference, /`work_started` is the one-shot, non-blocking suggestion/u);
+  assert.match(statusProposalReference, /semantic\s+`queue` to `active` transition returned by the server/u);
+  assert.match(statusProposalReference, /Call `get_task_status_proposal_context` exactly once with that running task\s+Run's `runId`/u);
+  assert.match(statusProposalReference, /When its `state` is `eligible`, call\s+`render_task_status_proposal` with `intent=work_started`/u);
+  assert.match(statusProposalReference, /Continue the Run immediately after rendering/u);
+  assert.match(statusProposalReference, /Do not repeat the context read or start proposal after a tool action/u);
+  assert.match(statusProposalReference, /`dismissed_for_current_status`/u);
+  assert.match(statusProposalReference, /`already_proposed_for_current_status`/u);
+  assert.match(statusProposalReference, /durable server marker/u);
+  assert.match(statusProposalReference, /backend suppression lasts until the task\s+actually leaves that queue status and later enters a new status epoch/u);
   assert.match(statusProposalReference, /Completing the immediate agent instruction may cover only\s+part of the task/u);
-  assert.match(statusProposalReference, /After partial work, still prepare the required comment proposal, but do not\s+create a status proposal/u);
+  assert.match(statusProposalReference, /After partial work, still prepare the required comment proposal, but do not\s+create a `whole_task_ready` proposal/u);
   assert.match(statusProposalReference, /unset optional due date, assignee, control,\s+or similar field is not an open task question by itself/u);
   assert.match(statusProposalReference, /blocks readiness only when the task requirements or the\s+target transition policy actually require that value/u);
-  assert.match(statusProposalReference, /recorded `no_status_change`, or prose question about an\s+optional field is not a substitute/u);
+  assert.match(statusProposalReference, /recorded `no_status_change`, or prose question about an optional field is not a\s+substitute/u);
   assert.match(statusProposalReference, /get_task_status_proposal_context/u);
   assert.match(statusProposalReference, /render_task_status_proposal/u);
   assert.match(statusProposalReference, /apply_task_status_proposal/u);
@@ -2961,6 +2978,8 @@ test("workspace skill keeps status proposal separate from Run acceptance and com
   assert.match(statusProposalReference, /userExplicitlyRequestedImmediateStatusChange=true/u);
   assert.match(statusProposalReference, /conditional instruction such as “when\s+done move to review” does not satisfy this assertion/u);
   assert.match(statusProposalReference, /presses the corresponding MCP App action or\s+explicitly approves\/rejects that exact proposal/u);
+  assert.match(agentRunReference, /Immediately after the exact bridge `open` succeeds for a task-scoped Run/u);
+  assert.match(agentRunReference, /Never repeat this start check\s+after a tool action, checkpoint, pause, resumed turn/u);
   assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
   assert.match(taskRunReference, /Use `--question` and `no_status_change` only when the answer is required to\s+complete, verify, or decide the task/u);
   assert.match(taskRunReference, /unresolved completion-blocking questions/u);
@@ -2968,7 +2987,8 @@ test("workspace skill keeps status proposal separate from Run acceptance and com
   assert.match(taskRunReference, /Reassess the whole task from the final evidence even\s+when the recorded outcome is `no_status_change`/u);
   assert.match(taskRunReference, /Partial work produces no status proposal/u);
   assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /accepted Run и `taskOutcome` его не меняют/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /открытие и accepted Run сами его не меняют/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`workStartProposal\.state=eligible`/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Outcome — recommendation для отдельного status proposal/u);
 });
 

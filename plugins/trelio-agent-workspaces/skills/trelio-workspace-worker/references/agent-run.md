@@ -2,8 +2,9 @@
 
 Read this file completely before starting, opening, continuing, checkpointing,
 submitting, restoring, cancelling, or recovering an Agent Workspace Run. For a
-task-scoped Run, also read `task-run.md` and `task-comment-proposals.md` before
-task communication, handoff, submit, or final reporting.
+task-scoped Run, also read `task-run.md`, `task-status-proposals.md`, and
+`task-comment-proposals.md` before opening, task communication, handoff,
+submit, or final reporting.
 
 ## Contents
 
@@ -81,6 +82,13 @@ task communication, handoff, submit, or final reporting.
    granted to the primary MCP connection; it never gains
    `mcp:agent-instructions:manage` or secret-metadata read. Do not start another
    OAuth flow or use `--legacy-oauth` during normal setup.
+6. Immediately after the exact bridge `open` succeeds for a task-scoped Run,
+   perform the one-shot work-start procedure in `task-status-proposals.md`
+   before the first substantive work action. It is non-blocking: render only
+   when the server returns an eligible `workStartProposal`, then continue the
+   Run without waiting for the user's decision. Never repeat this start check
+   after a tool action, checkpoint, pause, resumed turn, or later progress
+   update.
 
 ## Read and use materialized context
 
