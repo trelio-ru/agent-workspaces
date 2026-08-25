@@ -2388,6 +2388,9 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Недоступность search\/get control plane и transient network failure/u,
     /обычный proposal — коммуникация для людей/u,
     /Статус — отдельное решение по всей задаче.*accepted Run и `taskOutcome` его не меняют/u,
+    /Перед финальным ответом после каждого содержательного task Run обязательно заново оцени всю задачу.*не жди отдельного вопроса пользователя о статусе/u,
+    /Отсутствующий необязательный срок, исполнитель, контроль или будущая профилактика.*не являются unresolved question.*не переводят готовую задачу в `no_status_change`/u,
+    /даже при уже записанном `no_status_change`.*`get_task_status_proposal_context`.*`render_task_status_proposal`/u,
     /Для partial work используй `no_status_change`.*не создавай status proposal/u,
     /Immediate `update_task_status`.*exact задачу на exact статус сейчас.*`userExplicitlyRequestedImmediateStatusChange=true`/u,
     /условное «когда закончишь» этого права не дают/u,
@@ -2399,6 +2402,7 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /границы реплики\/сессии, compaction или передачи работы другому агенту/u,
     /Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause`/u,
     /Заверши Run одной командой `trelio-workspace finish`/u,
+    /только при completion-blocking вопросах и partial work используй `no_status_change`.*пустые необязательные task metadata не превращай в `--question`/u,
     /Trelio примет его при актуальном base head/u,
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, invariant);
@@ -2947,6 +2951,9 @@ test("workspace skill keeps status proposal separate from Run acceptance and com
   assert.match(statusProposalReference, /independent from both Agent Run acceptance and the human\s+comment proposal/u);
   assert.match(statusProposalReference, /Completing the immediate agent instruction may cover only\s+part of the task/u);
   assert.match(statusProposalReference, /After partial work, still prepare the required comment proposal, but do not\s+create a status proposal/u);
+  assert.match(statusProposalReference, /unset optional due date, assignee, control,\s+or similar field is not an open task question by itself/u);
+  assert.match(statusProposalReference, /blocks readiness only when the task requirements or the\s+target transition policy actually require that value/u);
+  assert.match(statusProposalReference, /recorded `no_status_change`, or prose question about an\s+optional field is not a substitute/u);
   assert.match(statusProposalReference, /get_task_status_proposal_context/u);
   assert.match(statusProposalReference, /render_task_status_proposal/u);
   assert.match(statusProposalReference, /apply_task_status_proposal/u);
@@ -2955,6 +2962,10 @@ test("workspace skill keeps status proposal separate from Run acceptance and com
   assert.match(statusProposalReference, /conditional instruction such as “when\s+done move to review” does not satisfy this assertion/u);
   assert.match(statusProposalReference, /presses the corresponding MCP App action or\s+explicitly approves\/rejects that exact proposal/u);
   assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
+  assert.match(taskRunReference, /Use `--question` and `no_status_change` only when the answer is required to\s+complete, verify, or decide the task/u);
+  assert.match(taskRunReference, /unresolved completion-blocking questions/u);
+  assert.match(taskRunReference, /Do not manufacture a blocking question\s+from an unset optional due date, assignee, control, or other metadata field/u);
+  assert.match(taskRunReference, /Reassess the whole task from the final evidence even\s+when the recorded outcome is `no_status_change`/u);
   assert.match(taskRunReference, /Partial work produces no status proposal/u);
   assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /accepted Run и `taskOutcome` его не меняют/u);

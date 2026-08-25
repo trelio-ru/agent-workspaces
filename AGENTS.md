@@ -77,6 +77,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   пользовательском ходе, после смены exact route, после снятия ранее
   возвращённого setup/access blocker либо один раз на
   `AGENT_SKILL_RELEASE_CHANGED`.
+- Завершение task-scoped Run всегда включает отдельную оценку готовности всей
+  задачи перед финальным ответом. Отсутствующий необязательный срок,
+  исполнитель, контроль или будущая профилактика сами по себе не являются
+  незавершённостью: если требования задачи и transition policy выполнены,
+  агент обязан подготовить отдельный status proposal, не подменяя его вопросом
+  про пустое metadata-поле либо comment proposal.
 - Compact `propose_task_comment` является create-only маршрутом первого
   известного private draft exact задачи. Если в текущей переписке уже был
   proposal или backend возвращает `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, агент

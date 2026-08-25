@@ -21,9 +21,9 @@ recommendation; accepted Run does not change task status:
   pinned rule permits it, or the same authenticated user created and assigned
   the task to themselves. This recommends `done`; even then prefer
   `work_completed` unless there is a concrete reason to skip review.
-- `no_status_change`: partial/informational work, failed review, or any handoff
-  with unresolved questions. This is the safe default whenever the direct
-  request may be narrower than the full task.
+- `no_status_change`: partial/informational work, failed review, or a handoff
+  with unresolved completion-blocking questions. This is the safe default
+  whenever the direct request may be narrower than the full task.
 
 For example:
 
@@ -36,7 +36,13 @@ trelio-workspace finish \
   --task-outcome work_completed
 ```
 
-When a question remains, include `--question` and use `no_status_change`.
+Use `--question` and `no_status_change` only when the answer is required to
+complete, verify, or decide the task. Do not manufacture a blocking question
+from an unset optional due date, assignee, control, or other metadata field.
+When the task requirements and transition policy are satisfied, choose the
+ready outcome and leave unrelated optional metadata unchanged. Future
+maintenance or a nice-to-have may be the next action without becoming
+unfinished task scope.
 
 ## Submit and propose
 
@@ -46,8 +52,11 @@ Consecutive accepted Runs by the same user are grouped within the company
 calendar day, while individual Run details remain available.
 
 After acceptance, follow the separately routed task-comment proposal procedure
-before final reporting. If and only if the whole task was assessed ready, also
-follow `task-status-proposals.md` and prepare an independent status proposal.
+before final reporting. Reassess the whole task from the final evidence even
+when the recorded outcome is `no_status_change`; it is a recommendation, not a
+gate. If and only if the whole task is ready, follow
+`task-status-proposals.md` and prepare an independent status proposal before
+asking any optional follow-up question.
 Before either proposal write, inventory all interactive cards required in the
 same response, including any inferred control-clear proposal. When two or more
 cards are needed, read `task-proposal-bundles.md` and return all of them through

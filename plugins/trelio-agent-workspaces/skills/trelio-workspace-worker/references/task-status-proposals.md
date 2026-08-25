@@ -18,6 +18,19 @@ handoff default for partial, informational, failed-review, or unresolved work.
 After partial work, still prepare the required comment proposal, but do not
 create a status proposal.
 
+Make this decision before composing the final response or raising a new
+follow-up about task metadata. An unset optional due date, assignee, control,
+or similar field is not an open task question by itself and must not downgrade
+a completed task. It blocks readiness only when the task requirements or the
+target transition policy actually require that value. Likewise, future
+maintenance or an optional improvement belongs in the next action; do not
+invent it as unfinished scope.
+
+After the whole task is ready and the context offers a transitionable target,
+rendering the status proposal is required before the final response. A comment
+proposal, accepted Run, recorded `no_status_change`, or prose question about an
+optional field is not a substitute for that separate decision.
+
 ## Distinguish a direct command from inferred readiness
 
 Use `update_task_status`, a `statusCode` task patch, batch patch, or
@@ -37,7 +50,9 @@ call `move_task_to_project` without the direct command.
 1. Call `get_task_status_proposal_context` with the accepted task Run `runId`
    or the exact `companySlug`, `projectSlug`, and `taskNumber`.
 2. Choose one currently transitionable target returned by that context. Use
-   the semantic `taskOutcome` only as a recommendation, never as authority.
+   the semantic `taskOutcome` only as a recommendation, never as authority. If
+   the final evidence proves the whole task ready despite an over-conservative
+   `no_status_change`, prepare the proposal from the live context.
 3. Inventory every interactive comment, status, and control-clear card needed
    in the current assistant response. If this status is the sole card, call
    `render_task_status_proposal` with the exact `stateRevision`, current status

@@ -88,6 +88,9 @@ These references are additive; do not read unrelated files speculatively.
 - **The user asks to change a task status, status readiness is inferred from
   completed work, or an accepted task Run assessed the whole task as ready:**
   read [`references/task-status-proposals.md`](references/task-status-proposals.md).
+  At the end of every substantive task-scoped Run, make this whole-task
+  readiness decision before any optional follow-up question or final response;
+  do not wait for the user to mention status.
   Keep this decision independent from the required human comment proposal.
   Also read the scope reference when the exact task target is not already known.
 - **The current assistant response must show two or more comment, status, or
