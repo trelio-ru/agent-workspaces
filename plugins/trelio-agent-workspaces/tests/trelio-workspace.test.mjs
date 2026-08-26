@@ -2270,7 +2270,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.13.4");
+  assert.equal(BRIDGE_VERSION, "1.13.5");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
