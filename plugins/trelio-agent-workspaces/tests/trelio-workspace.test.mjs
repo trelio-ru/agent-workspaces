@@ -2893,6 +2893,7 @@ test("Windows Node resolver uses durable PATH when the Codex process PATH is sta
 
 test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
   skip: process.platform !== "win32",
+  timeout: 15_000,
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-node-launcher-"));
   const probePath = path.join(temporaryDirectory, "probe.mjs");
@@ -2914,7 +2915,11 @@ test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
         env: {
           ...process.env,
           // A merely executable host hint must not pass Node validation.
-          CODEX_MCP_NODE_PATH: process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
+          CODEX_MCP_NODE_PATH: path.join(
+            process.env.SystemRoot || "C:\\Windows",
+            "System32",
+            "where.exe",
+          ),
           CODEX_BROWSER_USE_NODE_PATH: process.execPath,
           PATH: temporaryDirectory,
         },
