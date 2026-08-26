@@ -2903,7 +2903,9 @@ test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
       probePath,
       "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
     );
-    const command = `\"${launcherPath}\" \"${probePath}\" \"remote argument\"`;
+    // `cmd.exe /s /c` consumes one outer quote pair around the complete
+    // command line. Keep a second pair around each path so spaces remain safe.
+    const command = `""${launcherPath}" "${probePath}" "remote argument""`;
     const { stdout } = await execFileAsync(
       process.env.ComSpec || "cmd.exe",
       ["/d", "/s", "/c", command],
