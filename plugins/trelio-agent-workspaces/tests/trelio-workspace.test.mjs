@@ -2895,40 +2895,33 @@ test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
   skip: process.platform !== "win32",
   timeout: 15_000,
 }, async () => {
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-node-launcher-"));
-  const probePath = path.join(temporaryDirectory, "probe.mjs");
-
-  try {
-    await writeFile(
-      probePath,
-      "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
-    );
-    // Match the manifest's working-directory contract: the launcher command is
-    // relative to the plugin root, while paths passed to it stay quoted.
-    const command = `scripts\\launch-trelio-node.cmd "${probePath}" "remote argument"`;
-    const { stdout } = await execFileAsync(
-      process.env.ComSpec || "cmd.exe",
-      ["/d", "/s", "/c", command],
-      {
-        cwd: pluginDirectory,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          // A merely executable host hint must not pass Node validation.
-          CODEX_MCP_NODE_PATH: path.join(
-            process.env.SystemRoot || "C:\\Windows",
-            "System32",
-            "where.exe",
-          ),
-          CODEX_BROWSER_USE_NODE_PATH: process.execPath,
-          PATH: temporaryDirectory,
-        },
+  // Match the manifest's working-directory contract: both launcher and target
+  // are repository-relative paths without shell-sensitive quoting.
+  const command = [
+    "scripts\\launch-trelio-node.cmd",
+    "tests\\fixtures\\node-launcher-probe.mjs",
+    "remote-argument",
+  ].join(" ");
+  const { stdout } = await execFileAsync(
+    process.env.ComSpec || "cmd.exe",
+    ["/d", "/s", "/c", command],
+    {
+      cwd: pluginDirectory,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        // A merely executable host hint must not pass Node validation.
+        CODEX_MCP_NODE_PATH: path.join(
+          process.env.SystemRoot || "C:\\Windows",
+          "System32",
+          "where.exe",
+        ),
+        CODEX_BROWSER_USE_NODE_PATH: process.execPath,
+        PATH: os.tmpdir(),
       },
-    );
-    assert.deepEqual(JSON.parse(stdout), ["remote argument"]);
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  }
+    },
+  );
+  assert.deepEqual(JSON.parse(stdout), ["remote-argument"]);
 });
 
 test("project access skill preserves owner-only plan/apply and moderator confirmation", async () => {
