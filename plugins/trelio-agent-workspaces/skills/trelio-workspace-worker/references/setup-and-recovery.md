@@ -46,12 +46,14 @@ state as incomplete plugin setup rather than a task, ACL, or browser problem.
    still lacks tools or reports the old plugin version.
 
 Failure of only `trelio-remote-skills` is not failed Trelio OAuth. Base remote
-Trelio and bridge work may continue. Diagnose Node through the project
-onboarding skill's bundled Windows resolver and use an already installed
-Node.js 22+ executable by absolute path for the bridge. Discuss restarting the
-local stdio server only when an exact selected skill needs
-`remoteMcpExecution`; never reinstall Node or repeat restart advice after a
-verified compatible absolute executable has been found.
+Trelio and bridge work may continue. Inspect `codex mcp list --json`: the
+current plugin definition must launch `./scripts/launch-trelio-node`, not bare
+`node`. Run `trelio-workspace.mjs doctor --json` through that loaded plugin's
+POSIX launcher or Windows `.cmd`; it prefers the bundled Codex runtime before
+system Node and requires version 22+. A missing PATH alias is not a Node
+failure when the launcher succeeds. If Codex still shows bare `node`, follow
+the normal plugin update/new-task path. Never reset OAuth, reinstall Node, or
+repeat restart advice after the launcher has verified a compatible runtime.
 
 Do not claim readiness because skill text is visible. Confirm it with a
 successful low-risk MCP read such as `get_my_context` or `get_task`.
@@ -60,8 +62,9 @@ successful low-risk MCP read such as `get_my_context` or `get_task`.
 
 Git is a local bridge prerequisite, not proof about Trelio OAuth, MCP ACL, or
 plugin installation. On `TRELIO_GIT_REQUIRED`, run this loaded plugin's bundled
-`../../scripts/trelio-workspace.mjs doctor --json` through an exact Node.js 22+
-executable. Doctor resolves standalone Git 2.28+ only from standard macOS/
+`../../scripts/trelio-workspace.mjs doctor --json` through its exact
+`../../scripts/launch-trelio-node` launcher (or the sibling `.cmd` on native
+Windows). Doctor resolves standalone Git 2.28+ only from standard macOS/
 Windows locations and durable Windows PATH and proves a temporary
 `init → add → commit`. Arbitrary process-PATH executables are not candidates;
 never reuse an undocumented Git private to Codex's marketplace manager.

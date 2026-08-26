@@ -76,17 +76,20 @@ current task.
      process attached a bearer. A failed live Trelio read that explicitly
      reports HTTP 401 or a required/missing bearer is an OAuth failure even
      when this status still says `o_auth`.
-   - Resolve Node.js without intentionally executing a missing command. On
-     native Windows, run this loaded plugin's bundled
-     `../../scripts/resolve-node.ps1`; it checks the current process, durable
-     machine/user PATH values and official Program Files location without
-     editing anything. On POSIX use `command -v node`. If Node.js is absent or
-     older than 22, follow the installation-offer flow under **Connect the
-     local component**. A local Node.js problem does not prove that Trelio
-     OAuth is invalid.
-   - After resolving compatible Node.js, run this loaded plugin's bundled
-     `../../scripts/trelio-workspace.mjs doctor --json` through that exact
-     executable. Doctor resolves a standalone Git 2.28+ only from standard
+   - Run this loaded plugin's bundled `../../scripts/trelio-workspace.mjs` with
+     `doctor --json` through its exact platform launcher: on POSIX use
+     `../../scripts/launch-trelio-node`; on native Windows use
+     `../../scripts/launch-trelio-node.cmd`. The launcher requires Node.js 22+,
+     prefers host-owned Codex hints and its deterministic bundled runtime, then
+     falls back to a system installation. Therefore an empty `command -v node`
+     result or failed Codex PATH-alias creation is not proof that Node is
+     absent. On Windows the launcher also uses the bundled
+     `../../scripts/resolve-node.ps1`, which checks durable machine/user PATH
+     values and official Program Files without editing anything. If the
+     launcher cannot find Node.js 22+, follow the installation-offer flow under
+     **Connect the local component**. A local Node.js problem does not prove
+     that Trelio OAuth is invalid.
+   - Doctor resolves a standalone Git 2.28+ only from standard
      macOS/Windows locations and durable Windows PATH; arbitrary process-PATH
      executables, including Codex's private runtime, are not candidates. It then
      proves `init → add → commit` in a temporary repository. If Git needs installation
@@ -190,16 +193,23 @@ state and may change after this file is created.
 ## Connect the local component
 
 The bundled local component requires Node.js 22 or newer and a standalone Git
-2.28 or newer. Resolve `node`
-without a deliberate failing probe and read its version only when an exact
-executable exists. On native Windows use the bundled
-`../../scripts/resolve-node.ps1` diagnostic. If it returns `ready` with
-`processPathReady=false`, Node is already installed: use its absolute
-`nodePath` for the bundled bridge in this task. Do not reinstall Node, repeat
-restart advice, or block remote Trelio OAuth merely because the current client
-process has a stale PATH. The plugin's `trelio-remote-skills` stdio server may
-still need one later app restart, but mention that only when a skill selected
-by the user actually returns `remoteMcpExecution` and the server is unavailable.
+2.28 or newer. Its canonical executable path is the paired
+`../../scripts/launch-trelio-node` / `launch-trelio-node.cmd`, with the target
+bundled `.mjs` file as the first argument. In Codex the launcher first checks
+host-owned runtime hints and the deterministic bundled runtime; only then does
+it inspect a system Node. Do not treat a missing PATH alias as a prerequisite
+failure and do not put a machine-specific absolute path into `.mcp.json`.
+
+If the launcher cannot find a compatible runtime, resolve `node` without a
+deliberate failing probe and read its version only when an exact executable
+exists. On native Windows use the bundled `../../scripts/resolve-node.ps1`
+diagnostic. If it returns `ready` with `processPathReady=false`, Node is already
+installed: the launcher must use its absolute `nodePath` for the bundled bridge
+in this task. Do not reinstall Node, repeat restart advice, or block remote
+Trelio OAuth merely because the current client process has a stale PATH. If a
+selected `remoteMcpExecution` route remains unavailable, inspect
+`codex mcp list --json`: a bare `node` command means the current task still
+loaded an older plugin definition and needs the normal update/new-task path.
 
 If the resolver returns `not_found` or a version older than 22, explain that
 this blocks the local bridge and local skill server, then offer installation
@@ -215,16 +225,16 @@ instead of merely reporting a missing `PATH` entry:
 Installing or upgrading Node.js is a separate side effect. Ask one
 concise explicit confirmation before running its package manager command and
 let the client apply its normal command approval. Never install Node.js
-silently. Afterward, rerun the resolver and verify the exact version. Use the
-absolute executable immediately for the bundled bridge. Ask for one full app
-restart only if a selected `remoteMcpExecution` skill needs the client-managed
-local MCP server and that server still cannot start. If the user says they
-already restarted, do not repeat the same advice: compare the process PATH with
-the durable machine/user PATH and report one exact environment repair or a
-bounded unsupported-client blocker.
+silently. Afterward, rerun the launcher and verify the exact version reported
+by doctor. Use the absolute executable immediately for the bundled bridge. Ask
+for one full app restart only if a selected `remoteMcpExecution` skill needs
+the client-managed local MCP server and a new task still cannot start it. If
+the user says they already restarted, do not repeat the same advice: compare
+the process PATH with the durable machine/user PATH and report one exact
+environment repair or a bounded unsupported-client blocker.
 
-After compatible Node.js is available, run the bundled
-`trelio-workspace.mjs doctor --json` before pairing. When it returns `ready`,
+After compatible Node.js is available, run the bundled `trelio-workspace.mjs`
+with `doctor --json` through the launcher before pairing. When it returns `ready`,
 continue through the bundled bridge; the bridge will use `git.gitPath` by
 absolute path. `processPathReady=false` is not a reason to restart the app.
 Doctor validates a real external Git executable and a temporary
@@ -254,11 +264,9 @@ app restart. Do not retry an installer whose result is ambiguous until
 doctor has checked whether Git is already ready.
 
 Run `trelio-workspace login` through the logical launcher of this installed
-plugin. Resolve it without executing a failing probe: use the PATH command when
-present, otherwise replace only the first token with Node.js 22+ and this
-skill's bundled `../../scripts/trelio-workspace.mjs`. Do not install
-`trelio-workspace` globally or treat its normally absent `PATH` entry as an
-error.
+plugin: use the platform `launch-trelio-node` script with this skill's bundled
+`../../scripts/trelio-workspace.mjs login`. Do not install `trelio-workspace`
+globally or treat its normally absent `PATH` entry as an error.
 
 If login reports a one-time pairing request, immediately call
 `approve_agent_workspace_bridge_pairing` with its exact `pairingId` and

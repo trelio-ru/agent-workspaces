@@ -117,6 +117,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
   ID или private key и не объявляет Hooks включёнными: client approval остаётся
   `client_managed_unknown` до отдельного client/live-read подтверждения.
+- Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
+  только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
+  Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,
+  затем системный Node. Возвращать в `.mcp.json` bare `node`, машинный absolute
+  path или менять `hooks.json` ради PATH-совместимости нельзя.
 - Secret передаётся только exact executable через scoped one-use delivery и не
   попадает в model-visible output, argv, ambient environment, workspace,
   comments, checkpoints, handoff или logs.

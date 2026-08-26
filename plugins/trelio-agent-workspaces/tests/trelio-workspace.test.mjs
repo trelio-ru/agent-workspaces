@@ -2318,11 +2318,96 @@ test("bridge release version stays synchronized across executable and manifests"
     },
   });
   assert.deepEqual(mcpManifest.mcpServers["trelio-remote-skills"], {
-    command: "node",
+    command: "./scripts/launch-trelio-node",
     args: ["./scripts/trelio-remote-mcp.mjs"],
     cwd: ".",
+    env_vars: [
+      "CODEX_MCP_NODE_PATH",
+      "CODEX_BROWSER_USE_NODE_PATH",
+      "CODEX_ELECTRON_RESOURCES_PATH",
+      "CODEX_CLI_PATH",
+      "XDG_CACHE_HOME",
+      "HOME",
+      "USERPROFILE",
+      "LOCALAPPDATA",
+      "PATH",
+    ],
     tool_timeout_sec: 660,
   });
+
+  const posixLauncher = await stat(path.join(
+    pluginDirectory,
+    "scripts",
+    "launch-trelio-node",
+  ));
+  const windowsLauncher = await stat(path.join(
+    pluginDirectory,
+    "scripts",
+    "launch-trelio-node.cmd",
+  ));
+  assert.equal(posixLauncher.isFile(), true);
+  assert.notEqual(posixLauncher.mode & 0o111, 0, "POSIX launcher must remain executable");
+  assert.equal(windowsLauncher.isFile(), true);
+});
+
+test("POSIX Node launcher uses the bundled Codex runtime without a PATH alias", {
+  skip: process.platform === "win32",
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-node-launcher-"));
+  const cacheDirectory = path.join(temporaryDirectory, "cache");
+  const emptyBinDirectory = path.join(temporaryDirectory, "empty-bin");
+  const oldNodePath = path.join(temporaryDirectory, "old-node");
+  const bundledNodePath = path.join(
+    cacheDirectory,
+    "codex-runtimes",
+    "codex-primary-runtime",
+    "dependencies",
+    "node",
+    "bin",
+    "node",
+  );
+  const invocationPath = path.join(temporaryDirectory, "invocation.txt");
+  const launcherPath = path.join(pluginDirectory, "scripts", "launch-trelio-node");
+
+  try {
+    await mkdir(path.dirname(bundledNodePath), { recursive: true });
+    await mkdir(emptyBinDirectory, { recursive: true });
+    await writeFile(oldNodePath, [
+      "#!/bin/sh",
+      "if [ \"${1:-}\" = \"--version\" ]; then printf '%s\\n' 'v20.19.0'; exit 0; fi",
+      `printf '%s\\n' 'old runtime must not launch' > ${JSON.stringify(invocationPath)}`,
+      "exit 97",
+      "",
+    ].join("\n"), { mode: 0o755 });
+    await writeFile(bundledNodePath, [
+      "#!/bin/sh",
+      "if [ \"${1:-}\" = \"--version\" ]; then printf '%s\\n' 'v24.19.0'; exit 0; fi",
+      `printf '%s\\n' \"$@\" > ${JSON.stringify(invocationPath)}`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    await execFileAsync(
+      launcherPath,
+      ["./scripts/trelio-remote-mcp.mjs", "--launcher-probe"],
+      {
+        cwd: pluginDirectory,
+        encoding: "utf8",
+        env: {
+          CODEX_MCP_NODE_PATH: oldNodePath,
+          XDG_CACHE_HOME: cacheDirectory,
+          HOME: temporaryDirectory,
+          PATH: emptyBinDirectory,
+        },
+      },
+    );
+
+    assert.equal(
+      await readFile(invocationPath, "utf8"),
+      "./scripts/trelio-remote-mcp.mjs\n--launcher-probe\n",
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("compact protected runtime keeps the complete agent safety contract", () => {
@@ -2553,7 +2638,9 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /a listed marketplace is not proof that its\s+plugin is installed/u);
   assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
   assert.match(onboardingSkill, /resolve-node\.ps1/u);
-  assert.match(onboardingSkill, /durable\s+machine\/user PATH values/u);
+  assert.match(onboardingSkill, /durable\s+machine\/user PATH\s+values/u);
+  assert.match(onboardingSkill, /launch-trelio-node/u);
+  assert.match(onboardingSkill, /failed Codex PATH-alias creation is not proof/u);
   assert.match(onboardingSkill, /in Codex use\s+`codex mcp login trelio`/u);
   assert.match(onboardingSkill, /Never open the Trelio site as a\s+preparatory login/u);
   assert.match(onboardingSkill, /ask the user\s+to report that login finished/u);
@@ -2562,7 +2649,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /processPathReady=false/u);
   assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
   assert.match(onboardingSkill, /do not repeat the same advice/u);
-  assert.match(onboardingSkill, /trelio-workspace\.mjs doctor --json/u);
+  assert.match(onboardingSkill, /trelio-workspace\.mjs`\s+with `doctor --json/u);
   assert.match(onboardingSkill, /standalone Git\s+2\.28/u);
   assert.match(onboardingSkill, /temporary\s+`init → add → commit`/u);
   assert.match(onboardingSkill, /private Git that Codex may use to\s+download a\s+marketplace/u);
@@ -2576,7 +2663,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /winget install --id OpenJS\.NodeJS\.LTS -e/u);
   assert.match(onboardingSkill, /brew install node/u);
   assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
-  assert.match(onboardingSkill, /Do not install\s+`trelio-workspace` globally/u);
+  assert.match(onboardingSkill, /Do not install\s+`trelio-workspace`\s+globally/u);
   assert.match(onboardingSkill, /требуется настройка администратором компании/u);
   assert.match(onboardingSkill, /enabledThroughProjectMembership=true/u);
   assert.match(onboardingSkill, /sources` containing\s+`project_membership`/u);
@@ -2621,6 +2708,8 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(diagnosticsSkill, /approvalStatus=client_managed_unknown/u);
   assert.match(diagnosticsSkill, /codex plugin list --json/u);
   assert.match(diagnosticsSkill, /codex mcp list --json/u);
+  assert.match(diagnosticsSkill, /launch-trelio-node/u);
+  assert.match(diagnosticsSkill, /failed Codex PATH-alias\s+creation is not a missing-Node diagnosis/u);
   assert.match(diagnosticsSkill, /Do not infer Claude Code only\s+from `CLAUDE_PLUGIN_ROOT`/u);
   assert.match(diagnosticsSkill, /Do not create or mutate an\s+object just to test a hook/u);
   assert.match(diagnosticsSkill, /installed version already satisfies the requirement/u);
@@ -2774,6 +2863,65 @@ test("Windows Node resolver uses durable PATH when the Codex process PATH is sta
   assert.equal(result.source, "machine-path");
   assert.equal(path.resolve(result.nodePath).toLowerCase(), process.execPath.toLowerCase());
   assert.match(result.version, /^v(?:2[2-9]|[3-9][0-9])\./u);
+
+  const { stdout: pathOnlyStdout } = await execFileAsync(
+    "powershell.exe",
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      resolverPath,
+      "-ProcessPath",
+      missingProcessPath,
+      "-UserPath",
+      "",
+      "-MachinePath",
+      path.dirname(process.execPath),
+      "-SkipDefaultInstallRoots",
+      "-PathOnly",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    path.resolve(pathOnlyStdout.trim()).toLowerCase(),
+    process.execPath.toLowerCase(),
+  );
+});
+
+test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
+  skip: process.platform !== "win32",
+  timeout: 15_000,
+}, async () => {
+  // Match the manifest's working-directory contract: both launcher and target
+  // are repository-relative paths without shell-sensitive quoting.
+  const command = [
+    "scripts\\launch-trelio-node.cmd",
+    "tests\\fixtures\\node-launcher-probe.mjs",
+    "remote-argument",
+  ].join(" ");
+  const { stdout } = await execFileAsync(
+    process.env.ComSpec || "cmd.exe",
+    ["/d", "/s", "/c", command],
+    {
+      cwd: pluginDirectory,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        // A merely executable host hint must not pass Node validation.
+        CODEX_MCP_NODE_PATH: path.join(
+          process.env.SystemRoot || "C:\\Windows",
+          "System32",
+          "where.exe",
+        ),
+        CODEX_BROWSER_USE_NODE_PATH: process.execPath,
+        PATH: os.tmpdir(),
+      },
+    },
+  );
+  assert.deepEqual(JSON.parse(stdout), ["remote-argument"]);
 });
 
 test("project access skill preserves owner-only plan/apply and moderator confirmation", async () => {
