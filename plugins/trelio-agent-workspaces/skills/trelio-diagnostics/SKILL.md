@@ -38,15 +38,22 @@ Never treat success or failure in one layer as proof about another.
 Resolve the actual host from host-owned context. Do not infer Claude Code only
 from `CLAUDE_PLUGIN_ROOT`, which Codex may provide for compatibility.
 
-Resolve Node.js without intentionally executing a missing command. On POSIX,
-use `command -v node`; on native Windows, run this loaded plugin's bundled
-`../../scripts/resolve-node.ps1`. Require version 22 or newer. Then run this
-loaded plugin's exact bundled bridge, without scanning plugin caches or picking
-another version:
+Run this loaded plugin's exact bundled bridge through its platform launcher,
+without scanning plugin caches or picking another version. On POSIX use:
 
 ```text
-node ../../scripts/trelio-workspace.mjs doctor --json
+../../scripts/launch-trelio-node ../../scripts/trelio-workspace.mjs doctor --json
 ```
+
+On native Windows use the sibling
+`../../scripts/launch-trelio-node.cmd` with the same script and arguments. The
+launcher accepts only Node.js 22+, prefers host-owned Codex runtime hints and
+the deterministic bundled Codex runtime, then falls back to an installed
+system Node. An empty `command -v node` result or failed Codex PATH-alias
+creation is not a missing-Node diagnosis when this launcher succeeds. If the
+launcher cannot find a compatible runtime, use `command -v node` on POSIX or
+the bundled `../../scripts/resolve-node.ps1` on native Windows to distinguish
+not-found from an installed version below 22 before offering installation.
 
 Interpret its fields literally:
 
@@ -128,8 +135,11 @@ runtime script do not require another `hooks.json` change or trust review.
   host's Trelio MCP login once, let the user complete browser login and consent,
   then retry one low-risk read. Do not loop login if the current process did
   not adopt a successfully refreshed credential; use a fresh task first.
-- Only `trelio-remote-skills` fails: diagnose its Node.js/runtime prerequisite.
-  Do not reset remote Trelio OAuth.
+- Only `trelio-remote-skills` fails: inspect its exact command in
+  `codex mcp list --json`. A still-loaded bare `node` command needs the normal
+  plugin update/new-task path; the current manifest must use
+  `./scripts/launch-trelio-node`. Run the launcher diagnostic above before
+  classifying a Node.js/runtime prerequisite. Do not reset remote Trelio OAuth.
 - Doctor reports Node below 22: offer the platform's normal Node.js LTS install
   path and obtain explicit confirmation before running a package-manager
   command.

@@ -3,7 +3,8 @@ param(
   [string]$ProcessPath = [Environment]::GetEnvironmentVariable("Path", "Process"),
   [string]$UserPath = [Environment]::GetEnvironmentVariable("Path", "User"),
   [string]$MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine"),
-  [switch]$SkipDefaultInstallRoots
+  [switch]$SkipDefaultInstallRoots,
+  [switch]$PathOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,7 +117,13 @@ foreach ($candidate in $candidates) {
   }
 
   if ($resolved.status -eq "ready") {
-    $resolved | ConvertTo-Json -Compress
+    # The paired Windows MCP launcher needs only the already validated absolute
+    # executable. Keep the default JSON diagnostic stable for agents and users.
+    if ($PathOnly) {
+      $resolved.nodePath
+    } else {
+      $resolved | ConvertTo-Json -Compress
+    }
     exit 0
   }
 
@@ -126,15 +133,19 @@ foreach ($candidate in $candidates) {
 }
 
 if ($null -ne $firstIncompatible) {
-  $firstIncompatible | ConvertTo-Json -Compress
+  if (-not $PathOnly) {
+    $firstIncompatible | ConvertTo-Json -Compress
+  }
   exit 0
 }
 
-[pscustomobject]@{
-  status = "not_found"
-  nodePath = $null
-  version = $null
-  source = $null
-  processPathReady = $false
-  restartMayBeRequiredForLocalMcp = $false
-} | ConvertTo-Json -Compress
+if (-not $PathOnly) {
+  [pscustomobject]@{
+    status = "not_found"
+    nodePath = $null
+    version = $null
+    source = $null
+    processPathReady = $false
+    restartMayBeRequiredForLocalMcp = $false
+  } | ConvertTo-Json -Compress
+}

@@ -1,0 +1,82 @@
+#!/bin/sh
+set -eu
+
+minimum_node_major=22
+
+if [ "$#" -lt 1 ]; then
+  printf '%s\n' 'Trelio could not start: missing bundled JavaScript entrypoint.' >&2
+  exit 64
+fi
+
+# Codex Desktop normally adds aliases for its bundled tools, but a denied alias
+# directory must not make the plugin depend on a separately installed Node.js.
+# Prefer host-owned absolute runtime hints and the deterministic Codex runtime
+# layout. Claude and standalone clients naturally fall through to system PATH.
+PATH="${PATH:-/usr/bin:/bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH
+
+codex_electron_node=
+if [ -n "${CODEX_ELECTRON_RESOURCES_PATH:-}" ]; then
+  codex_electron_node="${CODEX_ELECTRON_RESOURCES_PATH}/cua_node/bin/node"
+fi
+
+codex_cli_node=
+case "${CODEX_CLI_PATH:-}" in
+  /*) codex_cli_node="${CODEX_CLI_PATH%/*}/cua_node/bin/node" ;;
+esac
+
+cache_root=${XDG_CACHE_HOME:-}
+if [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+fi
+codex_cached_node=
+case "$cache_root" in
+  /*) codex_cached_node="${cache_root}/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node" ;;
+esac
+
+is_compatible_node() {
+  candidate=$1
+
+  # Relative environment values would make the selected executable depend on
+  # the plugin cache working directory. Host runtime hints must be absolute.
+  case "$candidate" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$candidate" ] || return 1
+
+  version=$("$candidate" --version 2>/dev/null) || return 1
+  case "$version" in
+    v*) node_major=${version#v} ;;
+    *) return 1 ;;
+  esac
+  node_major=${node_major%%.*}
+  case "$node_major" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$node_major" -lt "$minimum_node_major" ]; then
+    return 1
+  fi
+  return 0
+}
+
+for candidate in \
+  "${CODEX_MCP_NODE_PATH:-}" \
+  "${CODEX_BROWSER_USE_NODE_PATH:-}" \
+  "$codex_electron_node" \
+  "$codex_cli_node" \
+  "$codex_cached_node"
+do
+  if is_compatible_node "$candidate"; then
+    exec "$candidate" "$@"
+  fi
+done
+
+if node_path=$(command -v node 2>/dev/null); then
+  if is_compatible_node "$node_path"; then
+    exec "$node_path" "$@"
+  fi
+fi
+
+printf '%s\n' 'Trelio could not find Node.js 22 or newer. Update Codex or install Node.js 22+.' >&2
+exit 127

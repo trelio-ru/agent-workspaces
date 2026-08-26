@@ -75,7 +75,7 @@ jobs:
       - name: Run Windows ACL regressions
         run: >-
           node --test
-          --test-name-pattern="Windows ACL command|Windows bridge applies|Windows Node resolver"
+          --test-name-pattern="Windows ACL command|Windows bridge applies|Windows Node resolver|Windows Remote MCP launcher"
           plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 
       # Git discovery is deliberately platform-aware even when Codex inherited

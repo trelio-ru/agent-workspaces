@@ -1878,12 +1878,20 @@ test("platform routing blocks on explicit no_access until the user chooses anoth
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
+  const launcherPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../scripts/launch-trelio-node",
+  );
   const scriptPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
     "../scripts/trelio-remote-mcp.mjs",
   );
-  const child = spawn(process.execPath, [scriptPath], {
+  const child = spawn(launcherPath, [scriptPath], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_MCP_NODE_PATH: process.execPath,
+    },
   });
   let stdout = "";
   let stderr = "";
