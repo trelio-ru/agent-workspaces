@@ -124,7 +124,11 @@ only after the authenticated user presses the corresponding MCP App action or
 explicitly approves/rejects that exact proposal. A text-only fallback still
 requires the user's decision; a promise in the final response is not approval.
 
-Before reporting completion, state honestly whether no status proposal was
-needed, a separate proposal is awaiting the user, it was dismissed, or its
-exact transition was applied. Never report Agent Run acceptance as a status
+When no status proposal was rendered, no status-related error affects the work,
+and no task-status action is required from the user, do not mention that absence
+in progress or final text; continue silently. Otherwise mention task status only
+when it is relevant to the user's request or next action: a proposal is actually
+awaiting the user, the user asked about status, the user dismissed a proposal in
+the current exchange, an exact transition was applied, or a status-related error
+or blocker affects the work. Never report Agent Run acceptance as a status
 change.

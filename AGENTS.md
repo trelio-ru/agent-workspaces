@@ -92,7 +92,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   очередной tool, новый ход или новый Run не являются новым поводом.
   `whole_task_ready` после
   завершения заменяет pending start draft, поэтому одновременно существует
-  только одна status proposal карточка exact task+member.
+  только одна status proposal карточка exact task+member. Suppressed или
+  ineligible start-decision остаётся внутренним control-plane результатом: если
+  карточка не создана, status-related error отсутствует и от пользователя не
+  требуется действие, агент молча продолжает работу и не объясняет отсутствие
+  proposal в progress update или финальном ответе.
 - Compact `propose_task_comment` является create-only маршрутом первого
   известного private draft exact задачи. Если в текущей переписке уже был
   proposal или backend возвращает `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, агент

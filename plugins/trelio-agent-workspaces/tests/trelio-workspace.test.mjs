@@ -2978,6 +2978,12 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(statusProposalReference, /userExplicitlyRequestedImmediateStatusChange=true/u);
   assert.match(statusProposalReference, /conditional instruction such as “when\s+done move to review” does not satisfy this assertion/u);
   assert.match(statusProposalReference, /presses the corresponding MCP App action or\s+explicitly approves\/rejects that exact proposal/u);
+  // A suppressed or ineligible proposal is internal control-plane bookkeeping,
+  // so it must not create a user-facing progress or completion message by itself.
+  assert.match(statusProposalReference, /When no status proposal was rendered, no status-related error affects the work,\s+and no task-status action is required from the user, do not mention that absence\s+in progress or final text; continue silently/u);
+  assert.match(statusProposalReference, /mention task status only\s+when it is relevant to the user's request or next action/u);
+  assert.match(statusProposalReference, /a status-related error\s+or blocker affects the work/u);
+  assert.doesNotMatch(statusProposalReference, /state honestly whether no status proposal was\s+needed/u);
   assert.match(agentRunReference, /Immediately after the exact bridge `open` succeeds for a task-scoped Run/u);
   assert.match(agentRunReference, /Never repeat this start check\s+after a tool action, checkpoint, pause, resumed turn/u);
   assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
