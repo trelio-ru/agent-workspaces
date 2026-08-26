@@ -53,10 +53,11 @@ exit /b %ERRORLEVEL%
 :consider_node
 if "%~1"=="" exit /b 0
 if not exist "%~1" exit /b 0
-set "TRELIO_NODE_MAJOR="
-for /f "usebackq delims=" %%V in (`"%~1" -p "process.versions.node.split('.')[0]" 2^>nul`) do if not defined TRELIO_NODE_MAJOR set "TRELIO_NODE_MAJOR=%%V"
-if not defined TRELIO_NODE_MAJOR exit /b 0
-for /f "delims=0123456789" %%V in ("%TRELIO_NODE_MAJOR%") do exit /b 0
-if %TRELIO_NODE_MAJOR% LSS %TRELIO_MINIMUM_NODE_MAJOR% exit /b 0
+
+rem Avoid FOR /F command substitution here: it wraps a quoted executable in a
+rem second cmd.exe /c and breaks absolute paths. A compatible Node process exits
+rem with a reserved marker; ordinary executables returning zero stay rejected.
+"%~1" -e "process.exit(Number(process.versions.node.split('.')[0]) >= %TRELIO_MINIMUM_NODE_MAJOR% ? 86 : 1)" >nul 2>&1
+if not "%ERRORLEVEL%"=="86" exit /b 0
 set "TRELIO_NODE_PATH=%~f1"
 exit /b 0

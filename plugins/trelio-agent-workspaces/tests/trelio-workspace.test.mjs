@@ -2913,7 +2913,9 @@ test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
         encoding: "utf8",
         env: {
           ...process.env,
-          CODEX_MCP_NODE_PATH: process.execPath,
+          // A merely executable host hint must not pass Node validation.
+          CODEX_MCP_NODE_PATH: process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe",
+          CODEX_BROWSER_USE_NODE_PATH: process.execPath,
           PATH: temporaryDirectory,
         },
       },
