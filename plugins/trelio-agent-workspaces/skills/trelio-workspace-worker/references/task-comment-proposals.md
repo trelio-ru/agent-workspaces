@@ -22,7 +22,7 @@ its exact `runId`.
 
 Determine how many interactive task-proposal cards the current assistant
 response must show before calling a proposal write tool. Include comment,
-whole-task status, and control-clear proposals for every exact task. If the
+whole-task status, control-clear, and checklist proposals for every exact task. If the
 total is two or more, read `task-proposal-bundles.md` and use its single bundle
 route. Do not call a comment tool first and discover afterward that another
 card is needed.

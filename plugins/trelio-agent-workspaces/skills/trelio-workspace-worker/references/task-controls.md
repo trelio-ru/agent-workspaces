@@ -30,7 +30,7 @@ an exact immediate command, first call
 `get_task_control_clear_proposal_context` and preserve one concrete private
 reason per proposed control. If this is the sole interactive proposal card in
 the current response, use `render_task_control_clear_proposal`. If any comment,
-status, or another task's control-clear card is also needed, read
+status, checklist, or another task's control-clear card is also needed, read
 `task-proposal-bundles.md` and put the exact context revision and control items
 in one `controlClearProposal` block of the single `render_task_proposals` call.
 Never emit several single-card App calls. Proposal reasons remain private and

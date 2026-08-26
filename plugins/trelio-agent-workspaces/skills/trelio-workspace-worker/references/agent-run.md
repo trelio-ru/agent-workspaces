@@ -2,9 +2,9 @@
 
 Read this file completely before starting, opening, continuing, checkpointing,
 submitting, restoring, cancelling, or recovering an Agent Workspace Run. For a
-task-scoped Run, also read `task-run.md`, `task-status-proposals.md`, and
-`task-comment-proposals.md` before opening, task communication, handoff,
-submit, or final reporting.
+task-scoped Run, also read `task-run.md`, `task-status-proposals.md`,
+`task-comment-proposals.md`, and `task-checklist-proposals.md` before opening,
+task communication, handoff, submit, or final reporting.
 
 ## Contents
 
@@ -158,7 +158,8 @@ submit, or final reporting.
    compare-and-swap. A failed final step leaves the handoff/delta recoverable;
    never force-update accepted history or blindly repeat an ambiguous submit.
 7. For a task Run, follow the status procedure in `task-run.md` and the
-   separately routed proposal procedure in `task-comment-proposals.md` after
+   separately routed comment and checklist procedures in
+   `task-comment-proposals.md` and `task-checklist-proposals.md` after
    acceptance. Inventory every card before the first proposal write and follow
    `task-proposal-bundles.md` whenever the same response needs two or more.
 8. Report in this order: outcome, important findings/validation, saved

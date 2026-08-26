@@ -2431,6 +2431,11 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     "dismiss_task_status_proposal",
     "apply_task_status_proposal",
     "userExplicitlyRequestedImmediateStatusChange",
+    "get_task_checklist_proposal_context",
+    "render_task_checklist_proposal",
+    "dismiss_task_checklist_proposal",
+    "apply_task_checklist_proposal",
+    "userExplicitlyRequestedImmediateChecklistStateChange",
     "create_comment",
     "get_task",
     "create_task_control",
@@ -2481,6 +2486,9 @@ test("compact protected runtime keeps the complete agent safety contract", () =>
     /Для partial work используй `no_status_change`.*не создавай completion proposal/u,
     /Immediate `update_task_status`.*exact задачу на exact статус сейчас.*`userExplicitlyRequestedImmediateStatusChange=true`/u,
     /условное «когда закончишь» этого права не дают/u,
+    /Состояние чек-листа — отдельное решение.*содержательного accepted task Run.*ordinary non-linked items/u,
+    /partial work может предложить exact выполненные пункты без готовности всей задачи/u,
+    /Immediate `complete_checklist_item`.*exact пункт сейчас.*`userExplicitlyRequestedImmediateChecklistStateChange=true`/u,
     /Не публикуй автоматически/u,
     /дата не уведомляет/u,
     /не расширяй personal в shared без полномочия/u,
@@ -2508,6 +2516,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "task-controls.md",
     "task-comment-proposals.md",
     "task-status-proposals.md",
+    "task-checklist-proposals.md",
     "agent-run.md",
     "task-run.md",
     "ocr-and-vision.md",
@@ -3144,6 +3153,42 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /открытие и accepted Run сами его не меняют/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`workStartProposal\.state=eligible`/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Outcome — recommendation для отдельного status proposal/u);
+});
+
+test("workspace skill proposes checklist progress without applying inferred state", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const mainSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const checklistReference = await readFile(
+    path.join(workerDirectory, "references", "task-checklist-proposals.md"),
+    "utf8",
+  );
+  const taskRunReference = await readFile(
+    path.join(workerDirectory, "references", "task-run.md"),
+    "utf8",
+  );
+  const bundleReference = await readFile(
+    path.join(workerDirectory, "references", "task-proposal-bundles.md"),
+    "utf8",
+  );
+
+  assert.match(mainSkill, /checklist completion-state review or a separate checklist proposal/u);
+  assert.match(mainSkill, /substantive task-scoped Run was accepted/u);
+  assert.match(mainSkill, /item-by-item decision even when the whole task\s+is not ready/u);
+  assert.match(checklistReference, /After every substantive accepted task Run, call\s+`get_task_checklist_proposal_context`/u);
+  assert.match(checklistReference, /Partial work may propose the exact items it satisfied/u);
+  assert.match(checklistReference, /status-driven items linked to subtasks/u);
+  assert.match(checklistReference, /render no checklist card and do\s+not mention a ritual “checklist unchanged” result/u);
+  assert.match(checklistReference, /`render_task_checklist_proposal`/u);
+  assert.match(checklistReference, /`checklistProposal` block/u);
+  assert.match(checklistReference, /`apply_task_checklist_proposal`/u);
+  assert.match(checklistReference, /`dismiss_task_checklist_proposal`/u);
+  assert.match(checklistReference, /userExplicitlyRequestedImmediateChecklistStateChange=true/u);
+  assert.match(checklistReference, /A stale item blocks\s+the whole selected batch/u);
+  assert.match(checklistReference, /must not be copied to task\s+comments, system events, or notifications/u);
+  assert.match(taskRunReference, /Partial work may propose exact satisfied items/u);
+  assert.match(bundleReference, /get_task_checklist_proposal_context/u);
+  assert.match(bundleReference, /checklist\/item snapshots/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Accepted Run, inferred progress.*этого права не дают/u);
 });
 
 test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {

@@ -5,7 +5,9 @@ to a task. It supplements `agent-run.md` and governs handoff, status outcome,
 submit behavior, and reporting. The main skill separately requires
 `task-comment-proposals.md` for the human update and
 `task-status-proposals.md` for both the one-shot work-start decision after open
-and the separate whole-task status decision after acceptance.
+and the separate whole-task status decision after acceptance. It also requires
+`task-checklist-proposals.md` for the independent post-acceptance item-by-item
+checklist decision.
 
 ## Choose the handoff outcome
 
@@ -58,10 +60,15 @@ when the recorded outcome is `no_status_change`; it is a recommendation, not a
 gate. If and only if the whole task is ready, follow
 `task-status-proposals.md` and prepare an independent status proposal before
 asking any optional follow-up question.
-Before either proposal write, inventory all interactive cards required in the
-same response, including any inferred control-clear proposal. When two or more
+Separately follow `task-checklist-proposals.md`: reread the live checklist and
+prepare only the completion-state transitions directly supported by the
+accepted result. Partial work may propose exact satisfied items even though it
+produces no completion status proposal. If no item transition is supported,
+render no checklist card and continue silently.
+Before any proposal write, inventory all interactive cards required in the
+same response, including any inferred control-clear or checklist proposal. When two or more
 cards are needed, read `task-proposal-bundles.md` and return all of them through
-one `render_task_proposals` call; never issue the singular comment/status/control
+one `render_task_proposals` call; never issue the singular comment/status/control/checklist
 App calls sequentially. Partial work produces no status proposal. The accepted
 workspace result remains valid even when any proposal is blocked by missing
 scope or permissions.

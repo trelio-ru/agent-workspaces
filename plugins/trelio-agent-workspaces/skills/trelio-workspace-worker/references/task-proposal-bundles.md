@@ -1,8 +1,8 @@
 # Task proposal bundles
 
 Read this file completely before one assistant response prepares two or more
-interactive task proposal cards. It governs comment, whole-task status, and
-control-clear proposals, whether the cards belong to different tasks, use
+interactive task proposal cards. It governs comment, whole-task status,
+control-clear, and checklist proposals, whether the cards belong to different tasks, use
 different kinds, or repeat one kind.
 
 ## Return one host result
@@ -12,7 +12,8 @@ more than one interactive card, read every matching proposal-kind reference
 and call `render_task_proposals` exactly once. Do not call
 `propose_task_comment`, `render_task_comment_proposal`,
 `render_task_comment_proposals`, `render_task_status_proposal`, or
-`render_task_control_clear_proposal` in that response. Several standalone MCP
+`render_task_control_clear_proposal`, or `render_task_checklist_proposal` in
+that response. Several standalone MCP
 App results are not a bundle: a host may persist every server draft while only
 one result remains visible to the user.
 
@@ -22,9 +23,10 @@ Read the matching fresh context separately for every exact target:
 - `get_task_status_proposal_context` for each `statusProposal` block;
 - `get_task_control_clear_proposal_context` for each
   `controlClearProposal` block.
+- `get_task_checklist_proposal_context` for each `checklistProposal` block.
 
 Carry each target's exact optimistic revision, snapshot/hash, current status,
-control ids, and other fields only into its own block. A Run target uses its
+control ids, checklist/item snapshots, and other fields only into its own block. A Run target uses its
 exact `runId`; a direct target uses exact `companySlug`, `projectSlug`, and
 `taskNumber`. Never reuse one task's context for a sibling card or create two
 cards of the same kind for the same target.

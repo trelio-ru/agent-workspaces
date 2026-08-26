@@ -8,6 +8,7 @@ description: >-
   asks for an editable task-comment proposal or reply with or without an Agent
   Run; asks to change a task status or prepare a separate editable status
   proposal, including the one-shot start-of-work decision for a task Run; needs
+  checklist completion-state review or a separate checklist proposal; needs
   durable dossier context, a dossier transfer, or task controls;
   requests personal/company/project agent-rule changes; or needs recovery from
   a blocker or concurrent Agent Runs encountered during that work. Use the
@@ -95,8 +96,14 @@ These references are additive; do not read unrelated files speculatively.
   do not wait for the user to mention status.
   Keep this decision independent from the required human comment proposal.
   Also read the scope reference when the exact task target is not already known.
-- **The current assistant response must show two or more comment, status, or
-  control-clear proposal cards, including several cards of the same kind:**
+- **The user asks to change checklist completion state, progress suggests an
+  item transition, or a substantive task-scoped Run was accepted:** read
+  [`references/task-checklist-proposals.md`](references/task-checklist-proposals.md).
+  After accepted work, make this item-by-item decision even when the whole task
+  is not ready for a status proposal. Keep it independent from comment, status,
+  and control decisions.
+- **The current assistant response must show two or more comment, status,
+  control-clear, or checklist proposal cards, including several cards of the same kind:**
   read [`references/task-proposal-bundles.md`](references/task-proposal-bundles.md)
   and every proposal-kind reference that applies. Decide this before the first
   proposal write; do not emit several single-card App calls and try to combine
@@ -109,7 +116,8 @@ These references are additive; do not read unrelated files speculatively.
   [`references/task-run.md`](references/task-run.md) before handoff, task
   outcome, submit, or final report. Always read the status-proposal reference
   before opening the Run: it governs the one-shot work-start decision as well
-  as the later whole-task completion decision.
+  as the later whole-task completion decision. Read the checklist-proposal
+  reference before the post-acceptance checklist reassessment.
 - **OCR or vision output will be stored in a workspace:** additionally read
   [`references/ocr-and-vision.md`](references/ocr-and-vision.md) before writing
   the extracted artifact or manifest.

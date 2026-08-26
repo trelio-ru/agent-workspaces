@@ -100,7 +100,7 @@ itself has no inferred status-proposal path; do not call
    returned by that context. Use `taskOutcome` only as a recommendation, never
    as authority. If final evidence proves the whole task ready despite an
    over-conservative `no_status_change`, prepare the live proposal.
-3. Inventory every interactive comment, status, and control-clear card needed
+3. Inventory every interactive comment, status, control-clear, and checklist card needed
    in the current assistant response. If this status is the sole card, call
    `render_task_status_proposal` with `intent=whole_task_ready`, the exact
    `stateRevision`, current status id, target status code, and a concise reason
