@@ -2896,20 +2896,20 @@ test("Windows Remote MCP launcher uses the Codex Node runtime without PATH", {
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-node-launcher-"));
   const probePath = path.join(temporaryDirectory, "probe.mjs");
-  const launcherPath = path.join(pluginDirectory, "scripts", "launch-trelio-node.cmd");
 
   try {
     await writeFile(
       probePath,
       "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
     );
-    // `cmd.exe /s /c` consumes one outer quote pair around the complete
-    // command line. Keep a second pair around each path so spaces remain safe.
-    const command = `""${launcherPath}" "${probePath}" "remote argument""`;
+    // Match the manifest's working-directory contract: the launcher command is
+    // relative to the plugin root, while paths passed to it stay quoted.
+    const command = `scripts\\launch-trelio-node.cmd "${probePath}" "remote argument"`;
     const { stdout } = await execFileAsync(
       process.env.ComSpec || "cmd.exe",
       ["/d", "/s", "/c", command],
       {
+        cwd: pluginDirectory,
         encoding: "utf8",
         env: {
           ...process.env,
