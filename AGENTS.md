@@ -34,6 +34,34 @@ provider-tag workflow или внутренние release playbooks в этот 
   не выбирай другую установленную версию и не подменяй exact executable.
 - Сохраняй чужие изменения в рабочем дереве и отделяй scope текущей задачи.
 
+## Обязательный Git-workflow
+
+- Канонический checkout регистрируется один раз через
+  `npm run git:configure-main` и постоянно остаётся чистым worktree с
+  checked-out `main`. Обычные task-правки и commits в нём запрещены; tracked
+  hooks блокируют прямой commit в `main`, raw push в `origin/main` и отдельный
+  push стабильного plugin tag.
+- Перед нетривиальной правкой выполни `git fetch --prune origin`, проверь
+  `git status -sb` и `git rev-list --left-right --count HEAD...@{upstream}`.
+  Новую задачу начинай от свежего `origin/main` в отдельной ветке и отдельном
+  physical worktree через `npm run git:new-worktree -- codex/<task-slug>`.
+  Не редактируй канонический checkout вручную.
+- Обычная завершённая правка получает commit в task-ветке и интегрируется
+  только через `npm run git:push-main`. Guard принимает лишь clean source,
+  fast-forward от свежего `origin/main`, делает exact remote read-back и затем
+  fast-forward канонического локального `main`. `git push origin main`,
+  `git push origin HEAD:main` и эквивалентные raw refspec запрещены.
+- Непосредственно перед guarded push выполни `npm run check:worktree` и не
+  пушь при непустом status. Если canonical либо source содержит чужие tracked
+  или untracked изменения, сохрани их и остановись до выяснения scope.
+- Stable plugin tag публикуется атомарно с соответствующим `main` только через
+  `npm run git:push-main -- --tag vX.Y.Z`. Это не заменяет явную команду
+  пользователя на plugin release и остальные release-проверки.
+- `.gitignore` намеренно скрывает только системные метаданные, dependency cache
+  и generated Python bytecode. `platform-skills/**` целиком не игнорируется:
+  попытка вернуть provider source в публичный репозиторий должна оставаться
+  видимой в `git status` и блокировать guarded flow.
+
 ## Архитектурная граница
 
 - Trelio MCP – control plane; bundled bridge – локальный Git data plane.

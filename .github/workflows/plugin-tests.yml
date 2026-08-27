@@ -3,10 +3,15 @@ name: Plugin tests
 on:
   pull_request:
     paths:
+      - ".githooks/**"
+      - ".gitignore"
       - ".github/scripts/run-windows-acl-standard-user.ps1"
       - ".github/workflows/plugin-tests.yml"
       - ".claude-plugin/**"
+      - "AGENTS.md"
+      - "package.json"
       - "plugins/trelio-agent-workspaces/**"
+      - "scripts/**"
   push:
     branches:
       - main
@@ -16,15 +21,34 @@ on:
     # verification. New provider tags are created in the private provider
     # repository; historical public provider tags remain immutable.
     paths:
+      - ".githooks/**"
+      - ".gitignore"
       - ".github/scripts/run-windows-acl-standard-user.ps1"
       - ".github/workflows/plugin-tests.yml"
       - ".claude-plugin/**"
+      - "AGENTS.md"
+      - "package.json"
       - "plugins/trelio-agent-workspaces/**"
+      - "scripts/**"
 
 permissions:
   contents: read
 
 jobs:
+  git-main-guard:
+    name: Canonical main Git guard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # The test builds a disposable bare remote plus linked worktrees and
+      # proves that raw protected pushes fail while the guarded path keeps the
+      # canonical checkout, origin/main and stable release tag exact.
+      - name: Run canonical main guard regressions
+        run: bash scripts/git-main-guard.test.sh
+
   node-tests:
     name: Node tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

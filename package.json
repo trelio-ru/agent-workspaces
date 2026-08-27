@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "check:worktree": "bash scripts/assert-clean-worktree.sh",
+    "git:configure-main": "bash scripts/configure-canonical-main.sh",
+    "git:new-worktree": "bash scripts/create-task-worktree.sh",
+    "git:push-main": "bash scripts/push-main.sh",
+    "test:git-guard": "bash scripts/git-main-guard.test.sh"
+  }
+}

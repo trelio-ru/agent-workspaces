@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+current_branch="$(git branch --show-current)"
+
+if [[ "${current_branch}" == "main" ]]; then
+  cat >&2 <<'EOF'
+ERROR: direct commits in canonical main are disabled.
+Create a codex/* task worktree, commit there and integrate it with:
+  npm run git:push-main
+EOF
+  exit 1
+fi

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+guarded_push="${TRELIO_AGENT_WORKSPACES_GUARDED_MAIN_PUSH:-0}"
+protected_ref_seen=0
+
+# Git передаёт по stdin фактические refspec-ы. Проверяем remote ref, поэтому
+# guard одинаково блокирует main, HEAD:main и push raw commit SHA в main.
+while read -r _local_ref _local_oid remote_ref _remote_oid; do
+  if [[ "${remote_ref}" == "refs/heads/main" ]] \
+    || [[ "${remote_ref}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    protected_ref_seen=1
+  fi
+done
+
+if [[ "${protected_ref_seen}" -eq 1 ]] && [[ "${guarded_push}" != "1" ]]; then
+  cat >&2 <<'EOF'
+ERROR: direct push to origin/main or a stable plugin tag is disabled.
+Use the guarded entrypoint so remote read-back and canonical-main sync cannot be skipped:
+  npm run git:push-main
+
+For a plugin release use:
+  npm run git:push-main -- --tag vX.Y.Z
+EOF
+  exit 1
+fi
