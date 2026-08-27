@@ -69,11 +69,13 @@ test("Codex hook observes model and current turn effort", async () => {
 
 test("hook protects context and mutation but leaves discovery and recovery open", () => {
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__get_task" }), "get_task");
+  assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__get_tasks" }), "get_tasks");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__list_my_tasks" }), "list_my_tasks");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp:trelio:get_task" }), "get_task");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__other__trelio__get_task" }), null);
   assert.equal(resolveTrelioMcpToolName({ tool_name: "exec_command" }), null);
   assert.equal(isProtectedTrelioToolName("get_task"), true);
+  assert.equal(isProtectedTrelioToolName("get_tasks"), true);
   assert.equal(isProtectedTrelioToolName("create_task"), true);
   assert.equal(isProtectedTrelioToolName("search_agent_skills"), false);
   assert.equal(isProtectedTrelioToolName("list_my_tasks"), false);
@@ -176,6 +178,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
   );
   const preToolUseMatcher = new RegExp(hooks.hooks.PreToolUse[0].matcher, "u");
   assert.equal(preToolUseMatcher.test("mcp__trelio__get_task"), true);
+  assert.equal(preToolUseMatcher.test("mcp__trelio__get_tasks"), true);
   assert.equal(preToolUseMatcher.test("mcp:trelio:get_task"), true);
   assert.equal(preToolUseMatcher.test("mcp__other__trelio__get_task"), false);
   assert.equal(preToolUseMatcher.test("mcp__filesystem__read_file"), false);
@@ -220,13 +223,13 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.7");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
       // Simulate the next minimum so this release's hook exercises the upgrade
       // path without pretending that its own immutable bridge bytes are older.
-      response.end(JSON.stringify({ supported: false, minimumVersion: "1.13.7" }));
+      response.end(JSON.stringify({ supported: false, minimumVersion: "1.13.8" }));
       return;
     }
     response.statusCode = 500;
@@ -278,7 +281,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v1\.13\.6 больше не поддерживается; требуется v1\.13\.7/u);
+    assert.match(result.stderr, /v1\.13\.7 больше не поддерживается; требуется v1\.13\.8/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -296,7 +299,7 @@ test("SessionStart pins the initial model and PreToolUse injects a verifiable pr
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.7");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -468,7 +471,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.7");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -577,7 +580,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.13.7");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));

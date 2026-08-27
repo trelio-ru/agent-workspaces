@@ -23,9 +23,10 @@ reclassify it as missing Hooks.
 
 Trelio context search is lexical, not semantic. Company/project rules are not
 search documents and never compete with tasks or dossiers in ranking. If the
-user supplied a canonical task URL or exact company/project/task coordinates,
-call `get_task` directly and apply its leading `effectiveInstructions` before
-the task content. Otherwise:
+user supplied one canonical task URL or one exact company/project/task
+coordinate, call `get_task` directly. If 2-20 distinct exact task locators are
+already known or selected together, call `get_tasks` once in the required
+order; do not make repeated `get_task` calls. Otherwise:
 
 1. Build up to five short independent queries: important nouns, synonyms,
    abbreviations, alternate spellings, old names, object/city, counterparty,
@@ -39,23 +40,53 @@ the task content. Otherwise:
    procedure or prior decision found in a dossier or task Workspace.
 4. Prefer results found by several variants. Use returned exact scope metadata
    and `fetch` to inspect up to three material documents or task candidates;
-   call `get_task` for the probable task before a mutation or Run. Exact
-   `fetch`, `get_task`, `get_dossier`, `get_project_meta`, and
-   `get_task_create_meta` return `effectiveInstructions` first. Apply a
-   `loaded` envelope before the object content outside a prepared Agent
-   Workspace Run. Inside a prepared Run, its pinned `agent-instructions.md`
-   and `user-profile.md` remain authoritative; current revisions from a later
-   exact read must not replace that immutable snapshot. If an ordinary exact
-   read says `requires_scope`, use the standard `get_agent_instructions`
-   consent/recovery flow. Do not call `get_agent_instructions` again after a
-   loaded envelope unless the user is managing rules, the scope changes
-   without another exact read, or the server asks for refresh. Read activity
-   or attachments only as needed to distinguish candidates.
+   call `get_task` for one probable task or `get_tasks` for several exact
+   probable tasks before a mutation or Run. Exact `fetch`, `get_dossier`,
+   `get_project_meta`, and `get_task_create_meta` return their ordinary
+   `effectiveInstructions` envelope. Task reads use the normalized contract
+   below. Apply loaded instructions before object content outside a prepared
+   Agent Workspace Run. Inside a prepared Run, its pinned
+   `agent-instructions.md` and `user-profile.md` remain authoritative; current
+   revisions from a later exact read must not replace that immutable snapshot.
+   If an ordinary exact read says `requires_scope`, use the standard
+   `get_agent_instructions` consent/recovery flow. Do not call
+   `get_agent_instructions` again after loaded instructions unless the user is
+   managing rules, the scope changes without another exact read, or the server
+   asks for refresh. Read activity or attachments only as needed to
+   distinguish candidates.
 5. Treat a candidate as probable only when at least two independent identifiers
    agree. A similar title alone is insufficient. A supplied canonical URL or
    exact coordinates count after successful readback.
 6. If several remain, show their direct URLs and differences and ask before a
    mutation or workspace Run.
+
+## Resolve task-read instructions
+
+Current `get_task` and `get_tasks` return `schemaVersion: 2` with the complete
+payload in `structuredContent`. Every item contains one structured `task`, not
+a derived `document.text` copy. Treat text `content` only as a compact summary;
+it intentionally does not repeat full task or instruction Markdown.
+
+For every item in `tasks[]` independently:
+
+1. Require `instructionScope.status=loaded` before substantive work. On
+   `requires_scope`, complete the standard consent flow for that exact scope.
+2. Index `effectiveInstructions.layers` by unique `key`. Resolve every key in
+   the item's `instructionScope.orderedLayerKeys`; a missing key or conflicting
+   duplicate is an invalid response and must stop work instead of guessing.
+3. Apply only the resolved layers, in the returned order, before interpreting
+   that task. Never concatenate the whole catalog for every task and never
+   apply a company, project, or personal layer to an item that does not
+   reference it.
+4. Keep `effectiveRevisionKey` as the exact task-scope fingerprint when a later
+   step needs to establish whether the effective order changed.
+
+During the ordered plugin-before-backend rollout only, a server that does not
+advertise `get_tasks` may still return legacy `get_task` schema v1 with one
+leading `effectiveInstructions` envelope and a top-level task. Apply that
+loaded envelope exactly as returned. Once `get_tasks` is advertised, always use
+the v2 routing above for multiple exact targets; do not voluntarily fall back
+to repeated legacy reads.
 
 `search_tasks` and `search_agent_workspace_files` remain optional refinement
 tools, not consecutive mandatory procedures. Use `search_tasks` when ambiguity
@@ -85,9 +116,9 @@ dossier by default or an explicitly justified company dossier.
 Discover context when it can materially improve the result; do not crawl every
 workspace.
 
-- `get_task` returns accessible linked dossiers, task links, and work-case
-  members. Read those explicit relations first; they are the cheapest and most
-  reliable context signal.
+- Each task item returned by `get_task` or `get_tasks` contains accessible
+  linked dossiers, task links, and work-case members. Read those explicit
+  relations first; they are the cheapest and most reliable context signal.
 - A dossier is agent-only and has no standalone browser page. `task_full` from
   a linked task grants only read access; it never exposes the owner project or
   grants dossier write, Run, approval, or link-management rights.

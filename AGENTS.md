@@ -105,6 +105,16 @@ provider-tag workflow или внутренние release playbooks в этот 
   пользовательском ходе, после смены exact route, после снятия ранее
   возвращённого setup/access blocker либо один раз на
   `AGENT_SKILL_RELEASE_CHANGED`.
+- Один известный exact task читается через `get_task`, а 2-20 distinct exact
+  targets – одним `get_tasks`; последовательные `get_task` для уже известного
+  набора запрещены. Task-read schema v2 хранит уникальные Markdown-слои один
+  раз в `effectiveInstructions.layers`, а каждый `tasks[]` item применяет только
+  собственный exact `instructionScope.orderedLayerKeys` в указанном порядке.
+  Каждый item содержит одну structured `task`, без производного `document.text`.
+  `content` является только компактным summary, полный payload читается из
+  `structuredContent`; company/project/personal layer нельзя переносить на
+  непривязанную задачу. Legacy schema v1 допустима только как rollout fallback,
+  пока backend ещё не объявляет `get_tasks`.
 - Завершение task-scoped Run всегда включает отдельную оценку готовности всей
   задачи перед финальным ответом. Отсутствующий необязательный срок,
   исполнитель, контроль или будущая профилактика сами по себе не являются

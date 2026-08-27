@@ -28,14 +28,21 @@ dossier.
 лексических вариантов в exact company scope. Один ответ объединяет проекты,
 активные и архивные задачи, task comments и accepted task/dossier Workspace
 files с exact scope metadata. Агент читает relevant документы, проверяет
-вероятную задачу через `get_task` и не выбирает по одному похожему заголовку.
+одну вероятную задачу через `get_task`, а 2-20 уже известных exact-задач –
+одним `get_tasks`; повторять `get_task` для такого набора нельзя. Агент не
+выбирает цель по одному похожему заголовку.
 `search_tasks` и `search_agent_workspace_files` нужны только для task-only или
 Workspace-only уточнения, а не как обязательная последовательность.
 
 Правила компании и проекта не входят в поисковый ranking. После выбора exact
-scope обычные `fetch`, `get_task`, `get_dossier`, `get_project_meta` и
-`get_task_create_meta` возвращают их первым блоком `effectiveInstructions`
-перед содержимым. Статус `loaded` применяется сразу, без отдельного
+scope обычные `fetch`, `get_dossier`, `get_project_meta` и
+`get_task_create_meta` возвращают envelope `effectiveInstructions`. Task reads
+используют schema v2: уникальные инструкции находятся один раз в
+`effectiveInstructions.layers`, а каждый элемент `tasks[]` задаёт собственный
+точный порядок через `instructionScope.orderedLayerKeys`. Агент применяет только
+привязанные слои и не переносит project/company/profile rules между задачами;
+полный payload читается из `structuredContent`, а компактный `content` его не
+дублирует. Статус `loaded` применяется сразу, без отдельного
 `get_agent_instructions`; `requires_scope` запускает стандартный consent и
 повторное чтение правил. Внутри уже подготовленного Run более новая revision из
 exact read не заменяет pinned `agent-instructions.md` и `user-profile.md` этого
