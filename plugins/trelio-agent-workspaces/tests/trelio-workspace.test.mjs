@@ -29,6 +29,7 @@ import {
   WORKSPACE_CONTEXT_FILE_NAME,
   BridgePluginUpgradeRequiredError,
   BrowserOpenError,
+  AgentSkillDeviceConsentDeclinedError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
@@ -41,6 +42,7 @@ import {
   buildWindowsPrivateAclPowerShellInvocation,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
+  collectAgentSkillDeviceConsentThroughLoopback,
   hardenWindowsPrivatePath,
   getGitStatus,
   inspectWorkspaceFile,
@@ -52,6 +54,7 @@ import {
   resolveWorkspaceContextFileName,
   ensureWorkspaceWorklog,
   normalizeAgentSkillPackagePath,
+  normalizeAgentSkillDeviceConsentChallenge,
   normalizeResolvedSkillRuntimeArtifact,
   openBrowser,
   parseAndValidateAgentSkillPackage,
@@ -61,6 +64,7 @@ import {
   restoreRetainedCodexPluginInstallations,
   retainLoadedCodexPluginInstallation,
   request,
+  renderAgentSkillDeviceConsentPage,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
@@ -970,6 +974,159 @@ test("browser opener cancellation stops its short-lived child immediately", asyn
 
   await assert.rejects(opening, (error) => error === cancellation);
   assert.equal(killCalls, 1);
+});
+
+const buildCompanyRuntimeConsentChallenge = () => ({
+  schemaVersion: 1,
+  trustLevel: "company_unverified",
+  company: {
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "Example & Company",
+  },
+  skill: {
+    id: "company-11111111-1111-4111-8111-111111111111-iphone-mirroring",
+    title: "iPhone <Mirroring>",
+    version: "1.1.0",
+    releaseId: "22222222-2222-4222-8222-222222222222",
+  },
+  publication: {
+    id: "33333333-3333-4333-8333-333333333333",
+    sequence: 2,
+    summary: "Обновлена диагностика подключения",
+    changeReason: "Нужно поддержать новую версию macOS",
+    publishedAt: "2026-08-28T10:00:00.000Z",
+    publisher: {
+      displayName: "Company Admin",
+      username: "company-admin",
+    },
+  },
+  artifact: {
+    id: "44444444-4444-4444-8444-444444444444",
+    runtimeVersion: "1.1.0",
+    packageSha256: "a".repeat(64),
+    packageSizeBytes: 65_536,
+    instructionsSha256: "b".repeat(64),
+    capabilities: ["browser", "local-session"],
+  },
+  changes: {
+    kind: "update",
+    previousVersion: "1.0.0",
+    packageChanged: true,
+    instructionsChanged: true,
+    capabilitiesAdded: ["browser"],
+    capabilitiesRemoved: [],
+  },
+});
+
+test("company runtime consent page exposes provenance and escapes admin text", () => {
+  const challenge = normalizeAgentSkillDeviceConsentChallenge(
+    buildCompanyRuntimeConsentChallenge(),
+  );
+  const html = renderAgentSkillDeviceConsentPage({
+    challenge,
+    nonce: "private-nonce",
+  });
+
+  assert.match(html, /Навык не проверен Trelio/u);
+  assert.match(html, /Нужно поддержать новую версию macOS/u);
+  assert.match(html, /Company Admin \(@company-admin\)/u);
+  assert.match(html, /iPhone &lt;Mirroring&gt;/u);
+  assert.doesNotMatch(html, /iPhone <Mirroring>/u);
+  assert.match(html, /Установить и запустить/u);
+});
+
+test("company runtime consent requires a real loopback form decision before server grant", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  const consentRequests = [];
+  const accepted = await collectAgentSkillDeviceConsentThroughLoopback({
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    challenge,
+    companyId: challenge.company.id,
+    skillId: challenge.skill.id,
+    releaseId: challenge.skill.releaseId,
+  }, {
+    requestFn: async (origin, token, pathname, options) => {
+      consentRequests.push({ origin, token, pathname, options });
+      return new Response(JSON.stringify({ consent: { id: "accepted" } }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    openBrowserFn: async (url) => {
+      const consentUrl = new URL(url);
+      const pageResponse = await fetch(consentUrl);
+      assert.equal(pageResponse.status, 200);
+      assert.match(await pageResponse.text(), /Навык не проверен Trelio/u);
+
+      const decisionResponse = await fetch(new URL("/decision", consentUrl), {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: consentUrl.origin,
+        },
+        body: new URLSearchParams({
+          nonce: consentUrl.searchParams.get("nonce"),
+          decision: "accept",
+        }),
+      });
+      assert.equal(decisionResponse.status, 200);
+      assert.match(await decisionResponse.text(), /Эта версия разрешена/u);
+    },
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(consentRequests.length, 1);
+  assert.equal(consentRequests[0].pathname, "/api/agent-skills/runtime/device-consents");
+  assert.equal(consentRequests[0].token, "paired-device-token");
+  assert.deepEqual(JSON.parse(consentRequests[0].options.body), {
+    companyId: challenge.company.id,
+    skillId: challenge.skill.id,
+    expectedReleaseId: challenge.skill.releaseId,
+    publicationId: challenge.publication.id,
+    runtimeArtifactId: challenge.artifact.id,
+    packageSha256: challenge.artifact.packageSha256,
+    instructionsSha256: challenge.artifact.instructionsSha256,
+  });
+});
+
+test("declining company runtime consent never calls the server grant endpoint", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  let consentRequestCount = 0;
+
+  await assert.rejects(
+    collectAgentSkillDeviceConsentThroughLoopback({
+      origin: "https://trelio.example",
+      token: "paired-device-token",
+      challenge,
+      companyId: challenge.company.id,
+      skillId: challenge.skill.id,
+      releaseId: challenge.skill.releaseId,
+    }, {
+      requestFn: async () => {
+        consentRequestCount += 1;
+      },
+      openBrowserFn: async (url) => {
+        const consentUrl = new URL(url);
+        await fetch(consentUrl);
+        await fetch(new URL("/decision", consentUrl), {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            origin: consentUrl.origin,
+          },
+          body: new URLSearchParams({
+            nonce: consentUrl.searchParams.get("nonce"),
+            decision: "decline",
+          }),
+        });
+      },
+      timeoutMs: 5_000,
+    }),
+    (error) => error instanceof AgentSkillDeviceConsentDeclinedError,
+  );
+  assert.equal(consentRequestCount, 0);
 });
 
 test("bridge maps parent and related contexts to stable read-only paths", () => {

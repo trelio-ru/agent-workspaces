@@ -152,6 +152,7 @@ export const AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN = [
 const WORKLOG_FILE_NAME = "WORKLOG.md";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
+const AGENT_SKILL_DEVICE_CONSENT_HEADER = "x-trelio-agent-skill-device-consent";
 const AGENT_RULES_SHA256_HEADER = "x-trelio-agent-rules-sha256";
 // Legacy OAuth остаётся только как явный rollback для старого backend. Даже
 // там bridge не просит права на рабочие правила и чтение metadata секретов:
@@ -951,6 +952,10 @@ export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
   // transfer и Agent Secrets. Backend поэтому проверяет фактически
   // исполняемый bridge каждого запроса, а не только provenance старого Run.
   headers.set(BRIDGE_VERSION_HEADER, BRIDGE_VERSION);
+  // Dedicated capability proof keeps company runtime fail-closed during a
+  // rolling plugin install where an older executable could report the same
+  // marketplace version but cannot render the trusted local consent page.
+  headers.set(AGENT_SKILL_DEVICE_CONSENT_HEADER, "v1");
 
   if (token) {
     headers.set("authorization", `Bearer ${token}`);
@@ -975,12 +980,19 @@ const parseRetryAfterMilliseconds = (rawValue, nowMs = Date.now()) => {
   return Number.isFinite(retryAtMs) ? Math.max(0, retryAtMs - nowMs) : null;
 };
 
-class TrelioApiError extends Error {
-  constructor(statusCode, message, retryAfterMilliseconds = null, code = null) {
+export class TrelioApiError extends Error {
+  constructor(
+    statusCode,
+    message,
+    retryAfterMilliseconds = null,
+    code = null,
+    payload = null,
+  ) {
     super(`Trelio API ${statusCode}: ${String(message).slice(0, 1000)}`);
     this.statusCode = statusCode;
     this.retryAfterMilliseconds = retryAfterMilliseconds;
     this.code = code;
+    this.payload = payload;
   }
 }
 
@@ -1036,6 +1048,7 @@ export const request = async (origin, token, pathname, options = {}) => {
       message,
       parseRetryAfterMilliseconds(response.headers.get("retry-after")),
       code,
+      errorPayload,
     );
   }
 
@@ -3090,6 +3103,483 @@ export const openBrowser = async (
   });
 };
 
+const AGENT_SKILL_DEVICE_CONSENT_TIMEOUT_MS = 5 * 60 * 1000;
+const AGENT_SKILL_DEVICE_CONSENT_BODY_LIMIT = 8 * 1024;
+const AGENT_SKILL_DEVICE_CONSENT_CAPABILITIES = new Set([
+  "browser",
+  "local-session",
+  "network",
+  "secret-checkout",
+]);
+
+const escapeAgentSkillConsentHtml = (value) => String(value ?? "")
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll('"', "&quot;")
+  .replaceAll("'", "&#39;");
+
+const normalizeConsentText = (value, maximumLength) => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized && normalized.length <= maximumLength ? normalized : null;
+};
+
+export const normalizeAgentSkillDeviceConsentChallenge = (value) => {
+  const company = value?.company;
+  const skill = value?.skill;
+  const publication = value?.publication;
+  const artifact = value?.artifact;
+  const changes = value?.changes;
+  const publisher = publication?.publisher ?? null;
+  const capabilities = Array.isArray(artifact?.capabilities)
+    ? [...new Set(artifact.capabilities)]
+    : [];
+  const addedCapabilities = Array.isArray(changes?.capabilitiesAdded)
+    ? [...new Set(changes.capabilitiesAdded)]
+    : [];
+  const removedCapabilities = Array.isArray(changes?.capabilitiesRemoved)
+    ? [...new Set(changes.capabilitiesRemoved)]
+    : [];
+  const capabilitiesAreSafe = [
+    ...capabilities,
+    ...addedCapabilities,
+    ...removedCapabilities,
+  ].every((capability) => (
+    typeof capability === "string"
+    && AGENT_SKILL_DEVICE_CONSENT_CAPABILITIES.has(capability)
+  ));
+  const publisherIsSafe = publisher === null || (
+    normalizeConsentText(publisher?.displayName, 255)
+    && normalizeConsentText(publisher?.username, 64)
+  );
+
+  if (
+    value?.schemaVersion !== 1
+    || value?.trustLevel !== "company_unverified"
+    || !UUID_PATTERN.test(String(company?.id || ""))
+    || !normalizeConsentText(company?.name, 255)
+    || !SKILL_ID_PATTERN.test(String(skill?.id || ""))
+    || !normalizeConsentText(skill?.title, 255)
+    || !STABLE_VERSION_PATTERN.test(String(skill?.version || ""))
+    || !UUID_PATTERN.test(String(skill?.releaseId || ""))
+    || !UUID_PATTERN.test(String(publication?.id || ""))
+    || !Number.isSafeInteger(publication?.sequence)
+    || publication.sequence <= 0
+    || !normalizeConsentText(publication?.summary, 2_000)
+    || !normalizeConsentText(publication?.changeReason, 2_000)
+    || !Number.isFinite(Date.parse(String(publication?.publishedAt || "")))
+    || !publisherIsSafe
+    || !UUID_PATTERN.test(String(artifact?.id || ""))
+    || !STABLE_VERSION_PATTERN.test(String(artifact?.runtimeVersion || ""))
+    || !SHA256_PATTERN.test(String(artifact?.packageSha256 || ""))
+    || !SHA256_PATTERN.test(String(artifact?.instructionsSha256 || ""))
+    || !Number.isSafeInteger(artifact?.packageSizeBytes)
+    || artifact.packageSizeBytes <= 0
+    || artifact.packageSizeBytes > AGENT_SKILL_MAX_PACKAGE_BYTES
+    || !capabilitiesAreSafe
+    || !["initial_install", "update", "republish"].includes(changes?.kind)
+    || (
+      changes?.previousVersion !== null
+      && !STABLE_VERSION_PATTERN.test(String(changes?.previousVersion || ""))
+    )
+    || typeof changes?.packageChanged !== "boolean"
+    || typeof changes?.instructionsChanged !== "boolean"
+  ) {
+    throw new Error("Trelio вернул некорректный запрос согласия на runtime компании.");
+  }
+
+  return {
+    schemaVersion: 1,
+    trustLevel: "company_unverified",
+    company: { id: company.id, name: company.name.trim() },
+    skill: {
+      id: skill.id,
+      title: skill.title.trim(),
+      version: skill.version,
+      releaseId: skill.releaseId,
+    },
+    publication: {
+      id: publication.id,
+      sequence: publication.sequence,
+      summary: publication.summary.trim(),
+      changeReason: publication.changeReason.trim(),
+      publishedAt: new Date(publication.publishedAt).toISOString(),
+      publisher: publisher === null
+        ? null
+        : {
+            displayName: publisher.displayName.trim(),
+            username: publisher.username.trim(),
+          },
+    },
+    artifact: {
+      id: artifact.id,
+      runtimeVersion: artifact.runtimeVersion,
+      packageSha256: artifact.packageSha256,
+      packageSizeBytes: artifact.packageSizeBytes,
+      instructionsSha256: artifact.instructionsSha256,
+      capabilities: capabilities.sort(),
+    },
+    changes: {
+      kind: changes.kind,
+      previousVersion: changes.previousVersion,
+      packageChanged: changes.packageChanged,
+      instructionsChanged: changes.instructionsChanged,
+      capabilitiesAdded: addedCapabilities.sort(),
+      capabilitiesRemoved: removedCapabilities.sort(),
+    },
+  };
+};
+
+const renderAgentSkillConsentCapability = (capability) => ({
+  browser: "Управление браузером",
+  "local-session": "Локальная сессия",
+  network: "Сетевые запросы",
+  "secret-checkout": "Получение разрешённого Agent Secret",
+}[capability] || capability);
+
+export const renderAgentSkillDeviceConsentPage = ({ challenge, nonce }) => {
+  const publisher = challenge.publication.publisher;
+  const capabilityItems = challenge.artifact.capabilities.length > 0
+    ? challenge.artifact.capabilities
+        .map((capability) => `<li>${escapeAgentSkillConsentHtml(renderAgentSkillConsentCapability(capability))}</li>`)
+        .join("")
+    : "<li>Дополнительные capabilities не заявлены</li>";
+  const changeItems = [
+    `Пакет: ${challenge.changes.packageChanged ? "изменён" : "без изменений"}`,
+    `Инструкция: ${challenge.changes.instructionsChanged ? "изменена" : "без изменений"}`,
+    challenge.changes.capabilitiesAdded.length > 0
+      ? `Добавлены права: ${challenge.changes.capabilitiesAdded.map(renderAgentSkillConsentCapability).join(", ")}`
+      : null,
+    challenge.changes.capabilitiesRemoved.length > 0
+      ? `Убраны права: ${challenge.changes.capabilitiesRemoved.map(renderAgentSkillConsentCapability).join(", ")}`
+      : null,
+  ].filter(Boolean).map((item) => `<li>${escapeAgentSkillConsentHtml(item)}</li>`).join("");
+  const previousVersion = challenge.changes.previousVersion
+    ? ` после v${escapeAgentSkillConsentHtml(challenge.changes.previousVersion)}`
+    : "";
+  const packageSizeMb = (challenge.artifact.packageSizeBytes / (1024 * 1024)).toFixed(2);
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Установка навыка компании</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #172033; }
+    main { width: min(680px, calc(100% - 32px)); margin: 40px auto; background: #fff; border: 1px solid #dce3ef; border-radius: 18px; box-shadow: 0 16px 48px rgba(27, 43, 72, .14); overflow: hidden; }
+    header, section, form { padding: 22px 26px; }
+    header { background: #fff4e5; border-bottom: 1px solid #f0d4a7; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    p { margin: 7px 0; line-height: 1.5; }
+    section { border-bottom: 1px solid #e8edf5; }
+    dl { display: grid; grid-template-columns: minmax(130px, auto) 1fr; gap: 8px 16px; margin: 0; }
+    dt { color: #68758c; } dd { margin: 0; overflow-wrap: anywhere; }
+    ul { margin: 8px 0 0; padding-left: 22px; line-height: 1.5; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; overflow-wrap: anywhere; }
+    .warning { color: #8a3d00; font-weight: 700; }
+    .actions { display: flex; gap: 12px; justify-content: flex-end; background: #f8faff; }
+    button { border-radius: 10px; padding: 11px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+    .cancel { border: 1px solid #b8c3d4; background: #fff; color: #27354d; }
+    .accept { border: 1px solid #1768d1; background: #1768d1; color: #fff; }
+    @media (prefers-color-scheme: dark) {
+      body { background: #111827; color: #e8eef9; } main { background: #1b2433; border-color: #344158; } header { background: #3a2d1d; border-color: #6d522e; } section { border-color: #344158; } dt { color: #aeb9cc; } .actions { background: #151d2a; } .cancel { background: #1b2433; color: #e8eef9; border-color: #64718a; } .warning { color: #ffc675; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Навык не проверен Trelio</h1>
+    <p class="warning">Код загрузил администратор компании. Он будет запущен с правами вашей учётной записи ОС.</p>
+    <p>Подпись Trelio подтверждает, что пакет не изменился при доставке, но не означает, что Trelio проверил код.</p>
+  </header>
+  <section>
+    <h2>${escapeAgentSkillConsentHtml(challenge.skill.title)} · v${escapeAgentSkillConsentHtml(challenge.skill.version)}${previousVersion}</h2>
+    <dl>
+      <dt>Компания</dt><dd>${escapeAgentSkillConsentHtml(challenge.company.name)}</dd>
+      <dt>Опубликовал</dt><dd>${publisher ? `${escapeAgentSkillConsentHtml(publisher.displayName)} (@${escapeAgentSkillConsentHtml(publisher.username)})` : "Администратор компании"}</dd>
+      <dt>Что изменилось</dt><dd>${escapeAgentSkillConsentHtml(challenge.publication.summary)}</dd>
+      <dt>Причина</dt><dd>${escapeAgentSkillConsentHtml(challenge.publication.changeReason)}</dd>
+    </dl>
+  </section>
+  <section>
+    <h2>Изменения этой публикации</h2>
+    <ul>${changeItems}</ul>
+    <h2 style="margin-top:16px">Заявленные возможности</h2>
+    <ul>${capabilityItems}</ul>
+  </section>
+  <section>
+    <dl>
+      <dt>Runtime</dt><dd>${escapeAgentSkillConsentHtml(challenge.artifact.runtimeVersion)}</dd>
+      <dt>Размер</dt><dd>${escapeAgentSkillConsentHtml(packageSizeMb)} МБ</dd>
+      <dt>SHA-256 package</dt><dd><code>${escapeAgentSkillConsentHtml(challenge.artifact.packageSha256)}</code></dd>
+      <dt>SHA-256 инструкции</dt><dd><code>${escapeAgentSkillConsentHtml(challenge.artifact.instructionsSha256)}</code></dd>
+    </dl>
+  </section>
+  <form method="post" action="/decision" class="actions">
+    <input type="hidden" name="nonce" value="${escapeAgentSkillConsentHtml(nonce)}">
+    <button class="cancel" type="submit" name="decision" value="decline">Отмена</button>
+    <button class="accept" type="submit" name="decision" value="accept">Установить и запустить</button>
+  </form>
+</main>
+</body>
+</html>`;
+};
+
+const readAgentSkillConsentBody = async (incoming) => {
+  const chunks = [];
+  let sizeBytes = 0;
+
+  for await (const chunk of incoming) {
+    sizeBytes += chunk.length;
+    if (sizeBytes > AGENT_SKILL_DEVICE_CONSENT_BODY_LIMIT) {
+      throw new Error("Подтверждение не выполнено: локальная форма отправила слишком большой запрос.");
+    }
+    chunks.push(chunk);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
+};
+
+const readAgentSkillConsentHeader = (incoming, name) => {
+  const value = incoming.headers[name.toLowerCase()];
+  return Array.isArray(value) ? value[0] || "" : String(value || "");
+};
+
+const isAgentSkillConsentLoopbackAddress = (address) => (
+  address === "127.0.0.1"
+  || address === "::1"
+  || address === "::ffff:127.0.0.1"
+);
+
+const writeAgentSkillConsentHtml = (outgoing, statusCode, html, onFinished) => {
+  outgoing.writeHead(statusCode, {
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "content-type": "text/html; charset=utf-8",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+  });
+  outgoing.end(html, onFinished);
+};
+
+export class AgentSkillDeviceConsentDeclinedError extends Error {
+  constructor() {
+    super("AGENT_SKILL_DEVICE_CONSENT_DECLINED: пользователь отменил установку навыка компании.");
+    this.code = "AGENT_SKILL_DEVICE_CONSENT_DECLINED";
+  }
+}
+
+export const collectAgentSkillDeviceConsentThroughLoopback = async ({
+  origin,
+  token,
+  challenge: rawChallenge,
+  companyId,
+  projectId = null,
+  skillId,
+  releaseId,
+}, {
+  openBrowserFn = openBrowser,
+  requestFn = request,
+  timeoutMs = AGENT_SKILL_DEVICE_CONSENT_TIMEOUT_MS,
+  onListening = () => {},
+} = {}) => {
+  const challenge = normalizeAgentSkillDeviceConsentChallenge(rawChallenge);
+
+  if (
+    challenge.company.id !== companyId
+    || challenge.skill.id !== skillId
+    || challenge.skill.releaseId !== releaseId
+  ) {
+    throw new Error("Запрос согласия не совпадает с exact командой get_agent_skill.");
+  }
+
+  const nonce = crypto.randomBytes(32).toString("base64url");
+  let expectedOrigin = "";
+  let expectedHost = "";
+  let expectedPort = 0;
+  let settled = false;
+  let complete;
+  let fail;
+  const completion = new Promise((resolve, reject) => {
+    complete = resolve;
+    fail = reject;
+  });
+  completion.catch(() => {});
+
+  const server = http.createServer(async (incoming, outgoing) => {
+    try {
+      const requestUrl = new URL(incoming.url || "/", expectedOrigin || "http://127.0.0.1");
+      const exactSocket = (
+        isAgentSkillConsentLoopbackAddress(incoming.socket.remoteAddress)
+        && incoming.socket.localAddress === "127.0.0.1"
+        && incoming.socket.localPort === expectedPort
+        && readAgentSkillConsentHeader(incoming, "host") === expectedHost
+      );
+
+      if (
+        incoming.method === "GET"
+        && requestUrl.pathname === "/"
+        && requestUrl.origin === expectedOrigin
+        && requestUrl.searchParams.get("nonce") === nonce
+        && exactSocket
+      ) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          200,
+          renderAgentSkillDeviceConsentPage({ challenge, nonce }),
+        );
+        return;
+      }
+
+      if (incoming.method !== "POST" || requestUrl.pathname !== "/decision") {
+        outgoing.writeHead(404, { "cache-control": "no-store" }).end("Not found");
+        return;
+      }
+
+      const originHeader = readAgentSkillConsentHeader(incoming, "origin");
+      const authorizedOrigin = originHeader === expectedOrigin || (
+        (originHeader === "" || originHeader === "null")
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-site") === "same-origin"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-mode") === "navigate"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-dest") === "document"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-user") === "?1"
+      );
+      const contentType = readAgentSkillConsentHeader(incoming, "content-type").toLowerCase();
+
+      if (
+        settled
+        || requestUrl.origin !== expectedOrigin
+        || requestUrl.search !== ""
+        || !exactSocket
+        || !authorizedOrigin
+        || !contentType.startsWith("application/x-www-form-urlencoded")
+      ) {
+        incoming.resume();
+        writeAgentSkillConsentHtml(
+          outgoing,
+          403,
+          "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Защитная проверка локальной формы не пройдена. Закройте вкладку и повторите запуск навыка.</p>",
+        );
+        return;
+      }
+
+      const form = new URLSearchParams(await readAgentSkillConsentBody(incoming));
+      const decision = form.get("decision");
+      if (form.get("nonce") !== nonce || !["accept", "decline"].includes(decision)) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          403,
+          "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Одноразовое подтверждение недействительно. Закройте вкладку и повторите запуск навыка.</p>",
+        );
+        return;
+      }
+
+      settled = true;
+      if (decision === "decline") {
+        const declinedError = new AgentSkillDeviceConsentDeclinedError();
+        writeAgentSkillConsentHtml(
+          outgoing,
+          200,
+          "<!doctype html><meta charset=utf-8><title>Установка отменена</title><p>Навык не установлен. Эту вкладку можно закрыть.</p>",
+          () => fail(declinedError),
+        );
+        return;
+      }
+
+      try {
+        await requestFn(origin, token, "/api/agent-skills/runtime/device-consents", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            companyId,
+            ...(projectId ? { projectId } : {}),
+            skillId,
+            expectedReleaseId: releaseId,
+            publicationId: challenge.publication.id,
+            runtimeArtifactId: challenge.artifact.id,
+            packageSha256: challenge.artifact.packageSha256,
+            instructionsSha256: challenge.artifact.instructionsSha256,
+          }),
+        });
+      } catch (error) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          409,
+          "<!doctype html><meta charset=utf-8><title>Навык не установлен</title><p>Версия могла измениться или Trelio сейчас недоступен. Закройте вкладку, перечитайте текущую публикацию и повторите запуск.</p>",
+          () => fail(error),
+        );
+        return;
+      }
+
+      writeAgentSkillConsentHtml(
+        outgoing,
+        200,
+        "<!doctype html><meta charset=utf-8><title>Навык установлен</title><p>Эта версия разрешена на устройстве и будет запущена. Вкладку можно закрыть.</p>",
+        () => complete(true),
+      );
+    } catch (error) {
+      if (!outgoing.headersSent && !outgoing.destroyed) {
+        outgoing.writeHead(500, { "cache-control": "no-store" }).end(
+          "Подтверждение не выполнено. Закройте вкладку и повторите запуск навыка.",
+        );
+      } else {
+        outgoing.destroy();
+      }
+      fail(error);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const closeServer = () => new Promise((resolve) => {
+    if (!server.listening) {
+      server.closeAllConnections();
+      resolve();
+      return;
+    }
+    server.close(resolve);
+    server.closeAllConnections();
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address !== "object") {
+      throw new Error("Локальная форма согласия не получила loopback port.");
+    }
+    expectedOrigin = `http://127.0.0.1:${address.port}`;
+    expectedHost = `127.0.0.1:${address.port}`;
+    expectedPort = address.port;
+    onListening({ port: address.port });
+
+    process.stdout.write(
+      "Открываю защищённое локальное окно: проверьте издателя, причины и изменения навыка компании.\n",
+    );
+    await openBrowserFn(
+      `${expectedOrigin}/?${new URLSearchParams({ nonce }).toString()}`,
+    );
+
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(
+        "AGENT_SKILL_DEVICE_CONSENT_TIMEOUT: время локального подтверждения истекло.",
+      )), timeoutMs);
+    });
+    return await Promise.race([completion, timeout])
+      .finally(() => clearTimeout(timeoutId));
+  } finally {
+    await closeServer();
+  }
+};
+
 const createPkce = () => {
   const verifier = crypto.randomBytes(48).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
@@ -3856,6 +4346,12 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
 
 export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   const artifact = payload?.artifact;
+  const trust = payload?.trust ?? {
+    level: "platform_verified",
+    artifactLevel: "platform_verified",
+    requiresDeviceConsent: false,
+    consentId: null,
+  };
   // `localIdentity` is independent from a company connection starting with
   // host v1.6.17. A browser-only runtime still needs the stable member scope
   // for private local preferences even though it receives no connection ID or
@@ -3883,6 +4379,21 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
     || !STABLE_VERSION_PATTERN.test(String(artifact?.minimumHostVersion || ""))
     || typeof payload?.packageUrl !== "string"
     || !payload.packageUrl.startsWith("/api/agent-skills/runtime/package?")
+    || !["platform_verified", "company_unverified"].includes(trust?.level)
+    || !["platform_verified", "company_unverified"].includes(trust?.artifactLevel)
+    || typeof trust?.requiresDeviceConsent !== "boolean"
+    || (
+      trust?.consentId !== null
+      && !UUID_PATTERN.test(String(trust?.consentId || ""))
+    )
+    || (
+      trust?.level === "company_unverified"
+      && (!trust.requiresDeviceConsent || !UUID_PATTERN.test(String(trust.consentId || "")))
+    )
+    || (
+      trust?.level === "platform_verified"
+      && (trust.requiresDeviceConsent || trust.consentId !== null)
+    )
     || (
       localIdentity !== null
       && (
@@ -3958,6 +4469,12 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
             hasValue: binding.hasValue,
           })),
         },
+    trust: {
+      level: trust.level,
+      artifactLevel: trust.artifactLevel,
+      requiresDeviceConsent: trust.requiresDeviceConsent,
+      consentId: trust.consentId,
+    },
     artifact: {
       id: artifact.id,
       skillId: artifact.skillId,
@@ -3975,8 +4492,9 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   };
 };
 
-// A signed runtime is trusted code, but the shell/workspace that launches the
-// plugin is not a trusted source of process configuration. In particular,
+// A runtime that passed signature, digest and (when required) device-consent
+// gates may execute, but the shell/workspace that launches the plugin is not a
+// trusted source of process configuration. In particular,
 // dynamic-loader hooks (LD_PRELOAD/DYLD_*), NODE_OPTIONS/PYTHONPATH and ambient
 // credentials can act before the materialized runtime has a chance to sanitize
 // itself. Pass only the small set of OS/runtime-location values that an Agent
@@ -4052,7 +4570,7 @@ const normalizedWindowsInstallationRoot = (value, expectedBasename) => {
  * Never let a workspace-prepended PATH choose an interpreter or shebang
  * helper. The host's own absolute Node directory remains available (important
  * for nvm/asdf installations), followed only by conventional OS-managed
- * executable roots. A signed runtime that needs another executable must carry
+ * executable roots. A runtime that needs another executable must carry
  * it in its package and declare the `executable` interpreter explicitly.
  */
 export const buildAgentSkillRuntimePath = (environment = process.env) => {
@@ -4515,6 +5033,57 @@ const assertOrdinaryRuntimePolicyForCompany = async ({
   }
 };
 
+const resolveAgentSkillRuntimeWithDeviceConsent = async ({
+  origin,
+  token,
+  companyId,
+  projectId,
+  skillId,
+  releaseId,
+}) => {
+  const requestResolution = () => request(
+    origin,
+    token,
+    "/api/agent-skills/runtime/resolve",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companyId,
+        ...(projectId ? { projectId } : {}),
+        skillId,
+        expectedReleaseId: releaseId,
+      }),
+    },
+  );
+
+  try {
+    return await requestResolution();
+  } catch (error) {
+    if (
+      !(error instanceof TrelioApiError)
+      || error.code !== "AGENT_SKILL_DEVICE_CONSENT_REQUIRED"
+    ) {
+      throw error;
+    }
+
+    await collectAgentSkillDeviceConsentThroughLoopback({
+      origin,
+      token,
+      challenge: error.payload?.challenge,
+      companyId,
+      projectId,
+      skillId,
+      releaseId,
+    });
+
+    // The accepted grant is server-side and exact to the same publication.
+    // A second live resolve both proves the write and catches an update that
+    // raced with the browser click before any cache/package access.
+    return requestResolution();
+  }
+};
+
 const skillCommand = async (
   origin,
   options,
@@ -4576,21 +5145,14 @@ const skillCommand = async (
     runtimeSessionId,
     runtimeAttestation,
   });
-  const response = await request(
+  const response = await resolveAgentSkillRuntimeWithDeviceConsent({
     origin,
     token,
-    "/api/agent-skills/runtime/resolve",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        companyId,
-        ...(projectId ? { projectId } : {}),
-        skillId,
-        expectedReleaseId: releaseId,
-      }),
-    },
-  );
+    companyId,
+    projectId,
+    skillId,
+    releaseId,
+  });
   const resolution = normalizeResolvedSkillRuntimeArtifact(await response.json());
 
   if (

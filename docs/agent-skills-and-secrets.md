@@ -60,13 +60,39 @@ control-plane outage, timeout, transient/unknown failure и запрещённы
 
 ## Signed runtime packages
 
-Company-controlled Markdown не поставляет executable. Исполняемая часть навыка
-может быть immutable signed package:
+Исполняемая часть навыка может быть immutable signed package. Для package есть
+два независимых уровня доверия:
+
+- `platform_verified` – runtime проверен и опубликован Trelio;
+- `company_unverified` – runtime загрузил owner/admin компании, а Trelio не
+  проверял его код.
+
+Оба варианта подписаны Trelio для контроля целостности доставки. Подпись
+`company_unverified` package не превращает его в проверенный Trelio runtime.
+Доступ такого навыка ограничен назначениями внутри компании, но после запуска
+процесс работает с правами локального OS-account пользователя.
+
+Обычный запуск:
 
 1. Host делает authenticated live resolve exact release.
 2. Проверяет Ed25519 signature, package/file SHA-256 и portable paths.
 3. Использует content-addressed cache только после полной проверки.
 4. Запускает exact command с `shell:false`.
+
+Перед первым запуском `company_unverified` release агент показывает publisher,
+summary и обязательную причину публикации. Затем host открывает защищённую
+одноразовую форму на `127.0.0.1`. Только сам пользователь может нажать в ней
+`Установить и запустить на этом устройстве`; ответ в чате, аргумент CLI или
+действие агента не являются согласием. До подтверждения backend не возвращает
+ни package bytes, ни download URL.
+
+Разрешение привязано к exact пользователю, bridge-session, компании, skill,
+publication, release, artifact и SHA-256 package/инструкции. Каждая новая
+публикация требует нового согласия, в том числе если администратор изменил
+только инструкцию, переиспользовал тот же package, сделал rollback либо заново
+активировал версию. Локальная форма показывает причину администратора и
+machine-readable diff package, инструкции и capabilities. Отмена или timeout
+оставляют runtime неустановленным.
 
 На `AGENT_SKILL_RELEASE_CHANGED` агент перечитывает current skill, а не
 принуждает stale package. Host-injected company config проходит строгую

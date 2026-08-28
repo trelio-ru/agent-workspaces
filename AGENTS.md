@@ -165,6 +165,18 @@ provider-tag workflow или внутренние release playbooks в этот 
   comments, checkpoints, handoff или logs.
 - Signed runtime запускается только после authenticated exact-release resolve,
   проверки signature/package/files/paths и с host-authored allowlist окружения.
+- `company_unverified` runtime, загруженный owner/admin компании, не становится
+  проверенным из-за backend Ed25519-подписи: подпись гарантирует только
+  целостность доставки. До package URL/bytes bridge обязан объявить capability
+  `x-trelio-agent-skill-device-consent: v1`, получить bounded challenge и
+  открыть защищённую одноразовую форму на `127.0.0.1` с компанией, publisher,
+  summary, обязательной причиной, diff, capabilities и hash-ами. Только прямой
+  POST пользователя из формы создаёт grant exact
+  user/device/publication/release/artifact/package/instruction; chat reply,
+  CLI approval flag, browser automation и действие агента запрещены. Любой
+  новый publication, включая unchanged package, instruction-only update,
+  rollback или reactivation, требует нового disclosure и consent; cancel и
+  timeout не скачивают package.
 - User login, CAPTCHA, passkey, OTP и иные protected account steps выполняет
   сам пользователь в разрешённом browser handoff. Агент не вводит и не читает
   credential.
