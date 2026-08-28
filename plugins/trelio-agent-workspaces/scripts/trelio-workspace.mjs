@@ -3480,6 +3480,21 @@ export const collectAgentSkillDeviceConsentThroughLoopback = async ({
         return;
       }
 
+      // Both POST requests may pass the cheap pre-body checks while their
+      // bodies are still arriving. Claim the one-shot decision only after the
+      // bounded form has been read and validated, then recheck synchronously
+      // before any response callback or remote grant can create a side effect.
+      // JavaScript runs this short section without an await, so exactly one
+      // valid decision can change `settled` from false to true.
+      if (settled) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          403,
+          "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Решение по этой одноразовой форме уже принято. Закройте вкладку и повторите запуск навыка.</p>",
+        );
+        return;
+      }
+
       settled = true;
       if (decision === "decline") {
         const declinedError = new AgentSkillDeviceConsentDeclinedError();
@@ -4346,12 +4361,11 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
 
 export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
   const artifact = payload?.artifact;
-  const trust = payload?.trust ?? {
-    level: "platform_verified",
-    artifactLevel: "platform_verified",
-    requiresDeviceConsent: false,
-    consentId: null,
-  };
+  // Trust is an admission decision, not optional compatibility metadata. A
+  // missing object must fail closed: otherwise a response produced by an old
+  // or incomplete backend would silently promote arbitrary code to
+  // `platform_verified` on the local device.
+  const trust = payload?.trust;
   // `localIdentity` is independent from a company connection starting with
   // host v1.6.17. A browser-only runtime still needs the stable member scope
   // for private local preferences even though it receives no connection ID or
@@ -4392,7 +4406,15 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
     )
     || (
       trust?.level === "platform_verified"
-      && (trust.requiresDeviceConsent || trust.consentId !== null)
+      && (
+        // A platform-verified publication may never downgrade to bytes whose
+        // artifact provenance is only company-unverified. The reverse pairing
+        // is valid when a company republishes previously verified bytes: the
+        // publication itself still requires a fresh exact device consent.
+        trust.artifactLevel !== "platform_verified"
+        || trust.requiresDeviceConsent
+        || trust.consentId !== null
+      )
     )
     || (
       localIdentity !== null
@@ -5033,15 +5055,18 @@ const assertOrdinaryRuntimePolicyForCompany = async ({
   }
 };
 
-const resolveAgentSkillRuntimeWithDeviceConsent = async ({
+export const resolveAgentSkillRuntimeWithDeviceConsent = async ({
   origin,
   token,
   companyId,
   projectId,
   skillId,
   releaseId,
-}) => {
-  const requestResolution = () => request(
+}, {
+  requestFn = request,
+  collectConsentFn = collectAgentSkillDeviceConsentThroughLoopback,
+} = {}) => {
+  const requestResolution = () => requestFn(
     origin,
     token,
     "/api/agent-skills/runtime/resolve",
@@ -5067,7 +5092,7 @@ const resolveAgentSkillRuntimeWithDeviceConsent = async ({
       throw error;
     }
 
-    await collectAgentSkillDeviceConsentThroughLoopback({
+    await collectConsentFn({
       origin,
       token,
       challenge: error.payload?.challenge,

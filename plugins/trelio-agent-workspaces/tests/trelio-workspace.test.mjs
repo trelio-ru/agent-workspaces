@@ -13,7 +13,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as requestHttp } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -30,6 +30,7 @@ import {
   BridgePluginUpgradeRequiredError,
   BrowserOpenError,
   AgentSkillDeviceConsentDeclinedError,
+  TrelioApiError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
@@ -65,6 +66,7 @@ import {
   retainLoadedCodexPluginInstallation,
   request,
   renderAgentSkillDeviceConsentPage,
+  resolveAgentSkillRuntimeWithDeviceConsent,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
@@ -984,16 +986,16 @@ const buildCompanyRuntimeConsentChallenge = () => ({
     name: "Example & Company",
   },
   skill: {
-    id: "company-11111111-1111-4111-8111-111111111111-iphone-mirroring",
-    title: "iPhone <Mirroring>",
+    id: "company-11111111-1111-4111-8111-111111111111-synthetic-runtime",
+    title: "Synthetic <Runtime>",
     version: "1.1.0",
     releaseId: "22222222-2222-4222-8222-222222222222",
   },
   publication: {
     id: "33333333-3333-4333-8333-333333333333",
     sequence: 2,
-    summary: "Обновлена диагностика подключения",
-    changeReason: "Нужно поддержать новую версию macOS",
+    summary: "Обновлён synthetic runtime protocol",
+    changeReason: "Нужно проверить новую версию generic host protocol",
     publishedAt: "2026-08-28T10:00:00.000Z",
     publisher: {
       displayName: "Company Admin",
@@ -1018,6 +1020,52 @@ const buildCompanyRuntimeConsentChallenge = () => ({
   },
 });
 
+/**
+ * Open a loopback decision request and send only its headers at first.
+ *
+ * Keeping the body pending lets the regression place two requests inside the
+ * server's asynchronous body-read window. That makes the one-shot race
+ * deterministic instead of relying on two ordinary `fetch` calls happening to
+ * overlap on a particular machine.
+ */
+const startPendingCompanyRuntimeConsentDecision = (
+  consentUrl,
+  {
+    nonce = consentUrl.searchParams.get("nonce"),
+    decision = "accept",
+    origin = consentUrl.origin,
+    host = consentUrl.host,
+  } = {},
+) => {
+  const body = new URLSearchParams({ nonce, decision }).toString();
+  let finish;
+  const response = new Promise((resolve, reject) => {
+    const outgoing = requestHttp(new URL("/decision", consentUrl), {
+      method: "POST",
+      headers: {
+        "content-length": Buffer.byteLength(body),
+        "content-type": "application/x-www-form-urlencoded",
+        host,
+        origin,
+      },
+    }, async (incoming) => {
+      const chunks = [];
+      for await (const chunk of incoming) {
+        chunks.push(chunk);
+      }
+      resolve({
+        statusCode: incoming.statusCode,
+        body: Buffer.concat(chunks).toString("utf8"),
+      });
+    });
+    outgoing.once("error", reject);
+    outgoing.flushHeaders();
+    finish = () => outgoing.end(body);
+  });
+
+  return { finish, response };
+};
+
 test("company runtime consent page exposes provenance and escapes admin text", () => {
   const challenge = normalizeAgentSkillDeviceConsentChallenge(
     buildCompanyRuntimeConsentChallenge(),
@@ -1028,10 +1076,10 @@ test("company runtime consent page exposes provenance and escapes admin text", (
   });
 
   assert.match(html, /Навык не проверен Trelio/u);
-  assert.match(html, /Нужно поддержать новую версию macOS/u);
+  assert.match(html, /Нужно проверить новую версию generic host protocol/u);
   assert.match(html, /Company Admin \(@company-admin\)/u);
-  assert.match(html, /iPhone &lt;Mirroring&gt;/u);
-  assert.doesNotMatch(html, /iPhone <Mirroring>/u);
+  assert.match(html, /Synthetic &lt;Runtime&gt;/u);
+  assert.doesNotMatch(html, /Synthetic <Runtime>/u);
   assert.match(html, /Установить и запустить/u);
 });
 
@@ -1127,6 +1175,225 @@ test("declining company runtime consent never calls the server grant endpoint", 
     (error) => error instanceof AgentSkillDeviceConsentDeclinedError,
   );
   assert.equal(consentRequestCount, 0);
+});
+
+test("company runtime consent rejects wrong origin, host and nonce without consuming the form", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  let consentRequestCount = 0;
+
+  const accepted = await collectAgentSkillDeviceConsentThroughLoopback({
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    challenge,
+    companyId: challenge.company.id,
+    skillId: challenge.skill.id,
+    releaseId: challenge.skill.releaseId,
+  }, {
+    requestFn: async () => {
+      consentRequestCount += 1;
+      return new Response(JSON.stringify({ consent: { id: "accepted" } }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    openBrowserFn: async (url) => {
+      const consentUrl = new URL(url);
+      const pageResponse = await fetch(consentUrl);
+      assert.equal(pageResponse.status, 200);
+
+      const wrongOrigin = startPendingCompanyRuntimeConsentDecision(consentUrl, {
+        origin: "http://attacker.invalid",
+      });
+      wrongOrigin.finish();
+      assert.equal((await wrongOrigin.response).statusCode, 403);
+
+      const wrongHost = startPendingCompanyRuntimeConsentDecision(consentUrl, {
+        host: `localhost:${consentUrl.port}`,
+      });
+      wrongHost.finish();
+      assert.equal((await wrongHost.response).statusCode, 403);
+
+      const wrongNonce = startPendingCompanyRuntimeConsentDecision(consentUrl, {
+        nonce: "not-the-one-time-nonce",
+      });
+      wrongNonce.finish();
+      assert.equal((await wrongNonce.response).statusCode, 403);
+
+      assert.equal(consentRequestCount, 0);
+      const validDecision = startPendingCompanyRuntimeConsentDecision(consentUrl);
+      validDecision.finish();
+      assert.equal((await validDecision.response).statusCode, 200);
+    },
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(consentRequestCount, 1);
+});
+
+test("company runtime consent times out without creating a server grant", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  let consentRequestCount = 0;
+
+  await assert.rejects(
+    collectAgentSkillDeviceConsentThroughLoopback({
+      origin: "https://trelio.example",
+      token: "paired-device-token",
+      challenge,
+      companyId: challenge.company.id,
+      skillId: challenge.skill.id,
+      releaseId: challenge.skill.releaseId,
+    }, {
+      requestFn: async () => {
+        consentRequestCount += 1;
+      },
+      openBrowserFn: async (url) => {
+        const pageResponse = await fetch(url);
+        assert.equal(pageResponse.status, 200);
+      },
+      timeoutMs: 100,
+    }),
+    /AGENT_SKILL_DEVICE_CONSENT_TIMEOUT/u,
+  );
+  assert.equal(consentRequestCount, 0);
+});
+
+test("concurrent accept decisions create exactly one device grant", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  let consentRequestCount = 0;
+
+  const accepted = await collectAgentSkillDeviceConsentThroughLoopback({
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    challenge,
+    companyId: challenge.company.id,
+    skillId: challenge.skill.id,
+    releaseId: challenge.skill.releaseId,
+  }, {
+    requestFn: async () => {
+      consentRequestCount += 1;
+      return new Response(JSON.stringify({ consent: { id: "accepted" } }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    },
+    openBrowserFn: async (url) => {
+      const consentUrl = new URL(url);
+      const first = startPendingCompanyRuntimeConsentDecision(consentUrl);
+      const second = startPendingCompanyRuntimeConsentDecision(consentUrl);
+
+      // Both handlers have received valid headers and are waiting for their
+      // bounded bodies before either request is allowed to claim the decision.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      first.finish();
+      second.finish();
+
+      const responses = await Promise.all([first.response, second.response]);
+      assert.deepEqual(
+        responses.map(({ statusCode }) => statusCode).sort(),
+        [200, 403],
+      );
+    },
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(accepted, true);
+  assert.equal(consentRequestCount, 1);
+});
+
+test("a concurrent decline wins without a hidden accept grant", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  let consentRequestCount = 0;
+
+  await assert.rejects(
+    collectAgentSkillDeviceConsentThroughLoopback({
+      origin: "https://trelio.example",
+      token: "paired-device-token",
+      challenge,
+      companyId: challenge.company.id,
+      skillId: challenge.skill.id,
+      releaseId: challenge.skill.releaseId,
+    }, {
+      requestFn: async () => {
+        consentRequestCount += 1;
+      },
+      openBrowserFn: async (url) => {
+        const consentUrl = new URL(url);
+        const decline = startPendingCompanyRuntimeConsentDecision(consentUrl, {
+          decision: "decline",
+        });
+        const accept = startPendingCompanyRuntimeConsentDecision(consentUrl, {
+          decision: "accept",
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        decline.finish();
+        await new Promise((resolve) => setImmediate(resolve));
+        accept.finish();
+
+        const [declineResponse, acceptResponse] = await Promise.all([
+          decline.response,
+          accept.response,
+        ]);
+        assert.equal(declineResponse.statusCode, 200);
+        assert.equal(acceptResponse.statusCode, 403);
+      },
+      timeoutMs: 5_000,
+    }),
+    (error) => error instanceof AgentSkillDeviceConsentDeclinedError,
+  );
+  assert.equal(consentRequestCount, 0);
+});
+
+test("device consent returns only after a second live resolve and before package access", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  const events = [];
+  const finalResponse = new Response(JSON.stringify({ releaseId: challenge.skill.releaseId }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+  let resolveCount = 0;
+
+  const response = await resolveAgentSkillRuntimeWithDeviceConsent({
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    companyId: challenge.company.id,
+    projectId: null,
+    skillId: challenge.skill.id,
+    releaseId: challenge.skill.releaseId,
+  }, {
+    requestFn: async (_origin, _token, pathname) => {
+      assert.equal(pathname, "/api/agent-skills/runtime/resolve");
+      resolveCount += 1;
+      events.push(resolveCount === 1 ? "resolve-before-consent" : "resolve-after-consent");
+      if (resolveCount === 1) {
+        throw new TrelioApiError(
+          409,
+          "Device consent is required",
+          null,
+          "AGENT_SKILL_DEVICE_CONSENT_REQUIRED",
+          { challenge },
+        );
+      }
+      return finalResponse;
+    },
+    collectConsentFn: async (input) => {
+      events.push("consent");
+      assert.equal(input.challenge, challenge);
+      assert.equal(input.releaseId, challenge.skill.releaseId);
+    },
+  });
+
+  assert.equal(response, finalResponse);
+  // Package/cache work lives in the caller and cannot begin until the consent
+  // helper returns the response from the second exact live resolve.
+  events.push("package-access");
+  assert.deepEqual(events, [
+    "resolve-before-consent",
+    "consent",
+    "resolve-after-consent",
+    "package-access",
+  ]);
 });
 
 test("bridge maps parent and related contexts to stable read-only paths", () => {
@@ -4560,13 +4827,13 @@ test("skill pack rejects machine-specific Python bytecode cache", async () => {
   }
 });
 
-test("connection-free skill runtime receives member identity without synthetic connection authority", () => {
+const buildConnectionFreeRuntimeResolutionPayload = () => {
   const companyId = "99999999-9999-4999-8999-999999999999";
   const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const releaseId = "77777777-7777-4777-8777-777777777777";
   const artifactId = "88888888-8888-4888-8888-888888888888";
   const skillId = "connection-free-runtime";
-  const payload = {
+  return {
     releaseId,
     localIdentity: {
       companyId,
@@ -4589,8 +4856,21 @@ test("connection-free skill runtime receives member identity without synthetic c
       minimumHostVersion: BRIDGE_VERSION,
       manifest: {},
     },
+    trust: {
+      level: "platform_verified",
+      artifactLevel: "platform_verified",
+      requiresDeviceConsent: false,
+      consentId: null,
+    },
     packageUrl: `/api/agent-skills/runtime/package?artifactId=${artifactId}`,
   };
+};
+
+test("connection-free skill runtime receives member identity without synthetic connection authority", () => {
+  const payload = buildConnectionFreeRuntimeResolutionPayload();
+  const { companyId, memberId, skillId } = payload.localIdentity;
+  const { releaseId } = payload;
+  const artifactId = payload.artifact.id;
 
   const resolution = normalizeResolvedSkillRuntimeArtifact(payload);
   const environment = buildAgentSkillRuntimeEnvironment({
@@ -4692,6 +4972,44 @@ test("connection-free skill runtime receives member identity without synthetic c
     }),
     /некорректную runtime resolution/u,
   );
+});
+
+test("skill runtime resolution fails closed on missing or contradictory trust", () => {
+  const payload = buildConnectionFreeRuntimeResolutionPayload();
+
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact({
+      ...payload,
+      trust: undefined,
+    }),
+    /некорректную runtime resolution/u,
+  );
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact({
+      ...payload,
+      trust: {
+        level: "platform_verified",
+        artifactLevel: "company_unverified",
+        requiresDeviceConsent: false,
+        consentId: null,
+      },
+    }),
+    /некорректную runtime resolution/u,
+  );
+
+  // A company publication may intentionally reuse platform-verified bytes,
+  // but the new publication still needs its own exact device consent.
+  const consentId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const companyPublication = normalizeResolvedSkillRuntimeArtifact({
+    ...payload,
+    trust: {
+      level: "company_unverified",
+      artifactLevel: "platform_verified",
+      requiresDeviceConsent: true,
+      consentId,
+    },
+  });
+  assert.equal(companyPublication.trust.consentId, consentId);
 });
 
 test("skill host environment allowlist strips pre-runtime injection and ambient secrets", () => {
@@ -5002,6 +5320,12 @@ test("skill host resolves on every run, verifies signed package, caches it and r
             signingPublicKeySpki,
             minimumHostVersion: BRIDGE_VERSION,
             manifest: {},
+          },
+          trust: {
+            level: "platform_verified",
+            artifactLevel: "platform_verified",
+            requiresDeviceConsent: false,
+            consentId: null,
           },
           packageUrl,
         }));

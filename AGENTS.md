@@ -176,7 +176,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   CLI approval flag, browser automation и действие агента запрещены. Любой
   новый publication, включая unchanged package, instruction-only update,
   rollback или reactivation, требует нового disclosure и consent; cancel и
-  timeout не скачивают package.
+  timeout не скачивают package. Runtime resolve обязан вернуть explicit trust:
+  отсутствие trust fail closed, а `platform_verified` publication не может
+  ссылаться на `company_unverified` artifact. Обратная комбинация допустима
+  только как company publication поверх ранее проверенных bytes и всё равно
+  требует exact consent. Loopback decision резервируется атомарно только после
+  bounded body + nonce validation: из параллельных accept/decline POST ровно
+  один получает право на результат, остальные отклоняются до remote grant.
 - User login, CAPTCHA, passkey, OTP и иные protected account steps выполняет
   сам пользователь в разрешённом browser handoff. Агент не вводит и не читает
   credential.
