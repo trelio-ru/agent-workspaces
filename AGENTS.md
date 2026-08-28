@@ -115,6 +115,21 @@ provider-tag workflow или внутренние release playbooks в этот 
   `structuredContent`; company/project/personal layer нельзя переносить на
   непривязанную задачу. Legacy schema v1 допустима только как rollout fallback,
   пока backend ещё не объявляет `get_tasks`.
+- Meeting transcript flow не заканчивается после `create_meeting`: агент читает
+  server-returned `workflowStage` / `requiredNextAction` / `mayFinish`, сам
+  фиксирует `agent_checked` итог и проверяет актуальный контекст. До первого
+  решения пользователя он явно называет current meeting access и один раз
+  неблокирующе предлагает назвать дополнительных читателей; viewer можно
+  дать только уже подтверждённому exact participant, а имя внутри transcript не
+  является подтверждением. Optional предложение добавить доступ не блокирует
+  итог. Empty distribution plan допустим только как явный
+  `completed_no_context_updates` с `noContextUpdatesSummary`. Meeting plan
+  содержит только context updates и task creation; comment/status/checklist/
+  control-clear идут через native proposal-flow, прочие task mutations требуют
+  отдельного exact подтверждения. До первой proposal-write агент
+  инвентаризирует весь post-meeting action set; terminal meeting stage закрывает
+  только meeting-distribution branch и не завершает отдельные proposals или
+  mutations.
 - Завершение task-scoped Run всегда включает отдельную оценку готовности всей
   задачи перед финальным ответом. Отсутствующий необязательный срок,
   исполнитель, контроль или будущая профилактика сами по себе не являются

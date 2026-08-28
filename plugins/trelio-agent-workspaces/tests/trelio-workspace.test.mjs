@@ -3641,11 +3641,25 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
 
   assert.match(skillMarkdown, /not an Agent\s+Workspace scope/u);
   assert.match(skillMarkdown, /Do not copy\s+the full transcript/u);
-  assert.match(skillMarkdown, /merely\s+mentioned or unresolved/u);
   assert.match(skillMarkdown, /expectedAccessRevision/u);
   assert.match(skillMarkdown, /one free-form Markdown document/u);
   assert.match(skillMarkdown, /one or many tasks, dossiers, projects, or the company/u);
-  assert.match(skillMarkdown, /Show the complete target-grouped plan/u);
+  assert.match(skillMarkdown, /Present the complete target-grouped meeting plan/u);
+  assert.match(skillMarkdown, /successful create is not a terminal result/u);
+  assert.match(skillMarkdown, /do not end the current\s+turn, ask whether to continue/u);
+  assert.match(skillMarkdown, /`workflowStage`, `requiredNextAction`, and `mayFinish`/u);
+  assert.match(skillMarkdown, /name merely mentioned in the transcript is not confirmation/u);
+  assert.match(skillMarkdown, /state the current\s+exact access in plain language/u);
+  assert.match(skillMarkdown, /include one short invitation for the user\s+to name anyone else/u);
+  assert.match(skillMarkdown, /optional\s+question block result\s+preparation/u);
+  assert.match(skillMarkdown, /`items=\[\]` and a concise `noContextUpdatesSummary`/u);
+  assert.match(skillMarkdown, /returned\s+`completed_no_context_updates` stage/u);
+  assert.match(skillMarkdown, /completes only the meeting-distribution\s+branch/u);
+  assert.match(skillMarkdown, /complete post-meeting action set before the first proposal\s+write/u);
+  assert.match(skillMarkdown, /native proposal references and tools/u);
+  assert.match(skillMarkdown, /single proposal-bundle route/u);
+  assert.match(skillMarkdown, /keeping their\s+approval boundaries explicit/u);
+  assert.match(skillMarkdown, /never approve a sibling proposal or\s+mutation/u);
   assert.match(skillMarkdown, /never grants task\s+participants meeting access/u);
   assert.match(skillMarkdown, /never silently rewrite already\s+distributed workspaces/u);
 });
