@@ -60,6 +60,30 @@ order; do not make repeated `get_task` calls. Otherwise:
 6. If several remain, show their direct URLs and differences and ask before a
    mutation or workspace Run.
 
+### Recover a bounded search timeout
+
+`MCP_SEARCH_TIMEOUT` is a structured, server-confirmed read-only search budget
+failure, not a transport outage and not evidence of broken OAuth, Hooks, MCP
+registration, company access, or a missing object. Do not apply the generic
+three network retries and do not repeat the same broad call unchanged.
+
+Retry at most once in the current turn, and only after making the request
+strictly narrower:
+
+1. Pass the exact `companySlugs`; never omit company scope on the retry.
+2. Keep at most the two strongest independent formulations. Do not concatenate
+   synonyms or alternate names into one longer query.
+3. When an exact project boundary is already known and task-only refinement is
+   sufficient, use one `search_tasks` call with exact `projectSlugs`. Do not add
+   a project filter merely to guess around cross-project context.
+
+If no truthful narrower scope exists, or the one narrowed retry returns the
+same code, stop and explain which scope is still broad; ask for the missing
+company/project discriminator instead of retrying again or switching to
+browser, HTTP, another MCP, `list_dossiers`, or a chain of per-query calls. An
+HTTP 504 without structured `MCP_SEARCH_TIMEOUT` remains a transport/service
+failure and follows the dedicated diagnostics path.
+
 ## Resolve task-read instructions
 
 Current `get_task` and `get_tasks` return `schemaVersion: 2` with the complete

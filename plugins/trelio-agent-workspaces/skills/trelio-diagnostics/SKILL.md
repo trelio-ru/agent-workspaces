@@ -152,11 +152,21 @@ runtime script do not require another `hooks.json` change or trust review.
 - `runtimeSessions.status=attention` alone is not proof that hooks, OAuth or the
   plugin are broken. Current hooks recover expired state and stale registration
   locks; report counts and retest one read before proposing any cleanup.
+- Structured `MCP_SEARCH_TIMEOUT` proves that remote MCP reached Trelio and the
+  backend deliberately cancelled a read-only search statement before the
+  reverse-proxy deadline. It is not a 504, OAuth failure, missing Hooks, stale
+  plugin cache, or permission denial. Do not run login, reinstall the plugin,
+  or make three identical network retries. Retry at most once with exact
+  `companySlugs`, no more than two strongest independent queries, and exact
+  `projectSlugs` only when that boundary is already known. If the narrowed
+  retry times out, report the search scope as the failing layer.
 
 For transient network failures, make three bounded safe retries with a short
 increasing delay. Before repeating a request with side effects, verify whether
 it already succeeded. Treat explicit 401 and 403 differently from DNS,
-timeout, reset, 429 and 5xx responses.
+timeout, reset, 429 and 5xx responses. A bare HTTP 504 remains in this transport
+category; never reinterpret it as `MCP_SEARCH_TIMEOUT` without the structured
+tool error.
 
 ## Report the result
 

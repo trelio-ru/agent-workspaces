@@ -34,6 +34,14 @@ files с exact scope metadata. Агент читает relevant документ
 `search_tasks` и `search_agent_workspace_files` нужны только для task-only или
 Workspace-only уточнения, а не как обязательная последовательность.
 
+Если backend вернул structured `MCP_SEARCH_TIMEOUT`, соединение с Trelio уже
+состоялось: это ограничение времени read-only SQL, а не HTTP 504, OAuth или
+Hooks. Агент не повторяет тот же широкий поиск три раза. Допустим один более
+узкий retry с exact `companySlugs`, максимум двумя сильнейшими отдельными
+формулировками и `projectSlugs` только для уже известной task-only границы. Если
+scope нельзя сузить честно либо timeout повторился, агент просит недостающий
+company/project discriminator. Bare HTTP 504 остаётся transport failure.
+
 Правила компании и проекта не входят в поисковый ranking. После выбора exact
 scope обычные `fetch`, `get_dossier`, `get_project_meta` и
 `get_task_create_meta` возвращают envelope `effectiveInstructions`. Task reads

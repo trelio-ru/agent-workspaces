@@ -115,6 +115,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   `structuredContent`; company/project/personal layer нельзя переносить на
   непривязанную задачу. Legacy schema v1 допустима только как rollout fallback,
   пока backend ещё не объявляет `get_tasks`.
+- Structured `MCP_SEARCH_TIMEOUT` является подтверждённым backend-ом
+  превышением бюджета read-only поиска, а не transport 504. Bundled discovery
+  и diagnostics не применяют к нему три одинаковых network retry: допустим один
+  строго более узкий повтор с exact company scope, максимум двумя независимыми
+  формулировками и только уже известной project boundary, затем остановка. Bare
+  HTTP 504 сохраняет обычный bounded network-retry contract. Regression живёт
+  в generic plugin suite, а compact runtime instructions обязаны сохранять тот
+  же invariant.
 - Meeting transcript flow не заканчивается после `create_meeting`: агент читает
   server-returned `workflowStage` / `requiredNextAction` / `mayFinish`, сам
   фиксирует `agent_checked` итог и проверяет актуальный контекст. До первого

@@ -2694,7 +2694,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.13.8");
+  assert.equal(BRIDGE_VERSION, "1.13.9");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2989,6 +2989,46 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");
     assert.match(reference, /Read this file completely/u);
   }
+});
+
+test("bundled instructions narrow structured MCP search timeouts without a blind retry", async () => {
+  const scopeReference = await readFile(
+    path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-workspace-worker",
+      "references",
+      "scope-and-context.md",
+    ),
+    "utf8",
+  );
+  const diagnosticsSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
+    "utf8",
+  );
+
+  for (const instructions of [scopeReference, diagnosticsSkill]) {
+    assert.match(instructions, /`MCP_SEARCH_TIMEOUT`/u);
+    assert.match(instructions, /not a transport|not a 504/iu);
+    assert.match(instructions, /exact\s+`companySlugs`/u);
+    assert.match(instructions, /at most once|Retry at most once/iu);
+    assert.match(instructions, /no more than two|at most the two/iu);
+    assert.match(instructions, /`projectSlugs`/u);
+  }
+
+  assert.match(scopeReference, /Do not concatenate/u);
+  assert.match(scopeReference, /HTTP 504 without structured `MCP_SEARCH_TIMEOUT`/u);
+  assert.match(diagnosticsSkill, /Do not run login, reinstall the plugin/u);
+  assert.match(diagnosticsSkill, /A bare HTTP 504 remains in this transport/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /structured `MCP_SEARCH_TIMEOUT`/u);
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /максимум один раз передай exact `companySlugs`.*не больше двух.*exact `projectSlugs`/u,
+  );
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /Bare HTTP 504 без structured code остаётся transport failure/u,
+  );
 });
 
 test("plugin exposes folder-first onboarding before ordinary task work", async () => {
