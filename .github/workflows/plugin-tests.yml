@@ -66,19 +66,22 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Keep every runner on the same Node patch. The generic suite below
+          # invokes each node:test file directly because the parent `node
+          # --test` process can still corrupt its serialized child IPC stream
+          # intermittently under load, even after upgrading from 22.23.1.
+          node-version: 22.23.2
 
       # Keep exact paths explicit so every shell passes the same generic host
       # files to Node. Provider source and CI live in the private backend/provider
       # contour and cannot become public plugin release inputs again.
       - name: Run generic plugin host Node tests
-        run: >-
-          node --test
-          plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
-          plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
+        run: |
+          node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 
   windows-acl:
     name: Windows runtime and private ACL
@@ -91,7 +94,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.23.2
 
       # The broader bridge suite contains POSIX-specific fixtures. This job is
       # intentionally narrow: it exercises the command transport and the real

@@ -229,6 +229,13 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Для manifest используй штатный `plugin-creator` validator. Для
   bridge/host/hooks/MCP запускай релевантные generic regressions на Node.js 22+
   на поддерживаемых платформах.
+- Release CI фиксирует exact Node.js `22.23.2`: macOS cache для плавающего
+  `node-version: 22` мог выбрать `22.23.1`, где native test runner повреждал
+  serialized IPC stream и падал до assertion с `Unable to deserialize cloned
+  data`. Generic test files запускаются отдельными прямыми `node <test-file>`,
+  без parent `node --test`: сбой serialized child IPC остаётся редким и на
+  `22.23.2` под нагрузкой. Linux, macOS и Windows jobs не должны расходиться по
+  patch version.
 - `BRIDGE_VERSION`, Codex manifest, Claude manifest, marketplace entry и exact
   version assertions должны оставаться синхронны.
 - Stable plugin version и tag `vX.Y.Z` выпускаются вместе. Не меняй version, не

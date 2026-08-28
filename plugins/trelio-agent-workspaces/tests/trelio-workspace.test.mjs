@@ -2694,7 +2694,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.13.9");
+  assert.equal(BRIDGE_VERSION, "1.13.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2772,6 +2772,28 @@ test("bridge release version stays synchronized across executable and manifests"
   assert.equal(posixLauncher.isFile(), true);
   assert.notEqual(posixLauncher.mode & 0o111, 0, "POSIX launcher must remain executable");
   assert.equal(windowsLauncher.isFile(), true);
+});
+
+test("release CI pins Node 22 and avoids the parent test-runner IPC", async () => {
+  const workflowSource = await readFile(
+    path.resolve(pluginDirectory, "..", "..", ".github", "workflows", "plugin-tests.yml"),
+    "utf8",
+  );
+
+  // A floating `22` selected 22.23.1 from the macOS runner cache while the
+  // other platforms used 22.23.2. Exact patch parity removes that mismatch.
+  // Direct execution keeps each file's node:test harness in its own process
+  // and avoids the parent runner's intermittent serialized IPC corruption.
+  assert.equal([...workflowSource.matchAll(/node-version: 22\.23\.2/gu)].length, 2);
+  assert.doesNotMatch(workflowSource, /node-version: 22(?:\s|$)/u);
+  const genericJobSource = workflowSource.slice(
+    workflowSource.indexOf("node-tests:"),
+    workflowSource.indexOf("windows-acl:"),
+  );
+  assert.equal([
+    ...genericJobSource.matchAll(/node plugins\/trelio-agent-workspaces\/tests\/[^\s]+\.test\.mjs/gu),
+  ].length, 5);
+  assert.doesNotMatch(genericJobSource, /node --test/u);
 });
 
 test("POSIX Node launcher uses the bundled Codex runtime without a PATH alias", {
