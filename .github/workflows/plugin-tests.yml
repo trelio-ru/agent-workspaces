@@ -77,6 +77,7 @@ jobs:
       # contour and cannot become public plugin release inputs again.
       - name: Run generic plugin host Node tests
         run: |
+          node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
