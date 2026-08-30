@@ -186,6 +186,20 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Secret передаётся только exact executable через scoped one-use delivery и не
   попадает в model-visible output, argv, ambient environment, workspace,
   comments, checkpoints, handoff или logs.
+- Для зашифрованной компании bridge получает ключ шифрования только через
+  одноразовую loopback-форму `127.0.0.1`, создаёт отдельную device identity и
+  сохраняет её wrapped private bundle вместе с локальным unlock key только в
+  owner-only private config. Ключ шифрования нельзя просить в chat/prompt,
+  передавать через MCP/HTTP, argv, environment, stdin, clipboard или писать в
+  Workspace. Повторный Run обязан использовать remembered device без нового
+  ввода; access pending завершается явным owner-grant blocker-ом без plaintext
+  fallback.
+- Encrypted Agent Workspace materialize-ится и индексируется только локальным
+  bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанный
+  manifest без Git paths, blobs и plaintext digests. Локальный bridge перед
+  upload заново проверяет bounds, paths, file types, protected control files и
+  очевидные private-key/credential patterns. Server bundle/search/object path
+  fallback для encrypted workspace запрещён.
 - Signed runtime запускается только после authenticated exact-release resolve,
   проверки signature/package/files/paths и с host-authored allowlist окружения.
 - `company_unverified` runtime, загруженный owner/admin компании, не становится

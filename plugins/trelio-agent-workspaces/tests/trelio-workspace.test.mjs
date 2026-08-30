@@ -44,6 +44,7 @@ import {
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   collectAgentSkillDeviceConsentThroughLoopback,
+  collectCompanyEncryptionKeyThroughLoopback,
   hardenWindowsPrivatePath,
   getGitStatus,
   inspectWorkspaceFile,
@@ -66,6 +67,7 @@ import {
   retainLoadedCodexPluginInstallation,
   request,
   renderAgentSkillDeviceConsentPage,
+  renderCompanyEncryptionKeyPage,
   resolveAgentSkillRuntimeWithDeviceConsent,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
@@ -88,6 +90,11 @@ const bridgePath = path.resolve(testDirectory, "../scripts/trelio-workspace.mjs"
 const runId = "11111111-1111-4111-8111-111111111111";
 const companyWorkspaceId = "22222222-2222-4222-8222-222222222222";
 const relatedWorkspaceId = "33333333-3333-4333-8333-333333333333";
+const testCompany = {
+  id: "99999999-9999-4999-8999-999999999999",
+  slug: "bridge-test-company",
+  name: "Bridge test company",
+};
 const companyHead = "a".repeat(40);
 const relatedHead = "b".repeat(40);
 
@@ -1083,6 +1090,53 @@ test("company runtime consent page exposes provenance and escapes admin text", (
   assert.match(html, /Установить и запустить/u);
 });
 
+test("company encryption key page is local-only copy and escapes company names", () => {
+  const html = renderCompanyEncryptionKeyPage({
+    companyName: 'Private <Company> & "team"',
+    nonce: "one-time-nonce",
+  });
+
+  assert.match(html, /Ключ шифрования/u);
+  assert.match(html, /Private &lt;Company&gt; &amp; &quot;team&quot;/u);
+  assert.doesNotMatch(html, /Private <Company>/u);
+  assert.match(html, /не попадёт в Trelio, командную строку, Workspace или логи/u);
+  assert.match(html, /name="secret"/u);
+  assert.match(html, /name="confirmation"/u);
+});
+
+test("company encryption key is returned only after an exact loopback form submission", async () => {
+  const key = "correct horse battery staple";
+  const received = await collectCompanyEncryptionKeyThroughLoopback({
+    companyName: "Encrypted company",
+  }, {
+    openBrowserFn: async (url) => {
+      const keyUrl = new URL(url);
+      const pageResponse = await fetch(keyUrl);
+      assert.equal(pageResponse.status, 200);
+      assert.doesNotMatch(await pageResponse.text(), new RegExp(key, "u"));
+
+      const unlockResponse = await fetch(new URL("/unlock", keyUrl), {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: keyUrl.origin,
+        },
+        body: new URLSearchParams({
+          nonce: keyUrl.searchParams.get("nonce"),
+          decision: "save",
+          secret: key,
+          confirmation: key,
+        }),
+      });
+      assert.equal(unlockResponse.status, 200);
+      assert.doesNotMatch(await unlockResponse.text(), new RegExp(key, "u"));
+    },
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(received, key);
+});
+
 test("company runtime consent requires a real loopback form decision before server grant", async () => {
   const challenge = buildCompanyRuntimeConsentChallenge();
   const consentRequests = [];
@@ -1496,6 +1550,16 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
         return;
       }
 
+      if (request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          suite: "trelio-e2ee-v1",
+          state: "plain",
+          company: testCompany,
+        }));
+        return;
+      }
+
       if (
         request.method === "POST"
         && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}/runs`
@@ -1560,6 +1624,7 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
             },
           },
           workspace: { id: writableWorkspaceId },
+          company: testCompany,
         }));
         return;
       }
@@ -1827,6 +1892,17 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         return;
       }
 
+
+      if (request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          suite: "trelio-e2ee-v1",
+          state: "plain",
+          company: testCompany,
+        }));
+        return;
+      }
+
       if (
         request.method === "POST"
         && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}/runs`
@@ -1835,6 +1911,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         response.end(JSON.stringify({
           run: serializeRun(),
           workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
+          company: testCompany,
         }));
         return;
       }
@@ -1934,6 +2011,7 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
           workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
+          company: testCompany,
           runs: [serializeRun()],
           checkpoints: blockerCheckpointPayload
             ? [{

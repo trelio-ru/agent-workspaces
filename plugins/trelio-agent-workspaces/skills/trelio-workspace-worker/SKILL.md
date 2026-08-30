@@ -27,6 +27,18 @@ a credential in a prompt. The only prompt/MCP exception is the exact
 already-shared value and explicit company/user opt-in flow documented below;
 it does not permit copying the value anywhere else.
 
+For an encrypted company, let the exact bridge command own unlock and
+materialization. On the first trusted desktop it opens a protected
+`127.0.0.1` form where the user enters the encryption key directly; never ask
+for that key in chat, MCP, a tool argument, shell input, environment, clipboard,
+or a Workspace file. Later Runs reuse the locally remembered device key. If
+the bridge reports `access_pending`, tell the user that the company owner must
+grant that displayed Agent Workspaces device in company encryption settings,
+then stop the content operation without a plaintext or server-search fallback.
+Search an opened encrypted Workspace only in its locally materialized files
+with ordinary bounded local tools such as `rg`; do not send a query, Git path,
+file content, or derived plaintext back to Trelio merely to implement search.
+
 ## Let the approved hook prove the runtime
 
 Do not author, copy, preserve, or retry `runtimeSessionProof` or

@@ -30,6 +30,22 @@ import {
   SecretBrowserFillError,
   runSecretBrowserFill,
 } from "./trelio-secret-browser.mjs";
+import {
+  COMPANY_ENCRYPTION_SUITE,
+  buildAgentDeviceRegistrationRecord,
+  buildCompanyEncryptedJsonMarker,
+  buildCompanyEncryptedTextMarker,
+  buildEncryptedAgentWorkspaceRevisionRecord,
+  createAgentEncryptionDevice,
+  decryptCompanyPayload,
+  decryptFileFromCompanyContainer,
+  encryptFileToCompanyContainer,
+  encryptCompanyPayload,
+  openScopePrivateKey,
+  signCompanyEncryptionRecord,
+  unlockRememberedAgentEncryptionDevice,
+  wrapAndRememberAgentEncryptionDevice,
+} from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
 export const BRIDGE_VERSION = "1.13.10";
@@ -199,6 +215,13 @@ const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
 // namespace. Каталог не зависит от workspace path и поэтому не может случайно
 // попасть в Git, checkpoint или handoff.
 const LOCAL_AGENT_SECRETS_DIRECTORY = path.join(CONFIG_DIRECTORY, "agent-secrets");
+// Company keys are never stored inside a materialized Workspace. Every
+// company gets one owner-only local device record plus a separate remembered
+// wrapping key; neither file contains the user-entered phrase.
+const COMPANY_ENCRYPTION_DEVICE_DIRECTORY = path.join(
+  CONFIG_DIRECTORY,
+  "company-encryption",
+);
 const SECRET_BROWSER_PROFILE_DIRECTORY = path.join(
   SECRET_BROWSER_DIRECTORY,
   "profile",
@@ -304,6 +327,8 @@ const AGENT_SKILL_ALLOWED_CAPABILITIES = new Set([
 const WORKSPACE_OBJECT_POINTER_VERSION = "https://trelio.ru/spec/workspace-object/v1";
 const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
+const MAX_ENCRYPTED_WORKSPACE_TREE_BYTES = 100 * 1024 * 1024;
+const MAX_ENCRYPTED_WORKSPACE_FILE_COUNT = 20_000;
 const POINTER_MAX_BYTES = 1024;
 const MAX_RATE_LIMIT_RETRIES = 8;
 const MAX_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
@@ -3595,6 +3620,586 @@ export const collectAgentSkillDeviceConsentThroughLoopback = async ({
   }
 };
 
+export const renderCompanyEncryptionKeyPage = ({ companyName, nonce }) => `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Ключ шифрования Trelio</title>
+  <style>
+    :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f4f7fb; color: #172033; }
+    main { width: min(560px, calc(100% - 32px)); margin: 40px auto; padding: 26px; box-sizing: border-box; background: #fff; border: 1px solid #dce3ef; border-radius: 18px; box-shadow: 0 16px 48px rgba(27, 43, 72, .14); }
+    h1 { margin: 0 0 10px; font-size: 24px; } p { line-height: 1.5; }
+    label { display: grid; gap: 7px; margin-top: 18px; font-weight: 700; }
+    input { box-sizing: border-box; width: 100%; padding: 12px; border: 1px solid #aebbd0; border-radius: 10px; font: inherit; }
+    small { display: block; margin-top: 10px; color: #68758c; line-height: 1.45; }
+    .actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 22px; }
+    button { border-radius: 10px; padding: 11px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+    .cancel { border: 1px solid #b8c3d4; background: #fff; color: #27354d; }
+    .save { border: 1px solid #1768d1; background: #1768d1; color: #fff; }
+    @media (prefers-color-scheme: dark) { body { background: #111827; color: #e8eef9; } main { background: #1b2433; border-color: #344158; } input, .cancel { background: #111827; color: #e8eef9; border-color: #64718a; } small { color: #aeb9cc; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Подключить Agent Workspaces</h1>
+  <p>Компания «${escapeAgentSkillConsentHtml(companyName)}» зашифрована. Введите ключ шифрования в этой локальной форме.</p>
+  <p>Фраза останется на компьютере и не попадёт в Trelio, командную строку, Workspace или логи.</p>
+  <form method="post" action="/unlock">
+    <input type="hidden" name="nonce" value="${escapeAgentSkillConsentHtml(nonce)}">
+    <label>Ключ шифрования
+      <input type="password" name="secret" minlength="12" maxlength="4096" autocomplete="new-password" required autofocus>
+    </label>
+    <label>Повторите ключ
+      <input type="password" name="confirmation" minlength="12" maxlength="4096" autocomplete="new-password" required>
+    </label>
+    <small>После подключения bridge сохранит только локально защищённый ключ устройства. Повторно вводить фразу на этом компьютере не понадобится.</small>
+    <div class="actions">
+      <button class="cancel" type="submit" name="decision" value="cancel">Отмена</button>
+      <button class="save" type="submit" name="decision" value="save">Сохранить на устройстве</button>
+    </div>
+  </form>
+</main>
+</body>
+</html>`;
+
+/**
+ * Collect the encryption key in an exact loopback-only form. The value is
+ * returned in process memory once and is never printed or sent over the
+ * network. Tests can inject their own opener and observe the ephemeral port.
+ */
+export const collectCompanyEncryptionKeyThroughLoopback = async ({
+  companyName,
+}, {
+  openBrowserFn = openBrowser,
+  timeoutMs = 5 * 60 * 1000,
+  onListening = () => {},
+} = {}) => {
+  const nonce = crypto.randomBytes(32).toString("base64url");
+  let expectedOrigin = "";
+  let expectedHost = "";
+  let expectedPort = 0;
+  let settled = false;
+  let complete;
+  let fail;
+  const completion = new Promise((resolve, reject) => {
+    complete = resolve;
+    fail = reject;
+  });
+  completion.catch(() => {});
+  const server = http.createServer(async (incoming, outgoing) => {
+    try {
+      const requestUrl = new URL(incoming.url || "/", expectedOrigin || "http://127.0.0.1");
+      const exactSocket = (
+        isAgentSkillConsentLoopbackAddress(incoming.socket.remoteAddress)
+        && incoming.socket.localAddress === "127.0.0.1"
+        && incoming.socket.localPort === expectedPort
+        && readAgentSkillConsentHeader(incoming, "host") === expectedHost
+      );
+
+      if (
+        incoming.method === "GET"
+        && requestUrl.pathname === "/"
+        && requestUrl.origin === expectedOrigin
+        && requestUrl.searchParams.get("nonce") === nonce
+        && exactSocket
+      ) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          200,
+          renderCompanyEncryptionKeyPage({ companyName, nonce }),
+        );
+        return;
+      }
+
+      if (incoming.method !== "POST" || requestUrl.pathname !== "/unlock") {
+        outgoing.writeHead(404, { "cache-control": "no-store" }).end("Not found");
+        return;
+      }
+
+      const originHeader = readAgentSkillConsentHeader(incoming, "origin");
+      const authorizedOrigin = originHeader === expectedOrigin || (
+        (originHeader === "" || originHeader === "null")
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-site") === "same-origin"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-mode") === "navigate"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-dest") === "document"
+        && readAgentSkillConsentHeader(incoming, "sec-fetch-user") === "?1"
+      );
+      const contentType = readAgentSkillConsentHeader(incoming, "content-type").toLowerCase();
+
+      if (
+        settled
+        || requestUrl.origin !== expectedOrigin
+        || requestUrl.search !== ""
+        || !exactSocket
+        || !authorizedOrigin
+        || !contentType.startsWith("application/x-www-form-urlencoded")
+      ) {
+        incoming.resume();
+        writeAgentSkillConsentHtml(
+          outgoing,
+          403,
+          "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Защитная проверка локальной формы не пройдена.</p>",
+        );
+        return;
+      }
+
+      const form = new URLSearchParams(await readAgentSkillConsentBody(incoming));
+      const decision = form.get("decision");
+      const secret = form.get("secret") || "";
+      const confirmation = form.get("confirmation") || "";
+
+      if (form.get("nonce") !== nonce || !["save", "cancel"].includes(decision)) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          403,
+          "<!doctype html><meta charset=utf-8><title>Запрос отклонён</title><p>Одноразовая локальная форма недействительна.</p>",
+        );
+        return;
+      }
+
+      if (decision === "save" && (secret.length < 12 || secret !== confirmation)) {
+        writeAgentSkillConsentHtml(
+          outgoing,
+          400,
+          "<!doctype html><meta charset=utf-8><title>Ключ не сохранён</title><p>Ключ должен содержать не меньше 12 символов, а оба значения должны совпадать. Закройте вкладку и повторите подключение.</p>",
+        );
+        return;
+      }
+
+      if (settled) {
+        writeAgentSkillConsentHtml(outgoing, 403, "<!doctype html><p>Форма уже использована.</p>");
+        return;
+      }
+      settled = true;
+
+      if (decision === "cancel") {
+        const error = new Error("TRELIO_ENCRYPTION_DEVICE_SETUP_CANCELLED: подключение зашифрованной компании отменено.");
+        error.code = "TRELIO_ENCRYPTION_DEVICE_SETUP_CANCELLED";
+        writeAgentSkillConsentHtml(
+          outgoing,
+          200,
+          "<!doctype html><meta charset=utf-8><title>Подключение отменено</title><p>Ключ не сохранён. Вкладку можно закрыть.</p>",
+          () => fail(error),
+        );
+        return;
+      }
+
+      writeAgentSkillConsentHtml(
+        outgoing,
+        200,
+        "<!doctype html><meta charset=utf-8><title>Устройство подготовлено</title><p>Ключ обрабатывается локально. Вкладку можно закрыть.</p>",
+        () => complete(secret),
+      );
+    } catch (error) {
+      if (!outgoing.headersSent && !outgoing.destroyed) {
+        outgoing.writeHead(500, { "cache-control": "no-store" }).end("Локальная форма не обработана.");
+      } else {
+        outgoing.destroy();
+      }
+      fail(error);
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const closeServer = () => new Promise((resolve) => {
+    if (!server.listening) {
+      server.closeAllConnections();
+      resolve();
+      return;
+    }
+    server.close(resolve);
+    server.closeAllConnections();
+  });
+
+  try {
+    const address = server.address();
+    if (!address || typeof address !== "object") throw new Error("Локальная форма не получила loopback port.");
+    expectedOrigin = `http://127.0.0.1:${address.port}`;
+    expectedHost = `127.0.0.1:${address.port}`;
+    expectedPort = address.port;
+    onListening({ port: address.port, nonce });
+    process.stdout.write("Открываю локальную форму ключа шифрования Trelio.\n");
+    await openBrowserFn(`${expectedOrigin}/?${new URLSearchParams({ nonce }).toString()}`);
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error(
+        "TRELIO_ENCRYPTION_DEVICE_SETUP_TIMEOUT: время локальной формы истекло.",
+      )), timeoutMs);
+    });
+    return await Promise.race([completion, timeout]).finally(() => clearTimeout(timeoutId));
+  } finally {
+    await closeServer();
+  }
+};
+
+const resolveCompanyEncryptionDevicePaths = ({ origin, companyId }) => {
+  const originHash = crypto.createHash("sha256").update(origin).digest("hex").slice(0, 32);
+  const companyDirectory = path.join(
+    COMPANY_ENCRYPTION_DEVICE_DIRECTORY,
+    originHash,
+    requireUuid(companyId, "company"),
+  );
+
+  return {
+    companyDirectory,
+    deviceFile: path.join(companyDirectory, "device.json"),
+    trustedUnlockFile: path.join(companyDirectory, "trusted-unlock.json"),
+  };
+};
+
+const loadRememberedCompanyEncryptionDevice = async ({ origin, companyId }) => {
+  const paths = resolveCompanyEncryptionDevicePaths({ origin, companyId });
+  const [record, unlockRecord] = await Promise.all([
+    readPrivateJsonFile(paths.deviceFile),
+    readPrivateJsonFile(paths.trustedUnlockFile),
+  ]);
+  const hasRecord = Object.keys(record).length > 0;
+  const hasUnlockRecord = Object.keys(unlockRecord).length > 0;
+
+  if (!hasRecord && !hasUnlockRecord) {
+    return { paths, device: null };
+  }
+  if (!hasRecord || !hasUnlockRecord) {
+    throw new Error(
+      "Локальный ключ Agent Workspaces записан не полностью. Удалите exact каталог устройства и подключите его заново: "
+      + paths.companyDirectory,
+    );
+  }
+  if (
+    record.companyId !== companyId
+    || unlockRecord.companyId !== companyId
+    || unlockRecord.fingerprint !== record.fingerprint
+    || typeof unlockRecord.trustedUnlockKey !== "string"
+  ) {
+    throw new Error("Локальный ключ Agent Workspaces не соответствует выбранной компании.");
+  }
+
+  return {
+    paths,
+    device: await unlockRememberedAgentEncryptionDevice({
+      record,
+      trustedUnlockKey: unlockRecord.trustedUnlockKey,
+    }),
+  };
+};
+
+const persistRememberedCompanyEncryptionDevice = async ({
+  paths,
+  companyId,
+  record,
+  trustedUnlockKey,
+}) => {
+  // Обе записи принадлежат owner-only private config. Фраза пользователя сюда
+  // не попадает: unlock record содержит только случайно посоленный KDF-result,
+  // которым bridge открывает exact wrapped device bundle на этом компьютере.
+  await writePrivateJsonFile(paths.deviceFile, record);
+  try {
+    await writePrivateJsonFile(paths.trustedUnlockFile, {
+      format: "trelio-agent-encryption-device-unlock",
+      version: 1,
+      companyId,
+      fingerprint: record.fingerprint,
+      trustedUnlockKey,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    // Не оставляем половину пары: без unlock record device всё равно нельзя
+    // открыть, а явное удаление позволяет безопасно повторить регистрацию.
+    await fs.rm(paths.deviceFile, { force: true }).catch(() => undefined);
+    throw error;
+  }
+};
+
+const registerCompanyEncryptionDevice = async ({
+  origin,
+  token,
+  runtime,
+  device,
+}) => {
+  const record = buildAgentDeviceRegistrationRecord({
+    companyId: runtime.company.id,
+    userId: runtime.viewer.userId,
+    fingerprint: device.fingerprint,
+    publicEncryptionJwk: device.publicEncryptionJwk,
+    publicSigningJwk: device.publicSigningJwk,
+  });
+  const registrationSignature = await signCompanyEncryptionRecord(
+    device.privateKeys.signingPrivateKey,
+    record,
+  );
+  const response = await request(
+    origin,
+    token,
+    "/api/agent-workspaces/encryption/devices",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companySlug: runtime.company.slug,
+        suite: COMPANY_ENCRYPTION_SUITE,
+        name: `Agent Workspaces – ${os.hostname()}`.slice(0, 255),
+        platform: `${process.platform}/${process.arch}`.slice(0, 64),
+        publicEncryptionJwk: device.publicEncryptionJwk,
+        publicSigningJwk: device.publicSigningJwk,
+        fingerprint: device.fingerprint,
+        registrationSignature,
+      }),
+    },
+  );
+  return readJsonResponse(response);
+};
+
+const readCompanyEncryptionRuntime = async ({
+  origin,
+  token,
+  companySlug,
+  fingerprint = null,
+}) => {
+  const query = new URLSearchParams({ companySlug });
+  if (fingerprint) query.set("fingerprint", fingerprint);
+  const runtime = await readJsonResponse(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/encryption/runtime?${query.toString()}`,
+  ));
+
+  if (
+    !runtime
+    || runtime.suite !== COMPANY_ENCRYPTION_SUITE
+    || runtime.company?.slug !== companySlug
+    || !UUID_PATTERN.test(String(runtime.company?.id || ""))
+  ) {
+    throw new Error("Trelio вернул некорректный encryption runtime компании.");
+  }
+  return runtime;
+};
+
+/**
+ * Open the company scope for the local bridge without ever placing a private
+ * key or the user's phrase in argv, stdout, a Workspace, or an API request.
+ */
+export const ensureCompanyEncryptionContext = async ({
+  origin,
+  token,
+  company,
+  collectEncryptionKey = collectCompanyEncryptionKeyThroughLoopback,
+}) => {
+  const initialRuntime = await readCompanyEncryptionRuntime({
+    origin,
+    token,
+    companySlug: company.slug,
+  });
+
+  if (initialRuntime.state === "plain") return null;
+  if (!initialRuntime.viewer?.userId) {
+    throw new Error("Trelio не вернул пользователя для локального encryption device.");
+  }
+
+  let { paths, device } = await loadRememberedCompanyEncryptionDevice({
+    origin,
+    companyId: initialRuntime.company.id,
+  });
+
+  if (!device) {
+    let encryptionSecret = await collectEncryptionKey({
+      companyName: initialRuntime.company.name,
+    });
+    const generatedDevice = await createAgentEncryptionDevice();
+    const wrapped = await wrapAndRememberAgentEncryptionDevice({
+      device: generatedDevice,
+      encryptionSecret,
+      companyId: initialRuntime.company.id,
+    });
+    // JS strings cannot be reliably zeroized, but dropping the only reference
+    // immediately keeps the phrase out of persistent state and later closures.
+    encryptionSecret = "";
+    await persistRememberedCompanyEncryptionDevice({
+      paths,
+      companyId: initialRuntime.company.id,
+      record: wrapped.record,
+      trustedUnlockKey: wrapped.trustedUnlockKey,
+    });
+    device = generatedDevice;
+  }
+
+  let runtime = await readCompanyEncryptionRuntime({
+    origin,
+    token,
+    companySlug: initialRuntime.company.slug,
+    fingerprint: device.fingerprint,
+  });
+
+  if (runtime.accessState === "registration_required") {
+    await registerCompanyEncryptionDevice({ origin, token, runtime, device });
+    runtime = await readCompanyEncryptionRuntime({
+      origin,
+      token,
+      companySlug: initialRuntime.company.slug,
+      fingerprint: device.fingerprint,
+    });
+  }
+
+  if (runtime.accessState === "access_pending") {
+    throw new Error(
+      `Устройство ${device.fingerprint} зарегистрировано, но ещё не получило доступ. `
+      + `Владелец компании должен открыть ${origin}/${runtime.company.slug}/settings/encryption/ `
+      + "и нажать «Выдать доступ» у этого Agent Workspaces device, затем команду можно повторить.",
+    );
+  }
+  if (runtime.accessState !== "ready" || !runtime.scope || !runtime.envelope) {
+    throw new Error(`Зашифрованная компания недоступна локальному устройству: ${runtime.accessState}.`);
+  }
+  if (
+    runtime.device?.fingerprint !== device.fingerprint
+    || runtime.envelope.recipientType !== "agent_device"
+    || runtime.envelope.recipientId !== runtime.device.id
+    || runtime.envelope.scopeId !== runtime.scope.id
+    || runtime.envelope.scopeEpoch !== runtime.scope.epoch
+  ) {
+    throw new Error("Trelio вернул envelope другого устройства или scope.");
+  }
+
+  return {
+    runtime,
+    device,
+    scopePrivateEncryptionKey: await openScopePrivateKey({
+      device,
+      envelope: runtime.envelope,
+    }),
+    metadata: {
+      enabled: true,
+      companyId: runtime.company.id,
+      companySlug: runtime.company.slug,
+      deviceId: runtime.device.id,
+      deviceFingerprint: runtime.device.fingerprint,
+      scopeId: runtime.scope.id,
+      scopeEpoch: runtime.scope.epoch,
+      suite: runtime.suite,
+    },
+  };
+};
+
+const ENCRYPTED_TEXT_MARKER_PATTERN = /^~e1:([0-9a-f-]{36}):([a-z][a-z0-9_]{0,63})~$/u;
+const EMBEDDED_ENCRYPTED_TEXT_MARKER_PATTERN = /~e1:([0-9a-f-]{36}):([a-z][a-z0-9_]{0,63})~/gu;
+
+const parseAgentEncryptedContentReference = (value) => {
+  if (typeof value === "string") {
+    const match = ENCRYPTED_TEXT_MARKER_PATTERN.exec(value);
+    return match ? { entityId: match[1], field: match[2] } : null;
+  }
+  const candidate = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  if (
+    !candidate
+    || typeof candidate !== "object"
+    || Array.isArray(candidate)
+    || Object.keys(candidate).length !== 1
+  ) {
+    return null;
+  }
+  const marker = candidate.$trelioE2ee;
+  if (
+    !marker
+    || typeof marker !== "object"
+    || Array.isArray(marker)
+    || Object.keys(marker).sort().join(",") !== "field,id,v"
+    || marker.v !== 1
+    || !UUID_PATTERN.test(String(marker.id || ""))
+    || !/^[a-z][a-z0-9_]{0,63}$/u.test(String(marker.field || ""))
+  ) {
+    return null;
+  }
+  return { entityId: marker.id, field: marker.field };
+};
+
+const collectAgentEncryptedReferences = (value, result = new Map()) => {
+  const direct = parseAgentEncryptedContentReference(value);
+  if (direct) {
+    result.set(direct.entityId, direct);
+    return result;
+  }
+  if (typeof value === "string") {
+    for (const match of value.matchAll(EMBEDDED_ENCRYPTED_TEXT_MARKER_PATTERN)) {
+      result.set(match[1], { entityId: match[1], field: match[2] });
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((item) => collectAgentEncryptedReferences(item, result));
+  } else if (value && typeof value === "object") {
+    Object.values(value).forEach((item) => collectAgentEncryptedReferences(item, result));
+  }
+  return result;
+};
+
+export const hydrateAgentCompanyEncryptedJson = async ({
+  value,
+  origin,
+  token,
+  companyEncryption,
+}) => {
+  if (!companyEncryption) return value;
+  const references = collectAgentEncryptedReferences(value);
+  if (references.size === 0) return value;
+  const response = await readJsonResponse(await request(
+    origin,
+    token,
+    "/api/agent-workspaces/encryption/payloads/resolve",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companySlug: companyEncryption.runtime.company.slug,
+        recipientDeviceId: companyEncryption.runtime.device.id,
+        entityIds: [...references.keys()],
+      }),
+    },
+  ));
+  const decryptedByEntity = new Map();
+  for (const payload of response.payloads ?? []) {
+    decryptedByEntity.set(payload.entityId, await decryptCompanyPayload({
+      encryptedPayload: payload,
+      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+    }));
+  }
+  const resolveReference = (reference) => {
+    const decrypted = decryptedByEntity.get(reference.entityId);
+    const values = decrypted?.values && typeof decrypted.values === "object"
+      ? decrypted.values
+      : decrypted;
+    if (!values || typeof values !== "object" || !(reference.field in values)) {
+      throw new Error(`Зашифрованное поле ${reference.field} недоступно Agent Workspaces.`);
+    }
+    return structuredClone(values[reference.field]);
+  };
+  const hydrate = async (current) => {
+    const direct = parseAgentEncryptedContentReference(current);
+    if (direct) return resolveReference(direct);
+    if (typeof current === "string") {
+      let hydrated = current;
+      for (const match of current.matchAll(EMBEDDED_ENCRYPTED_TEXT_MARKER_PATTERN)) {
+        const marker = match[0];
+        const resolved = resolveReference({ entityId: match[1], field: match[2] });
+        hydrated = hydrated.replaceAll(marker, String(resolved ?? ""));
+      }
+      return hydrated;
+    }
+    if (Array.isArray(current)) return Promise.all(current.map(hydrate));
+    if (current && typeof current === "object") {
+      return Object.fromEntries(await Promise.all(Object.entries(current).map(async ([key, child]) => [
+        key,
+        await hydrate(child),
+      ])));
+    }
+    return current;
+  };
+  return hydrate(value);
+};
+
 const createPkce = () => {
   const verifier = crypto.randomBytes(48).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
@@ -3752,6 +4357,51 @@ const writeResponseToFile = async (response, destination) => {
     Readable.fromWeb(response.body),
     createWriteStream(destination, { flags: "wx", mode: 0o600 }),
   );
+};
+
+const writeAndDecryptCompanyWorkspaceBundle = async ({
+  response,
+  destination,
+  companyEncryption,
+}) => {
+  if (!companyEncryption) {
+    throw new Error("Encrypted Agent Workspace response requires an unlocked local company key.");
+  }
+  const encryptedPath = `${destination}.trelioe1`;
+  const expectedDigest = response.headers.get("x-trelio-ciphertext-sha256");
+  const responseScopeId = response.headers.get("x-trelio-scope-id");
+  const responseScopeEpoch = Number(response.headers.get("x-trelio-scope-epoch"));
+
+  if (
+    response.headers.get("x-trelio-e2ee") !== "v1"
+    || !/^[0-9a-f]{64}$/u.test(expectedDigest || "")
+    || responseScopeId !== companyEncryption.runtime.scope.id
+    || responseScopeEpoch !== companyEncryption.runtime.scope.epoch
+  ) {
+    throw new Error("Trelio вернул encrypted Workspace bundle другого scope или формата.");
+  }
+
+  try {
+    await writeResponseToFile(response, encryptedPath);
+    const decrypted = await decryptFileFromCompanyContainer({
+      sourcePath: encryptedPath,
+      destinationPath: destination,
+      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+      expectedCiphertextSha256: expectedDigest,
+    });
+    if (
+      decrypted.header.aad.companyId !== companyEncryption.runtime.company.id
+      || decrypted.header.aad.scopeId !== companyEncryption.runtime.scope.id
+      || decrypted.header.aad.scopeEpoch !== companyEncryption.runtime.scope.epoch
+      || decrypted.header.aad.entityType !== "agent_workspace_revision"
+    ) {
+      throw new Error("Расшифрованный Workspace bundle привязан к другой компании или сущности.");
+    }
+    return decrypted;
+  } finally {
+    await fs.rm(encryptedPath, { force: true }).catch(() => undefined);
+  }
 };
 
 export const parseWorkspaceObjectPointer = (value) => {
@@ -5456,6 +6106,104 @@ const listTrackedWorkspacePaths = async (workspaceDirectory) => {
   return result.stdout.split("\0").filter(Boolean);
 };
 
+const isForbiddenWorkspaceSecretPath = (filePath) => {
+  const normalized = filePath.replaceAll("\\", "/").toLowerCase();
+  const segments = normalized.split("/");
+  const basename = segments.at(-1) || "";
+
+  return segments.includes(".ssh")
+    || segments.includes(".aws")
+    || basename === ".env"
+    || basename.startsWith(".env.")
+    || basename === "credentials.json"
+    || basename === "secrets.json"
+    || basename === "id_rsa"
+    || basename === "id_ed25519"
+    || basename.endsWith(".p12")
+    || basename.endsWith(".pfx")
+    || basename.endsWith(".key");
+};
+
+/**
+ * The server deliberately cannot inspect an encrypted Git tree.  The local
+ * bridge therefore owns the same fail-closed path/type/secret checks before
+ * it seals a full snapshot.  These checks run after `git add`, so they inspect
+ * the exact candidate rather than an earlier filesystem view.
+ */
+const assertEncryptedCandidateSafe = async ({ workspaceDirectory, baseHead }) => {
+  const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
+
+  if (trackedPaths.length > MAX_ENCRYPTED_WORKSPACE_FILE_COUNT) {
+    throw new Error("Зашифрованный Workspace содержит слишком много файлов.");
+  }
+
+  let totalBytes = 0;
+
+  for (const filePath of trackedPaths) {
+    const segments = filePath.split("/");
+    const hasGitControlSegment = segments.some(
+      (segment) => segment.toLowerCase().replace(/[ .]+$/gu, "") === ".git",
+    );
+
+    if (
+      !filePath
+      || filePath.length > 2048
+      || filePath.startsWith("/")
+      || filePath.includes("\\")
+      || segments.includes("..")
+      || /[<>:"|?*]/u.test(filePath)
+      || /[\u0000-\u001f\u007f]/u.test(filePath)
+      || hasGitControlSegment
+    ) {
+      throw new Error(`Workspace содержит небезопасный путь: ${filePath}`);
+    }
+    if (isForbiddenWorkspaceSecretPath(filePath)) {
+      throw new Error(`Workspace содержит запрещённый secret path: ${filePath}`);
+    }
+
+    const fileStat = await fs.lstat(path.join(workspaceDirectory, filePath));
+
+    if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+      throw new Error(`Workspace содержит неподдерживаемый тип файла: ${filePath}`);
+    }
+    totalBytes += fileStat.size;
+
+    if (fileStat.size <= MAX_INLINE_TEXT_BYTES) {
+      const bytes = await fs.readFile(path.join(workspaceDirectory, filePath));
+
+      if (
+        isUtf8(bytes)
+        && !bytes.includes(0)
+        && /BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY|AKIA[0-9A-Z]{16}/u.test(bytes.toString("utf8"))
+      ) {
+        throw new Error(`Candidate похож на приватный ключ или долгоживущий credential: ${filePath}`);
+      }
+    }
+
+    if (totalBytes > MAX_ENCRYPTED_WORKSPACE_TREE_BYTES) {
+      throw new Error("Зашифрованный Workspace превышает локальный лимит полного снимка.");
+    }
+  }
+
+  if (GIT_OBJECT_PATTERN.test(String(baseHead || ""))) {
+    const protectedChanges = (await runGit([
+      "diff",
+      "--cached",
+      "--name-only",
+      baseHead,
+      "--",
+      "AGENTS.md",
+      "CLAUDE.md",
+      ".trelio",
+    ], { cwd: workspaceDirectory })).stdout.trim();
+
+    if (protectedChanges) {
+      throw new Error("Candidate изменяет защищённые control-файлы Agent Workspace.");
+    }
+  }
+
+};
+
 const downloadAndVerifyWorkspaceObject = async ({
   origin,
   token,
@@ -5559,7 +6307,12 @@ const materializeBundle = async ({ bundlePath, directory, head, branch }) => {
     { cwd: directory },
   );
   await runGit(["config", "fetch.fsckObjects", "true"], { cwd: directory });
-  await runGit(["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"], { cwd: directory });
+  await runGit([
+    "fetch",
+    bundlePath,
+    "+refs/trelio/exports/*:refs/remotes/trelio-export/*",
+    "+refs/heads/*:refs/remotes/trelio-encrypted/*",
+  ], { cwd: directory });
   await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: directory });
   await runGit(["checkout", "-B", branch, head], { cwd: directory });
   await runGit(["config", "user.name", "Trelio Agent Workspace"], { cwd: directory });
@@ -5590,7 +6343,12 @@ const fastForwardMaterializedBundle = async ({
   }
 
   await runGit(
-    ["fetch", bundlePath, "+refs/trelio/exports/*:refs/remotes/trelio-export/*"],
+    [
+      "fetch",
+      bundlePath,
+      "+refs/trelio/exports/*:refs/remotes/trelio-export/*",
+      "+refs/heads/*:refs/remotes/trelio-encrypted/*",
+    ],
     { cwd: workspaceDirectory },
   );
   await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: workspaceDirectory });
@@ -5991,6 +6749,7 @@ const replaceMaterializedContext = async ({
   rootDirectory,
   specification,
   temporaryDirectory,
+  companyEncryption,
 }) => {
   const destination = path.join(rootDirectory, specification.relativeDirectory);
   const currentHead = await readMaterializedContextHead(destination);
@@ -6006,8 +6765,19 @@ const replaceMaterializedContext = async ({
   await ensureContextDirectoryChain(rootDirectory, specification.relativeDirectory);
 
   try {
-    const contextResponse = await request(origin, token, specification.endpoint);
-    await writeResponseToFile(contextResponse, bundlePath);
+    const endpoint = companyEncryption
+      ? specification.endpoint.replace(/\/bundle$/u, "/encrypted-bundle")
+      : specification.endpoint;
+    const contextResponse = await request(origin, token, endpoint);
+    if (companyEncryption) {
+      await writeAndDecryptCompanyWorkspaceBundle({
+        response: contextResponse,
+        destination: bundlePath,
+        companyEncryption,
+      });
+    } else {
+      await writeResponseToFile(contextResponse, bundlePath);
+    }
     await materializeBundle({
       bundlePath,
       directory: stagingDirectory,
@@ -6043,7 +6813,14 @@ const replaceMaterializedContext = async ({
   }
 };
 
-const materializeRunContexts = async ({ origin, token, rootDirectory, runId, contextHeads }) => {
+const materializeRunContexts = async ({
+  origin,
+  token,
+  rootDirectory,
+  runId,
+  contextHeads,
+  companyEncryption = null,
+}) => {
   const specifications = buildRunContextSpecifications(runId, contextHeads);
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-context-"));
   const contexts = [];
@@ -6057,6 +6834,7 @@ const materializeRunContexts = async ({ origin, token, rootDirectory, runId, con
         rootDirectory,
         specification,
         temporaryDirectory,
+        companyEncryption,
       }));
     }
   } finally {
@@ -6554,6 +7332,7 @@ const openWorkspace = async (origin, options) => {
   const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
   let runPayload;
   let runOverview = null;
+  let companyEncryption = null;
 
   if (options.run) {
     const runId = requireUuid(options.run, "run");
@@ -6562,11 +7341,32 @@ const openWorkspace = async (origin, options) => {
       runId,
       directoryOption: options.dir,
     });
-    const overview = await readJsonResponse(await request(
+    const rawOverview = await readJsonResponse(await request(
       origin,
       token,
       `/api/agent-workspaces/workspaces/${workspaceId}`,
     ));
+    if (
+      !rawOverview.company
+      || !UUID_PATTERN.test(String(rawOverview.company.id || ""))
+      || typeof rawOverview.company.slug !== "string"
+    ) {
+      throw new Error("Trelio не вернул компанию Agent Workspace.");
+    }
+    // Продолжение существующего Run может содержать зашифрованные pinned
+    // инструкции. Поэтому устройство и scope открываются до чтения snapshot и
+    // до claim: в server request никогда не попадает ключ шифрования.
+    companyEncryption = await ensureCompanyEncryptionContext({
+      origin,
+      token,
+      company: rawOverview.company,
+    });
+    const overview = await hydrateAgentCompanyEncryptedJson({
+      value: rawOverview,
+      origin,
+      token,
+      companyEncryption,
+    });
     runOverview = overview;
     const existingRun = overview.runs.find((item) => item.id === runId);
 
@@ -6601,7 +7401,11 @@ const openWorkspace = async (origin, options) => {
         }),
       },
     ));
-    runPayload = { run: claimedRun, workspace: overview.workspace };
+    runPayload = {
+      run: claimedRun,
+      workspace: overview.workspace,
+      company: overview.company,
+    };
   } else {
     // Если super-admin опубликовал новую revision между preflight и start,
     // backend отклонит старый hash до создания Run. Bridge перечитывает
@@ -6644,6 +7448,39 @@ const openWorkspace = async (origin, options) => {
 
   if (!runPayload) {
     throw new Error("Trelio не создал Agent Run после синхронизации правил.");
+  }
+  if (
+    !runPayload.company
+    || !UUID_PATTERN.test(String(runPayload.company.id || ""))
+    || typeof runPayload.company.slug !== "string"
+  ) {
+    throw new Error("Trelio не вернул компанию Agent Workspace.");
+  }
+  // Encryption access is resolved before any bundle or context bytes are
+  // downloaded. For a protected company this is the fail-closed boundary:
+  // the bridge either opens the exact local device envelope or materializes
+  // nothing at all.
+  companyEncryption ??= await ensureCompanyEncryptionContext({
+    origin,
+    token,
+    company: runPayload.company,
+  });
+  // Все marker-ы раскрываются в памяти bridge до первого обращения к полям
+  // Run. На диск затем попадает только локальная рабочая копия пользователя;
+  // backend продолжает видеть лишь opaque ciphertext.
+  runPayload = await hydrateAgentCompanyEncryptedJson({
+    value: runPayload,
+    origin,
+    token,
+    companyEncryption,
+  });
+  if (runOverview) {
+    runOverview = await hydrateAgentCompanyEncryptedJson({
+      value: runOverview,
+      origin,
+      token,
+      companyEncryption,
+    });
   }
   const agentRun = runPayload.run;
   const pinnedRunAgentRules = agentRun.agentInstructionsSnapshotJson?.platform;
@@ -6695,9 +7532,17 @@ const openWorkspace = async (origin, options) => {
           const bundleResponse = await request(
             origin,
             token,
-            `/api/agent-workspaces/runs/${runId}/bundle`,
+            `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
           );
-          await writeResponseToFile(bundleResponse, syncBundlePath);
+          if (companyEncryption) {
+            await writeAndDecryptCompanyWorkspaceBundle({
+              response: bundleResponse,
+              destination: syncBundlePath,
+              companyEncryption,
+            });
+          } else {
+            await writeResponseToFile(bundleResponse, syncBundlePath);
+          }
           await fastForwardMaterializedBundle({
             bundlePath: syncBundlePath,
             workspaceDirectory,
@@ -6719,6 +7564,8 @@ const openWorkspace = async (origin, options) => {
         origin,
         pluginVersion: BRIDGE_VERSION,
         scopeType: runPayload.workspace?.scopeType || existingMetadata.scopeType || null,
+        company: runPayload.company,
+        encryption: companyEncryption?.metadata ?? { enabled: false },
         leaseId: agentRun.leaseId,
         fencingToken: agentRun.fencingToken,
         baseHead: agentRun.baseHead,
@@ -6742,6 +7589,7 @@ const openWorkspace = async (origin, options) => {
         rootDirectory,
         runId,
         contextHeads: refreshedMetadata.contextHeads,
+        companyEncryption,
       });
       const objects = await materializeWorkspaceObjects({
         origin,
@@ -6788,8 +7636,20 @@ const openWorkspace = async (origin, options) => {
 
   try {
     const baseBundlePath = path.join(temporaryDirectory, "base.bundle");
-    const baseResponse = await request(origin, token, `/api/agent-workspaces/runs/${runId}/bundle`);
-    await writeResponseToFile(baseResponse, baseBundlePath);
+    const baseResponse = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
+    );
+    if (companyEncryption) {
+      await writeAndDecryptCompanyWorkspaceBundle({
+        response: baseResponse,
+        destination: baseBundlePath,
+        companyEncryption,
+      });
+    } else {
+      await writeResponseToFile(baseResponse, baseBundlePath);
+    }
     await materializeBundle({
       bundlePath: baseBundlePath,
       directory: workspaceDirectory,
@@ -6811,6 +7671,7 @@ const openWorkspace = async (origin, options) => {
       rootDirectory,
       runId,
       contextHeads,
+      companyEncryption,
     });
     await writeContextIndex(
       rootDirectory,
@@ -6826,6 +7687,8 @@ const openWorkspace = async (origin, options) => {
       origin,
       pluginVersion: BRIDGE_VERSION,
       scopeType: runPayload.workspace?.scopeType || null,
+      company: runPayload.company,
+      encryption: companyEncryption?.metadata ?? { enabled: false },
       workspaceId,
       runId,
       leaseId: agentRun.leaseId,
@@ -6891,7 +7754,11 @@ const withRun = async (handler) => {
   const { metadata, metadataPath } = await findRunMetadata();
   const origin = normalizeOrigin(metadata.origin);
   const token = await requireToken(origin);
-  return handler({ metadata, metadataPath, origin, token });
+  const company = metadata.company;
+  const companyEncryption = company?.slug
+    ? await ensureCompanyEncryptionContext({ origin, token, company })
+    : null;
+  return handler({ metadata, metadataPath, origin, token, companyEncryption });
 };
 
 const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
@@ -6904,12 +7771,24 @@ const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
   process.stdout.write(`Lease продлён до ${runPayload.leaseExpiresAt}.\n`);
 });
 
-const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) => {
-  const overview = await readJsonResponse(await request(
+const synchronizeRunContext = async ({
+  metadata,
+  metadataPath,
+  origin,
+  token,
+  companyEncryption,
+}) => {
+  const rawOverview = await readJsonResponse(await request(
     origin,
     token,
     `/api/agent-workspaces/workspaces/${requireUuid(metadata.workspaceId, "workspace")}`,
   ));
+  const overview = await hydrateAgentCompanyEncryptedJson({
+    value: rawOverview,
+    origin,
+    token,
+    companyEncryption,
+  });
   const agentRun = overview.runs.find((item) => item.id === metadata.runId);
 
   if (!agentRun) {
@@ -6924,6 +7803,7 @@ const synchronizeRunContext = async ({ metadata, metadataPath, origin, token }) 
     rootDirectory,
     runId: metadata.runId,
     contextHeads,
+    companyEncryption,
   });
   await writeContextIndex(
     rootDirectory,
@@ -7208,11 +8088,123 @@ export const validateHandoffTaskOutcome = ({
   }
 };
 
+const buildAgentEncryptedPayloadSignatureRecord = (payload) => ({
+  suite: payload.suite,
+  scopeId: payload.scopeId,
+  scopeEpoch: payload.scopeEpoch,
+  entityType: payload.entityType,
+  entityId: payload.entityId,
+  entityRevision: payload.entityRevision,
+  schemaVersion: payload.schemaVersion,
+  nonce: payload.nonce,
+  ciphertext: payload.ciphertext,
+  wrappedDataKey: payload.wrappedDataKey,
+  aad: payload.aad,
+  ciphertextSha256: payload.ciphertextSha256,
+  writerDeviceId: payload.writerDeviceId,
+});
+
+const protectAgentWorkspaceCheckpoint = async ({
+  metadata,
+  origin,
+  token,
+  companyEncryption,
+  summary,
+  evidence,
+  filesChanged,
+  openQuestions,
+  nextActionInstruction,
+  taskOutcome,
+}) => {
+  const entityId = crypto.randomUUID();
+  const values = {
+    summary,
+    evidence_json: evidence,
+    files_changed_json: filesChanged,
+    open_questions_json: openQuestions,
+    next_action_instruction: nextActionInstruction,
+  };
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source: { kind: "agent_workspace_checkpoint", runId: metadata.runId },
+      values,
+    },
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType: "agent_workspace.checkpoint",
+      entityId,
+      entityRevision: 1,
+      purpose: "content",
+    },
+  });
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType: "agent_workspace.checkpoint",
+    entityId,
+    entityRevision: 1,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildAgentEncryptedPayloadSignatureRecord(payload),
+  );
+  await readJsonResponse(await request(
+    origin,
+    token,
+    "/api/agent-workspaces/encryption/payloads",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companySlug: companyEncryption.runtime.company.slug,
+        writerDeviceId: companyEncryption.runtime.device.id,
+        payloads: [payload],
+      }),
+    },
+  ));
+
+  return {
+    summary: buildCompanyEncryptedTextMarker(entityId, "summary"),
+    ...(evidence.length > 0
+      ? { evidence: buildCompanyEncryptedJsonMarker(entityId, "evidence_json", "array") }
+      : {}),
+    ...(filesChanged.length > 0
+      ? { filesChanged: buildCompanyEncryptedJsonMarker(entityId, "files_changed_json", "array") }
+      : {}),
+    ...(openQuestions.length > 0
+      ? { openQuestions: buildCompanyEncryptedJsonMarker(entityId, "open_questions_json", "array") }
+      : {}),
+    ...(nextActionInstruction || taskOutcome
+      ? {
+          nextAction: {
+            ...(nextActionInstruction
+              ? {
+                  instruction: buildCompanyEncryptedTextMarker(
+                    entityId,
+                    "next_action_instruction",
+                  ),
+                }
+              : {}),
+            ...(taskOutcome ? { taskOutcome } : {}),
+          },
+        }
+      : {}),
+  };
+};
+
 const checkpoint = async (options) => withRun(async ({
   metadata,
   metadataPath,
   origin,
   token,
+  companyEncryption,
 }) => {
   const checkpointType = String(options.type || "draft");
   const summary = String(options.summary || "").trim();
@@ -7285,6 +8277,7 @@ const checkpoint = async (options) => withRun(async ({
         metadataPath,
         origin,
         token,
+        companyEncryption,
         requireChangedHead: checkpointType === "draft",
         message: String(options.message || (
           checkpointType === "blocker"
@@ -7293,6 +8286,26 @@ const checkpoint = async (options) => withRun(async ({
         )),
       })
     : null;
+  const protectedContent = companyEncryption
+    ? await protectAgentWorkspaceCheckpoint({
+        metadata,
+        origin,
+        token,
+        companyEncryption,
+        summary,
+        evidence,
+        filesChanged,
+        openQuestions,
+        nextActionInstruction,
+        taskOutcome,
+      })
+    : {
+        summary,
+        ...(evidence.length > 0 ? { evidence } : {}),
+        ...(filesChanged.length > 0 ? { filesChanged } : {}),
+        ...(openQuestions.length > 0 ? { openQuestions } : {}),
+        ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
+      };
   const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/checkpoints`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -7300,11 +8313,7 @@ const checkpoint = async (options) => withRun(async ({
       leaseId: metadata.leaseId,
       fencingToken: metadata.fencingToken,
       checkpointType,
-      summary,
-      ...(evidence.length > 0 ? { evidence } : {}),
-      ...(filesChanged.length > 0 ? { filesChanged } : {}),
-      ...(openQuestions.length > 0 ? { openQuestions } : {}),
-      ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
+      ...protectedContent,
       ...(taskOutcome ? { taskOutcome } : {}),
       ...(draftSnapshot ? { draftHead: draftSnapshot.draftHead } : {}),
     }),
@@ -7523,11 +8532,29 @@ const serializeObjectRegistrationProgress = (plannedObjects, progressByPath) => 
   })
 );
 
-const prepareCandidateIndex = async ({ metadata, metadataPath, origin, token }) => {
+const prepareCandidateIndex = async ({
+  metadata,
+  metadataPath,
+  origin,
+  token,
+  companyEncryption,
+}) => {
   const workspaceDirectory = metadata.workspaceDirectory;
   const knownObjectPaths = (metadata.objects || []).map((object) => object.filePath);
   await setSkipWorktree(workspaceDirectory, knownObjectPaths, false);
   await runGit(["add", "--all"], { cwd: workspaceDirectory });
+
+  if (companyEncryption) {
+    // Paths, pointer manifests and plaintext digests are protected content.
+    // A full encrypted bundle can safely carry ordinary Git blobs, including
+    // binaries, so encrypted companies deliberately bypass server-visible
+    // per-file object registration altogether.
+    await assertEncryptedCandidateSafe({
+      workspaceDirectory,
+      baseHead: metadata.baseHead,
+    });
+    return [];
+  }
   const candidateObjects = [];
   const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
   const inspections = new Map();
@@ -7686,6 +8713,7 @@ const prepareLocalCandidateSnapshot = async ({
   metadataPath,
   origin,
   token,
+  companyEncryption,
   message,
 }) => {
   const workspaceDirectory = metadata.workspaceDirectory;
@@ -7703,6 +8731,7 @@ const prepareLocalCandidateSnapshot = async ({
       metadataPath,
       origin,
       token,
+      companyEncryption,
     });
 
     if (await hasStagedChanges(workspaceDirectory)) {
@@ -7736,23 +8765,26 @@ const prepareLocalCandidateSnapshot = async ({
 };
 
 const withLocalCandidateBundle = async (
-  { metadata, temporaryPrefix },
+  { metadata, temporaryPrefix, fullSnapshot = false },
   handler,
 ) => {
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), `${temporaryPrefix}-`));
   const bundlePath = path.join(temporaryDirectory, "candidate.bundle");
 
   try {
-    // Bundle остаётся delta относительно pinned base даже когда новый
-    // компьютер materialize-ил последний draft head.
+    // Plain companies keep the compact delta protocol. An encrypted server
+    // cannot merge or inspect Git objects, so every protected revision is a
+    // self-contained bundle that another trusted device can materialize.
     await runGit(
-      [
-        "bundle",
-        "create",
-        bundlePath,
-        "refs/heads/trelio-candidate",
-        `^${metadata.baseHead}`,
-      ],
+      fullSnapshot
+        ? ["bundle", "create", bundlePath, "refs/heads/trelio-candidate"]
+        : [
+            "bundle",
+            "create",
+            bundlePath,
+            "refs/heads/trelio-candidate",
+            `^${metadata.baseHead}`,
+          ],
       { cwd: metadata.workspaceDirectory },
     );
     return await handler(bundlePath);
@@ -7761,11 +8793,90 @@ const withLocalCandidateBundle = async (
   }
 };
 
+const uploadEncryptedAgentWorkspaceRevision = async ({
+  metadata,
+  origin,
+  token,
+  companyEncryption,
+  bundlePath,
+  workspaceHead,
+  revisionKind,
+}) => {
+  if (!companyEncryption) {
+    throw new Error("Encrypted Workspace upload requires an unlocked company context.");
+  }
+  const encryptedPath = `${bundlePath}.trelioe1`;
+  try {
+    const encrypted = await encryptFileToCompanyContainer({
+      sourcePath: bundlePath,
+      destinationPath: encryptedPath,
+      scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+      aad: {
+        companyId: companyEncryption.runtime.company.id,
+        scopeId: companyEncryption.runtime.scope.id,
+        scopeEpoch: companyEncryption.runtime.scope.epoch,
+        entityType: "agent_workspace_revision",
+        entityId: requireUuid(metadata.runId, "run"),
+        entityRevision: Number(metadata.fencingToken),
+      },
+      originalName: "workspace.bundle",
+      mimeType: "application/vnd.git.bundle",
+      writerDeviceId: companyEncryption.runtime.device.id,
+      signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+    });
+    const manifest = buildEncryptedAgentWorkspaceRevisionRecord({
+      companyId: companyEncryption.runtime.company.id,
+      workspaceId: requireUuid(metadata.workspaceId, "workspace"),
+      runId: requireUuid(metadata.runId, "run"),
+      revisionKind,
+      baseHead: metadata.baseHead,
+      workspaceHead,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      writerDeviceId: companyEncryption.runtime.device.id,
+      ciphertextSha256: encrypted.ciphertextSha256,
+      ciphertextSizeBytes: encrypted.ciphertextSizeBytes,
+      fencingToken: Number(metadata.fencingToken),
+    });
+    const signature = await signCompanyEncryptionRecord(
+      companyEncryption.device.privateKeys.signingPrivateKey,
+      manifest,
+    );
+    const response = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${metadata.runId}/encrypted-${revisionKind === "draft" ? "draft" : "candidate"}`,
+      {
+        method: "POST",
+        duplex: "half",
+        headers: {
+          "content-type": "application/vnd.trelio.encrypted-workspace",
+          "content-length": String(encrypted.ciphertextSizeBytes),
+          "x-trelio-lease-id": metadata.leaseId,
+          "x-trelio-fencing-token": String(metadata.fencingToken),
+          "x-trelio-base-head": metadata.baseHead,
+          "x-trelio-workspace-head": workspaceHead,
+          "x-trelio-scope-id": companyEncryption.runtime.scope.id,
+          "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
+          "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
+          "x-trelio-ciphertext-sha256": encrypted.ciphertextSha256,
+          "x-trelio-signature": signature,
+        },
+        body: createReadStream(encryptedPath),
+      },
+    );
+    return response.json();
+  } finally {
+    await fs.rm(encryptedPath, { force: true }).catch(() => undefined);
+  }
+};
+
 const saveRunDraftSnapshot = async ({
   metadata,
   metadataPath,
   origin,
   token,
+  companyEncryption,
   message,
   requireChangedHead = false,
 }) => {
@@ -7778,6 +8889,7 @@ const saveRunDraftSnapshot = async ({
     metadataPath,
     origin,
     token,
+    companyEncryption,
     message,
   });
 
@@ -7804,8 +8916,23 @@ const saveRunDraftSnapshot = async ({
 
   await heartbeat();
   const result = await withLocalCandidateBundle(
-    { metadata: prepared.candidateMetadata, temporaryPrefix: "trelio-draft" },
+    {
+      metadata: prepared.candidateMetadata,
+      temporaryPrefix: "trelio-draft",
+      fullSnapshot: Boolean(companyEncryption),
+    },
     async (bundlePath) => {
+      if (companyEncryption) {
+        return uploadEncryptedAgentWorkspaceRevision({
+          metadata: prepared.candidateMetadata,
+          origin,
+          token,
+          companyEncryption,
+          bundlePath,
+          workspaceHead: prepared.head,
+          revisionKind: "draft",
+        });
+      }
       const bundleStat = await fs.stat(bundlePath);
       const response = await request(
         origin,
@@ -7843,13 +8970,20 @@ const saveRunDraftSnapshot = async ({
   return { draftHead: prepared.head, metadata: draftMetadata };
 };
 
-const submit = async (options) => withRun(async ({ metadata, metadataPath, origin, token }) => {
+const submit = async (options) => withRun(async ({
+  metadata,
+  metadataPath,
+  origin,
+  token,
+  companyEncryption,
+}) => {
   await heartbeat();
   const prepared = await prepareLocalCandidateSnapshot({
     metadata,
     metadataPath,
     origin,
     token,
+    companyEncryption,
     message: String(options.message || "Подготовить результат Agent Run"),
   });
   const head = prepared.head;
@@ -7860,8 +8994,36 @@ const submit = async (options) => withRun(async ({ metadata, metadataPath, origi
 
   await heartbeat();
   await withLocalCandidateBundle(
-    { metadata: prepared.candidateMetadata, temporaryPrefix: "trelio-candidate" },
+    {
+      metadata: prepared.candidateMetadata,
+      temporaryPrefix: "trelio-candidate",
+      fullSnapshot: Boolean(companyEncryption),
+    },
     async (bundlePath) => {
+      if (companyEncryption) {
+        const result = await uploadEncryptedAgentWorkspaceRevision({
+          metadata: prepared.candidateMetadata,
+          origin,
+          token,
+          companyEncryption,
+          bundlePath,
+          workspaceHead: head,
+          revisionKind: "accepted",
+        });
+        if (result.run.status !== "accepted") {
+          throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
+        }
+        await writeRunMetadata(metadataPath, {
+          ...prepared.candidateMetadata,
+          schemaVersion: 3,
+          candidateHead: head,
+          terminalStatus: "accepted",
+          terminalAt: result.run.acceptedAt || new Date().toISOString(),
+          cleanupEligibleAfterDays: (await readLocalSettings()).terminalRunRetentionDays,
+        });
+        process.stdout.write("Зашифрованный результат записан в рабочее пространство Trelio.\n");
+        return;
+      }
       const bundleStat = await fs.stat(bundlePath);
       const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/candidate`, {
         method: "POST",

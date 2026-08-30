@@ -11,6 +11,8 @@
 - Agent Workspaces компании, проекта, досье и задачи с ACL и Git-версиями;
 - локальный bridge с `pause` для переносимого blocker и `finish` для единого
   handoff/heartbeat/submit;
+- локальную расшифровку Agent Workspaces зашифрованной компании без передачи
+  ключа или Git-содержимого backend-у;
 - живой каталог навыков компании и проекта;
 - подписанные локальные runtime-пакеты и декларативные Remote MCP;
 - private-встречи с отдельным результатом и подтверждаемым планом переноса;
@@ -89,6 +91,11 @@ Trelio. Установка через штатный package manager предл�
 bundled, ни системного совместимого Node действительно нет; без явного
 подтверждения пользователя системное ПО не устанавливается. Глобальная команда
 `trelio-workspace` не требуется: плагин использует свой bundled script.
+
+Agent Workspaces поэтому запускается на desktop macOS/Windows/Linux, а не в
+мобильном браузере. Сам web-интерфейс зашифрованной компании поддерживает
+актуальные Chrome, Edge, Firefox и Safari на desktop, Android и iOS при наличии
+HTTPS, Web Crypto, IndexedDB и WebAssembly.
 
 Bundled `trelio-workspace doctor --json` отдельно разрешает absolute Git только
 из Homebrew/system/Program Files и durable Windows PATH и проверяет настоящий
@@ -210,6 +217,16 @@ Trelio проверяет совместимость bridge перед transport
 [GitHub Releases](https://github.com/trelio-ru/agent-workspaces/releases).
 
 ## Безопасность
+
+В зашифрованной компании первый `open` показывает локальную форму
+`127.0.0.1`: ключ шифрования вводит сам пользователь, и значение не уходит в
+Trelio, MCP, командную строку или логи. Bridge создаёт отдельный ключ устройства
+и сохраняет wrapped bundle и локальный unlock key в owner-only private config;
+после этого повторный ввод на том же компьютере не нужен. Владелец компании
+отдельно выдаёт этому device доступ в настройках шифрования. Git bundle
+шифруется и расшифровывается локально, а поиск выполняется по materialized
+рабочей копии локальным `rg`. Текущая версия опирается на файловые права
+OS-account и не выдаёт private config за Keychain/DPAPI-хранилище.
 
 - MCP использует OAuth и штатные ACL компании, проекта, досье и задачи.
 - Bridge использует отдельную узкую device-session вместо MCP token.
