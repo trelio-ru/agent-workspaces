@@ -29,10 +29,13 @@ export const TASK_RUN_PROPOSAL_BUNDLE_PATH =
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
   workerSkillBytes: 9_000,
-  requiredTaskRunSkillsBytes: 51_000,
-  taskRunWithProposalBundleBytes: 54_000,
-  requiredTaskRunPluginLayerBytes: 60_000,
-  taskRunWithProposalBundlePluginLayerBytes: 63_000,
+  // Durable task–dossier sharing is a required discovery decision for ordinary
+  // task Runs, so its bounded policy belongs in scope-and-context rather than a
+  // conditionally unread reference. Keep only the exact 1 KiB ceiling increase.
+  requiredTaskRunSkillsBytes: 52_000,
+  taskRunWithProposalBundleBytes: 55_000,
+  requiredTaskRunPluginLayerBytes: 61_000,
+  taskRunWithProposalBundlePluginLayerBytes: 64_000,
 });
 
 export const measureContextText = (text) => {

@@ -165,6 +165,21 @@ workspace.
   Every read reapplies ACL.
 - Do not create an unrelated workspace merely to attach it as context.
 
+### Persist a task–dossier subject link
+
+- The link is durable, not a one-Run dependency. It gives current and future
+  `task_full` readers cross-project read-only access to the whole accepted dossier,
+  but no owner-project, write, Run, approval, or link-management rights.
+- After exact reads, call `link_task_dossier` without confirmation only when one
+  durable match has at least two stable independent identifiers (a similar title
+  alone is insufficient) and the whole dossier suits the task audience. Confirm
+  the returned link; tell the user what, why, and the read-only effect. Add no task
+  comment or notification unless separately asked.
+- Multiple candidates, one identifier, temporary relevance, or unclear whole-
+  dossier disclosure require a question. A weak hit does not; a partial fit uses
+  narrower context. Task edit and independent dossier management remain required;
+  after an ambiguous result, exact-read the relation before retry.
+
 When ordinary tasks need a direct connection, prefer `create_task_relation`.
 Describe `relationType` in precise human language; examples such as
 “Блокирует” are not an enum. Set `isDirectional` only when order matters. Use

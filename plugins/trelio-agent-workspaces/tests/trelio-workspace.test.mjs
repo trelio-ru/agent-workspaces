@@ -3058,6 +3058,14 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /plugin\/backend version mismatch/u);
   assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and `user-profile\.md` remain authoritative/u);
   assert.match(scopeReference, /Do not call\s+`get_agent_instructions` again after loaded instructions/u);
+  assert.match(scopeReference, /The link is durable, not a one-Run dependency/u);
+  assert.match(scopeReference, /at least two stable independent identifiers/u);
+  assert.match(scopeReference, /call `link_task_dossier` without confirmation/u);
+  assert.match(scopeReference, /`task_full` readers cross-project read-only access to the whole accepted dossier/u);
+  assert.match(scopeReference, /Add no task\s+comment or notification unless separately asked/u);
+  assert.match(scopeReference, /unclear whole-\s+dossier disclosure require a question/u);
+  assert.match(scopeReference, /A weak hit does not/u);
+  assert.match(scopeReference, /exact-read the relation before retry/u);
   const taskControlsReference = await readFile(
     path.join(workerDirectory, "references", "task-controls.md"),
     "utf8",

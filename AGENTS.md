@@ -147,6 +147,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   HTTP 504 сохраняет обычный bounded network-retry contract. Regression живёт
   в generic plugin suite, а compact runtime instructions обязаны сохранять тот
   же invariant.
+- После exact read одной задачи и одного досье Worker самостоятельно создаёт
+  долговременную task/dossier связь без формального подтверждения, только если
+  совпадение подтверждено минимум двумя независимыми идентификаторами, нет
+  конкурирующей цели и всё досье подходит аудитории `task_full`. После mutation
+  он сообщает пользователю причину и read-only access effect. Несколько
+  кандидатов, один признак, временная релевантность или сомнение в раскрытии
+  всего досье требуют вопроса; weak hit игнорируется, partial fit получает более
+  узкий контекст.
 - Meeting transcript flow не заканчивается после `create_meeting`: агент читает
   server-returned `workflowStage` / `requiredNextAction` / `mayFinish`, сам
   фиксирует `agent_checked` итог и проверяет актуальный контекст. До первого
