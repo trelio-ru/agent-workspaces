@@ -1,8 +1,33 @@
 # Setup and recovery
 
 Read this file completely when Trelio MCP tools are absent, an OAuth scope is
-missing, the local bridge reports `TRELIO_GIT_REQUIRED`, or Trelio rejects the
-installed plugin version.
+missing, the local bridge reports `TRELIO_GIT_REQUIRED`, Trelio rejects the
+installed plugin version, or a runtime hook returns an error.
+
+## Runtime hook admission
+
+Never author, copy, preserve, or retry `runtimeSessionProof` or
+`runtimeAttestation`. Discovery and pairing/session recovery remain available
+without admission; the approved hook injects a fresh one-use proof for context,
+mutation, and Agent Workspace calls.
+
+If Trelio itself returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work.
+In Codex tell the user only: `Откройте настройки плагина Trelio Agent
+Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell the
+user only to enable/approve this plugin's hooks and retry. Do not initially
+suggest installing, updating, or reinstalling the plugin, running
+`trelio-workspace login`, starting a new task/session, or restarting the app.
+Escalate only after Hooks are enabled and a retry still proves that the current
+session did not load them or returns a separate version, installation, pairing,
+or session error. Never bypass admission through another MCP, direct HTTP,
+browser automation, or a shell script.
+
+A `PreToolUse` failure proves that the hook ran. Preserve its exact structured
+code and reason rather than replacing it with the missing-Hooks response.
+`TRELIO_RUNTIME_HOOK_FAILED` follows its exact cause and one current-task retry.
+For `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, follow the required-version
+procedure below and never tell the user to enable Hooks for that failure.
 
 ## Missing MCP tools
 

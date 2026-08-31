@@ -27,12 +27,12 @@ export const TASK_RUN_PROPOSAL_BUNDLE_PATH =
   "skills/trelio-workspace-worker/references/task-proposal-bundles.md";
 
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
-  runtimeAgentsBytes: 30_000,
-  workerSkillBytes: 24_000,
-  requiredTaskRunSkillsBytes: 70_000,
-  taskRunWithProposalBundleBytes: 73_000,
-  requiredTaskRunPluginLayerBytes: 100_000,
-  taskRunWithProposalBundlePluginLayerBytes: 103_000,
+  runtimeAgentsBytes: 10_000,
+  workerSkillBytes: 9_000,
+  requiredTaskRunSkillsBytes: 51_000,
+  taskRunWithProposalBundleBytes: 54_000,
+  requiredTaskRunPluginLayerBytes: 60_000,
+  taskRunWithProposalBundlePluginLayerBytes: 63_000,
 });
 
 export const measureContextText = (text) => {

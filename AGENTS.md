@@ -247,6 +247,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   task Run references и варианта с proposal bundle. Эти потолки не являются
   целевыми размерами: осознанное увеличение требует объяснения, а оптимизация
   должна уменьшать фактический отчёт без удаления security-инвариантов.
+  Runtime `AGENTS.md` хранит только неизменяемое safety/lifecycle-ядро, а
+  `trelio-workspace-worker/SKILL.md` остаётся коротким router. Процедуры setup
+  и recovery, внешних сервисов и Agent Secrets находятся в отдельных
+  references и не добавляются в `TASK_RUN_REQUIRED_SKILL_PATHS`: агент обязан
+  загружать их полностью только при соответствующем сценарии.
 - Для изменённого bundled skill запусти его tests, `validate-skill` при наличии
   и `skill-creator/scripts/quick_validate.py`.
 - Для manifest используй штатный `plugin-creator` validator. Для

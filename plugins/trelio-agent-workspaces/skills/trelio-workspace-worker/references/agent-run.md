@@ -15,25 +15,12 @@ task communication, handoff, submit, or final reporting.
 
 ## Prepare and open the Run
 
-1. Resolve the exact task or dossier writable target through the scope
-   procedure. Company/project may identify rules, ACL and dossier ownership,
-   but are not writable material Workspace.
-   Native Trelio discovery requires neither `search_agent_skills` nor
-   `list_agent_skills`. Do not guess
-   an ID from a title. For task work, read `get_task` connections and linked
-   dossiers. For durable task-independent subjects, search existing Workspace
-   metadata/files; do not list dossiers merely for discovery. Prefer a project
-   dossier and use a company dossier only for genuinely company-wide work.
-2. Read explicit task/dossier relations first. When more prior context can
-   materially help and the scope procedure has not already produced sufficient
-   context, call unified `search` once with several independent queries and the
-   exact company scope. Read exact Workspace hits and resolve exact linked
-   scopes with `get_agent_workspace_by_scope`. Use
-   `search_agent_workspace_files` only for a remaining Workspace-only
-   ambiguity, not as a required second search. Keep only materially relevant
-   same-company task/dossier Workspace IDs; no company/project Workspace
-   context is inherited automatically.
-3. Call `prepare_agent_workspace_run` once with the exact writable scope and
+1. Complete `scope-and-context.md` first: resolve one exact task/dossier
+   writable target and only materially relevant same-company task/dossier
+   contexts. Do not guess IDs, repeat its discovery sequence, inherit
+   company/project Workspace context, or use the external Agent Skill catalog
+   for native Trelio control-plane work.
+2. Call `prepare_agent_workspace_run` once with the exact writable scope and
    optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
    cross-task subject uses dossier scope. The tool rejects company/project
    Workspace scope, ensures the exact task/dossier Workspace and rechecks write
@@ -49,26 +36,11 @@ task communication, handoff, submit, or final reporting.
    dossier-only migration may still be claimed, checkpointed and finished by
    its existing Run ID; this compatibility never permits preparing or starting
    another legacy-scope Run.
-4. Do not add runtime fields to the prepare call. The approved `PreToolUse`
-   hook injects a one-use proof, and the returned bridge `open` command carries
-   only the server-side `--runtime-session UUID`. Execute it unchanged through
-   the approved bundled launcher. When Trelio itself returns
-   `TRELIO_RUNTIME_HOOK_REQUIRED`, stop and give one host-specific action. In
-   Codex tell the user only: `Откройте настройки плагина Trelio Agent
-   Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell
-   the user only to enable/approve this plugin's hooks and retry. Do not
-   initially suggest plugin installation or update, `trelio-workspace login`,
-   a new task/session, or an app restart.
-   Escalate only when the retry after enabling Hooks still proves that the
-   current session did not load them or returns a separate, specific version,
-   installation, pairing, or session error.
-   A `PreToolUse` failure instead proves that the hook ran. Preserve its exact
-   code and reason. Route `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` and
-   `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` through
-   `setup-and-recovery.md`; never answer either with the missing-Hooks action.
-   Resolve `TRELIO_RUNTIME_HOOK_FAILED` from its stated cause and retry once in
-   the current task.
-5. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
+3. Do not add runtime fields to prepare. The approved hook injects proof; the
+   returned `open` command carries only server-authored runtime state. Execute
+   the command through this loaded plugin's logical launcher. On any hook or
+   version error, stop and read `setup-and-recovery.md` before recovery.
+4. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
    `deviceName`, then rerun the original bridge command. Do not show a code or
    request a separate chat confirmation. The MCP client's normal approval is
@@ -82,7 +54,7 @@ task communication, handoff, submit, or final reporting.
    granted to the primary MCP connection; it never gains
    `mcp:agent-instructions:manage` or secret-metadata read. Do not start another
    OAuth flow or use `--legacy-oauth` during normal setup.
-6. Immediately after the exact bridge `open` succeeds for a task-scoped Run,
+5. Immediately after the exact bridge `open` succeeds for a task-scoped Run,
    perform the one-shot work-start procedure in `task-status-proposals.md`
    before the first substantive work action. It is non-blocking: render only
    when the server returns an eligible `workStartProposal`, then continue the

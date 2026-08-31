@@ -1692,47 +1692,11 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Перед подключённым сервисом или внешней системой вызови `search_agent_skills`/u,
+      /Native Trelio MCP и bundled bridge являются единственным штатным control\/data plane/u,
     );
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /`list_agent_skills` используй только для явной инвентаризации всего каталога/u,
-    );
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /formal `integrationRouting`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не выводи маршрут из skill ID, title, порядка массива или прошлого использования/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact возвращённые `role`, `primarySkillId`, `selectionRule` и semantics поля `priority`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /exact `fallbackSkillId`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /собственный `fallbackWhen`/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоматический повтор/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`remoteMcpExecution`/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Не обходи доступный навык браузером, Computer Use, прямым HTTP, альтернативным MCP или скриптом/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /как maintainer route/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Repository-owned development tools, unpublished runtime и узкие bounded read-only probes разрешены/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Наличие checkout само по себе не включает этот режим/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /назови required action и останови текущий запрос к данным/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /допустим только после явного выбора пользователя/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Недоступность search\/get control plane и transient network failure/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /Trelio MCP и bundled bridge остаются штатным workflow/u,
-    );
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /не ищи для этих операций отдельный catalog skill/u,
+      /загружай только соответствующий reference.*не читай все references заранее/u,
     );
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "CLAUDE.md"), "utf8"),
@@ -1758,19 +1722,7 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /user-profile\.md/u);
     assert.match(
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /render_task_comment_proposal/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /propose_task_comment/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /dismiss_task_comment_proposal/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /System handoff — технический аудит и контекст для агентов/u,
-    );
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /обычный proposal — коммуникация для людей/u);
-    assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /filePaths/u);
-    assert.match(
-      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-      /только полезными `filePaths`/u,
+      /Комментарий, статус, checklist и control задачи являются отдельными user-decision flows/u,
     );
     assert.equal(
       await getGitStatus(path.join(rootDirectory, "workspace")),
@@ -2934,101 +2886,66 @@ test("POSIX Node launcher uses the bundled Codex runtime without a PATH alias", 
   }
 });
 
-test("compact protected runtime keeps the complete agent safety contract", () => {
-  // The runtime text is intentionally short, so pin semantic identifiers and
-  // boundaries instead of the former long prose. This catches accidental rule
-  // loss without making harmless editorial changes fail the regression.
+test("compact protected runtime keeps the immutable Run safety kernel", () => {
+  // Runtime AGENTS.md is always loaded. Pin only immutable safety and lifecycle
+  // boundaries here; scenario procedures are validated in their references.
   for (const identifier of [
     "plan_my_agent_profile_update",
     "plan_agent_instructions_update",
-    "search_agent_skills",
-    "list_agent_skills",
-    "get_agent_skill",
-    "AGENT_SKILL_RELEASE_CHANGED",
-    "propose_task_comment",
-    "get_task_comment_proposal_context",
-    "render_task_comment_proposal",
-    "dismiss_task_comment_proposal",
-    "publish_task_comment_proposal",
-    "get_task_status_proposal_context",
-    "render_task_status_proposal",
-    "dismiss_task_status_proposal",
-    "apply_task_status_proposal",
-    "userExplicitlyRequestedImmediateStatusChange",
-    "get_task_checklist_proposal_context",
-    "render_task_checklist_proposal",
-    "dismiss_task_checklist_proposal",
-    "apply_task_checklist_proposal",
-    "userExplicitlyRequestedImmediateChecklistStateChange",
-    "create_comment",
-    "get_task",
-    "get_tasks",
-    "create_task_control",
-    "update_task_control",
-    "clear_task_control",
-    "work_completed",
-    "review_passed",
-    "direct_completion",
-    "no_status_change",
+    "runtimeSessionProof",
+    "TRELIO_RUNTIME_HOOK_REQUIRED",
+    "WORKSPACE_CONTEXT.md",
+    "WORKLOG.md",
+    "trelio-workspace checkpoint",
+    "trelio-workspace pause",
+    "trelio-workspace finish",
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, new RegExp(identifier, "u"));
   }
 
   for (const invariant of [
-    /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*`/u,
-    /Run может записывать только в task или dossier Workspace/u,
-    /канонический ACL-aware `search`.*несколькими запросами.*exact company scope/u,
-    /вместе возвращает проекты, задачи и accepted task\/dossier Workspace files/u,
-    /`search_tasks` и `search_agent_workspace_files` используй только для узкого уточнения/u,
-    /Для одного exact task используй `get_task`, для 2-20 exact targets — один `get_tasks`, не повторяй `get_task`/u,
-    /task-read schema v2.*`structuredContent`.*`instructionScope\.orderedLayerKeys`.*`effectiveInstructions\.layers`/u,
-    /не переноси company\/project\/personal layer на непривязанную задачу/u,
-    /внутри Run используй pinned instruction\/profile snapshot/u,
-    /не вызывай list_dossiers только ради discovery/u,
-    /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`.*`WORKLOG\.md`/u,
-    /Политику модели применяет approved hook плагина/u,
-    /discovery и recovery доступны без допуска/u,
-    /hook сам подставляет одноразовый runtimeSessionProof/u,
-    /Только если сам Trelio возвращает TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
-    /активным PreToolUse hook.*Hooks запущены.*не заменяй их на TRELIO_RUNTIME_HOOK_REQUIRED.*не советуй включать Hooks/u,
-    /AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED.*AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED.*требуемая версия уже установлена.*новую задачу\/session/u,
-    /TRELIO_RUNTIME_HOOK_FAILED.*повтори запрос в текущей задаче/u,
-    /не обходи gate другим MCP, HTTP, browser или shell/iu,
-    /Если выбранный навык или его company\/personal подключение возвращает `setup_required`, `no_access` либо `needs_reconnect`/u,
-    /назови required action и останови текущий запрос к данным/u,
-    /не выводи маршрут из skill ID, title, порядка массива или прошлого использования/u,
-    /exact возвращённые `role`, `primarySkillId`, `selectionRule` и semantics поля `priority`/u,
-    /exact `fallbackSkillId`/u,
-    /собственный `fallbackWhen`/u,
-    /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоматический повтор/u,
-    /Вне formal `integrationRouting` не ищи и не используй другой источник автоматически/u,
-    /допустим только после явного выбора пользователя/u,
-    /Недоступность search\/get control plane и transient network failure/u,
-    /обычный proposal — коммуникация для людей/u,
-    /Статус — отдельное решение: открытие и accepted Run сами его не меняют/u,
-    /после успешного `trelio-workspace open`.*ровно один раз.*`workStartProposal\.state=eligible`.*`intent=work_started`/u,
-    /Не повторяй уже показанное start-предложение после действий, checkpoint, pause, нового хода, pending draft, отклонения или замены completion-карточкой/u,
-    /Перед финальным ответом после каждого содержательного task Run обязательно заново оцени всю задачу.*не жди отдельного вопроса пользователя о статусе/u,
-    /Отсутствующий необязательный срок, исполнитель, контроль или будущая профилактика.*не являются unresolved question.*не переводят готовую задачу в `no_status_change`/u,
-    /даже при уже записанном `no_status_change`.*`intent=whole_task_ready`.*заменяет pending `work_started`/u,
-    /Для partial work используй `no_status_change`.*не создавай completion proposal/u,
-    /Immediate `update_task_status`.*exact задачу на exact статус сейчас.*`userExplicitlyRequestedImmediateStatusChange=true`/u,
-    /условное «когда закончишь» этого права не дают/u,
-    /Состояние чек-листа — отдельное решение.*содержательного accepted task Run.*ordinary non-linked items/u,
-    /partial work может предложить exact выполненные пункты без готовности всей задачи/u,
-    /Immediate `complete_checklist_item`.*exact пункт сейчас.*`userExplicitlyRequestedImmediateChecklistStateChange=true`/u,
-    /Не публикуй автоматически/u,
-    /дата не уведомляет/u,
-    /не расширяй personal в shared без полномочия/u,
-    /только полезными `filePaths`/u,
-    /После каждого завершённого смыслового изменения файлов сразу выполни `trelio-workspace checkpoint --type draft/u,
-    /границы реплики\/сессии, compaction или передачи работы другому агенту/u,
-    /Перед блокирующим вопросом с содержательными локальными изменениями выполни `trelio-workspace pause`/u,
+    /Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши/u,
+    /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*` и read-only `\.\.\/context\/\*\*`/u,
+    /Новый Run может записывать только в task или dossier Workspace/u,
+    /legacy company\/project Run.*только этот exact pinned Run/u,
+    /exact diff.*только после явного подтверждения/u,
+    /Approved hook сам подставляет одноразовый runtimeSessionProof/u,
+    /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
+    /активного PreToolUse hook означает, что Hooks уже работают/u,
+    /Не обходи gate другим MCP, HTTP, browser или shell/iu,
+    /Native Trelio MCP и bundled bridge являются единственным штатным control\/data plane/u,
+    /загружай только соответствующий reference.*не читай все references заранее/u,
+    /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`/u,
+    /pinned authority snapshot.*не заменяй его более новой live revision/u,
+    /короткое активное резюме.*до 15 000 символов/u,
+    /`WORKLOG\.md` открывай перед первой записью, а не автоматически в начале Run/u,
+    /Agent Secret: <текущее safe название> \(secretId: <UUID>\)/u,
+    /Секретные значения никогда не передавай модели, MCP, prompt, env, argv/u,
+    /`trelio-workspace` — логический launcher текущего плагина/u,
+    /`sources\/`.*`work\/`.*`artifacts\/`/u,
+    /checkpoint --type draft.*границы реплики\/сессии, compaction или передачи работы/u,
+    /Перед блокирующим вопросом.*`trelio-workspace pause`/u,
+    /отдельными user-decision flows.*без действия пользователя/u,
+    /Accepted Run, вывод агента и inferred progress сами не разрешают immediate mutation/u,
     /Заверши Run одной командой `trelio-workspace finish`/u,
-    /только при completion-blocking вопросах и partial work используй `no_status_change`.*пустые необязательные task metadata не превращай в `--question`/u,
-    /Trelio примет его при актуальном base head/u,
+    /`--task-outcome`.*не меняет задачу/u,
+    /устаревший base head.*начни новый Run/u,
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, invariant);
+  }
+
+  for (const conditionalProcedure of [
+    "search_agent_skills",
+    "integrationRouting",
+    "MCP_SEARCH_TIMEOUT",
+    "prepare_agent_secret_browser_fill",
+    "propose_task_comment",
+    "workStartProposal",
+  ]) {
+    assert.doesNotMatch(
+      AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+      new RegExp(conditionalProcedure, "u"),
+    );
   }
 });
 
@@ -3045,15 +2962,18 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "task-comment-proposals.md",
     "task-status-proposals.md",
     "task-checklist-proposals.md",
+    "task-proposal-bundles.md",
     "agent-run.md",
     "task-run.md",
     "ocr-and-vision.md",
+    "external-services.md",
+    "agent-secrets.md",
   ];
 
-  assert.match(mainSkill, /Read every matching reference below\s+completely before its first related tool call/u);
-  assert.match(mainSkill, /If the scenario changes during\s+the task, pause and read the newly relevant reference/u);
+  assert.match(mainSkill, /Read every matching\s+reference below completely before its first related tool call/u);
+  assert.match(mainSkill, /If the scenario\s+changes during the task, pause and read the newly relevant reference/u);
   assert.match(mainSkill, /Classify every user addition independently/u);
-  assert.match(mainSkill, /active maintainer, integration, or Run route does not absorb a\s+later request/u);
+  assert.match(mainSkill, /active\s+maintainer, external-service, or Run route does not absorb a later request/u);
   const agentRunReference = await readFile(
     path.join(workerDirectory, "references", "agent-run.md"),
     "utf8",
@@ -3062,9 +2982,9 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(agentRunReference, /checkpoint --type draft/u);
   assert.match(agentRunReference, /startNewRun=true/u);
   assert.match(agentRunReference, /rejects company\/project\s+Workspace scope/u);
-  assert.match(agentRunReference, /no company\/project Workspace\s+context is inherited automatically/u);
-  assert.match(agentRunReference, /call unified `search` once with several independent queries/u);
-  assert.match(agentRunReference, /not as a required second search/u);
+  assert.match(agentRunReference, /inherit\s+company\/project Workspace context/u);
+  assert.match(agentRunReference, /Complete `scope-and-context\.md` first/u);
+  assert.match(agentRunReference, /Do not guess IDs, repeat its discovery sequence/u);
   const scopeReference = await readFile(
     path.join(workerDirectory, "references", "scope-and-context.md"),
     "utf8",
@@ -3120,15 +3040,6 @@ test("bundled instructions narrow structured MCP search timeouts without a blind
   assert.match(scopeReference, /HTTP 504 without structured `MCP_SEARCH_TIMEOUT`/u);
   assert.match(diagnosticsSkill, /Do not run login, reinstall the plugin/u);
   assert.match(diagnosticsSkill, /A bare HTTP 504 remains in this transport/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /structured `MCP_SEARCH_TIMEOUT`/u);
-  assert.match(
-    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /максимум один раз передай exact `companySlugs`.*не больше двух.*exact `projectSlugs`/u,
-  );
-  assert.match(
-    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /Bare HTTP 504 без structured code остаётся transport failure/u,
-  );
 });
 
 test("plugin exposes folder-first onboarding before ordinary task work", async () => {
@@ -3318,7 +3229,7 @@ test("bundled skills reserve hook activation for Trelio's missing-proof signal",
       "skills",
       "trelio-workspace-worker",
       "references",
-      "agent-run.md",
+      "setup-and-recovery.md",
     ),
   ];
 
@@ -3355,21 +3266,21 @@ test("workspace skill recovers stale OAuth grants without discarding existing sc
 test("workspace skill follows the company Agent Secret storage policy before creation", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
-  assert.match(workspaceSkill, /call `list_agent_secrets`\s+for the exact target scope/u);
+  assert.match(workspaceSkill, /call\s+`list_agent_secrets` for the exact target scope/u);
   assert.match(workspaceSkill, /read its\s+company-level\s+`storagePolicy`/u);
   assert.match(workspaceSkill, /`prefer_trelio`/u);
   assert.match(workspaceSkill, /`contextual`/u);
   assert.match(workspaceSkill, /`local_only`/u);
-  assert.match(workspaceSkill, /Ask the user before creating the immutable record when the\s+context is ambiguous/u);
-  assert.match(workspaceSkill, /cannot override company `local_only`/u);
-  assert.match(workspaceSkill, /policy change never migrates an\s+existing record/u);
+  assert.match(workspaceSkill, /Ask the user before creating the\s+immutable record when the context is ambiguous/u);
+  assert.match(workspaceSkill, /cannot\s+override company `local_only`/u);
+  assert.match(workspaceSkill, /A policy change never migrates an existing\s+record/u);
   assert.match(workspaceSkill, /`allowAgentSaveChatSecrets`/u);
   assert.match(workspaceSkill, /`save_known_agent_secret`/u);
-  assert.match(workspaceSkill, /merely sharing it, asking to sign in, or asking to use\s+it is not storage consent/u);
+  assert.match(workspaceSkill, /merely sharing it, asking\s+to sign in, or asking to use it is not storage consent/u);
   assert.match(workspaceSkill, /`userExplicitlyRequestedPersistentStorage=true`/u);
   assert.match(workspaceSkill, /original plaintext remains in the chat and may remain\s+in the AI client's tool history/u);
   assert.match(workspaceSkill, /Do not use this path\s+for `local_device`/u);
-  assert.match(workspaceSkill, /do not ask\s+the user to provide a new value/u);
+  assert.match(workspaceSkill, /Do not use this path[\s\S]{0,180}or ask the user to provide a new value/u);
 });
 
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
@@ -3602,8 +3513,8 @@ test("workspace skill routes direct proposals independently of maintainer work a
   );
 
   assert.match(mainSkill, /editable task-comment proposal or reply with or without an Agent\s+Run/u);
-  assert.match(mainSkill, /explicitly asks to propose, draft, or prepare a Trelio task\s+comment or reply/u);
-  assert.match(mainSkill, /even during maintainer work,\s+after context compaction/u);
+  assert.match(mainSkill, /Editable task-comment proposal or reply/u);
+  assert.match(mainSkill, /even during\s+maintainer work or after context compaction/u);
   assert.match(proposalReference, /its own native Trelio operation with or\s+without an Agent Workspace Run/u);
   assert.match(proposalReference, /follow-up during maintainer work, after context compaction/u);
   assert.match(proposalReference, /Preserve it as a pending deliverable and\s+complete it before the final response/u);
@@ -3611,9 +3522,6 @@ test("workspace skill routes direct proposals independently of maintainer work a
   assert.match(proposalReference, /Do not start an\s+Agent Workspace Run solely to prepare a proposal/u);
   assert.match(proposalReference, /A request to “only propose” reinforces the draft\s+route/u);
   assert.match(proposalReference, /A quotation, prose block, or promise to suggest text in the final response does\s+not satisfy the request/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /отдельный native Trelio flow/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не подменяй редактируемую карточку цитатой/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /proposal должен вернуть draft либо точный blocker/u);
   assert.doesNotMatch(taskRunReference, /get_task_comment_proposal_context|publish_task_comment_proposal/u);
 });
 
@@ -3637,18 +3545,6 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.match(skillMarkdown, /UNPUBLISHED_DRAFT_REQUIRES_CONTEXT/u);
   assert.match(skillMarkdown, /Do not retry the compact tool/u);
   assert.match(skillMarkdown, /do not concatenate, patch, retract, or narrate the\s+old draft/u);
-  assert.match(
-    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /`propose_task_comment` используй только для первого известного private draft/u,
-  );
-  assert.match(
-    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /при exact `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT` не повторяй compact tool/u,
-  );
-  assert.match(
-    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /`currentDraft` — private\/unpublished/u,
-  );
   // Keep the invariant stable when the reference gives the normal path a more
   // specific name such as "sole-card normal path".
   assert.match(skillMarkdown, /do not make separate context\/hash calls on (?:the|this sole-card)\s+normal path/u);
@@ -3685,8 +3581,8 @@ test("workspace skill offers work start once and keeps completion status separat
 
   assert.match(mainSkill, /asks to change a task status or prepare a separate editable status\s+proposal/u);
   assert.match(mainSkill, /one-shot start-of-work decision for a task Run/u);
-  assert.match(mainSkill, /Always read the status-proposal reference\s+before opening the Run/u);
-  assert.match(mainSkill, /Keep this decision independent from the required human comment proposal/u);
+  assert.match(mainSkill, /Always read it before opening a task Run/u);
+  assert.match(mainSkill, /independently from the required human comment/u);
   assert.match(statusProposalReference, /`work_started` is the one-shot, non-blocking suggestion/u);
   assert.match(statusProposalReference, /semantic\s+`queue` to `active` transition returned by the server/u);
   assert.match(statusProposalReference, /Call `get_task_status_proposal_context` exactly once with that running task\s+Run's `runId`/u);
@@ -3724,9 +3620,6 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(taskRunReference, /Reassess the whole task from the final evidence even\s+when the recorded outcome is `no_status_change`/u);
   assert.match(taskRunReference, /Partial work produces no status proposal/u);
   assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /открытие и accepted Run сами его не меняют/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /`workStartProposal\.state=eligible`/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Outcome — recommendation для отдельного status proposal/u);
 });
 
 test("workspace skill proposes checklist progress without applying inferred state", async () => {
@@ -3746,8 +3639,8 @@ test("workspace skill proposes checklist progress without applying inferred stat
   );
 
   assert.match(mainSkill, /checklist completion-state review or a separate checklist proposal/u);
-  assert.match(mainSkill, /substantive task-scoped Run was accepted/u);
-  assert.match(mainSkill, /item-by-item decision even when the whole task\s+is not ready/u);
+  assert.match(mainSkill, /Checklist state request, inferred item progress, or accepted task Run/u);
+  assert.match(mainSkill, /post-acceptance item-by-item decision even when the whole task is\s+not ready/u);
   assert.match(checklistReference, /After every substantive accepted task Run, call\s+`get_task_checklist_proposal_context`/u);
   assert.match(checklistReference, /Partial work may propose the exact items it satisfied/u);
   assert.match(checklistReference, /status-driven items linked to subtasks/u);
@@ -3762,7 +3655,6 @@ test("workspace skill proposes checklist progress without applying inferred stat
   assert.match(taskRunReference, /Partial work may propose exact satisfied items/u);
   assert.match(bundleReference, /get_task_checklist_proposal_context/u);
   assert.match(bundleReference, /checklist\/item snapshots/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Accepted Run, inferred progress.*этого права не дают/u);
 });
 
 test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {
@@ -3806,19 +3698,19 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
 
 test("workspace skill and protected runtime preserve task control privacy and notification semantics", async () => {
   const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
-  const bridgeSource = await readFile(bridgePath, "utf8");
 
   for (const toolName of ["create_task_control", "update_task_control", "clear_task_control"]) {
     assert.match(skillMarkdown, new RegExp(toolName, "u"));
-    assert.match(bridgeSource, new RegExp(toolName, "u"));
   }
 
   assert.match(skillMarkdown, /Reaching `controlDate` never sends a notification/u);
   assert.match(skillMarkdown, /Never\s+widen personal to shared/u);
   assert.match(skillMarkdown, /Clearing a shared control also notifies/u);
   assert.match(skillMarkdown, /Do not clear a control because the Run completed or task status changed/u);
-  assert.match(bridgeSource, /дата не уведомляет/u);
-  assert.match(bridgeSource, /personal остаются приватными/u);
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /Комментарий, статус, checklist и control задачи являются отдельными user-decision flows/u,
+  );
 });
 
 test("skills resolve the logical bridge launcher before runtime execution", async () => {
@@ -3827,51 +3719,51 @@ test("skills resolve the logical bridge launcher before runtime execution", asyn
     "utf8",
   );
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
-  const bridgeSource = await readFile(bridgePath, "utf8");
 
-  for (const instructions of [catalogSkill, workspaceSkill, bridgeSource]) {
+  for (const instructions of [catalogSkill, workspaceSkill]) {
     assert.match(instructions, /logical launcher|логическ(?:ий|им) launcher/u);
     assert.match(instructions, /Node\.js 22\+/u);
     assert.match(instructions, /scan plugin caches|сканируй cache/u);
   }
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /логический launcher текущего плагина/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Node\.js 22\+/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не сканируй cache/u);
   assert.match(catalogSkill, /fail merely to discover it/u);
   assert.match(workspaceSkill, /merely to discover failure/u);
-  assert.match(bridgeSource, /пробный failure/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не запускай пробный failure/u);
   assert.match(catalogSkill, /not a fallback/u);
   assert.match(catalogSkill, /Do not announce/u);
   assert.match(workspaceSkill, /announce a normally missing PATH entry/u);
-  assert.match(bridgeSource, /не сообщай о штатно отсутствующем PATH/u);
 });
 
 test("workspace instructions keep a canonical safe Agent Secret reference and use browser-fill", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
-  const bridgeSource = await readFile(bridgePath, "utf8");
 
-  for (const instructions of [workspaceSkill, bridgeSource]) {
+  for (const instructions of [workspaceSkill]) {
     assert.match(instructions, /secretId/u);
     assert.match(instructions, /current safe name|текущее safe название/u);
     assert.match(instructions, /prepare_agent_secret_browser_fill/u);
     assert.match(instructions, /fills automatically|подставляет значение автоматически/u);
     assert.doesNotMatch(instructions, /Alt\/Option\+Shift\+S|Alt\+Shift\+S/u);
-    assert.match(instructions, /literal-text Browser\/Chrome tool|literal-text Browser\/Chrome\/Computer Use action/u);
+    assert.match(instructions, /literal-text Browser\/Chrome tool|literal-text Browser\/Chrome\/Computer Use\s+action/u);
     assert.match(instructions, /clipboard/u);
   }
-  assert.match(workspaceSkill, /merely\s+discovered but unused secrets/u);
+  assert.match(workspaceSkill, /merely\s+discovered but unused\s+secrets/u);
   assert.match(workspaceSkill, /--format fields-json/u);
   assert.match(workspaceSkill, /Never\s+split one logical multi-field credential/u);
   assert.match(workspaceSkill, /in-app Browser/u);
   assert.match(workspaceSkill, /do not assume that it inherits the system Chrome password\s+manager/u);
-  assert.match(workspaceSkill, /already authenticated,\s+continue with that session and do not request or consume the Agent Secret/u);
+  assert.match(workspaceSkill, /already authenticated, continue with that session and do\s+not request or consume the Agent Secret/u);
   assert.match(workspaceSkill, /explicitly asks to see/u);
   assert.match(workspaceSkill, /protected Trelio reveal/u);
   assert.match(workspaceSkill, /publicUrl/u);
   assert.match(workspaceSkill, /selects one or several fields/u);
   assert.match(workspaceSkill, /direct user gesture/u);
-  assert.match(bridgeSource, /неиспользованных найденных секретов/u);
-  assert.match(bridgeSource, /не предполагай, что он наследует менеджер паролей Chrome/u);
-  assert.match(bridgeSource, /живую авторизованную сессию используй без запроса Agent Secret/u);
-  assert.match(bridgeSource, /прямо просит показать значение/u);
-  assert.match(bridgeSource, /exact value-free `publicUrl`/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /safe ссылка по secretId/u);
+  assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /Секретные значения никогда не передавай модели, MCP, prompt, env, argv/u,
+  );
 });
 
 test("Trelio Secret Browser accepts an executable writable by its trusted OS group", async () => {
@@ -4832,15 +4724,13 @@ test("workspace worker gates external services but not native Trelio work", asyn
   );
   const workerSkillNormalized = workerSkill.replace(/\s+/gu, " ");
   const catalogSkillNormalized = catalogSkill.replace(/\s+/gu, " ");
-  const runtimeAgentsNormalized = AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN.replace(/\s+/gu, " ");
 
-  assert.match(workerSkill, /Before a connected service or external system/u);
-  assert.match(workerSkill, /`search_agent_skills` with the task and compact concept hints/u);
-  assert.match(workerSkill, /Reserve\s+`list_agent_skills` for explicit catalog inventory/u);
+  assert.match(workerSkill, /Read this file completely before using a connected service/u);
+  assert.match(workerSkill, /`search_agent_skills` with the\s+task and compact concept hints/u);
+  assert.match(workerSkill, /Reserve\s+`list_agent_skills` for explicit\s+catalog inventory/u);
   for (const instruction of [
     workerSkillNormalized,
     catalogSkillNormalized,
-    runtimeAgentsNormalized,
   ]) {
     assert.match(
       instruction,
@@ -4853,6 +4743,10 @@ test("workspace worker gates external services but not native Trelio work", asyn
     assert.match(instruction, /AGENT_SKILL_RELEASE_CHANGED/u);
   }
   assert.match(
+    AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
+    /внешний skill\/runtime, Agent Secrets и каждый proposal flow имеют отдельные references/u,
+  );
+  assert.match(
     catalogSkillNormalized,
     /successful response already satisfies the fresh-read requirement/u,
   );
@@ -4861,23 +4755,23 @@ test("workspace worker gates external services but not native Trelio work", asyn
     /Do not repeat `get_agent_skill` immediately/u,
   );
   assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
-  assert.match(workerSkill, /do not bypass it while it is\s+usable/u);
-  assert.match(workerSkill, /reports `setup_required`, `no_access`, or\s+`needs_reconnect`/u);
+  assert.match(workerSkill, /do not bypass a usable route/u);
+  assert.match(workerSkill, /reports\s+`setup_required`, `no_access`, or `needs_reconnect`/u);
   assert.match(
     workerSkill,
-    /say that it is\s+unavailable and name the required action/u,
+    /say that it is currently\s+unavailable, name the required action/u,
   );
-  assert.match(workerSkill, /do not choose another source until the\s+user explicitly asks/u);
+  assert.match(workerSkill, /another source is allowed only after the user sees\s+the blocker and explicitly chooses it/u);
   assert.match(workerSkill, /When relevant catalog items return `integrationRouting`/u);
-  assert.match(workerSkill, /not skill IDs, titles, catalog order, or previous use/u);
-  assert.match(workerSkill, /exact returned\s+`role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
+  assert.match(workerSkill, /never infer a route from skill IDs, titles, catalog order, prior use/u);
+  assert.match(workerSkill, /exact returned `role`,\s+`primarySkillId`, `selectionRule`, and `priority` semantics/u);
   assert.match(workerSkill, /exact `fallbackSkillId`/u);
   assert.match(workerSkill, /its\s+own `fallbackWhen`/u);
-  assert.match(workerSkill, /`ambiguousMutationFallback: forbidden` never permit fallback or\s+automatic retry/u);
-  assert.match(workerSkill, /Native Trelio reads, task discovery and Agent Workspace control-plane\s+operations are the primary workflow/u);
-  assert.match(workerSkill, /do not require a catalog or separate\s+skill lookup/u);
+  assert.match(workerSkill, /`ambiguousMutationFallback: forbidden` do not permit fallback or automatic\s+retry/u);
+  assert.match(workerSkill, /Native Trelio reads,\s+discovery, and Agent Workspace control-plane work do not use this gate/u);
+  assert.match(workerSkill, /use the external Agent Skill catalog\s+for native Trelio control-plane work/u);
   assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
-  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill again once/u);
+  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill once again/u);
   assert.match(workerSkill, /durable rule identified by\s+the agent/);
   assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
   assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
@@ -4887,7 +4781,6 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
   assert.match(workerSkill, /read each matching\s+reference completely/u);
   assert.match(workerSkill, /must preserve the `task-run\.md` limit/u);
-  assert.match(workerSkill, /Native Trelio discovery requires neither `search_agent_skills` nor\s+`list_agent_skills`/u);
   assert.match(workerSkill, /Call `prepare_agent_workspace_run` once/u);
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
   assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
