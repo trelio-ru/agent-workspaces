@@ -23,7 +23,10 @@ write, or the ordinary company publication form.
 - `executionKind=skillpkg` requires a local `.skillpkg` path. The bridge reads a
   regular non-symlink file, binds a short skill slug to the exact company skill
   identity when necessary, and revalidates every file digest, entrypoint,
-  interpreter, capability, size, and portable path before publication.
+  interpreter, capability, size, and portable path before publication. The
+  package may contain at most 100 files, 64 MiB encoded package bytes and 48
+  MiB decoded file bytes. A package larger than the former 8 MiB limit is
+  automatically bound to `minimumHostVersion >= 1.14.4`.
 - On a later release only, `executionKind=reuse_skillpkg` keeps the current
   immutable runtime bytes while publishing new instructions and discovery
   metadata.

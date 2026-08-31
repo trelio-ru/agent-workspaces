@@ -21,6 +21,10 @@ import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 import {
+  AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION,
+  AGENT_SKILL_LEGACY_MAX_PACKAGE_BYTES,
+  AGENT_SKILL_MAX_PACKAGE_BYTES,
+  AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION,
   BRIDGE_VERSION,
   ensureBridgeCompatibility,
   ensureCompanyEncryptionContext,
@@ -72,6 +76,7 @@ const COMPANY_PRIVATE_SKILL_CATEGORIES = new Set([
   "other",
 ]);
 const COMPANY_SKILL_PLAN_TTL_MS = 30 * 60 * 1000;
+const COMPANY_SKILL_MANAGEMENT_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
 const COMPANY_SKILL_PLAN_DIRECTORY = path.join(
   resolveWorkspaceBridgeConfigDirectory(),
   "agent-skill-publication-plans",
@@ -1991,6 +1996,23 @@ const maximumStableVersion = (...versions) => versions.reduce(
   ),
 );
 
+export const resolveAgentSkillPackageMinimumHostVersion = ({
+  packageSizeBytes,
+  requestedMinimum,
+  encrypted = false,
+}) => {
+  const packageContractMinimum = packageSizeBytes > AGENT_SKILL_LEGACY_MAX_PACKAGE_BYTES
+    ? AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION
+    : AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION;
+  const effectiveMinimum = maximumStableVersion(
+    requestedMinimum,
+    packageContractMinimum,
+  );
+  return encrypted
+    ? maximumStableVersion(effectiveMinimum, BRIDGE_VERSION)
+    : effectiveMinimum;
+};
+
 const requireBoundedText = (value, label, maximumLength) => {
   const normalized = String(value || "").trim();
   if (!normalized || normalized.length > maximumLength) {
@@ -2162,22 +2184,25 @@ const normalizePublicationExecution = async ({
     });
     const requestedMinimum = input.minimumHostVersion
       ? requireStableVersion(input.minimumHostVersion, "minimumHostVersion")
-      : "1.4.0";
-    if (compareStableVersions(requestedMinimum, "1.4.0") < 0) {
+      : AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION;
+    if (compareStableVersions(requestedMinimum, AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION) < 0) {
       throw new RemoteMcpHostError(
         "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
-        "Исполняемый навык требует minimumHostVersion 1.4.0 или новее.",
+        `Исполняемый навык требует minimumHostVersion ${AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION} или новее.`,
       );
     }
+    const effectiveMinimum = resolveAgentSkillPackageMinimumHostVersion({
+      packageSizeBytes: prepared.parsedPackage.packageSizeBytes,
+      requestedMinimum,
+      encrypted,
+    });
     return {
       kind: "runtime",
       artifactId: crypto.randomUUID(),
       packageBytes: prepared.packageBytes,
       parsedPackage: prepared.parsedPackage,
       manifest: prepared.manifest,
-      minimumHostVersion: encrypted
-        ? maximumStableVersion(requestedMinimum, BRIDGE_VERSION)
-        : requestedMinimum,
+      minimumHostVersion: effectiveMinimum,
     };
   }
   if (kind === "reuse_skillpkg" && allowRuntimeReuse) {
@@ -2687,7 +2712,12 @@ const planCompanyPrivateSkillRelease = async (origin, rawInput, { signal } = {})
 
 const readCompanySkillPlan = async ({ origin, planId, planHash, operation }) => {
   const planPath = resolveCompanySkillPlanPath(planId);
-  const plan = await readPrivateJsonFile(planPath);
+  // A package is kept only in the owner-readable expiring plan between the
+  // separate plan and apply turns. Bound that local read to the same 96 MiB
+  // transport envelope so a replaced file cannot become an unbounded parse.
+  const plan = await readPrivateJsonFile(planPath, {
+    maximumBytes: COMPANY_SKILL_MANAGEMENT_BODY_LIMIT_BYTES,
+  });
   if (
     plan.schemaVersion !== 1
     || plan.planId !== planId

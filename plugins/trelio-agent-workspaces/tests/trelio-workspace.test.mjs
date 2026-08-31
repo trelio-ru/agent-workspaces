@@ -21,6 +21,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION,
+  AGENT_SKILL_LEGACY_MAX_PACKAGE_BYTES,
+  AGENT_SKILL_MAX_DECODED_FILE_BYTES,
+  AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES,
+  AGENT_SKILL_MAX_FILE_COUNT,
+  AGENT_SKILL_MAX_PACKAGE_BYTES,
+  AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION,
   AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
@@ -66,6 +73,7 @@ import {
   recoverBridgePluginUpgrade,
   restoreRetainedCodexPluginInstallations,
   retainLoadedCodexPluginInstallation,
+  readBoundedResponseBuffer,
   request,
   renderAgentSkillDeviceConsentPage,
   renderCompanyEncryptionKeyPage,
@@ -2901,7 +2909,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.14.3");
+  assert.equal(BRIDGE_VERSION, "1.14.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -5085,6 +5093,25 @@ test("bridge adds its release version and bearer credential to every API request
   assert.equal(headers.get("x-trelio-company-skill-e2ee"), "v1");
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
+});
+
+test("skill package host exposes the synchronized 64 MiB package contract", async () => {
+  assert.equal(AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION, "1.4.0");
+  assert.equal(AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION, "1.14.4");
+  assert.equal(AGENT_SKILL_LEGACY_MAX_PACKAGE_BYTES, 8 * 1024 * 1024);
+  assert.equal(AGENT_SKILL_MAX_PACKAGE_BYTES, 64 * 1024 * 1024);
+  assert.equal(AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES, 65 * 1024 * 1024);
+  assert.equal(AGENT_SKILL_MAX_DECODED_FILE_BYTES, 48 * 1024 * 1024);
+  assert.equal(AGENT_SKILL_MAX_FILE_COUNT, 100);
+
+  await assert.rejects(
+    readBoundedResponseBuffer(
+      new Response(Buffer.from("oversized", "utf8")),
+      4,
+      "Test runtime package",
+    ),
+    /превышает допустимый размер 4 байт/u,
+  );
 });
 
 test("skill package host rejects non-portable paths and case collisions", () => {

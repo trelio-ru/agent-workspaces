@@ -49,7 +49,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.14.3";
+export const BRIDGE_VERSION = "1.14.4";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -316,10 +316,14 @@ const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const AGENT_SKILL_PACKAGE_FORMAT = "trelio-agent-skill-package/v1";
 const AGENT_SKILL_ENCRYPTED_PACKAGE_FORMAT = "trelio-company-encrypted-skill-package/v1";
-const AGENT_SKILL_MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
-const AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES = AGENT_SKILL_MAX_PACKAGE_BYTES + 1024 * 1024;
-const AGENT_SKILL_MAX_DECODED_FILE_BYTES = 6 * 1024 * 1024;
-const AGENT_SKILL_MAX_FILE_COUNT = 100;
+export const AGENT_SKILL_RUNTIME_HOST_MINIMUM_VERSION = "1.4.0";
+export const AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION = "1.14.4";
+export const AGENT_SKILL_LEGACY_MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
+export const AGENT_SKILL_MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
+export const AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES =
+  AGENT_SKILL_MAX_PACKAGE_BYTES + 1024 * 1024;
+export const AGENT_SKILL_MAX_DECODED_FILE_BYTES = 48 * 1024 * 1024;
+export const AGENT_SKILL_MAX_FILE_COUNT = 100;
 const AGENT_SKILL_SIGNING_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/u;
 const AGENT_SKILL_ALLOWED_CAPABILITIES = new Set([
   "browser",
@@ -1088,6 +1092,33 @@ export const request = async (origin, token, pathname, options = {}) => {
   return response;
 };
 
+export const readBoundedResponseBuffer = async (
+  response,
+  maximumBytes,
+  label = "HTTP response",
+) => {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
+    throw new Error(`${label} превышает допустимый размер ${maximumBytes} байт.`);
+  }
+  if (!response.body) return Buffer.alloc(0);
+
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const rawChunk of response.body) {
+    const chunk = Buffer.from(rawChunk);
+    totalBytes += chunk.byteLength;
+    if (totalBytes > maximumBytes) {
+      // The streaming count remains authoritative when Content-Length is
+      // absent, compressed or dishonest. Reject before Buffer.concat can
+      // allocate an attacker-controlled response in one large block.
+      throw new Error(`${label} превышает допустимый размер ${maximumBytes} байт.`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, totalBytes);
+};
+
 const wait = (milliseconds) => new Promise((resolve) => {
   setTimeout(resolve, milliseconds);
 });
@@ -1409,7 +1440,10 @@ const assertPrivateFileIfPresent = async (filePath) => {
   }
 };
 
-export const readPrivateJsonFile = async (filePath) => {
+export const readPrivateJsonFile = async (
+  filePath,
+  { maximumBytes = Number.POSITIVE_INFINITY } = {},
+) => {
   const exists = await assertPrivateFileIfPresent(filePath);
   if (!exists) return {};
 
@@ -1432,6 +1466,9 @@ export const readPrivateJsonFile = async (filePath) => {
     const metadata = await handle.stat();
     if (!metadata.isFile()) {
       throw new Error(`Небезопасный тип локального пути: ${filePath}`);
+    }
+    if (metadata.size > maximumBytes) {
+      throw new Error(`Локальный JSON превышает допустимый размер: ${filePath}`);
     }
     if (process.platform !== "win32") {
       const currentUserId = typeof process.getuid === "function" ? process.getuid() : null;
@@ -5140,7 +5177,11 @@ const inspectEncryptedAgentSkillRuntimeForConsent = async ({
   companyEncryption,
 }) => {
   const response = await request(origin, token, packageUrl);
-  const encryptedPackageBytes = Buffer.from(await response.arrayBuffer());
+  const encryptedPackageBytes = await readBoundedResponseBuffer(
+    response,
+    AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES,
+    "Зашифрованный runtime package",
+  );
   let plaintextPackageBytes = null;
   let parsedPackage = null;
 
@@ -5208,7 +5249,13 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
   companyEncryption = null,
 }) => {
   const response = await request(origin, token, packageUrl);
-  let packageBytes = Buffer.from(await response.arrayBuffer());
+  let packageBytes = await readBoundedResponseBuffer(
+    response,
+    artifact.contentProtection === "company_e2ee_v1"
+      ? AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES
+      : AGENT_SKILL_MAX_PACKAGE_BYTES,
+    "Runtime package",
+  );
 
   if (
     packageBytes.byteLength !== artifact.packageSizeBytes

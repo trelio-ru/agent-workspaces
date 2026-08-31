@@ -19,6 +19,7 @@ import {
   handleLocalMcpMessage,
   openCredentialFormInBrowser,
   remoteMcpHttpRequest,
+  resolveAgentSkillPackageMinimumHostVersion,
   resolveRemoteMcpCredentialFile,
   resolveSafeRemoteMcpEndpoint,
   runStdioHost,
@@ -26,6 +27,22 @@ import {
   validateResolvedRemoteMcp,
   validateRemoteMcpPublicationConfig,
 } from "../scripts/trelio-remote-mcp.mjs";
+
+test("large private packages raise their exact runtime host floor", () => {
+  assert.equal(resolveAgentSkillPackageMinimumHostVersion({
+    packageSizeBytes: 8 * 1024 * 1024,
+    requestedMinimum: "1.4.0",
+  }), "1.4.0");
+  assert.equal(resolveAgentSkillPackageMinimumHostVersion({
+    packageSizeBytes: 8 * 1024 * 1024 + 1,
+    requestedMinimum: "1.4.0",
+  }), "1.14.4");
+  assert.equal(resolveAgentSkillPackageMinimumHostVersion({
+    packageSizeBytes: 1,
+    requestedMinimum: "1.4.0",
+    encrypted: true,
+  }), "1.14.4");
+});
 
 const companyId = "11111111-1111-4111-8111-111111111111";
 const memberId = "22222222-2222-4222-8222-222222222222";
@@ -1984,7 +2001,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.14.3");
+  assert.equal(frames[0].result.serverInfo.version, "1.14.4");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
