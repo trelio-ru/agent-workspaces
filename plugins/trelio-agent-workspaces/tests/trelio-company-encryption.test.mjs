@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomBytes, webcrypto } from "node:crypto";
+import { createHash, randomBytes, webcrypto } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,9 @@ import test from "node:test";
 
 import {
   COMPANY_ENCRYPTION_SUITE,
+  buildAgentDeviceRegistrationRecord,
+  calculateKeyFingerprint,
+  canonicalJson,
   createAgentEncryptionDevice,
   decryptFileFromCompanyContainer,
   encryptFileToCompanyContainer,
@@ -15,6 +18,27 @@ import {
   unlockRememberedAgentEncryptionDevice,
   wrapAndRememberAgentEncryptionDevice,
 } from "../scripts/trelio-company-encryption.mjs";
+
+test("agent device fingerprint uses the backend JWK canonical form", async () => {
+  const device = await createAgentEncryptionDevice();
+
+  assert.equal(Object.hasOwn(device.publicEncryptionJwk, "key_ops"), false);
+  assert.equal(Object.hasOwn(device.publicSigningJwk, "key_ops"), false);
+  assert.equal(calculateKeyFingerprint({
+    publicEncryptionJwk: { ...device.publicEncryptionJwk, key_ops: [], alg: "ECDH-ES" },
+    publicSigningJwk: { ...device.publicSigningJwk, key_ops: ["verify"], alg: "ES256" },
+  }), device.fingerprint);
+
+  const registrationRecord = buildAgentDeviceRegistrationRecord({
+    companyId: "11111111-1111-4111-8111-111111111111",
+    userId: "22222222-2222-4222-8222-222222222222",
+    fingerprint: device.fingerprint,
+    publicEncryptionJwk: { ...device.publicEncryptionJwk, key_ops: [] },
+    publicSigningJwk: { ...device.publicSigningJwk, key_ops: ["verify"] },
+  });
+  assert.deepEqual(registrationRecord.publicEncryptionJwk, device.publicEncryptionJwk);
+  assert.deepEqual(registrationRecord.publicSigningJwk, device.publicSigningJwk);
+});
 
 test("agent device survives trusted local wrapping without retaining the phrase", async () => {
   const device = await createAgentEncryptionDevice();
@@ -30,6 +54,40 @@ test("agent device survives trusted local wrapping without retaining the phrase"
     trustedUnlockKey: wrapped.trustedUnlockKey,
   });
   assert.equal(unlocked.fingerprint, device.fingerprint);
+});
+
+test("agent device created by plugin 1.14.2 keeps its key pair and adopts the protocol fingerprint", async () => {
+  const device = await createAgentEncryptionDevice();
+  const legacyPublicEncryptionJwk = { ...device.publicEncryptionJwk, key_ops: [] };
+  const legacyPublicSigningJwk = { ...device.publicSigningJwk, key_ops: ["verify"] };
+  const legacyFingerprint = createHash("sha256")
+    .update(canonicalJson({
+      suite: COMPANY_ENCRYPTION_SUITE,
+      publicEncryptionJwk: legacyPublicEncryptionJwk,
+      publicSigningJwk: legacyPublicSigningJwk,
+    }))
+    .digest("base64url");
+  assert.notEqual(legacyFingerprint, device.fingerprint);
+
+  const wrapped = await wrapAndRememberAgentEncryptionDevice({
+    device: {
+      ...device,
+      publicEncryptionJwk: legacyPublicEncryptionJwk,
+      publicSigningJwk: legacyPublicSigningJwk,
+      fingerprint: legacyFingerprint,
+    },
+    encryptionSecret: "correct horse battery staple",
+    companyId: "11111111-1111-4111-8111-111111111111",
+  });
+  const unlocked = await unlockRememberedAgentEncryptionDevice({
+    record: wrapped.record,
+    trustedUnlockKey: wrapped.trustedUnlockKey,
+  });
+
+  assert.equal(wrapped.record.fingerprint, legacyFingerprint);
+  assert.equal(unlocked.fingerprint, device.fingerprint);
+  assert.deepEqual(unlocked.publicEncryptionJwk, device.publicEncryptionJwk);
+  assert.deepEqual(unlocked.publicSigningJwk, device.publicSigningJwk);
 });
 
 test("dependency-free RFC 9180 implementation seals and opens P-256 envelopes", async () => {

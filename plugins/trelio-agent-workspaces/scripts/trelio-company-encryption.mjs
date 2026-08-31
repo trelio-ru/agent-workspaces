@@ -92,12 +92,14 @@ const normalizePublicP256Jwk = (jwk, usage) => {
     throw new Error(`Expected a public P-256 ${usage} JWK.`);
   }
 
+  // `key_ops`, `alg`, `use` and runtime-specific export details are not key
+  // material. Excluding them keeps fingerprints and signed records identical
+  // to the browser/backend protocol on every supported Web Crypto runtime.
   return {
     kty: "EC",
     crv: "P-256",
     x: jwk.x,
     y: jwk.y,
-    ...(usage === "signing" ? { key_ops: ["verify"] } : { key_ops: [] }),
     ext: true,
   };
 };
@@ -402,8 +404,25 @@ export const unlockRememberedAgentEncryptionDevice = async ({ record, trustedUnl
       )),
     ));
     const privateBundle = JSON.parse(textDecoder.decode(plaintext));
+    const publicEncryptionJwk = publicJwkFromPrivate(
+      privateBundle.encryptionPrivateJwk,
+      "encryption",
+    );
+    const publicSigningJwk = publicJwkFromPrivate(
+      privateBundle.signingPrivateJwk,
+      "signing",
+    );
+
+    // Plugin 1.14.2 included JWK `key_ops` in its fingerprint while the
+    // browser and backend protocol deliberately exclude export metadata.
+    // Keep the persisted fingerprint only for authenticating the legacy AAD
+    // above, then rebuild the live identity from the decrypted private keys so
+    // an existing device can register without replacing its key pair.
     return {
       ...record,
+      publicEncryptionJwk,
+      publicSigningJwk,
+      fingerprint: calculateKeyFingerprint({ publicEncryptionJwk, publicSigningJwk }),
       privateBundle,
       privateKeys: await importPrivateKeys(privateBundle),
     };
