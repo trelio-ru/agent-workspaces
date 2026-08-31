@@ -1,15 +1,18 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in one durable local working folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in one durable non-Git local context folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
 ---
 
 # Trelio Working-Folder Onboarding
 
-Set up one durable local working folder in Codex or Claude Code without starting
-a disposable Trelio workspace run. Keep the binding durable in that folder's
-instruction file. Read live company metadata from Trelio. Read the current
-skill catalog and company-content instructions only when the selected company
-is in ordinary `plain` mode; encrypted content stays on the local bridge.
+Set up one durable ordinary local context folder in Codex or Claude Code without
+starting a disposable Trelio workspace run. The folder is a control-plane entry
+point, not a Git-repository association. Resolve work through current company
+and project rules, an exact task or dossier, and their Agent Workspaces. Keep
+the binding durable in that folder's instruction file. Read live company
+metadata from Trelio. Read the current skill catalog and company-content
+instructions only when the selected company is in ordinary `plain` mode;
+encrypted content stays on the local bridge.
 
 Discovery and pairing/session recovery remain available without runtime
 admission so setup can be repaired. Protected context/mutation calls receive a
@@ -46,13 +49,15 @@ current task.
      `CLAUDE_PROJECT_DIR`, an equivalent MCP root, or the directory from which
      the user launched `claude`. Do not substitute another shell directory after
      the session started.
-   The folder may be empty and does not need to be a Git repository.
-2. Treat the selected folder itself as the binding root. A Git root may confirm
-   it, but never climb above the client-selected root or redirect the binding to
-   home, a temporary directory, plugin cache, client-internal storage, or the
-   nearest convenient repository. A nearby `.trelio-run.json` or protected
-   managed-workspace `AGENTS.md` means this is a materialized Trelio Agent
-   Workspace, not an onboarding target.
+   The folder may be empty. It is intentionally an ordinary non-Git context
+   folder. The standalone Git prerequisite checked later belongs to the local
+   bridge and its managed temporary or Run repositories, not to this binding.
+2. Treat the selected folder itself as the binding root. Never use a Git root to
+   choose or expand it, climb above the client-selected root, or redirect the
+   binding to home, a temporary directory, plugin cache, client-internal
+   storage, or the nearest convenient repository. A nearby `.trelio-run.json`
+   or protected managed-workspace `AGENTS.md` means this is a materialized
+   Trelio Agent Workspace, not an onboarding target.
 3. If no unambiguous durable folder is available, stop before every setup side
    effect and do not create an arbitrary folder for the user. Say
    `Рабочая папка не найдена. Настройка не начата.` Then give one client-specific
@@ -60,6 +65,41 @@ current task.
    repeat the request in a new task in that project; in Claude Code, open a
    terminal in the intended folder, run `claude`, and repeat the request in that
    new session.
+4. Before Trelio discovery, OAuth, prerequisite installation, or an instruction
+   file write, classify Git with read-only checks on the selected folder and its
+   parents. Continue without cleanup only when the selected folder is not inside
+   a Git worktree and is not itself a bare repository or Git directory. Never
+   use Git presence, a repository name, or a remote URL as a Trelio
+   company/project selector.
+5. Automatically detach an incidental host-created Git shell only when every
+   condition below is proven:
+   - the selected folder is the exact repository top level and its `.git` is a
+     real ordinary directory, not a symlink, gitfile, submodule, or linked
+     worktree, and no ancestor owns another Git worktree containing this folder;
+   - `HEAD` is unborn, and the repository has no commits, remotes, local or
+     packed refs, tracked or staged paths, submodules, additional worktrees,
+     in-progress operation, non-sample hooks, alternates, or repository-local
+     configuration beyond ordinary fresh `git init` metadata;
+   - outside `.git`, the folder is empty or contains only regular root
+     `AGENTS.md` and/or `AGENTS.override.md` files. Any other entry makes the
+     repository ambiguous rather than disposable.
+
+   Make this cleanup recoverable: atomically rename the exact `.git` directory,
+   without following links or overwriting a target, to a unique root-level
+   `.git.trelio-detached-<UTC-timestamp>` backup. Never use `rm` or discard the
+   metadata. Recheck that the selected folder is no longer a Git worktree, then
+   immediately tell the user that the empty Git shell was detached and give the
+   exact backup path and restore rename. This deterministic cleanup is part of
+   folder onboarding and does not need a separate confirmation.
+6. For every existing or ambiguous repository—including any parent worktree,
+   any commit or remote, a `.git` gitfile, or a no-commit repository that fails
+   one strict condition above—do not alter Git and stop before Trelio calls or an
+   `AGENTS.md` write. Say:
+   `Выбрана папка Git-репозитория. Trelio-привязка в неё не записана. Откройте
+   отдельную обычную папку проекта без Git и повторите настройку.` Explain that
+   Trelio context should come through company/project rules, an exact task or
+   dossier, or their Agent Workspace, rather than a persistent binding inside
+   the code repository.
 
 ## Check prerequisites
 
@@ -191,12 +231,13 @@ Use this block, substituting the verified display name and slug:
 <!-- trelio-agent-workspaces:start -->
 ## Контекст Trelio
 
-Эта рабочая папка связана с компанией Trelio «Компания» (`company-slug`).
+Эта обычная локальная папка задаёт Trelio-контекст компании «Компания»
+(`company-slug`) и не связывает с Trelio Git-репозиторий.
 
 Перед первым содержательным ответом по работе в этой папке обязательно
-используй Trelio Agent Workspaces: получи из Trelio актуальные
-правила для указанной выше области, затем проверь относящийся к запросу
-контекст в доступных задачах, досье и рабочих материалах.
+используй Trelio Agent Workspaces: получи из Trelio актуальные правила компании
+и, если определён конкретный проект, правила этого проекта. Затем проверь
+относящийся к запросу контекст в доступных задачах, досье и их Agent Workspace.
 
 По умолчанию считай любой содержательный запрос в этой папке связанным с
 её рабочим контекстом, даже если пользователь не упомянул Trelio явно. Пропускай
@@ -413,10 +454,12 @@ catalog readiness was not queried in this onboarding.
 Summarize:
 
 1. the working folder and its bound company and optional Trelio project;
-2. whether the local component is connected;
-3. each offered skill as ready, awaiting personal setup, or
+2. that the folder is not a Git worktree and, if an incidental empty shell was
+   detached, its exact backup path and restore rename;
+3. whether the local component is connected;
+4. each offered skill as ready, awaiting personal setup, or
    `требуется настройка администратором компании`;
-4. the exact next action for every incomplete item.
+5. the exact next action for every incomplete item.
 
 For a non-`plain` company, include its current encryption state and say that
 the remote skill catalog was intentionally not queried. For exact `encrypted`,
@@ -430,4 +473,6 @@ If `AGENTS.md` or `AGENTS.override.md` changed, tell the user that future tasks
 or Claude sessions opened in this folder will use the binding automatically
 and that a new task/session is required for the instruction file to become
 active. The current onboarding process may still finish connection checks
-because this skill already carries the explicit setup scope.
+because this skill already carries the explicit setup scope. Do not describe
+the instruction file as uncommitted or suggest committing it: the binding
+folder is non-Git by contract.

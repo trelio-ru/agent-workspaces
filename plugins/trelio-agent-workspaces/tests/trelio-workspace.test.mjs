@@ -3302,7 +3302,35 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.ok(prerequisiteIndex > folderGateIndex);
   assert.match(onboardingSkill, /local project with an accessible primary folder/u);
   assert.match(onboardingSkill, /projectless\s+task is not evidence of a selected folder/u);
-  assert.match(onboardingSkill, /may be empty and does not need to be a Git repository/u);
+  assert.match(onboardingSkill, /intentionally an ordinary non-Git context\s+folder/u);
+  assert.match(
+    onboardingSkill,
+    /not inside\s+a Git worktree and is not itself a bare repository or Git directory/u,
+  );
+  assert.match(onboardingSkill, /selected folder is the exact repository top level/u);
+  assert.match(onboardingSkill, /no ancestor owns another Git worktree/u);
+  assert.match(onboardingSkill, /`HEAD` is unborn/u);
+  assert.match(
+    onboardingSkill,
+    /no commits, remotes, local or\s+packed refs, tracked or staged paths/u,
+  );
+  assert.match(
+    onboardingSkill,
+    /contains only regular root\s+`AGENTS\.md` and\/or `AGENTS\.override\.md`/u,
+  );
+  assert.match(onboardingSkill, /atomically rename the exact `\.git` directory/u);
+  assert.match(onboardingSkill, /`\.git\.trelio-detached-<UTC-timestamp>`/u);
+  assert.match(onboardingSkill, /Never use `rm` or discard the\s+metadata/u);
+  assert.match(onboardingSkill, /does not need a separate confirmation/u);
+  assert.match(
+    onboardingSkill,
+    /do not alter Git and stop before Trelio calls or an\s+`AGENTS\.md` write/u,
+  );
+  assert.match(onboardingSkill, /отдельную обычную папку проекта без Git/u);
+  assert.match(
+    onboardingSkill,
+    /company\/project rules, an exact task or\s+dossier, or their Agent Workspace/u,
+  );
   assert.match(onboardingSkill, /stop before every setup side\s+effect/u);
   assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
   assert.match(onboardingSkill, /`CLAUDE_PROJECT_DIR`/u);
@@ -3319,7 +3347,11 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkillNormalized, /получи из Trelio актуальные правила/u);
   assert.match(
     onboardingSkillNormalized,
-    /проверь относящийся к запросу контекст в доступных задачах, досье и рабочих материалах/u,
+    /правила компании и, если определён конкретный проект, правила этого проекта/u,
+  );
+  assert.match(
+    onboardingSkillNormalized,
+    /контекст в доступных задачах, досье и их Agent Workspace/u,
   );
   assert.match(
     onboardingSkillNormalized,
@@ -3327,6 +3359,11 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   );
   assert.match(onboardingSkillNormalized, /Пропускай обращение к Trelio только/u);
   assert.match(onboardingSkillNormalized, /его контекст не проверен/u);
+  assert.match(onboardingSkillNormalized, /не связывает с Trelio Git-репозиторий/u);
+  assert.match(
+    onboardingSkill,
+    /Do not describe\s+the instruction file as uncommitted or suggest committing it/u,
+  );
   assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
   assert.match(
     onboardingSkillNormalized,
