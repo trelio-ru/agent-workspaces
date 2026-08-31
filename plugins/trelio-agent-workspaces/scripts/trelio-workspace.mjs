@@ -36,6 +36,7 @@ import {
   buildCompanyEncryptedJsonMarker,
   buildCompanyEncryptedTextMarker,
   buildEncryptedAgentWorkspaceRevisionRecord,
+  canonicalJson,
   createAgentEncryptionDevice,
   decryptCompanyPayload,
   decryptFileFromCompanyContainer,
@@ -48,7 +49,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.14.1";
+export const BRIDGE_VERSION = "1.14.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -161,6 +162,7 @@ const WORKLOG_FILE_NAME = "WORKLOG.md";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const AGENT_SKILL_DEVICE_CONSENT_HEADER = "x-trelio-agent-skill-device-consent";
+const AGENT_SKILL_COMPANY_E2EE_HEADER = "x-trelio-company-skill-e2ee";
 const AGENT_RULES_SHA256_HEADER = "x-trelio-agent-rules-sha256";
 // Legacy OAuth остаётся только как явный rollback для старого backend. Даже
 // там bridge не просит права на рабочие правила и чтение metadata секретов:
@@ -306,7 +308,9 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const AGENT_SKILL_PACKAGE_FORMAT = "trelio-agent-skill-package/v1";
+const AGENT_SKILL_ENCRYPTED_PACKAGE_FORMAT = "trelio-company-encrypted-skill-package/v1";
 const AGENT_SKILL_MAX_PACKAGE_BYTES = 8 * 1024 * 1024;
+const AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES = AGENT_SKILL_MAX_PACKAGE_BYTES + 1024 * 1024;
 const AGENT_SKILL_MAX_DECODED_FILE_BYTES = 6 * 1024 * 1024;
 const AGENT_SKILL_MAX_FILE_COUNT = 100;
 const AGENT_SKILL_SIGNING_KEY_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/u;
@@ -973,6 +977,11 @@ export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
   // rolling plugin install where an older executable could report the same
   // marketplace version but cannot render the trusted local consent page.
   headers.set(AGENT_SKILL_DEVICE_CONSENT_HEADER, "v1");
+  // The backend must never send encrypted declarations or runtime bytes to a
+  // host that cannot hydrate and validate them locally. This independent
+  // capability header remains fail-closed even during rolling installations
+  // where two binaries temporarily report the same marketplace version.
+  headers.set(AGENT_SKILL_COMPANY_E2EE_HEADER, "v1");
 
   if (token) {
     headers.set("authorization", `Bearer ${token}`);
@@ -4897,14 +4906,134 @@ const verifyAgentSkillPackageSignature = (packageBytes, artifact) => {
   }
 };
 
+const assertEncryptedAgentSkillRuntimeBinding = ({ opened, artifact, companyEncryption }) => {
+  const writerId = opened.header?.writerIdentityId;
+
+  if (
+    opened.header?.aad?.companyId !== companyEncryption.runtime.company.id
+    || opened.header?.aad?.scopeId !== companyEncryption.runtime.scope.id
+    || opened.header?.aad?.scopeEpoch !== companyEncryption.runtime.scope.epoch
+    || opened.header?.aad?.entityType !== "file.agent_skill_runtime_artifacts"
+    || opened.header?.aad?.entityId !== artifact.encryptedManifestEntityId
+    || opened.header?.aad?.purpose !== "file"
+    // Fresh agent publications carry the authorized bridge-device UUID. A
+    // legacy package encrypted by the migration worker has an explicit null
+    // writer and remains company-unverified behind the same local consent.
+    || (writerId !== null && !UUID_PATTERN.test(String(writerId || "")))
+    || opened.mimeType !== "application/vnd.trelio.agent-skill-package+json"
+  ) {
+    throw new Error("Encrypted runtime package не совпадает с company/scope/manifest binding.");
+  }
+};
+
+const decryptEncryptedAgentSkillRuntimePackage = async ({
+  packageBytes,
+  artifact,
+  companyEncryption,
+}) => {
+  if (!companyEncryption) {
+    throw new Error("Для зашифрованного runtime package отсутствует локальный company key.");
+  }
+  const temporaryDirectory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    "trelio-runtime-decrypt-",
+  ));
+  const encryptedPath = path.join(temporaryDirectory, "runtime.skillpkg.e2ee");
+  const plaintextPath = path.join(temporaryDirectory, "runtime.skillpkg");
+
+  try {
+    await fs.writeFile(encryptedPath, packageBytes, { flag: "wx", mode: 0o600 });
+    const opened = await decryptFileFromCompanyContainer({
+      sourcePath: encryptedPath,
+      destinationPath: plaintextPath,
+      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+      expectedCiphertextSha256: artifact.packageSha256,
+    });
+    assertEncryptedAgentSkillRuntimeBinding({ opened, artifact, companyEncryption });
+    return await fs.readFile(plaintextPath);
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const inspectEncryptedAgentSkillRuntimeForConsent = async ({
+  origin,
+  token,
+  packageUrl,
+  artifact,
+  companyEncryption,
+}) => {
+  const response = await request(origin, token, packageUrl);
+  const encryptedPackageBytes = Buffer.from(await response.arrayBuffer());
+  let plaintextPackageBytes = null;
+  let parsedPackage = null;
+
+  try {
+    if (
+      encryptedPackageBytes.byteLength !== artifact.packageSizeBytes
+      || crypto.createHash("sha256").update(encryptedPackageBytes).digest("hex")
+        !== artifact.packageSha256
+    ) {
+      throw new Error("Загруженный runtime package не совпадает с consent metadata.");
+    }
+    verifyAgentSkillPackageSignature(encryptedPackageBytes, artifact);
+    plaintextPackageBytes = await decryptEncryptedAgentSkillRuntimePackage({
+      packageBytes: encryptedPackageBytes,
+      artifact,
+      companyEncryption,
+    });
+    parsedPackage = parseAndValidateAgentSkillPackage(
+      plaintextPackageBytes,
+      artifact.skillId,
+    );
+    const parsedManifest = {
+      format: AGENT_SKILL_PACKAGE_FORMAT,
+      skill: {
+        id: parsedPackage.skillId,
+        runtimeVersion: parsedPackage.runtimeVersion,
+      },
+      entrypoint: parsedPackage.entrypoint,
+      capabilities: [...parsedPackage.capabilities].sort(),
+      files: parsedPackage.files.map((file) => ({
+        path: file.path,
+        mode: file.mode,
+        sha256: file.sha256,
+        sizeBytes: file.bytes.byteLength,
+      })),
+    };
+
+    if (
+      parsedPackage.runtimeVersion !== artifact.runtimeVersion
+      || canonicalJson(parsedManifest) !== canonicalJson(artifact.manifest)
+    ) {
+      throw new Error(
+        "Расшифрованный runtime package не совпадает с локально расшифрованным manifest.",
+      );
+    }
+
+    return {
+      capabilities: [...parsedPackage.capabilities].sort(),
+      packageSizeBytes: parsedPackage.packageSizeBytes,
+    };
+  } finally {
+    encryptedPackageBytes.fill(0);
+    plaintextPackageBytes?.fill(0);
+    for (const file of parsedPackage?.files ?? []) {
+      file.bytes.fill(0);
+    }
+  }
+};
+
 const downloadAndMaterializeAgentSkillRuntime = async ({
   origin,
   token,
   packageUrl,
   artifact,
+  companyEncryption = null,
 }) => {
   const response = await request(origin, token, packageUrl);
-  const packageBytes = Buffer.from(await response.arrayBuffer());
+  let packageBytes = Buffer.from(await response.arrayBuffer());
 
   if (
     packageBytes.byteLength !== artifact.packageSizeBytes
@@ -4915,10 +5044,48 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
   }
 
   verifyAgentSkillPackageSignature(packageBytes, artifact);
-  artifact.parsedPackage = parseAndValidateAgentSkillPackage(
-    packageBytes,
-    artifact.skillId,
-  );
+  if (artifact.contentProtection === "company_e2ee_v1") {
+    const encryptedPackageBytes = packageBytes;
+    try {
+      packageBytes = await decryptEncryptedAgentSkillRuntimePackage({
+        packageBytes: encryptedPackageBytes,
+        artifact,
+        companyEncryption,
+      });
+    } finally {
+      encryptedPackageBytes.fill(0);
+    }
+  }
+
+  artifact.parsedPackage = parseAndValidateAgentSkillPackage(packageBytes, artifact.skillId);
+
+  if (artifact.contentProtection === "company_e2ee_v1") {
+    const parsedManifest = {
+      format: AGENT_SKILL_PACKAGE_FORMAT,
+      skill: {
+        id: artifact.parsedPackage.skillId,
+        runtimeVersion: artifact.parsedPackage.runtimeVersion,
+      },
+      entrypoint: artifact.parsedPackage.entrypoint,
+      capabilities: [...artifact.parsedPackage.capabilities].sort(),
+      files: artifact.parsedPackage.files.map((file) => ({
+        path: file.path,
+        mode: file.mode,
+        sha256: file.sha256,
+        sizeBytes: file.bytes.byteLength,
+      })),
+    };
+    if (canonicalJson(parsedManifest) !== canonicalJson(artifact.manifest)) {
+      throw new Error(
+        "Расшифрованный runtime package не совпадает с локально расшифрованным manifest.",
+      );
+    }
+    // Cache identity is content-addressed by locally verified plaintext. The
+    // transport digest and signature were checked immediately above and every
+    // encrypted run repeats that live ciphertext check before reusing cache.
+    artifact.packageSha256 = artifact.parsedPackage.packageSha256;
+    artifact.packageSizeBytes = artifact.parsedPackage.packageSizeBytes;
+  }
 
   if (
     artifact.parsedPackage.runtimeVersion !== artifact.runtimeVersion
@@ -5001,8 +5168,13 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
   return { runtimeDirectory: verifiedDirectory, cacheHit: false };
 };
 
-export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
+export const normalizeResolvedSkillRuntimeArtifact = (
+  payload,
+  { allowPendingEncryptedConsent = false } = {},
+) => {
   const artifact = payload?.artifact;
+  const contentProtection = artifact?.contentProtection ?? "plain";
+  const encryptedRuntime = contentProtection === "company_e2ee_v1";
   // Trust is an admission decision, not optional compatibility metadata. A
   // missing object must fail closed: otherwise a response produced by an old
   // or incomplete backend would silently promote arbitrary code to
@@ -5021,14 +5193,23 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
 
   if (
     !UUID_PATTERN.test(String(payload?.releaseId || ""))
+    || !["plain", "company_e2ee_v1"].includes(contentProtection)
     || !UUID_PATTERN.test(String(artifact?.id || ""))
     || !SKILL_ID_PATTERN.test(String(artifact?.skillId || ""))
     || !STABLE_VERSION_PATTERN.test(String(artifact?.runtimeVersion || ""))
-    || artifact?.packageFormat !== AGENT_SKILL_PACKAGE_FORMAT
+    || artifact?.packageFormat !== (
+      encryptedRuntime
+        ? AGENT_SKILL_ENCRYPTED_PACKAGE_FORMAT
+        : AGENT_SKILL_PACKAGE_FORMAT
+    )
     || !SHA256_PATTERN.test(String(artifact?.packageSha256 || ""))
     || !Number.isSafeInteger(artifact?.packageSizeBytes)
     || artifact.packageSizeBytes <= 0
-    || artifact.packageSizeBytes > AGENT_SKILL_MAX_PACKAGE_BYTES
+    || artifact.packageSizeBytes > (
+      encryptedRuntime
+        ? AGENT_SKILL_MAX_ENCRYPTED_PACKAGE_BYTES
+        : AGENT_SKILL_MAX_PACKAGE_BYTES
+    )
     || typeof artifact?.packageSignature !== "string"
     || !AGENT_SKILL_SIGNING_KEY_ID_PATTERN.test(String(artifact?.signingKeyId || ""))
     || typeof artifact?.signingPublicKeySpki !== "string"
@@ -5037,6 +5218,16 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
     || !payload.packageUrl.startsWith("/api/agent-skills/runtime/package?")
     || !["platform_verified", "company_unverified"].includes(trust?.level)
     || !["platform_verified", "company_unverified"].includes(trust?.artifactLevel)
+    || (
+      encryptedRuntime
+      && (
+        payload.company?.id !== localIdentity?.companyId
+        || typeof payload.company?.slug !== "string"
+        || !payload.company.slug
+        || typeof payload.company?.name !== "string"
+        || !UUID_PATTERN.test(String(payload.encryptedManifestEntityId || ""))
+      )
+    )
     || typeof trust?.requiresDeviceConsent !== "boolean"
     || (
       trust?.consentId !== null
@@ -5044,7 +5235,19 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
     )
     || (
       trust?.level === "company_unverified"
-      && (!trust.requiresDeviceConsent || !UUID_PATTERN.test(String(trust.consentId || "")))
+      && (
+        !trust.requiresDeviceConsent
+        || (
+          !UUID_PATTERN.test(String(trust.consentId || ""))
+          && !(
+            encryptedRuntime
+            && allowPendingEncryptedConsent
+            && trust.consentId === null
+            && payload?.consentChallenge
+            && typeof payload.consentChallenge === "object"
+          )
+        )
+      )
     )
     || (
       trust?.level === "platform_verified"
@@ -5118,6 +5321,7 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
 
   return {
     releaseId: payload.releaseId,
+    company: payload.company ?? null,
     packageUrl: payload.packageUrl,
     localIdentity,
     companyConnection: companyConnection === null
@@ -5151,6 +5355,10 @@ export const normalizeResolvedSkillRuntimeArtifact = (payload) => {
       signingPublicKeySpki: artifact.signingPublicKeySpki,
       manifest: artifact.manifest,
       minimumHostVersion: String(artifact.minimumHostVersion || ""),
+      contentProtection,
+      encryptedManifestEntityId: encryptedRuntime
+        ? payload.encryptedManifestEntityId
+        : null,
       parsedPackage: null,
     },
   };
@@ -5699,6 +5907,130 @@ const assertOrdinaryRuntimePolicyForCompany = async ({
   }
 };
 
+const readEncryptedRuntimeManifestCapabilities = (manifest) => {
+  const capabilities = Array.isArray(manifest?.capabilities)
+    ? manifest.capabilities
+    : [];
+  return [...new Set(capabilities.filter((capability) => (
+    typeof capability === "string"
+    && AGENT_SKILL_DEVICE_CONSENT_CAPABILITIES.has(capability)
+  )))].sort();
+};
+
+const hydrateEncryptedAgentSkillRuntimeResolution = async ({
+  rawResolution,
+  origin,
+  token,
+  companyId,
+}) => {
+  if (rawResolution?.artifact?.contentProtection !== "company_e2ee_v1") {
+    return { rawResolution, companyEncryption: null };
+  }
+  const manifestReference = parseAgentEncryptedContentReference(
+    rawResolution.artifact.manifest,
+  );
+  if (
+    manifestReference?.field !== "manifest_json"
+    || rawResolution.company?.id !== companyId
+    || typeof rawResolution.company?.slug !== "string"
+    || typeof rawResolution.company?.name !== "string"
+  ) {
+    throw new Error("Trelio вернул некорректную E2EE binding runtime package.");
+  }
+  const companyEncryption = await ensureCompanyEncryptionContext({
+    origin,
+    token,
+    company: rawResolution.company,
+  });
+  if (!companyEncryption) {
+    throw new Error(
+      "Runtime package защищён company E2EE, но компания уже находится в обычном режиме.",
+    );
+  }
+
+  return {
+    rawResolution: {
+      ...(await hydrateAgentCompanyEncryptedJson({
+        value: rawResolution,
+        origin,
+        token,
+        companyEncryption,
+      })),
+      encryptedManifestEntityId: manifestReference.entityId,
+    },
+    companyEncryption,
+  };
+};
+
+const prepareEncryptedAgentSkillDeviceConsent = async ({
+  origin,
+  token,
+  companyId,
+  projectId,
+  skillId,
+  releaseId,
+  rawResolution,
+  collectConsentFn,
+}) => {
+  const hydrated = await hydrateEncryptedAgentSkillRuntimeResolution({
+    rawResolution,
+    origin,
+    token,
+    companyId,
+  });
+  const resolution = normalizeResolvedSkillRuntimeArtifact(
+    hydrated.rawResolution,
+    { allowPendingEncryptedConsent: true },
+  );
+
+  if (
+    resolution.releaseId !== releaseId
+    || resolution.artifact.skillId !== skillId
+    || resolution.trust.consentId !== null
+  ) {
+    throw new Error("Encrypted runtime consent preview не совпадает с exact skill release.");
+  }
+  const inspected = await inspectEncryptedAgentSkillRuntimeForConsent({
+    origin,
+    token,
+    packageUrl: resolution.packageUrl,
+    artifact: { ...resolution.artifact },
+    companyEncryption: hydrated.companyEncryption,
+  });
+  const rawChallenge = hydrated.rawResolution.consentChallenge;
+  const previousCapabilities = readEncryptedRuntimeManifestCapabilities(
+    rawChallenge?.artifact?.previousManifest,
+  );
+  const capabilities = inspected.capabilities;
+  const challenge = {
+    ...rawChallenge,
+    artifact: {
+      ...rawChallenge?.artifact,
+      packageSizeBytes: inspected.packageSizeBytes,
+      capabilities,
+    },
+    changes: {
+      ...rawChallenge?.changes,
+      capabilitiesAdded: capabilities.filter(
+        (capability) => !previousCapabilities.includes(capability),
+      ),
+      capabilitiesRemoved: previousCapabilities.filter(
+        (capability) => !capabilities.includes(capability),
+      ),
+    },
+  };
+
+  await collectConsentFn({
+    origin,
+    token,
+    challenge,
+    companyId,
+    projectId,
+    skillId,
+    releaseId,
+  });
+};
+
 export const resolveAgentSkillRuntimeWithDeviceConsent = async ({
   origin,
   token,
@@ -5709,6 +6041,7 @@ export const resolveAgentSkillRuntimeWithDeviceConsent = async ({
 }, {
   requestFn = request,
   collectConsentFn = collectAgentSkillDeviceConsentThroughLoopback,
+  prepareEncryptedConsentFn = prepareEncryptedAgentSkillDeviceConsent,
 } = {}) => {
   const requestResolution = () => requestFn(
     origin,
@@ -5727,7 +6060,34 @@ export const resolveAgentSkillRuntimeWithDeviceConsent = async ({
   );
 
   try {
-    return await requestResolution();
+    const response = await requestResolution();
+    let preview = null;
+
+    try {
+      preview = await response.clone().json();
+    } catch {
+      return response;
+    }
+
+    if (
+      preview?.artifact?.contentProtection === "company_e2ee_v1"
+      && preview?.trust?.requiresDeviceConsent === true
+      && preview?.trust?.consentId === null
+    ) {
+      await prepareEncryptedConsentFn({
+        origin,
+        token,
+        companyId,
+        projectId,
+        skillId,
+        releaseId,
+        rawResolution: preview,
+        collectConsentFn,
+      });
+      return requestResolution();
+    }
+
+    return response;
   } catch (error) {
     if (
       !(error instanceof TrelioApiError)
@@ -5822,7 +6182,16 @@ const skillCommand = async (
     skillId,
     releaseId,
   });
-  const resolution = normalizeResolvedSkillRuntimeArtifact(await response.json());
+  let rawResolution = await response.json();
+  const hydratedRuntime = await hydrateEncryptedAgentSkillRuntimeResolution({
+    rawResolution,
+    origin,
+    token,
+    companyId,
+  });
+  rawResolution = hydratedRuntime.rawResolution;
+  const companyEncryption = hydratedRuntime.companyEncryption;
+  const resolution = normalizeResolvedSkillRuntimeArtifact(rawResolution);
 
   if (
     resolution.releaseId !== releaseId
@@ -5858,6 +6227,11 @@ const skillCommand = async (
   );
 
   try {
+    if (artifactForCache.contentProtection === "company_e2ee_v1") {
+      throw Object.assign(new Error("Encrypted runtime requires a fresh ciphertext check."), {
+        code: "ENOENT",
+      });
+    }
     const cachedPackageBytes = await fs.readFile(markerCandidate);
     if (
       cachedPackageBytes.byteLength !== artifactForCache.packageSizeBytes
@@ -5894,6 +6268,7 @@ const skillCommand = async (
       token,
       packageUrl: resolution.packageUrl,
       artifact: artifactForCache,
+      companyEncryption,
     });
     runtimeDirectory = materialized.runtimeDirectory;
   }

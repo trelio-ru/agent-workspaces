@@ -14,6 +14,7 @@ import {
   buildRemoteMcpRequestHeaders,
   collectCredentialThroughLoopback,
   doctorWithCredential,
+  fingerprintCompanySkillApplyPlan,
   fingerprintRemoteMcpConfig,
   handleLocalMcpMessage,
   openCredentialFormInBrowser,
@@ -23,6 +24,7 @@ import {
   runStdioHost,
   selectRemoteToolsForPolicy,
   validateResolvedRemoteMcp,
+  validateRemoteMcpPublicationConfig,
 } from "../scripts/trelio-remote-mcp.mjs";
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -995,6 +997,48 @@ test("Remote MCP fingerprint matches the backend canonical JSON contract", () =>
   );
 });
 
+test("publication validates Remote MCP before any private-skill plan is stored", () => {
+  assert.deepEqual(
+    validateRemoteMcpPublicationConfig(remoteKnowledgeConfig),
+    remoteKnowledgeConfig,
+  );
+  assert.throws(
+    () => validateRemoteMcpPublicationConfig({
+      ...remoteKnowledgeConfig,
+      endpoint: "http://127.0.0.1:3000/mcp",
+    }),
+    /HTTPS|endpoint|unsafe/iu,
+  );
+});
+
+test("private-skill plan hash matches the backend recursive canonical contract", () => {
+  const applyBase = {
+    companySlug: "acme",
+    writerDeviceId: null,
+    encryptedPayloads: [],
+    draft: {
+      slug: "daily-report",
+      contentProtection: "plain",
+      searchTerms: ["daily report", "summary"],
+      execution: { kind: "markdown" },
+    },
+  };
+  assert.equal(
+    fingerprintCompanySkillApplyPlan("create", applyBase),
+    "80db58b8713831e84092efbe7b0bd7179ec0094d9a7d5f5bf4b2eb19e90d9c5c",
+  );
+  assert.notEqual(
+    fingerprintCompanySkillApplyPlan("create", {
+      ...applyBase,
+      draft: {
+        ...applyBase.draft,
+        searchTerms: ["summary", "daily report"],
+      },
+    }),
+    fingerprintCompanySkillApplyPlan("create", applyBase),
+  );
+});
+
 test("Remote MCP declaration accepts credential-free live read-only discovery", () => {
   const validated = validateResolvedRemoteMcp(resolvedLiveReadOnly);
 
@@ -1561,7 +1605,7 @@ test("personal credential path follows the stable local integration namespace", 
   );
 });
 
-test("local MCP exposes only the four static trusted-host tools", async () => {
+test("local MCP exposes four private-skill management and four execution tools", async () => {
   const response = await handleLocalMcpMessage({
     jsonrpc: "2.0",
     id: 1,
@@ -1570,11 +1614,24 @@ test("local MCP exposes only the four static trusted-host tools", async () => {
   });
 
   assert.deepEqual(response.result.tools.map(({ name }) => name), [
+    "plan_company_private_agent_skill_create",
+    "create_company_private_agent_skill",
+    "plan_company_private_agent_skill_release",
+    "publish_company_private_agent_skill_release",
     "connect_remote_agent_skill",
     "doctor_remote_agent_skill",
     "call_remote_agent_skill_tool",
     "forget_remote_agent_skill_credential",
   ]);
+  for (const toolName of [
+    "create_company_private_agent_skill",
+    "publish_company_private_agent_skill_release",
+  ]) {
+    const tool = response.result.tools.find(({ name }) => name === toolName);
+    assert.equal(tool.inputSchema.properties.confirmed.const, true);
+    assert.equal(tool.inputSchema.additionalProperties, false);
+    assert.match(tool.description, /exact Trelio settings URL/u);
+  }
   assert.doesNotMatch(JSON.stringify(response), /personal-test-token/u);
 });
 
@@ -1927,10 +1984,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.14.1");
+  assert.equal(frames[0].result.serverInfo.version, "1.14.2");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 4);
+  assert.equal(frames[1].result.tools.length, 8);
 });

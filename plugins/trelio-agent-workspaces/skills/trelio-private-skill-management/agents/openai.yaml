@@ -1,0 +1,4 @@
+interface:
+  display_name: "Приватные навыки Trelio"
+  short_description: "Создаёт и публикует приватные навыки через plan/apply."
+  default_prompt: "Используй $trelio-private-skill-management, чтобы подготовить приватный навык компании Trelio и опубликовать его только после отдельного подтверждения exact planHash."

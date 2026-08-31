@@ -3,6 +3,7 @@
 ## Содержание
 
 - Живой каталог
+- Управление приватными навыками
 - Signed runtime packages
 - Remote MCP
 - Browser-first credentials
@@ -57,6 +58,37 @@ control-plane outage, timeout, transient/unknown failure и запрещённы
 
 Штатные Trelio MCP/workspace операции остаются основным workflow и не требуют
 отдельного catalog skill.
+
+## Управление приватными навыками
+
+Владелец или администратор компании может управлять private Agent Skills через
+четыре локальных инструмента `trelio-remote-skills`: отдельные plan/apply для
+создания и для новой версии. Bridge-session должна иметь capability
+`agent-skill:manage`; обычный участник, устаревший OAuth grant и прямой HTTP
+этот контур не заменяют.
+
+Create всегда начинает с `1.0.0` и устанавливает catalog item, но не включает
+его всей компании и не создаёт project assignment. Publish привязывается к
+exact `currentReleaseId` и не меняет существующие assignments. Оба apply
+возвращают server-built exact settings URL. Перед apply пользователь отдельно
+подтверждает показанный `planHash`; даже прямая исходная просьба «создай» или
+«опубликуй» не считается подтверждением ещё не построенного плана.
+
+Поддерживаются Markdown, Remote MCP и `.skillpkg`. Remote MCP проходит тот же
+provider-neutral HTTPS/auth/header/tool-policy validator, который применяется
+при исполнении. Package читается только как bounded regular non-symlink file,
+нормализуется к tenant skill ID и повторно проверяется по manifest, path,
+digest, interpreter и capabilities. Такой runtime остаётся
+`company_unverified` и перед первым запуском требует отдельного защищённого
+device consent.
+
+При company E2EE bridge до apply локально шифрует title, description, search
+terms, instructions, summary/reason, Remote MCP config, runtime manifest и
+сам package в bounded `TRELIOE1`. Backend сохраняет только markers, ciphertext
+и открытые structural поля, проверяет device signature/scope/CAS и фиксирует
+payload вместе с release одной транзакцией. Исполнение делает fresh resolve,
+проверяет transport signature/digest, расшифровывает локально и лишь затем
+валидирует Remote MCP либо materialize-ит package.
 
 ## Signed runtime packages
 

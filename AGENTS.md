@@ -84,6 +84,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   отсутствии write-like имени и exact annotations `readOnlyHint=true`,
   `destructiveHint=false`. Остальные tools игнорируются по одному; если
   безопасных нет, операция fail closed. V1 fingerprint и поведение не менять.
+- Company owner/admin управляет private Agent Skills только через четыре
+  локальных plan/apply tool `trelio-remote-skills` и capability
+  `agent-skill:manage`. Create устанавливает, но не назначает навык; apply
+  всегда требует отдельного подтверждения exact plan hash и возвращает
+  server-built settings URL. Markdown, Remote MCP и `.skillpkg` поддерживаются
+  одним контуром. В encrypted-компании bridge шифрует semantic metadata,
+  declaration, manifest и package bytes локально; backend получает только
+  markers/`TRELIOE1`, а host расшифровывает их локально перед исполнением.
 - Local credentials, sessions, profiles и policy живут вне workspace, plugin
   cache и runtime package в стабильном `skill/company/member/connection`
   namespace.

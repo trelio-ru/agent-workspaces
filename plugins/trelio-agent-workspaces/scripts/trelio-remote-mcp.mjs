@@ -23,15 +23,27 @@ import { pathToFileURL } from "node:url";
 import {
   BRIDGE_VERSION,
   ensureBridgeCompatibility,
+  ensureCompanyEncryptionContext,
   ensurePrivateDirectory,
+  hydrateAgentCompanyEncryptedJson,
   normalizeOrigin,
   openBrowser,
+  parseAndValidateAgentSkillPackage,
   readPrivateJsonFile,
   retainLoadedCodexPluginInstallation,
   request,
   requireToken,
+  resolveWorkspaceBridgeConfigDirectory,
   writePrivateJsonFile,
 } from "./trelio-workspace.mjs";
+import {
+  COMPANY_ENCRYPTION_SUITE,
+  buildCompanyEncryptedJsonMarker,
+  buildCompanyEncryptedTextMarker,
+  encryptCompanyPayload,
+  encryptFileToCompanyContainer,
+  signCompanyEncryptionRecord,
+} from "./trelio-company-encryption.mjs";
 
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const REMOTE_MCP_EXACT_CONFIG_SCHEMA_VERSION = 1;
@@ -47,9 +59,32 @@ const CREDENTIAL_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 const CREDENTIAL_BROWSER_HANDOFF_TIMEOUT_MS = 7_500;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SKILL_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const TOOL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u;
 const WRITE_TOOL_NAME_PATTERN = /(?:^|[_:.-])(?:add|archive|create|delete|edit|invite|move|publish|remove|rename|restore|revoke|send|set|update|upload|write)(?:$|[_:.-])/iu;
+const COMPANY_PRIVATE_SKILL_CATEGORIES = new Set([
+  "communications",
+  "business",
+  "knowledge",
+  "development",
+  "other",
+]);
+const COMPANY_SKILL_PLAN_TTL_MS = 30 * 60 * 1000;
+const COMPANY_SKILL_PLAN_DIRECTORY = path.join(
+  resolveWorkspaceBridgeConfigDirectory(),
+  "agent-skill-publication-plans",
+);
+const COMPANY_SKILL_MANAGEMENT_TOOL_NAMES = new Set([
+  "plan_company_private_agent_skill_create",
+  "create_company_private_agent_skill",
+  "plan_company_private_agent_skill_release",
+  "publish_company_private_agent_skill_release",
+]);
+const AGENT_SKILL_PACKAGE_FORMAT = "trelio-agent-skill-package/v1";
+const AGENT_SKILL_ENCRYPTED_PACKAGE_FORMAT = "trelio-company-encrypted-skill-package/v1";
+const AGENT_SKILL_PACKAGE_MIME_TYPE = "application/vnd.trelio.agent-skill-package+json";
 
 /**
  * MCP `initialize.instructions` is the always-on routing layer for this plugin.
@@ -434,6 +469,52 @@ export const validateResolvedRemoteMcp = (payload) => {
   };
 };
 
+/**
+ * Validate an author-supplied Remote MCP declaration with the same fail-closed
+ * rules used at execution time. Keeping publication and execution on one
+ * normalizer prevents an administrator from publishing a declaration that the
+ * local trusted host would later interpret differently.
+ */
+export const validateRemoteMcpPublicationConfig = (rawConfig) => {
+  let endpoint;
+  try {
+    endpoint = new URL(String(rawConfig?.endpoint || ""));
+  } catch {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_ENDPOINT_INVALID",
+      "Remote MCP endpoint некорректен.",
+    );
+  }
+  const hostname = endpoint.hostname.toLowerCase().replace(/\.$/u, "");
+  if (
+    endpoint.protocol !== "https:"
+    || endpoint.username
+    || endpoint.password
+    || endpoint.hash
+    || (endpoint.port && endpoint.port !== "443")
+    || net.isIP(hostname) !== 0
+    || hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local")
+    || hostname.endsWith(".internal")
+  ) {
+    throw new RemoteMcpHostError(
+      "REMOTE_MCP_ENDPOINT_BLOCKED",
+      "Remote MCP endpoint должен быть публичным HTTPS URL на порту 443.",
+    );
+  }
+
+  const normalizedForFingerprint = normalizeRemoteMcpConfigForFingerprint(rawConfig);
+  const validated = validateResolvedRemoteMcp({
+    releaseId: "00000000-0000-4000-8000-000000000001",
+    remoteMcp: {
+      config: rawConfig,
+      configFingerprint: fingerprintRemoteMcpConfig(normalizedForFingerprint),
+    },
+  });
+  return validated.remoteMcp.config;
+};
+
 const requireUuid = (value, label) => {
   const normalized = String(value || "").trim().toLowerCase();
   if (!UUID_PATTERN.test(normalized)) {
@@ -501,7 +582,51 @@ const resolveRemoteMcpDeclaration = async (
           signal: operationSignal,
         },
       );
-      return validateResolvedRemoteMcp(await response.json());
+      const rawResolution = await response.json();
+      if (rawResolution?.remoteMcp?.contentProtection !== "company_e2ee_v1") {
+        return validateResolvedRemoteMcp(rawResolution);
+      }
+      if (
+        rawResolution.company?.id !== input.companyId
+        || typeof rawResolution.company?.slug !== "string"
+        || typeof rawResolution.company?.name !== "string"
+      ) {
+        throw new RemoteMcpHostError(
+          "REMOTE_MCP_INVALID_DECLARATION",
+          "Trelio не вернул company binding зашифрованной Remote MCP декларации.",
+        );
+      }
+      const companyEncryption = await ensureCompanyEncryptionContext({
+        origin,
+        token,
+        company: rawResolution.company,
+      });
+      if (!companyEncryption) {
+        throw new RemoteMcpHostError(
+          "REMOTE_MCP_ENCRYPTION_STATE_CHANGED",
+          "Remote MCP declaration защищена E2EE, но компания уже находится в обычном режиме.",
+        );
+      }
+      const hydrated = await hydrateAgentCompanyEncryptedJson({
+        value: rawResolution,
+        origin,
+        token,
+        companyEncryption,
+      });
+      const normalizedConfig = validateRemoteMcpPublicationConfig(
+        hydrated.remoteMcp?.config,
+      );
+      return validateResolvedRemoteMcp({
+        ...hydrated,
+        remoteMcp: {
+          ...hydrated.remoteMcp,
+          config: normalizedConfig,
+          // The backend deliberately cannot derive a fingerprint from
+          // ciphertext. Bind the local credential to the normalized
+          // declaration only after local decryption.
+          configFingerprint: fingerprintRemoteMcpConfig(normalizedConfig),
+        },
+      });
     },
   });
 
@@ -1850,6 +1975,860 @@ export const collectCredentialThroughLoopback = async (
   }
 };
 
+const compareStableVersions = (left, right) => {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = leftParts[index] - rightParts[index];
+    if (difference !== 0) return difference;
+  }
+  return 0;
+};
+
+const maximumStableVersion = (...versions) => versions.reduce(
+  (maximum, version) => (
+    compareStableVersions(version, maximum) > 0 ? version : maximum
+  ),
+);
+
+const requireBoundedText = (value, label, maximumLength) => {
+  const normalized = String(value || "").trim();
+  if (!normalized || normalized.length > maximumLength) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      `${label} должен содержать от 1 до ${maximumLength} символов.`,
+    );
+  }
+  return normalized;
+};
+
+const requireSkillSlug = (value) => {
+  const normalized = requireBoundedText(value, "slug", 60).toLowerCase();
+  if (!SKILL_ID_PATTERN.test(normalized)) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      "slug должен использовать lowercase kebab-case.",
+    );
+  }
+  return normalized;
+};
+
+const requireStableVersion = (value, label) => {
+  const normalized = String(value || "").trim();
+  if (!STABLE_VERSION_PATTERN.test(normalized)) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      `${label} должен использовать формат X.Y.Z.`,
+    );
+  }
+  return normalized;
+};
+
+const normalizeSearchTerms = (value) => {
+  if (!Array.isArray(value)) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      "searchTerms должен быть массивом поисковых фраз.",
+    );
+  }
+  const normalized = [...new Set(value.map((term) => String(term || "").trim()))];
+  if (
+    normalized.length < 1
+    || normalized.length > 32
+    || normalized.some((term) => term.length < 2 || term.length > 120)
+  ) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      "searchTerms должен содержать от 1 до 32 уникальных фраз длиной 2–120 символов.",
+    );
+  }
+  return normalized;
+};
+
+const buildCompanyPrivateSkillId = (companyId, skillSlug) => (
+  `company-${companyId}-${skillSlug}`
+);
+
+const buildRuntimeManifest = (parsedPackage) => ({
+  format: AGENT_SKILL_PACKAGE_FORMAT,
+  skill: {
+    id: parsedPackage.skillId,
+    runtimeVersion: parsedPackage.runtimeVersion,
+  },
+  entrypoint: parsedPackage.entrypoint,
+  capabilities: [...parsedPackage.capabilities].sort(),
+  files: parsedPackage.files.map((file) => ({
+    path: file.path,
+    mode: file.mode,
+    sha256: file.sha256,
+    sizeBytes: file.bytes.byteLength,
+  })),
+});
+
+/**
+ * Company packages may be authored with the short catalog slug because the
+ * tenant UUID is not normally known to the author. Rebind that one allowed
+ * alias locally, then run the complete parser again over the exact bytes that
+ * will be encrypted or uploaded.
+ */
+const readAndBindAgentSkillPackage = async ({
+  packagePath,
+  companySkillId,
+  skillSlug,
+}) => {
+  const absolutePath = path.resolve(requireBoundedText(packagePath, "packagePath", 4096));
+  const fileStat = await fs.lstat(absolutePath);
+  if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_PACKAGE",
+      "packagePath должен указывать на обычный .skillpkg-файл без symlink.",
+    );
+  }
+  if (fileStat.size <= 0 || fileStat.size > AGENT_SKILL_MAX_PACKAGE_BYTES) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_PACKAGE",
+      `Размер .skillpkg должен быть от 1 до ${AGENT_SKILL_MAX_PACKAGE_BYTES} байт.`,
+    );
+  }
+
+  let packageBytes = await fs.readFile(absolutePath);
+  try {
+    let parsedPackage = parseAndValidateAgentSkillPackage(packageBytes);
+    if (parsedPackage.skillId === skillSlug) {
+      const packageJson = JSON.parse(packageBytes.toString("utf8"));
+      packageJson.skill.id = companySkillId;
+      const sourcePackageBytes = packageBytes;
+      packageBytes = Buffer.from(JSON.stringify(packageJson), "utf8");
+      sourcePackageBytes.fill(0);
+      parsedPackage = parseAndValidateAgentSkillPackage(packageBytes, companySkillId);
+    } else if (parsedPackage.skillId !== companySkillId) {
+      throw new RemoteMcpHostError(
+        "AGENT_SKILL_MANAGEMENT_INVALID_PACKAGE",
+        `Runtime package принадлежит ${parsedPackage.skillId}, а ожидался ${skillSlug} или ${companySkillId}.`,
+      );
+    }
+
+    return {
+      packageBytes,
+      parsedPackage,
+      manifest: buildRuntimeManifest(parsedPackage),
+    };
+  } catch (error) {
+    // Package bytes can contain proprietary company code. Clear them on every
+    // validation/rebinding failure instead of waiting for garbage collection.
+    packageBytes.fill(0);
+    throw error;
+  }
+};
+
+const normalizePublicationExecution = async ({
+  input,
+  companyId,
+  skillSlug,
+  encrypted,
+  allowRuntimeReuse,
+}) => {
+  const kind = String(input.executionKind || "").trim();
+  if (kind === "markdown") {
+    return { kind: "markdown" };
+  }
+  if (kind === "remote_mcp") {
+    let config;
+    try {
+      config = validateRemoteMcpPublicationConfig(input.remoteMcpConfig);
+    } catch (error) {
+      if (error instanceof RemoteMcpHostError) throw error;
+      throw new RemoteMcpHostError(
+        "AGENT_SKILL_MANAGEMENT_INVALID_REMOTE_MCP",
+        String(error?.message || "Remote MCP declaration не прошла локальную проверку."),
+      );
+    }
+    const schemaMinimum = config.schemaVersion === REMOTE_MCP_CONFIG_SCHEMA_VERSION
+      ? "1.13.3"
+      : "1.4.7";
+    return {
+      kind: "remote_mcp",
+      remoteMcpConfig: config,
+      remoteMcpMinimumHostVersion: encrypted
+        ? maximumStableVersion(schemaMinimum, BRIDGE_VERSION)
+        : schemaMinimum,
+    };
+  }
+  if (kind === "skillpkg") {
+    const prepared = await readAndBindAgentSkillPackage({
+      packagePath: input.packagePath,
+      companySkillId: buildCompanyPrivateSkillId(companyId, skillSlug),
+      skillSlug,
+    });
+    const requestedMinimum = input.minimumHostVersion
+      ? requireStableVersion(input.minimumHostVersion, "minimumHostVersion")
+      : "1.4.0";
+    if (compareStableVersions(requestedMinimum, "1.4.0") < 0) {
+      throw new RemoteMcpHostError(
+        "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+        "Исполняемый навык требует minimumHostVersion 1.4.0 или новее.",
+      );
+    }
+    return {
+      kind: "runtime",
+      artifactId: crypto.randomUUID(),
+      packageBytes: prepared.packageBytes,
+      parsedPackage: prepared.parsedPackage,
+      manifest: prepared.manifest,
+      minimumHostVersion: encrypted
+        ? maximumStableVersion(requestedMinimum, BRIDGE_VERSION)
+        : requestedMinimum,
+    };
+  }
+  if (kind === "reuse_skillpkg" && allowRuntimeReuse) {
+    return { kind: "runtime_reuse" };
+  }
+  throw new RemoteMcpHostError(
+    "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+    allowRuntimeReuse
+      ? "executionKind должен быть markdown, remote_mcp, skillpkg или reuse_skillpkg."
+      : "executionKind должен быть markdown, remote_mcp или skillpkg.",
+  );
+};
+
+const buildEncryptedPayloadSignatureRecord = (payload) => ({
+  suite: payload.suite,
+  scopeId: payload.scopeId,
+  scopeEpoch: payload.scopeEpoch,
+  entityType: payload.entityType,
+  entityId: payload.entityId,
+  entityRevision: payload.entityRevision,
+  schemaVersion: payload.schemaVersion,
+  nonce: payload.nonce,
+  ciphertext: payload.ciphertext,
+  wrappedDataKey: payload.wrappedDataKey,
+  aad: payload.aad,
+  ciphertextSha256: payload.ciphertextSha256,
+  writerDeviceId: payload.writerDeviceId,
+});
+
+const encryptPublicationPayload = async ({
+  companyEncryption,
+  entityId,
+  source,
+  values,
+}) => {
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source,
+      values,
+    },
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType: "agent_skill.publication",
+      entityId,
+      entityRevision: 1,
+      purpose: "content",
+    },
+  });
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType: "agent_skill.publication",
+    entityId,
+    entityRevision: 1,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildEncryptedPayloadSignatureRecord(payload),
+  );
+  return payload;
+};
+
+const encryptRuntimePackage = async ({
+  companyEncryption,
+  entityId,
+  skillSlug,
+  packageBytes,
+}) => {
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-private-skill-"));
+  const sourcePath = path.join(temporaryDirectory, "source.skillpkg");
+  const destinationPath = path.join(temporaryDirectory, "encrypted.skillpkg");
+  try {
+    await fs.writeFile(sourcePath, packageBytes, { flag: "wx", mode: 0o600 });
+    await encryptFileToCompanyContainer({
+      sourcePath,
+      destinationPath,
+      scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+      aad: {
+        companyId: companyEncryption.runtime.company.id,
+        scopeId: companyEncryption.runtime.scope.id,
+        scopeEpoch: companyEncryption.runtime.scope.epoch,
+        entityType: "file.agent_skill_runtime_artifacts",
+        entityId,
+        entityRevision: 1,
+      },
+      originalName: `${skillSlug}.skillpkg`,
+      mimeType: AGENT_SKILL_PACKAGE_MIME_TYPE,
+      writerDeviceId: companyEncryption.runtime.device.id,
+      signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+    });
+    return await fs.readFile(destinationPath);
+  } finally {
+    packageBytes.fill(0);
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const readCompanyPrivateSkillManagementContext = async ({
+  origin,
+  token,
+  companySlug,
+  skillSlug,
+}) => {
+  const query = new URLSearchParams({ companySlug });
+  if (skillSlug) query.set("skillSlug", skillSlug);
+  const response = await request(
+    origin,
+    token,
+    `/api/agent-skills/private-management/context?${query.toString()}`,
+  );
+  const rawContext = await response.json();
+  if (
+    !UUID_PATTERN.test(String(rawContext?.company?.id || ""))
+    || rawContext.company.slug !== companySlug
+    || !["plain", "encrypted"].includes(rawContext.company.encryptionState)
+    || rawContext.permissions?.canManage !== true
+    || typeof rawContext.settingsPath !== "string"
+  ) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_CONTEXT",
+      "Trelio вернул неполный owner/admin-контекст приватного навыка.",
+    );
+  }
+
+  const companyEncryption = rawContext.company.encryptionState === "encrypted"
+    ? await ensureCompanyEncryptionContext({
+        origin,
+        token,
+        company: rawContext.company,
+      })
+    : null;
+  const skill = companyEncryption && rawContext.skill
+    ? await hydrateAgentCompanyEncryptedJson({
+        value: rawContext.skill,
+        origin,
+        token,
+        companyEncryption,
+      })
+    : rawContext.skill;
+  return { ...rawContext, skill, companyEncryption };
+};
+
+const normalizeCommonPublicationInput = (rawInput) => ({
+  companySlug: requireBoundedText(rawInput?.companySlug, "companySlug", 120),
+  skillSlug: requireSkillSlug(rawInput?.skillSlug),
+  instructionsMarkdown: requireBoundedText(
+    rawInput?.instructionsMarkdown,
+    "instructionsMarkdown",
+    200_000,
+  ),
+  searchTerms: normalizeSearchTerms(rawInput?.searchTerms),
+  summary: requireBoundedText(rawInput?.summary, "summary", 2_000),
+  changeReason: requireBoundedText(rawInput?.changeReason, "changeReason", 2_000),
+});
+
+const protectPublicationDraft = async ({
+  operation,
+  companyEncryption,
+  draft,
+  execution,
+}) => {
+  const entityId = crypto.randomUUID();
+  const values = {
+    ...(operation === "create"
+      ? { title: draft.title, description: draft.description }
+      : {}),
+    ...Object.fromEntries(draft.searchTerms.map((term, index) => [
+      `search_term_${index}`,
+      term,
+    ])),
+    instructions_markdown: draft.instructionsMarkdown,
+    summary: draft.summary,
+    change_reason: draft.changeReason,
+    ...(execution.kind === "remote_mcp"
+      ? { remote_mcp_config_json: execution.remoteMcpConfig }
+      : {}),
+    ...(execution.kind === "runtime"
+      ? {
+          manifest_json: execution.manifest,
+          package_format: AGENT_SKILL_PACKAGE_FORMAT,
+        }
+      : {}),
+  };
+  const encryptedPayload = await encryptPublicationPayload({
+    companyEncryption,
+    entityId,
+    source: {
+      kind: "agent_skill_publication",
+      operation,
+      skillSlug: operation === "create" ? draft.slug : draft.skillSlug,
+      version: operation === "create" ? "1.0.0" : draft.version,
+    },
+    values,
+  });
+  const protectedExecution = execution.kind === "runtime"
+    ? {
+        kind: "runtime",
+        runtimePackage: {
+          artifactId: execution.artifactId,
+          packageBase64: (await encryptRuntimePackage({
+            companyEncryption,
+            entityId,
+            skillSlug: operation === "create" ? draft.slug : draft.skillSlug,
+            packageBytes: execution.packageBytes,
+          })).toString("base64"),
+          runtimeVersion: execution.parsedPackage.runtimeVersion,
+          manifest: buildCompanyEncryptedJsonMarker(entityId, "manifest_json"),
+          minimumHostVersion: execution.minimumHostVersion,
+        },
+      }
+    : execution.kind === "remote_mcp"
+      ? {
+          kind: "remote_mcp",
+          remoteMcpConfig: buildCompanyEncryptedJsonMarker(
+            entityId,
+            "remote_mcp_config_json",
+          ),
+          remoteMcpMinimumHostVersion: execution.remoteMcpMinimumHostVersion,
+        }
+      : { kind: execution.kind };
+
+  return {
+    writerDeviceId: companyEncryption.runtime.device.id,
+    encryptedPayloads: [encryptedPayload],
+    draft: {
+      ...draft,
+      ...(operation === "create"
+        ? {
+            title: buildCompanyEncryptedTextMarker(entityId, "title"),
+            description: buildCompanyEncryptedTextMarker(entityId, "description"),
+          }
+        : {}),
+      searchTerms: draft.searchTerms.map((_term, index) => (
+        buildCompanyEncryptedTextMarker(entityId, `search_term_${index}`)
+      )),
+      instructionsMarkdown: buildCompanyEncryptedTextMarker(
+        entityId,
+        "instructions_markdown",
+      ),
+      summary: buildCompanyEncryptedTextMarker(entityId, "summary"),
+      changeReason: buildCompanyEncryptedTextMarker(entityId, "change_reason"),
+      contentProtection: "company_e2ee_v1",
+      execution: protectedExecution,
+    },
+  };
+};
+
+const buildPlainPublicationDraft = ({ draft, execution }) => {
+  const runtimePackage = execution.kind === "runtime"
+    ? {
+        artifactId: execution.artifactId,
+        packageBase64: execution.packageBytes.toString("base64"),
+        runtimeVersion: execution.parsedPackage.runtimeVersion,
+        manifest: execution.manifest,
+        minimumHostVersion: execution.minimumHostVersion,
+      }
+    : null;
+  execution.packageBytes?.fill(0);
+
+  return {
+    writerDeviceId: null,
+    encryptedPayloads: [],
+    draft: {
+      ...draft,
+      contentProtection: "plain",
+      execution: runtimePackage
+        ? { kind: "runtime", runtimePackage }
+        : execution,
+    },
+  };
+};
+
+export const fingerprintCompanySkillApplyPlan = (operation, applyBase) => (
+  crypto.createHash("sha256").update(canonicalJson({
+    operation,
+    companySlug: applyBase.companySlug,
+    writerDeviceId: applyBase.writerDeviceId,
+    encryptedPayloads: applyBase.encryptedPayloads,
+    draft: applyBase.draft,
+  })).digest("hex")
+);
+
+const resolveCompanySkillPlanPath = (planId) => {
+  if (!UUID_PATTERN.test(String(planId || ""))) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_PLAN",
+      "planId должен содержать UUID подготовленного плана.",
+    );
+  }
+  return path.join(COMPANY_SKILL_PLAN_DIRECTORY, `${planId}.json`);
+};
+
+const storeCompanySkillPlan = async ({
+  origin,
+  operation,
+  applyBase,
+  settingsUrl,
+  summary,
+}) => {
+  const planId = crypto.randomUUID();
+  const planHash = fingerprintCompanySkillApplyPlan(operation, applyBase);
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + COMPANY_SKILL_PLAN_TTL_MS);
+  await writePrivateJsonFile(resolveCompanySkillPlanPath(planId), {
+    schemaVersion: 1,
+    planId,
+    planHash,
+    operation,
+    origin,
+    createdAt: createdAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    clientRequestId: crypto.randomUUID(),
+    settingsUrl,
+    summary,
+    applyBase,
+  });
+  return {
+    planId,
+    planHash,
+    expiresAt: expiresAt.toISOString(),
+    settingsUrl,
+    ...summary,
+    confirmationRequired: true,
+    confirmationAction: operation === "create"
+      ? "create_company_private_agent_skill"
+      : "publish_company_private_agent_skill_release",
+  };
+};
+
+const buildExecutionSummary = (execution) => ({
+  kind: execution.kind,
+  ...(execution.kind === "remote_mcp"
+    ? {
+        endpoint: execution.remoteMcpConfig.endpoint,
+        authentication: execution.remoteMcpConfig.authentication.type,
+        minimumHostVersion: execution.remoteMcpMinimumHostVersion,
+      }
+    : {}),
+  ...(execution.kind === "runtime"
+    ? {
+        runtimeVersion: execution.parsedPackage.runtimeVersion,
+        interpreter: execution.parsedPackage.entrypoint.interpreter,
+        capabilities: execution.parsedPackage.capabilities,
+        packageSha256: execution.parsedPackage.packageSha256,
+        packageSizeBytes: execution.parsedPackage.packageSizeBytes,
+        minimumHostVersion: execution.minimumHostVersion,
+      }
+    : {}),
+});
+
+const planCompanyPrivateSkillCreate = async (origin, rawInput, { signal } = {}) => {
+  const common = normalizeCommonPublicationInput(rawInput);
+  const token = await requireToken(origin, { onStatus: () => undefined, signal });
+  await ensureBridgeCompatibility(origin, token, { signal });
+  const context = await readCompanyPrivateSkillManagementContext({
+    origin,
+    token,
+    companySlug: common.companySlug,
+    skillSlug: common.skillSlug,
+  });
+  if (context.skill) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_ALREADY_EXISTS",
+      "Приватный навык с таким slug уже существует; подготовьте новую публикацию.",
+    );
+  }
+  const category = String(rawInput?.marketplaceCategory || "other");
+  if (!COMPANY_PRIVATE_SKILL_CATEGORIES.has(category)) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_INPUT",
+      "marketplaceCategory использует неизвестное значение.",
+    );
+  }
+  const draft = {
+    slug: common.skillSlug,
+    title: requireBoundedText(rawInput?.title, "title", 255),
+    description: requireBoundedText(rawInput?.description, "description", 10_000),
+    searchTerms: common.searchTerms,
+    marketplaceCategory: category,
+    instructionsMarkdown: common.instructionsMarkdown,
+    summary: common.summary,
+    changeReason: common.changeReason,
+  };
+  const execution = await normalizePublicationExecution({
+    input: rawInput,
+    companyId: context.company.id,
+    skillSlug: common.skillSlug,
+    encrypted: Boolean(context.companyEncryption),
+    allowRuntimeReuse: false,
+  });
+  const protectedDraft = context.companyEncryption
+    ? await protectPublicationDraft({
+        operation: "create",
+        companyEncryption: context.companyEncryption,
+        draft,
+        execution,
+      })
+    : buildPlainPublicationDraft({ draft, execution });
+  const applyBase = { companySlug: common.companySlug, ...protectedDraft };
+  return storeCompanySkillPlan({
+    origin,
+    operation: "create",
+    applyBase,
+    settingsUrl: new URL(context.settingsPath, `${origin}/`).href,
+    summary: {
+      operation: "create",
+      company: { id: context.company.id, slug: context.company.slug },
+      skill: { slug: common.skillSlug, version: "1.0.0", title: draft.title },
+      execution: buildExecutionSummary(execution),
+      contentProtection: context.companyEncryption ? "company_e2ee_v1" : "plain",
+      changes: [
+        "Создать приватный catalog item и initial release 1.0.0",
+        "Установить навык в компанию без назначения компании или проектам",
+      ],
+      warnings: execution.kind === "runtime"
+        ? ["Исполняемый пакет остаётся company_unverified и потребует отдельного согласия на каждом устройстве перед первым запуском."]
+        : [],
+    },
+  });
+};
+
+const planCompanyPrivateSkillRelease = async (origin, rawInput, { signal } = {}) => {
+  const common = normalizeCommonPublicationInput(rawInput);
+  const version = requireStableVersion(rawInput?.version, "version");
+  const token = await requireToken(origin, { onStatus: () => undefined, signal });
+  await ensureBridgeCompatibility(origin, token, { signal });
+  const context = await readCompanyPrivateSkillManagementContext({
+    origin,
+    token,
+    companySlug: common.companySlug,
+    skillSlug: common.skillSlug,
+  });
+  if (!context.skill || !UUID_PATTERN.test(String(context.skill.currentReleaseId || ""))) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_NOT_FOUND",
+      "Приватный навык не найден; сначала подготовьте его создание.",
+    );
+  }
+  const draft = {
+    skillSlug: common.skillSlug,
+    version,
+    instructionsMarkdown: common.instructionsMarkdown,
+    searchTerms: common.searchTerms,
+    summary: common.summary,
+    changeReason: common.changeReason,
+    expectedCurrentReleaseId: context.skill.currentReleaseId,
+  };
+  const execution = await normalizePublicationExecution({
+    input: rawInput,
+    companyId: context.company.id,
+    skillSlug: common.skillSlug,
+    encrypted: Boolean(context.companyEncryption),
+    allowRuntimeReuse: true,
+  });
+  const protectedDraft = context.companyEncryption
+    ? await protectPublicationDraft({
+        operation: "publish",
+        companyEncryption: context.companyEncryption,
+        draft,
+        execution,
+      })
+    : buildPlainPublicationDraft({ draft, execution });
+  const applyBase = { companySlug: common.companySlug, ...protectedDraft };
+  const changedFields = [
+    context.skill.version !== version ? "version" : null,
+    canonicalJson(context.skill.searchTerms ?? []) !== canonicalJson(common.searchTerms)
+      ? "searchTerms"
+      : null,
+    context.skill.instructionsMarkdown !== common.instructionsMarkdown
+      ? "instructionsMarkdown"
+      : null,
+    "publicationSummary",
+    "changeReason",
+    "execution",
+  ].filter(Boolean);
+  return storeCompanySkillPlan({
+    origin,
+    operation: "publish",
+    applyBase,
+    settingsUrl: new URL(context.settingsPath, `${origin}/`).href,
+    summary: {
+      operation: "publish",
+      company: { id: context.company.id, slug: context.company.slug },
+      skill: {
+        slug: common.skillSlug,
+        currentVersion: context.skill.version,
+        nextVersion: version,
+      },
+      execution: buildExecutionSummary(execution),
+      contentProtection: context.companyEncryption ? "company_e2ee_v1" : "plain",
+      expectedCurrentReleaseId: context.skill.currentReleaseId,
+      changedFields,
+      assignmentChanged: false,
+      warnings: execution.kind === "runtime"
+        ? ["Новая исполняемая публикация остаётся company_unverified и потребует отдельного согласия устройства."]
+        : [],
+    },
+  });
+};
+
+const readCompanySkillPlan = async ({ origin, planId, planHash, operation }) => {
+  const planPath = resolveCompanySkillPlanPath(planId);
+  const plan = await readPrivateJsonFile(planPath);
+  if (
+    plan.schemaVersion !== 1
+    || plan.planId !== planId
+    || plan.planHash !== planHash
+    || plan.operation !== operation
+    || plan.origin !== origin
+    || !UUID_PATTERN.test(String(plan.clientRequestId || ""))
+    || !plan.applyBase
+    || fingerprintCompanySkillApplyPlan(operation, plan.applyBase) !== planHash
+  ) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_PLAN_CHANGED",
+      "Локальный plan не найден либо не совпадает с exact planHash.",
+    );
+  }
+  if (!Number.isFinite(Date.parse(plan.expiresAt)) || Date.parse(plan.expiresAt) <= Date.now()) {
+    await fs.rm(planPath, { force: true });
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_PLAN_EXPIRED",
+      "Срок действия plan истёк; подготовьте новый diff и подтвердите его отдельно.",
+    );
+  }
+  return { plan, planPath };
+};
+
+const applyCompanyPrivateSkillPlan = async (
+  origin,
+  rawInput,
+  operation,
+  { signal } = {},
+) => {
+  if (rawInput?.confirmed !== true) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_CONFIRMATION_REQUIRED",
+      "Apply требует confirmed=true после отдельного явного подтверждения exact planHash.",
+    );
+  }
+  const planId = String(rawInput?.planId || "").trim();
+  const planHash = String(rawInput?.planHash || "").trim();
+  if (!SHA256_PATTERN.test(planHash)) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_PLAN",
+      "planHash должен содержать exact SHA-256 из plan tool.",
+    );
+  }
+  const { plan, planPath } = await readCompanySkillPlan({
+    origin,
+    planId,
+    planHash,
+    operation,
+  });
+  const token = await requireToken(origin, { onStatus: () => undefined, signal });
+  await ensureBridgeCompatibility(origin, token, { signal });
+  const endpoint = operation === "create"
+    ? "/api/agent-skills/private-management/create"
+    : "/api/agent-skills/private-management/publish";
+  const response = await request(origin, token, endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      ...plan.applyBase,
+      planHash,
+      clientRequestId: plan.clientRequestId,
+      confirmed: true,
+    }),
+    signal,
+  });
+  const result = await response.json();
+  if (
+    typeof result?.settingsPath !== "string"
+    || result.company?.slug !== plan.applyBase.companySlug
+  ) {
+    throw new RemoteMcpHostError(
+      "AGENT_SKILL_MANAGEMENT_INVALID_RESPONSE",
+      "Trelio применил запрос, но не вернул exact страницу приватного навыка.",
+    );
+  }
+  await fs.rm(planPath, { force: true });
+  return {
+    applied: true,
+    replayed: result.replayed === true,
+    operation,
+    company: result.company,
+    skillId: result.skillId,
+    releaseId: result.releaseId,
+    publicationId: result.publicationId,
+    settingsUrl: new URL(result.settingsPath, `${origin}/`).href,
+    ...(operation === "create"
+      ? {
+          installed: result.installed === true,
+          assigned: false,
+        }
+      : { assignmentChanged: false }),
+    note: operation === "create"
+      ? "Навык установлен, но не назначен компании или проектам. Откройте settingsUrl для проверки и назначения."
+      : "Публикация создана без изменения назначения. Откройте settingsUrl для проверки.",
+  };
+};
+
+const handleCompanySkillManagementTool = async (
+  origin,
+  name,
+  rawArguments,
+  { signal } = {},
+) => {
+  if (name === "plan_company_private_agent_skill_create") {
+    return buildTextResult(await planCompanyPrivateSkillCreate(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
+  if (name === "plan_company_private_agent_skill_release") {
+    return buildTextResult(await planCompanyPrivateSkillRelease(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
+  if (name === "create_company_private_agent_skill") {
+    return buildTextResult(await applyCompanyPrivateSkillPlan(
+      origin,
+      rawArguments,
+      "create",
+      { signal },
+    ));
+  }
+  if (name === "publish_company_private_agent_skill_release") {
+    return buildTextResult(await applyCompanyPrivateSkillPlan(
+      origin,
+      rawArguments,
+      "publish",
+      { signal },
+    ));
+  }
+  throw new RemoteMcpHostError(
+    "AGENT_SKILL_MANAGEMENT_UNKNOWN_TOOL",
+    "Неизвестный инструмент управления приватным навыком.",
+  );
+};
+
 const localToolBaseSchema = {
   type: "object",
   additionalProperties: false,
@@ -1862,7 +2841,148 @@ const localToolBaseSchema = {
   },
 };
 
+const companySkillExecutionProperties = {
+  executionKind: {
+    type: "string",
+    enum: ["markdown", "remote_mcp", "skillpkg", "reuse_skillpkg"],
+    description: "Markdown-only, declarative Remote MCP, a local .skillpkg, or reuse of the current runtime on a later release.",
+  },
+  remoteMcpConfig: {
+    type: ["object", "null"],
+    description: "Complete declarative Remote MCP config. Required only for executionKind=remote_mcp.",
+  },
+  packagePath: {
+    type: ["string", "null"],
+    description: "Absolute or working-directory-relative local .skillpkg path. Required only for executionKind=skillpkg.",
+  },
+  minimumHostVersion: {
+    type: ["string", "null"],
+    pattern: "^\\d+\\.\\d+\\.\\d+$",
+    description: "Optional runtime host floor for .skillpkg. Encrypted publication raises it to the current E2EE-capable host when needed.",
+  },
+};
+
+const companySkillPlanCommonProperties = {
+  companySlug: { type: "string", minLength: 1, maxLength: 120 },
+  skillSlug: {
+    type: "string",
+    minLength: 1,
+    maxLength: 60,
+    pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+  },
+  instructionsMarkdown: { type: "string", minLength: 1, maxLength: 200000 },
+  searchTerms: {
+    type: "array",
+    minItems: 1,
+    maxItems: 32,
+    items: { type: "string", minLength: 2, maxLength: 120 },
+  },
+  summary: { type: "string", minLength: 1, maxLength: 2000 },
+  changeReason: { type: "string", minLength: 1, maxLength: 2000 },
+  ...companySkillExecutionProperties,
+};
+
+const companySkillApplySchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["planId", "planHash", "confirmed"],
+  properties: {
+    planId: { type: "string", format: "uuid" },
+    planHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    confirmed: {
+      type: "boolean",
+      const: true,
+      description: "Must be true only after the owner/admin explicitly confirms the separate plan output and exact planHash.",
+    },
+  },
+};
+
 const LOCAL_TOOLS = [
+  {
+    name: "plan_company_private_agent_skill_create",
+    title: "Plan a company-private Agent Skill",
+    description: "Owner/admin only. Validate one Markdown, Remote MCP, or local .skillpkg skill, prepare a no-assignment initial release, encrypt protected content locally when company E2EE is enabled, and return an exact expiring planHash. This does not publish; ask for separate explicit confirmation before apply.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "companySlug",
+        "skillSlug",
+        "title",
+        "description",
+        "instructionsMarkdown",
+        "searchTerms",
+        "summary",
+        "changeReason",
+        "executionKind",
+      ],
+      properties: {
+        ...companySkillPlanCommonProperties,
+        title: { type: "string", minLength: 1, maxLength: 255 },
+        description: { type: "string", minLength: 1, maxLength: 10000 },
+        marketplaceCategory: {
+          type: "string",
+          enum: ["communications", "business", "knowledge", "development", "other"],
+          default: "other",
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "create_company_private_agent_skill",
+    title: "Create a planned company-private Agent Skill",
+    description: "Owner/admin only. Apply one exact, separately confirmed create plan. Creation installs the private skill but never assigns or enables it; the result includes the exact Trelio settings URL.",
+    inputSchema: companySkillApplySchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "plan_company_private_agent_skill_release",
+    title: "Plan a company-private Agent Skill release",
+    description: "Owner/admin only. Read the live current release, validate Markdown, Remote MCP, a new local .skillpkg, or reuse of the current package, encrypt locally for company E2EE, and return an exact CAS-bound planHash. This does not publish; ask for separate explicit confirmation before apply.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "companySlug",
+        "skillSlug",
+        "version",
+        "instructionsMarkdown",
+        "searchTerms",
+        "summary",
+        "changeReason",
+        "executionKind",
+      ],
+      properties: {
+        ...companySkillPlanCommonProperties,
+        version: { type: "string", pattern: "^\\d+\\.\\d+\\.\\d+$" },
+      },
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "publish_company_private_agent_skill_release",
+    title: "Publish a planned company-private Agent Skill release",
+    description: "Owner/admin only. Apply one exact, separately confirmed release plan with current-release CAS and idempotency. Assignment is unchanged; the result includes the exact Trelio settings URL.",
+    inputSchema: companySkillApplySchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
   {
     name: "connect_remote_agent_skill",
     title: "Connect personal Remote MCP credential",
@@ -1931,6 +3051,14 @@ export const handleToolCall = async (
   { signal } = {},
 ) => {
   throwIfAborted(signal);
+  if (COMPANY_SKILL_MANAGEMENT_TOOL_NAMES.has(name)) {
+    return handleCompanySkillManagementTool(
+      origin,
+      name,
+      rawArguments,
+      { signal },
+    );
+  }
   const resolved = await resolveRemoteMcpDeclaration(
     origin,
     rawArguments,

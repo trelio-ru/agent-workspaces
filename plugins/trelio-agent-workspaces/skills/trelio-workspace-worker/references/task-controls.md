@@ -6,7 +6,7 @@ or clearing a task control.
 Schema-v3 `get_task` keeps controls deferred. Read
 `get_task_sections.sections.controls` for the exact task; it contains all
 visible active shared controls and only the authenticated user's personal
-controls. Do not look for a schema-v2 inline controls array: plugin `1.14.1`
+controls. Do not look for a schema-v2 inline controls array: plugin `1.14.2`
 requires the schema-v3 section contract.
 These date-only controls are repeatable check points, not extra deadlines.
 

@@ -113,7 +113,7 @@ the other named sections only when relevant. Attachments are metadata, not
 bytes. The supplement rechecks ACL without repeating effective instructions,
 core fields, connections, or linked dossiers.
 
-Schema v1/v2 are not supported by plugin `1.14.1`. Treat either as a
+Schema v1/v2 are not supported by plugin `1.14.2`. Treat either as a
 plugin/backend version mismatch and stop for the normal upgrade path instead
 of interpreting a legacy payload.
 

@@ -56,7 +56,7 @@ authority/core, а компактный `content` не дублирует payloa
 `get_agent_instructions`; `requires_scope` запускает стандартный consent и
 повторное чтение правил. Внутри уже подготовленного Run более новая revision из
 exact read не заменяет pinned `agent-instructions.md` и `user-profile.md` этого
-Run. Schema v1/v2 не поддерживаются plugin `1.14.1`: совместимая пара
+Run. Schema v1/v2 не поддерживаются plugin `1.14.2`: совместимая пара
 plugin/backend обязана использовать schema v3 и `get_task_sections`, а version
 mismatch завершается обновлением вместо fallback к монолитному payload.
 

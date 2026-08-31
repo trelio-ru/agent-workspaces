@@ -1450,6 +1450,53 @@ test("device consent returns only after a second live resolve and before package
   ]);
 });
 
+test("encrypted runtime is locally inspected before consent and then resolved again", async () => {
+  const challenge = buildCompanyRuntimeConsentChallenge();
+  const preview = {
+    artifact: { contentProtection: "company_e2ee_v1" },
+    trust: { requiresDeviceConsent: true, consentId: null },
+    consentChallenge: challenge,
+  };
+  const finalResponse = new Response(JSON.stringify({
+    artifact: { contentProtection: "company_e2ee_v1" },
+    trust: { requiresDeviceConsent: true, consentId: crypto.randomUUID() },
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const events = [];
+  let resolveCount = 0;
+
+  const response = await resolveAgentSkillRuntimeWithDeviceConsent({
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    companyId: challenge.company.id,
+    projectId: null,
+    skillId: challenge.skill.id,
+    releaseId: challenge.skill.releaseId,
+  }, {
+    requestFn: async () => {
+      resolveCount += 1;
+      events.push(resolveCount === 1 ? "encrypted-preview" : "resolve-after-consent");
+      return resolveCount === 1
+        ? new Response(JSON.stringify(preview), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : finalResponse;
+    },
+    prepareEncryptedConsentFn: async (input) => {
+      events.push("decrypt-inspect-consent");
+      assert.deepEqual(input.rawResolution.consentChallenge, challenge);
+      assert.equal(input.releaseId, challenge.skill.releaseId);
+    },
+  });
+
+  assert.equal(response, finalResponse);
+  assert.deepEqual(events, [
+    "encrypted-preview",
+    "decrypt-inspect-consent",
+    "resolve-after-consent",
+  ]);
+});
+
 test("bridge maps parent and related contexts to stable read-only paths", () => {
   const contexts = buildRunContextSpecifications(runId, {
     company: { workspaceId: companyWorkspaceId, head: companyHead },
@@ -2724,7 +2771,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.14.1");
+  assert.equal(BRIDGE_VERSION, "1.14.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -3479,6 +3526,35 @@ test("project access skill preserves owner-only plan/apply and moderator confirm
   );
   assert.match(projectAccessSkill, /full project PATCH/u);
   assert.doesNotMatch(projectAccessSkill, /\[TODO:/u);
+});
+
+test("private skill management keeps owner-only confirmation, E2EE and assignment boundaries", async () => {
+  const managementSkill = await readFile(
+    path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-private-skill-management",
+      "SKILL.md",
+    ),
+    "utf8",
+  );
+
+  assert.match(managementSkill, /company owner or an administrator/u);
+  assert.match(managementSkill, /`agent-skill:manage`/u);
+  assert.match(managementSkill, /executionKind=markdown/u);
+  assert.match(managementSkill, /executionKind=remote_mcp/u);
+  assert.match(managementSkill, /executionKind=skillpkg/u);
+  assert.match(managementSkill, /plan_company_private_agent_skill_create/u);
+  assert.match(managementSkill, /create_company_private_agent_skill/u);
+  assert.match(managementSkill, /plan_company_private_agent_skill_release/u);
+  assert.match(managementSkill, /publish_company_private_agent_skill_release/u);
+  assert.match(managementSkill, /Do not call an\s+apply tool in the same assistant turn as its plan/u);
+  assert.match(managementSkill, /exact `planHash`/u);
+  assert.match(managementSkill, /exact `settingsUrl` returned by apply/u);
+  assert.match(managementSkill, /does not assign or enable it/u);
+  assert.match(managementSkill, /bridge encrypts prose, discovery terms, Remote MCP configuration/u);
+  assert.match(managementSkill, /company_unverified/u);
+  assert.doesNotMatch(managementSkill, /\[TODO:/u);
 });
 
 test("workspace skill transfers dossiers only with two-sided management authority", async () => {
@@ -4844,6 +4920,8 @@ test("workspace worker gates external services but not native Trelio work", asyn
 test("bridge adds its release version and bearer credential to every API request", () => {
   const headers = buildBridgeRequestHeaders("oauth-token", { accept: "application/json" });
   assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
+  assert.equal(headers.get("x-trelio-agent-skill-device-consent"), "v1");
+  assert.equal(headers.get("x-trelio-company-skill-e2ee"), "v1");
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
 });
@@ -5093,6 +5171,76 @@ test("skill runtime resolution fails closed on missing or contradictory trust", 
     },
   });
   assert.equal(companyPublication.trust.consentId, consentId);
+});
+
+test("encrypted runtime resolution requires exact company and manifest bindings", () => {
+  const payload = buildConnectionFreeRuntimeResolutionPayload();
+  const encryptedManifestEntityId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const consentId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const encryptedPayload = {
+    ...payload,
+    company: {
+      id: payload.localIdentity.companyId,
+      slug: "encrypted-company",
+      name: "Encrypted Company",
+    },
+    encryptedManifestEntityId,
+    artifact: {
+      ...payload.artifact,
+      packageFormat: "trelio-company-encrypted-skill-package/v1",
+      contentProtection: "company_e2ee_v1",
+      manifest: {
+        format: "trelio-agent-skill-package/v1",
+        skill: { id: payload.artifact.skillId, runtimeVersion: "1.0.0" },
+        entrypoint: { path: "runtime.mjs", interpreter: "node" },
+        capabilities: [],
+        files: [],
+      },
+    },
+    trust: {
+      level: "company_unverified",
+      artifactLevel: "company_unverified",
+      requiresDeviceConsent: true,
+      consentId,
+    },
+  };
+
+  const resolution = normalizeResolvedSkillRuntimeArtifact(encryptedPayload);
+  assert.equal(resolution.artifact.contentProtection, "company_e2ee_v1");
+  assert.equal(resolution.artifact.encryptedManifestEntityId, encryptedManifestEntityId);
+  assert.equal(resolution.company.slug, "encrypted-company");
+
+  const pendingPayload = {
+    ...encryptedPayload,
+    consentChallenge: buildCompanyRuntimeConsentChallenge(),
+    trust: { ...encryptedPayload.trust, consentId: null },
+  };
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact(pendingPayload),
+    /некорректную runtime resolution/u,
+  );
+  assert.equal(
+    normalizeResolvedSkillRuntimeArtifact(
+      pendingPayload,
+      { allowPendingEncryptedConsent: true },
+    ).trust.consentId,
+    null,
+  );
+
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact({
+      ...encryptedPayload,
+      company: { ...encryptedPayload.company, id: consentId },
+    }),
+    /некорректную runtime resolution/u,
+  );
+  assert.throws(
+    () => normalizeResolvedSkillRuntimeArtifact({
+      ...encryptedPayload,
+      encryptedManifestEntityId: null,
+    }),
+    /некорректную runtime resolution/u,
+  );
 });
 
 test("skill host environment allowlist strips pre-runtime injection and ambient secrets", () => {
