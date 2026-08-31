@@ -295,3 +295,8 @@ agent_workspaces_verify_canonical_main \
 
 agent_workspaces_git_guard_log \
   "Guarded main push complete: canonical main and origin/main are ${SOURCE_SHA}."
+
+if [[ "${REPOSITORY_ROOT}" != "${CANONICAL_ROOT}" ]]; then
+  agent_workspaces_git_guard_log \
+    "Required cleanup: run from canonical main: npm run git:finish-worktree -- ${REPOSITORY_ROOT}"
+fi

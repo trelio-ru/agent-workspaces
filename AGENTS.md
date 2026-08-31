@@ -51,6 +51,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   fast-forward от свежего `origin/main`, делает exact remote read-back и затем
   fast-forward канонического локального `main`. `git push origin main`,
   `git push origin HEAD:main` и эквивалентные raw refspec запрещены.
+- После подтверждённой интеграции задача не завершена, пока из чистого
+  канонического `main` не выполнен
+  `npm run git:finish-worktree -- <absolute-task-worktree>`. Helper удаляет
+  только clean `codex/*` worktree и exact local branch, уже достижимую из
+  свежего `origin/main`; squash/rebase merge требует отдельного
+  `--merged-pr <number-or-url>`. `git:new-worktree` fail-closed блокирует новую
+  задачу, если обычный merged worktree оставлен.
 - Непосредственно перед guarded push выполни `npm run check:worktree` и не
   пушь при непустом status. Если canonical либо source содержит чужие tracked
   или untracked изменения, сохрани их и остановись до выяснения scope.

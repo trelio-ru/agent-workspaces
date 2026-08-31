@@ -85,6 +85,14 @@ agent_workspaces_verify_canonical_main \
   "${ORIGIN_MAIN_SHA}" \
   origin
 
+# Не начинаем следующую задачу поверх забытого cleanup. Audit блокирует только
+# clean codex/* worktree, уже достижимые из свежего origin/main; активные,
+# dirty и реально невлитые ветки остаются нетронутыми.
+(
+  cd "${CANONICAL_ROOT}"
+  node scripts/git-finish-worktree.mjs --check --no-fetch
+)
+
 if git -C "${CANONICAL_ROOT}" show-ref --verify --quiet \
   "refs/heads/${TASK_BRANCH}"; then
   agent_workspaces_git_guard_log \

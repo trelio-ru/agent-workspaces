@@ -50,6 +50,8 @@ cp "${PROJECT_ROOT}/scripts/create-task-worktree.sh" \
   "${CANONICAL_REPOSITORY}/scripts/create-task-worktree.sh"
 cp "${PROJECT_ROOT}/scripts/git-main-guard.sh" \
   "${CANONICAL_REPOSITORY}/scripts/git-main-guard.sh"
+cp "${PROJECT_ROOT}/scripts/git-finish-worktree.mjs" \
+  "${CANONICAL_REPOSITORY}/scripts/git-finish-worktree.mjs"
 cp "${PROJECT_ROOT}/scripts/push-main.sh" \
   "${CANONICAL_REPOSITORY}/scripts/push-main.sh"
 chmod +x \
@@ -136,6 +138,20 @@ if [[ "${task_one_sha}" != "${canonical_sha}" ]] \
   exit 1
 fi
 
+(
+  cd "${CANONICAL_REPOSITORY}"
+  node scripts/git-finish-worktree.mjs \
+    --no-fetch \
+    "${TASK_ONE_WORKTREE}"
+) >/dev/null
+
+if [[ -d "${TASK_ONE_WORKTREE}" ]] \
+  || git -C "${CANONICAL_REPOSITORY}" show-ref --verify --quiet \
+    refs/heads/codex/guard-test-one; then
+  printf 'Completed task worktree survived guarded cleanup.\n' >&2
+  exit 1
+fi
+
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
   bash "${CANONICAL_REPOSITORY}/scripts/create-task-worktree.sh" \
     codex/guard-test-two \
@@ -169,6 +185,13 @@ git -C "${CANONICAL_REPOSITORY}" restore README.md
 AGENT_WORKSPACES_REPOSITORY_ROOT="${TASK_TWO_WORKTREE}" \
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
   bash "${TASK_TWO_WORKTREE}/scripts/push-main.sh" >/dev/null
+
+(
+  cd "${CANONICAL_REPOSITORY}"
+  node scripts/git-finish-worktree.mjs \
+    --no-fetch \
+    "${TASK_TWO_WORKTREE}"
+) >/dev/null
 
 # Имитируем внешний fast-forward, который обновил remote без этого clone.
 # Следующее штатное создание worktree обязано сначала догнать canonical main.
@@ -216,6 +239,20 @@ if [[ "$(git -C "${CANONICAL_REPOSITORY}" rev-parse HEAD)" != "${release_sha}" ]
   || [[ "$(git --git-dir="${REMOTE_REPOSITORY}" rev-parse refs/heads/main)" != "${release_sha}" ]] \
   || [[ "${remote_tag_sha}" != "${release_sha}" ]]; then
   printf 'Atomic tag push did not synchronize all protected refs.\n' >&2
+  exit 1
+fi
+
+(
+  cd "${CANONICAL_REPOSITORY}"
+  node scripts/git-finish-worktree.mjs \
+    --no-fetch \
+    "${TASK_THREE_WORKTREE}"
+) >/dev/null
+
+if [[ -d "${TASK_THREE_WORKTREE}" ]] \
+  || git -C "${CANONICAL_REPOSITORY}" show-ref --verify --quiet \
+    refs/heads/codex/guard-test-three; then
+  printf 'Released plugin task worktree survived guarded cleanup.\n' >&2
   exit 1
 fi
 

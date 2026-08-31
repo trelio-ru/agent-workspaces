@@ -4,9 +4,11 @@
     "check:worktree": "bash scripts/assert-clean-worktree.sh",
     "git:configure-main": "bash scripts/configure-canonical-main.sh",
     "git:new-worktree": "bash scripts/create-task-worktree.sh",
+    "git:finish-worktree": "node scripts/git-finish-worktree.mjs",
+    "git:check-finished-worktrees": "node scripts/git-finish-worktree.mjs --check",
     "git:push-main": "bash scripts/push-main.sh",
     "report:context-budget": "node plugins/trelio-agent-workspaces/scripts/report-context-budget.mjs",
     "test:context-budget": "node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs",
-    "test:git-guard": "bash scripts/git-main-guard.test.sh"
+    "test:git-guard": "node --test scripts/git-finish-worktree.test.mjs && bash scripts/git-main-guard.test.sh"
   }
 }
