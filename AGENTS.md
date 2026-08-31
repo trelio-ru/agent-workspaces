@@ -238,6 +238,15 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Проверки и релизы
 
+- Постоянный model-visible слой типового task-scoped Run измеряется командой
+  `npm run report:context-budget`; JSON для объединённого backend-отчёта
+  возвращает `npm run --silent report:context-budget -- --json`. Канонические
+  метрики – UTF-8 bytes, а `estimatedTokensUtf8Div4` является только прозрачной
+  сравнительной эвристикой. `context-budget.test.mjs` фиксирует regression
+  ceilings отдельно для runtime `AGENTS.md`, worker `SKILL.md`, обязательных
+  task Run references и варианта с proposal bundle. Эти потолки не являются
+  целевыми размерами: осознанное увеличение требует объяснения, а оптимизация
+  должна уменьшать фактический отчёт без удаления security-инвариантов.
 - Для изменённого bundled skill запусти его tests, `validate-skill` при наличии
   и `skill-creator/scripts/quick_validate.py`.
 - Для manifest используй штатный `plugin-creator` validator. Для
