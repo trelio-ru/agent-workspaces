@@ -3963,7 +3963,7 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
   assert.match(skillMarkdown, /never silently rewrite already\s+distributed workspaces/u);
 });
 
-test("workspace skill and protected runtime preserve task control privacy and notification semantics", async () => {
+test("workspace skill defaults task-level controls to shared without widening existing personal controls", async () => {
   const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
 
   for (const toolName of ["create_task_control", "update_task_control", "clear_task_control"]) {
@@ -3971,7 +3971,13 @@ test("workspace skill and protected runtime preserve task control privacy and no
   }
 
   assert.match(skillMarkdown, /Reaching `controlDate` never sends a notification/u);
-  assert.match(skillMarkdown, /Never\s+widen personal to shared/u);
+  assert.match(skillMarkdown, /For a new control, choose `shared` by default/u);
+  assert.match(skillMarkdown, /Choose `personal` only for an explicitly\s+private working check/u);
+  assert.match(skillMarkdown, /another\s+person's action does not make the control personal/u);
+  assert.match(skillMarkdown, /keep its current visibility unless the\s+user explicitly asks/u);
+  assert.match(skillMarkdown, /creation default never widens an\s+existing personal control/u);
+  assert.match(skillMarkdown, /do not silently create a personal substitute/u);
+  assert.doesNotMatch(skillMarkdown, /Never\s+widen personal to shared/u);
   assert.match(skillMarkdown, /Clearing a shared control also notifies/u);
   assert.match(skillMarkdown, /Do not clear a control because the Run completed or task status changed/u);
   assert.match(

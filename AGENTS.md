@@ -139,6 +139,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   нельзя переносить на непривязанную задачу. Schema v1/v2 больше не являются
   поддерживаемым task-read ABI: их получение означает version mismatch и
   требует обновления плагина/backend, а не client-side fallback.
+- Новый task control по умолчанию `shared`, когда он фиксирует объективную
+  контрольную точку задачи; `personal` допустим только для явно частной проверки.
+  Update сохраняет текущую visibility без прямой команды изменить аудиторию, а
+  недоступный по ACL `shared` нельзя молча заменять скрытым `personal`.
 - Structured `MCP_SEARCH_TIMEOUT` является подтверждённым backend-ом
   превышением бюджета read-only поиска, а не transport 504. Bundled discovery
   и diagnostics не применяют к нему три одинаковых network retry: допустим один
