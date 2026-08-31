@@ -243,9 +243,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   локального `TRELIOE1` self-test; transitional state блокирует content work.
   Успешный `login` сам по себе не доказывает encryption readiness.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
-  bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанный
-  manifest без Git paths, blobs и plaintext digests. Локальный bridge перед
-  upload заново проверяет bounds, paths, file types, protected control files и
+  bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанную
+  browser-проекцию: её clear index содержит только UUID, ciphertext ranges и
+  digests, а paths/MIME/file bytes находятся в отдельных `TRELIOE1` containers.
+  Accepted candidate без проекции запрещён. Локальный bridge перед upload
+  заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
 - Чистое чтение уже принятого task/dossier Workspace использует

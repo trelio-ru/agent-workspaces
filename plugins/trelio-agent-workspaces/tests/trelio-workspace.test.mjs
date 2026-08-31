@@ -82,10 +82,12 @@ import {
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
+  withEncryptedWorkspaceBrowserProjection,
 } from "../scripts/trelio-workspace.mjs";
 import {
   COMPANY_ENCRYPTION_SUITE,
   createAgentEncryptionDevice,
+  decryptFileFromCompanyContainer,
 } from "../scripts/trelio-company-encryption.mjs";
 import {
   buildSecretBrowserArguments,
@@ -3252,6 +3254,111 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
   }
 });
 
+test("encrypted browser projection exposes only opaque ranges before local decryption", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-browser-projection-test-"));
+  const workspaceDirectory = path.join(temporaryDirectory, "workspace");
+  const decryptedManifestPath = path.join(temporaryDirectory, "manifest.json");
+  const decryptedFilePath = path.join(temporaryDirectory, "result.md");
+  const companyId = "11111111-1111-4111-8111-111111111111";
+  const workspaceId = "22222222-2222-4222-8222-222222222222";
+  const scopeId = "33333333-3333-4333-8333-333333333333";
+  const deviceId = "44444444-4444-4444-8444-444444444444";
+  const scope = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const scopePublicEncryptionJwk = await webcrypto.subtle.exportKey("jwk", scope.publicKey);
+  const scopePrivateJwk = await webcrypto.subtle.exportKey("jwk", scope.privateKey);
+  const device = await createAgentEncryptionDevice();
+
+  try {
+    await mkdir(path.join(workspaceDirectory, "artifacts"), { recursive: true });
+    await writeFile(path.join(workspaceDirectory, "AGENTS.md"), "protected\n");
+    await writeFile(path.join(workspaceDirectory, "README.md"), "control\n");
+    await writeFile(path.join(workspaceDirectory, "artifacts", "result.md"), "# Готово\n");
+    await execFileAsync("git", ["init", "-b", "main"], { cwd: workspaceDirectory });
+    await execFileAsync("git", ["config", "user.name", "Trelio Test"], { cwd: workspaceDirectory });
+    await execFileAsync("git", ["config", "user.email", "test@trelio.local"], { cwd: workspaceDirectory });
+    await execFileAsync("git", ["add", "--all"], { cwd: workspaceDirectory });
+    await execFileAsync("git", ["commit", "-m", "Тест"], { cwd: workspaceDirectory });
+    const { stdout: workspaceHeadOutput } = await execFileAsync(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: workspaceDirectory, encoding: "utf8" },
+    );
+    const workspaceHead = workspaceHeadOutput.trim();
+
+    await withEncryptedWorkspaceBrowserProjection({
+      metadata: { workspaceId, workspaceDirectory, objects: [] },
+      workspaceHead,
+      companyEncryption: {
+        runtime: {
+          company: { id: companyId },
+          scope: { id: scopeId, epoch: 1, publicEncryptionJwk: scopePublicEncryptionJwk },
+          device: { id: deviceId },
+        },
+        device,
+      },
+      temporaryPrefix: "trelio-browser-projection-test",
+    }, async (projection) => {
+      const bytes = await readFile(projection.projectionPath);
+      assert.equal(bytes.subarray(0, 8).toString("ascii"), "TRELIOP1");
+      const indexLength = bytes.readUInt32BE(8);
+      const index = JSON.parse(bytes.subarray(12, 12 + indexLength).toString("utf8"));
+      const clearIndex = JSON.stringify(index);
+      const payloadOffset = 12 + indexLength;
+
+      assert.equal(clearIndex.includes("artifacts"), false);
+      assert.equal(clearIndex.includes("result.md"), false);
+      assert.equal(index.files.length, 2);
+      const manifestRange = index.files.find((file) => file.kind === "manifest");
+      await writeFile(
+        path.join(temporaryDirectory, "manifest.trelioe1"),
+        bytes.subarray(
+          payloadOffset + manifestRange.offset,
+          payloadOffset + manifestRange.offset + manifestRange.sizeBytes,
+        ),
+      );
+      await decryptFileFromCompanyContainer({
+        sourcePath: path.join(temporaryDirectory, "manifest.trelioe1"),
+        destinationPath: decryptedManifestPath,
+        scopePrivateKey: scope.privateKey,
+        scopePrivateJwk,
+      });
+      const manifest = JSON.parse(await readFile(decryptedManifestPath, "utf8"));
+      assert.deepEqual(manifest.files.map((file) => file.path), ["artifacts/result.md"]);
+      const contentRange = index.files.find((file) => file.kind === "content");
+      await writeFile(
+        path.join(temporaryDirectory, "result.trelioe1"),
+        bytes.subarray(
+          payloadOffset + contentRange.offset,
+          payloadOffset + contentRange.offset + contentRange.sizeBytes,
+        ),
+      );
+      await decryptFileFromCompanyContainer({
+        sourcePath: path.join(temporaryDirectory, "result.trelioe1"),
+        destinationPath: decryptedFilePath,
+        scopePrivateKey: scope.privateKey,
+        scopePrivateJwk,
+      });
+      assert.equal(await readFile(decryptedFilePath, "utf8"), "# Готово\n");
+    });
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("encrypted projection upload uses the backend's canonical id header", async () => {
+  const bridgeSource = await readFile(bridgePath, "utf8");
+
+  assert.match(
+    bridgeSource,
+    /\/encrypted-browser-projection`[\s\S]{0,1800}"x-trelio-browser-projection-id": projection\.projectionId/u,
+  );
+  assert.doesNotMatch(bridgeSource, /"x-trelio-projection-id"/u);
+});
+
 test("bridge release version stays synchronized across executable and manifests", async () => {
   const codexManifest = JSON.parse(await readFile(
     path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
@@ -3273,7 +3380,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.14.4");
+  assert.equal(BRIDGE_VERSION, "1.15.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

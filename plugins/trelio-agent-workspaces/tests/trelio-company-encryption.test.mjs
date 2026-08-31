@@ -8,6 +8,9 @@ import test from "node:test";
 import {
   COMPANY_ENCRYPTION_SUITE,
   buildAgentDeviceRegistrationRecord,
+  buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord,
+  buildEncryptedAgentWorkspaceBrowserProjectionRecord,
+  buildEncryptedAgentWorkspaceRevisionRecord,
   calculateKeyFingerprint,
   canonicalJson,
   createAgentEncryptionDevice,
@@ -18,6 +21,41 @@ import {
   unlockRememberedAgentEncryptionDevice,
   wrapAndRememberAgentEncryptionDevice,
 } from "../scripts/trelio-company-encryption.mjs";
+
+test("encrypted workspace records bind accepted revision to its browser projection", () => {
+  const common = {
+    companyId: "11111111-1111-4111-8111-111111111111",
+    workspaceId: "22222222-2222-4222-8222-222222222222",
+    runId: "33333333-3333-4333-8333-333333333333",
+    baseHead: "a".repeat(40),
+    workspaceHead: "b".repeat(40),
+    projectionId: "44444444-4444-4444-8444-444444444444",
+    scopeId: "55555555-5555-4555-8555-555555555555",
+    scopeEpoch: 2,
+    writerDeviceId: "66666666-6666-4666-8666-666666666666",
+    ciphertextSha256: "c".repeat(64),
+    ciphertextSizeBytes: 1234,
+    indexSha256: "d".repeat(64),
+    fileCount: 3,
+    fencingToken: 7,
+  };
+  const projection = buildEncryptedAgentWorkspaceBrowserProjectionRecord(common);
+  const revision = buildEncryptedAgentWorkspaceRevisionRecord({
+    ...common,
+    revisionKind: "accepted",
+    browserProjectionId: common.projectionId,
+  });
+  const migration = buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord({
+    ...common,
+    encryptedRevisionId: "77777777-7777-4777-8777-777777777777",
+  });
+
+  assert.equal(projection.purpose, "agent-workspace-browser-projection");
+  assert.equal(projection.indexSha256, common.indexSha256);
+  assert.equal(revision.browserProjectionId, common.projectionId);
+  assert.equal(migration.purpose, "agent-workspace-browser-projection-migration");
+  assert.equal(migration.encryptedRevisionId, "77777777-7777-4777-8777-777777777777");
+});
 
 test("agent device fingerprint uses the backend JWK canonical form", async () => {
   const device = await createAgentEncryptionDevice();

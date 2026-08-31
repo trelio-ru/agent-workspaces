@@ -171,6 +171,50 @@ export const buildEncryptedAgentWorkspaceRevisionRecord = (input) => ({
   ciphertextSha256: String(input.ciphertextSha256),
   ciphertextSizeBytes: Number(input.ciphertextSizeBytes),
   fencingToken: Number(input.fencingToken),
+  ...(input.browserProjectionId
+    ? { browserProjectionId: String(input.browserProjectionId) }
+    : {}),
+});
+
+/** Exact transport manifest for the browser-addressable encrypted file pack. */
+export const buildEncryptedAgentWorkspaceBrowserProjectionRecord = (input) => ({
+  suite: COMPANY_ENCRYPTION_SUITE,
+  purpose: "agent-workspace-browser-projection",
+  companyId: String(input.companyId),
+  workspaceId: String(input.workspaceId),
+  runId: String(input.runId),
+  baseHead: String(input.baseHead),
+  workspaceHead: String(input.workspaceHead),
+  projectionId: String(input.projectionId),
+  scopeId: String(input.scopeId),
+  scopeEpoch: Number(input.scopeEpoch),
+  writerDeviceId: String(input.writerDeviceId),
+  ciphertextSha256: String(input.ciphertextSha256),
+  ciphertextSizeBytes: Number(input.ciphertextSizeBytes),
+  indexSha256: String(input.indexSha256),
+  fileCount: Number(input.fileCount),
+  fencingToken: Number(input.fencingToken),
+});
+
+/**
+ * A migration is signed independently from a Run: it can attach only to the
+ * exact accepted head that the authorized bridge downloaded and opened.
+ */
+export const buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord = (input) => ({
+  suite: COMPANY_ENCRYPTION_SUITE,
+  purpose: "agent-workspace-browser-projection-migration",
+  companyId: String(input.companyId),
+  workspaceId: String(input.workspaceId),
+  workspaceHead: String(input.workspaceHead),
+  encryptedRevisionId: String(input.encryptedRevisionId),
+  projectionId: String(input.projectionId),
+  scopeId: String(input.scopeId),
+  scopeEpoch: Number(input.scopeEpoch),
+  writerDeviceId: String(input.writerDeviceId),
+  ciphertextSha256: String(input.ciphertextSha256),
+  ciphertextSizeBytes: Number(input.ciphertextSizeBytes),
+  indexSha256: String(input.indexSha256),
+  fileCount: Number(input.fileCount),
 });
 
 export const signCompanyEncryptionRecord = async (signingPrivateKey, record) => {

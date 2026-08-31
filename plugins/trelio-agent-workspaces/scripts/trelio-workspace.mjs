@@ -35,6 +35,8 @@ import {
   buildAgentDeviceRegistrationRecord,
   buildCompanyEncryptedJsonMarker,
   buildCompanyEncryptedTextMarker,
+  buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord,
+  buildEncryptedAgentWorkspaceBrowserProjectionRecord,
   buildEncryptedAgentWorkspaceRevisionRecord,
   canonicalJson,
   createAgentEncryptionDevice,
@@ -49,7 +51,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.14.4";
+export const BRIDGE_VERSION = "1.15.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -338,6 +340,21 @@ const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
 const MAX_ENCRYPTED_WORKSPACE_TREE_BYTES = 100 * 1024 * 1024;
 const MAX_ENCRYPTED_WORKSPACE_FILE_COUNT = 20_000;
+const ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_MAGIC = Buffer.from("TRELIOP1", "ascii");
+const ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE =
+  "application/vnd.trelio.encrypted-workspace-projection";
+const ENCRYPTED_WORKSPACE_TEXT_PREVIEW_EXTENSIONS = new Set([
+  ".css", ".csv", ".html", ".ini", ".js", ".json", ".log", ".markdown", ".md",
+  ".mjs", ".sql", ".svg", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
+]);
+const ENCRYPTED_WORKSPACE_BINARY_PREVIEW_TYPES = new Map([
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
 const POINTER_MAX_BYTES = 1024;
 const MAX_RATE_LIMIT_RETRIES = 8;
 const MAX_RATE_LIMIT_WAIT_MS = 5 * 60 * 1000;
@@ -8892,6 +8909,12 @@ const materializeWorkspaceInspection = async ({
     if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
       throw new Error("Trelio вернул read-only bundle другой принятой ревизии.");
     }
+    const encryptedRevisionId = companyEncryption
+      ? requireUuid(
+          response.headers.get("x-trelio-encrypted-revision-id"),
+          "encrypted revision",
+        )
+      : null;
     if (companyEncryption) {
       await writeAndDecryptCompanyWorkspaceBundle({
         response,
@@ -8934,13 +8957,17 @@ const materializeWorkspaceInspection = async ({
       acceptedHead,
       company: snapshot.company,
       encryption: companyEncryption?.metadata ?? { enabled: false },
+      encryptedRevisionId,
       workspaceDirectory: path.join(targetRoot, "workspace"),
       createdAt: new Date().toISOString(),
     });
     await removePreviousWorkspaceInspection(targetRoot, workspaceId);
     await fs.rename(stagingRoot, targetRoot);
     published = true;
-    return path.join(targetRoot, "workspace");
+    return {
+      workspaceDirectory: path.join(targetRoot, "workspace"),
+      encryptedRevisionId,
+    };
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
     if (!published) {
@@ -8968,14 +8995,14 @@ const inspectWorkspace = async (origin, options) => {
         token,
         company,
       });
-      const workspaceDirectory = await materializeWorkspaceInspection({
+      const inspection = await materializeWorkspaceInspection({
         origin,
         token,
         workspaceId,
         rawSnapshot,
         companyEncryption,
       });
-      process.stdout.write(`${workspaceDirectory}\n`);
+      process.stdout.write(`${inspection.workspaceDirectory}\n`);
       return;
     } catch (error) {
       // The accepted head may legitimately advance between the read-snapshot
@@ -8990,6 +9017,101 @@ const inspectWorkspace = async (origin, options) => {
       }
     }
   }
+};
+
+const migrateEncryptedWorkspaceBrowserFiles = async (origin, options) => {
+  const workspaceId = requireUuid(options.workspace, "workspace");
+  const token = await requireToken(origin);
+  await ensureBridgeCompatibility(origin, token);
+  const rawSnapshot = await readJsonResponse(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/workspaces/${workspaceId}/read-snapshot`,
+  ));
+  const { acceptedHead, company } = validateWorkspaceReadSnapshot(rawSnapshot, workspaceId);
+  const companyEncryption = await ensureCompanyEncryptionContext({ origin, token, company });
+
+  if (!companyEncryption) {
+    throw new Error("Миграция файловой проекции нужна только зашифрованной компании.");
+  }
+
+  const inspection = await materializeWorkspaceInspection({
+    origin,
+    token,
+    workspaceId,
+    rawSnapshot,
+    companyEncryption,
+  });
+
+  await withEncryptedWorkspaceBrowserProjection({
+    metadata: {
+      workspaceId,
+      workspaceDirectory: inspection.workspaceDirectory,
+      objects: [],
+    },
+    workspaceHead: acceptedHead,
+    companyEncryption,
+    temporaryPrefix: "trelio-browser-projection-migration",
+  }, async (projection) => {
+    const record = buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord({
+      companyId: companyEncryption.runtime.company.id,
+      workspaceId,
+      workspaceHead: acceptedHead,
+      encryptedRevisionId: inspection.encryptedRevisionId,
+      projectionId: projection.projectionId,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      writerDeviceId: companyEncryption.runtime.device.id,
+      ciphertextSha256: projection.ciphertextSha256,
+      ciphertextSizeBytes: projection.ciphertextSizeBytes,
+      indexSha256: projection.indexSha256,
+      fileCount: projection.fileCount,
+    });
+    const signature = await signCompanyEncryptionRecord(
+      companyEncryption.device.privateKeys.signingPrivateKey,
+      record,
+    );
+    const response = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-browser-projection-migration`,
+      {
+        method: "POST",
+        duplex: "half",
+        headers: {
+          "content-type": ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE,
+          "content-length": String(projection.ciphertextSizeBytes),
+          "x-trelio-workspace-head": acceptedHead,
+          "x-trelio-encrypted-revision-id": inspection.encryptedRevisionId,
+          "x-trelio-browser-projection-id": projection.projectionId,
+          "x-trelio-scope-id": companyEncryption.runtime.scope.id,
+          "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
+          "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
+          "x-trelio-ciphertext-sha256": projection.ciphertextSha256,
+          "x-trelio-index-sha256": projection.indexSha256,
+          "x-trelio-file-count": String(projection.fileCount),
+          "x-trelio-signature": signature,
+        },
+        body: createReadStream(projection.projectionPath),
+      },
+    );
+    const result = await response.json();
+
+    if (
+      result?.state !== "accepted"
+      || result.workspaceHead !== acceptedHead
+      || !UUID_PATTERN.test(String(result.projectionId || ""))
+      || Number(result.fileCount) !== projection.fileCount
+    ) {
+      throw new Error("Trelio не подтвердил перенос encrypted browser projection.");
+    }
+
+    process.stdout.write(
+      result.migrated
+        ? `Файлы workspace перенесены: ${result.fileCount}.\n`
+        : `Файлы workspace уже были перенесены: ${result.fileCount}.\n`,
+    );
+  });
 };
 
 const findRunMetadata = async (startDirectory = process.cwd()) => {
@@ -10046,6 +10168,300 @@ const prepareLocalCandidateSnapshot = async ({
   };
 };
 
+const isHumanFacingEncryptedWorkspacePath = (filePath) => {
+  const normalizedPath = String(filePath || "").replaceAll("\\", "/");
+  const basename = normalizedPath.split("/").at(-1) || "";
+
+  return Boolean(normalizedPath)
+    && normalizedPath !== "AGENTS.md"
+    && normalizedPath !== "CLAUDE.md"
+    && normalizedPath !== "README.md"
+    && !normalizedPath.startsWith(".trelio/")
+    && basename !== ".gitkeep";
+};
+
+const getEncryptedWorkspaceFileCategory = (filePath) => {
+  const rootDirectory = String(filePath || "").split("/", 1)[0];
+
+  return ["sources", "artifacts", "derived", "work"].includes(rootDirectory)
+    ? rootDirectory
+    : "other";
+};
+
+const serializeEncryptedWorkspaceBrowserFile = ({ fileId, filePath, sizeBytes, externalContentType }) => {
+  const fileName = filePath.split("/").at(-1) || filePath;
+  const extension = path.extname(fileName).toLowerCase();
+  const safeExternalType = ENCRYPTED_WORKSPACE_BINARY_PREVIEW_TYPES.has(extension)
+    && ENCRYPTED_WORKSPACE_BINARY_PREVIEW_TYPES.get(extension) === externalContentType
+    ? externalContentType
+    : null;
+  const binaryPreviewType = safeExternalType || (
+    externalContentType ? null : ENCRYPTED_WORKSPACE_BINARY_PREVIEW_TYPES.get(extension)
+  );
+  const textPreview = !externalContentType
+    && ENCRYPTED_WORKSPACE_TEXT_PREVIEW_EXTENSIONS.has(extension);
+
+  return {
+    id: fileId,
+    path: filePath,
+    sizeBytes,
+    category: getEncryptedWorkspaceFileCategory(filePath),
+    previewable: Boolean(binaryPreviewType || textPreview),
+    // Active types (HTML, SVG, JS, XML) are intentionally downgraded to
+    // inert text. The browser repeats this allowlist after decryption.
+    contentType: binaryPreviewType
+      || (textPreview ? "text/plain; charset=utf-8" : "application/octet-stream"),
+  };
+};
+
+const verifyEncryptedProjectionSource = async ({
+  metadata,
+  workspaceHead,
+  filePath,
+  expectedExternalObject,
+}) => {
+  const absolutePath = path.join(metadata.workspaceDirectory, filePath);
+
+  if (expectedExternalObject) {
+    const actual = await hashFile(absolutePath);
+
+    if (
+      actual.sha256 !== expectedExternalObject.sha256
+      || actual.sizeBytes !== expectedExternalObject.sizeBytes
+    ) {
+      throw new Error(`Workspace object ${filePath} изменился после подготовки candidate.`);
+    }
+    return actual;
+  }
+
+  const [candidateBlob, worktreeBlob] = await Promise.all([
+    runGit(["rev-parse", `${workspaceHead}:${filePath}`], { cwd: metadata.workspaceDirectory }),
+    runGit(["hash-object", "--", filePath], { cwd: metadata.workspaceDirectory }),
+  ]);
+
+  if (candidateBlob.stdout.trim() !== worktreeBlob.stdout.trim()) {
+    throw new Error(`Файл ${filePath} изменился после подготовки candidate.`);
+  }
+
+  const fileStat = await fs.lstat(absolutePath);
+
+  if (!fileStat.isFile() || fileStat.isSymbolicLink()) {
+    throw new Error(`Workspace содержит неподдерживаемый тип файла: ${filePath}`);
+  }
+  return { sizeBytes: fileStat.size };
+};
+
+const appendFileToHandle = async ({ sourcePath, destinationHandle, position }) => {
+  let outputOffset = position;
+
+  for await (const rawChunk of createReadStream(sourcePath)) {
+    const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+    const write = await destinationHandle.write(chunk, 0, chunk.byteLength, outputOffset);
+
+    if (write.bytesWritten !== chunk.byteLength) {
+      throw new Error("Не удалось полностью записать encrypted browser projection.");
+    }
+    outputOffset += write.bytesWritten;
+  }
+
+  return outputOffset;
+};
+
+const writeBufferToHandle = async ({ buffer, destinationHandle, position }) => {
+  const write = await destinationHandle.write(buffer, 0, buffer.byteLength, position);
+
+  if (write.bytesWritten !== buffer.byteLength) {
+    throw new Error("Не удалось полностью записать заголовок encrypted browser projection.");
+  }
+  return position + write.bytesWritten;
+};
+
+/**
+ * Build a transport pack whose clear index contains only random selectors and
+ * ciphertext ranges. Paths, names, MIME metadata and file bytes are each
+ * inside independently decryptable TRELIOE1 containers, so the browser can
+ * fetch the manifest first and one selected file later.
+ */
+export const withEncryptedWorkspaceBrowserProjection = async ({
+  metadata,
+  workspaceHead,
+  companyEncryption,
+  temporaryPrefix,
+}, handler) => {
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), `${temporaryPrefix}-`));
+  const projectionPath = path.join(temporaryDirectory, "workspace-files.treliop1");
+
+  try {
+    const tree = await runGit(
+      ["ls-tree", "-r", "--name-only", "-z", workspaceHead],
+      { cwd: metadata.workspaceDirectory },
+    );
+    const filePaths = tree.stdout.split("\0")
+      .filter(isHumanFacingEncryptedWorkspacePath);
+    const externalObjectByPath = new Map(
+      (metadata.objects || []).map((object) => [object.filePath, object]),
+    );
+    const encryptedFiles = [];
+    const manifestFiles = [];
+
+    for (const [fileIndex, filePath] of filePaths.entries()) {
+      const expectedExternalObject = externalObjectByPath.get(filePath) || null;
+      const source = await verifyEncryptedProjectionSource({
+        metadata,
+        workspaceHead,
+        filePath,
+        expectedExternalObject,
+      });
+      const fileId = crypto.randomUUID();
+      const encryptedPath = path.join(temporaryDirectory, `file-${fileIndex}.trelioe1`);
+      const manifestFile = serializeEncryptedWorkspaceBrowserFile({
+        fileId,
+        filePath,
+        sizeBytes: source.sizeBytes,
+        externalContentType: expectedExternalObject?.contentType || null,
+      });
+      const encrypted = await encryptFileToCompanyContainer({
+        sourcePath: path.join(metadata.workspaceDirectory, filePath),
+        destinationPath: encryptedPath,
+        scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+        aad: {
+          companyId: companyEncryption.runtime.company.id,
+          scopeId: companyEncryption.runtime.scope.id,
+          scopeEpoch: companyEncryption.runtime.scope.epoch,
+          entityType: "agent_workspace_browser_file",
+          entityId: fileId,
+          entityRevision: 1,
+        },
+        originalName: manifestFile.path.split("/").at(-1) || "workspace-file",
+        mimeType: manifestFile.contentType,
+        writerDeviceId: companyEncryption.runtime.device.id,
+        signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+      });
+
+      // Recheck after the streaming encryption. A concurrent edit must never
+      // produce a projection that claims the immutable candidate head while
+      // carrying bytes from a newer working-tree state.
+      await verifyEncryptedProjectionSource({
+        metadata,
+        workspaceHead,
+        filePath,
+        expectedExternalObject,
+      });
+      manifestFiles.push(manifestFile);
+      encryptedFiles.push({
+        id: fileId,
+        kind: "content",
+        encryptedPath,
+        ciphertextSha256: encrypted.ciphertextSha256,
+        sizeBytes: encrypted.ciphertextSizeBytes,
+      });
+    }
+
+    const projectionId = crypto.randomUUID();
+    const manifestFileId = crypto.randomUUID();
+    const manifestPath = path.join(temporaryDirectory, "workspace-files.json");
+    const encryptedManifestPath = path.join(temporaryDirectory, "workspace-files.json.trelioe1");
+    const manifest = {
+      schemaVersion: 1,
+      kind: "agent-workspace-browser-manifest",
+      projectionId,
+      workspaceId: requireUuid(metadata.workspaceId, "workspace"),
+      workspaceHead,
+      files: manifestFiles,
+    };
+    await fs.writeFile(manifestPath, canonicalJson(manifest), { mode: 0o600, flag: "wx" });
+    const encryptedManifest = await encryptFileToCompanyContainer({
+      sourcePath: manifestPath,
+      destinationPath: encryptedManifestPath,
+      scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+      aad: {
+        companyId: companyEncryption.runtime.company.id,
+        scopeId: companyEncryption.runtime.scope.id,
+        scopeEpoch: companyEncryption.runtime.scope.epoch,
+        entityType: "agent_workspace_browser_manifest",
+        entityId: manifestFileId,
+        entityRevision: 1,
+      },
+      originalName: "workspace-files.json",
+      mimeType: "application/json",
+      writerDeviceId: companyEncryption.runtime.device.id,
+      signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+    });
+    const orderedFiles = [{
+      id: manifestFileId,
+      kind: "manifest",
+      encryptedPath: encryptedManifestPath,
+      ciphertextSha256: encryptedManifest.ciphertextSha256,
+      sizeBytes: encryptedManifest.ciphertextSizeBytes,
+    }, ...encryptedFiles];
+    let payloadOffset = 0;
+    const index = {
+      schemaVersion: 1,
+      projectionId,
+      workspaceHead,
+      manifestFileId,
+      files: orderedFiles.map((file) => {
+        const range = {
+          id: file.id,
+          kind: file.kind,
+          offset: payloadOffset,
+          sizeBytes: file.sizeBytes,
+          ciphertextSha256: file.ciphertextSha256,
+        };
+        payloadOffset += file.sizeBytes;
+        return range;
+      }),
+    };
+    const indexBytes = Buffer.from(canonicalJson(index), "utf8");
+    const indexLength = Buffer.alloc(4);
+    indexLength.writeUInt32BE(indexBytes.byteLength, 0);
+    const destination = await fs.open(projectionPath, "wx", 0o600);
+
+    try {
+      let outputOffset = 0;
+      outputOffset = await writeBufferToHandle({
+        buffer: ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_MAGIC,
+        destinationHandle: destination,
+        position: outputOffset,
+      });
+      outputOffset = await writeBufferToHandle({
+        buffer: indexLength,
+        destinationHandle: destination,
+        position: outputOffset,
+      });
+      outputOffset = await writeBufferToHandle({
+        buffer: indexBytes,
+        destinationHandle: destination,
+        position: outputOffset,
+      });
+
+      for (const file of orderedFiles) {
+        outputOffset = await appendFileToHandle({
+          sourcePath: file.encryptedPath,
+          destinationHandle: destination,
+          position: outputOffset,
+        });
+      }
+      await destination.sync();
+    } finally {
+      await destination.close();
+    }
+
+    const encryptedProjection = await hashFile(projectionPath);
+    return await handler({
+      projectionPath,
+      projectionId,
+      manifestFileId,
+      fileCount: manifestFiles.length,
+      indexSha256: crypto.createHash("sha256").update(indexBytes).digest("hex"),
+      ciphertextSha256: encryptedProjection.sha256,
+      ciphertextSizeBytes: encryptedProjection.sizeBytes,
+    });
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
 const withLocalCandidateBundle = async (
   { metadata, temporaryPrefix, fullSnapshot = false },
   handler,
@@ -10075,6 +10491,83 @@ const withLocalCandidateBundle = async (
   }
 };
 
+const uploadEncryptedAgentWorkspaceBrowserProjection = async ({
+  metadata,
+  origin,
+  token,
+  companyEncryption,
+  workspaceHead,
+}) => withEncryptedWorkspaceBrowserProjection({
+  metadata,
+  workspaceHead,
+  companyEncryption,
+  temporaryPrefix: "trelio-browser-projection",
+}, async (projection) => {
+  const record = buildEncryptedAgentWorkspaceBrowserProjectionRecord({
+    companyId: companyEncryption.runtime.company.id,
+    workspaceId: requireUuid(metadata.workspaceId, "workspace"),
+    runId: requireUuid(metadata.runId, "run"),
+    baseHead: metadata.baseHead,
+    workspaceHead,
+    projectionId: projection.projectionId,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    writerDeviceId: companyEncryption.runtime.device.id,
+    ciphertextSha256: projection.ciphertextSha256,
+    ciphertextSizeBytes: projection.ciphertextSizeBytes,
+    indexSha256: projection.indexSha256,
+    fileCount: projection.fileCount,
+    fencingToken: Number(metadata.fencingToken),
+  });
+  const signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    record,
+  );
+  const response = await request(
+    origin,
+    token,
+    `/api/agent-workspaces/runs/${metadata.runId}/encrypted-browser-projection`,
+    {
+      method: "POST",
+      duplex: "half",
+      headers: {
+        "content-type": ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE,
+        "content-length": String(projection.ciphertextSizeBytes),
+        "x-trelio-lease-id": metadata.leaseId,
+        "x-trelio-fencing-token": String(metadata.fencingToken),
+        "x-trelio-base-head": metadata.baseHead,
+        "x-trelio-workspace-head": workspaceHead,
+        "x-trelio-browser-projection-id": projection.projectionId,
+        "x-trelio-scope-id": companyEncryption.runtime.scope.id,
+        "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
+        "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
+        "x-trelio-ciphertext-sha256": projection.ciphertextSha256,
+        "x-trelio-index-sha256": projection.indexSha256,
+        "x-trelio-file-count": String(projection.fileCount),
+        "x-trelio-signature": signature,
+      },
+      body: createReadStream(projection.projectionPath),
+    },
+  );
+  const result = await response.json();
+
+  const returnedProjectionId = requireUuid(result?.projectionId, "browser projection");
+
+  if (
+    result.workspaceHead !== workspaceHead
+    || Number(result.fileCount) !== projection.fileCount
+    || result.state !== "staging"
+  ) {
+    throw new Error("Trelio вернул другую encrypted browser projection.");
+  }
+
+  // A lost response can leave an already committed pack on the server while
+  // no local checkpoint exists. The backend reuses that exact Run/head/device
+  // projection and returns its opaque UUID; the candidate must bind the UUID
+  // the server actually owns, not the freshly generated retry UUID.
+  return { ...result, projectionId: returnedProjectionId };
+});
+
 const uploadEncryptedAgentWorkspaceRevision = async ({
   metadata,
   origin,
@@ -10083,6 +10576,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
   bundlePath,
   workspaceHead,
   revisionKind,
+  browserProjectionId = null,
 }) => {
   if (!companyEncryption) {
     throw new Error("Encrypted Workspace upload requires an unlocked company context.");
@@ -10119,6 +10613,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
       ciphertextSha256: encrypted.ciphertextSha256,
       ciphertextSizeBytes: encrypted.ciphertextSizeBytes,
       fencingToken: Number(metadata.fencingToken),
+      ...(browserProjectionId ? { browserProjectionId } : {}),
     });
     const signature = await signCompanyEncryptionRecord(
       companyEncryption.device.privateKeys.signingPrivateKey,
@@ -10143,6 +10638,9 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
           "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
           "x-trelio-ciphertext-sha256": encrypted.ciphertextSha256,
           "x-trelio-signature": signature,
+          ...(browserProjectionId
+            ? { "x-trelio-browser-projection-id": browserProjectionId }
+            : {}),
         },
         body: createReadStream(encryptedPath),
       },
@@ -10274,29 +10772,62 @@ const submit = async (options) => withRun(async ({
     throw new Error("В workspace нет изменений для отправки.");
   }
 
+  let submissionMetadata = prepared.candidateMetadata;
+  let browserProjectionId = null;
+
+  if (companyEncryption) {
+    const reusableProjection = submissionMetadata.browserProjection?.workspaceHead === head
+      && UUID_PATTERN.test(String(submissionMetadata.browserProjection?.projectionId || ""))
+      ? submissionMetadata.browserProjection
+      : null;
+    const projection = reusableProjection || await uploadEncryptedAgentWorkspaceBrowserProjection({
+      metadata: submissionMetadata,
+      origin,
+      token,
+      companyEncryption,
+      workspaceHead: head,
+    });
+
+    browserProjectionId = projection.projectionId;
+    submissionMetadata = {
+      ...submissionMetadata,
+      browserProjection: {
+        projectionId: projection.projectionId,
+        workspaceHead: head,
+        fileCount: Number(projection.fileCount),
+        stagedAt: reusableProjection?.stagedAt || new Date().toISOString(),
+      },
+    };
+    // The projection is already an immutable server object. Persist its
+    // opaque id before candidate upload so a network failure can retry the
+    // signed revision without creating another copy of the same file pack.
+    await writeRunMetadata(metadataPath, submissionMetadata);
+  }
+
   await heartbeat();
   await withLocalCandidateBundle(
     {
-      metadata: prepared.candidateMetadata,
+      metadata: submissionMetadata,
       temporaryPrefix: "trelio-candidate",
       fullSnapshot: Boolean(companyEncryption),
     },
     async (bundlePath) => {
       if (companyEncryption) {
         const result = await uploadEncryptedAgentWorkspaceRevision({
-          metadata: prepared.candidateMetadata,
+          metadata: submissionMetadata,
           origin,
           token,
           companyEncryption,
           bundlePath,
           workspaceHead: head,
           revisionKind: "accepted",
+          browserProjectionId,
         });
         if (result.run.status !== "accepted") {
           throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
         }
         await writeRunMetadata(metadataPath, {
-          ...prepared.candidateMetadata,
+          ...submissionMetadata,
           schemaVersion: 3,
           candidateHead: head,
           terminalStatus: "accepted",
@@ -12037,10 +12568,16 @@ const main = async () => {
       await pairBridge(origin);
     }
   } else if (command === "encryption") {
-    if (positional[0] !== "setup" || positional.length !== 1) {
-      throw new Error("Команда encryption поддерживает только подкоманду setup.");
+    if (positional[0] === "setup" && positional.length === 1) {
+      await setupCompanyEncryption(origin, options);
+    } else if (positional[0] === "migrate-workspace-files" && positional.length === 1) {
+      // One-time data migration for encrypted workspaces accepted before the
+      // browser projection contract. It is intentionally absent from help:
+      // ordinary users should never need a legacy workflow.
+      await migrateEncryptedWorkspaceBrowserFiles(origin, options);
+    } else {
+      throw new Error("Команда encryption поддерживает setup и служебную миграцию файлов workspace.");
     }
-    await setupCompanyEncryption(origin, options);
   } else if (command === "inspect") {
     if (positional.length !== 0) {
       throw new Error("Команда inspect не принимает позиционные параметры.");
