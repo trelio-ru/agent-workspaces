@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign, webcrypto } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmod,
@@ -32,6 +32,7 @@ import {
   AgentSkillDeviceConsentDeclinedError,
   TrelioApiError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
+  assertMaterializedWorkspaceFileTypes,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
   buildAgentSkillPackage,
@@ -68,11 +69,16 @@ import {
   request,
   renderAgentSkillDeviceConsentPage,
   renderCompanyEncryptionKeyPage,
+  runCompanyEncryptionSelfTest,
   resolveAgentSkillRuntimeWithDeviceConsent,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
 } from "../scripts/trelio-workspace.mjs";
+import {
+  COMPANY_ENCRYPTION_SUITE,
+  createAgentEncryptionDevice,
+} from "../scripts/trelio-company-encryption.mjs";
 import {
   buildSecretBrowserArguments,
   controlSecretBrowserViaDevTools,
@@ -1135,6 +1141,130 @@ test("company encryption key is returned only after an exact loopback form submi
   });
 
   assert.equal(received, key);
+});
+
+test("company encryption onboarding self-test round-trips the production TRELIOE1 codec", async () => {
+  const scopeKeyPair = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const [scopePublicEncryptionJwk, scopePrivateEncryptionJwk, device] = await Promise.all([
+    webcrypto.subtle.exportKey("jwk", scopeKeyPair.publicKey),
+    webcrypto.subtle.exportKey("jwk", scopeKeyPair.privateKey),
+    createAgentEncryptionDevice(),
+  ]);
+  const result = await runCompanyEncryptionSelfTest({
+    runtime: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      state: "encrypted",
+      accessState: "ready",
+      company: {
+        id: "11111111-1111-4111-8111-111111111111",
+        slug: "encrypted-company",
+        name: "Encrypted company",
+      },
+      scope: {
+        id: "22222222-2222-4222-8222-222222222222",
+        epoch: 1,
+        publicEncryptionJwk: scopePublicEncryptionJwk,
+      },
+      device: { id: "33333333-3333-4333-8333-333333333333" },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: scopeKeyPair.privateKey,
+      privateJwk: scopePrivateEncryptionJwk,
+    },
+  });
+
+  assert.deepEqual(result, {
+    status: "passed",
+    format: "TRELIOE1",
+    suite: COMPANY_ENCRYPTION_SUITE,
+  });
+});
+
+test("encryption setup reports plain companies without creating a Run", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-encryption-setup-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const requests = [];
+  let serverError = null;
+  const server = createServer((request, response) => {
+    try {
+      requests.push({ method: request.method, url: request.url });
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+
+      response.setHeader("content-type", "application/json");
+      if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.end(JSON.stringify({
+          supported: true,
+          minimumVersion: BRIDGE_VERSION,
+          agentRules: null,
+        }));
+        return;
+      }
+      if (request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        response.end(JSON.stringify({
+          suite: COMPANY_ENCRYPTION_SUITE,
+          state: "plain",
+          company: testCompany,
+        }));
+        return;
+      }
+      throw new Error(`Unexpected encryption setup request: ${request.method} ${request.url}`);
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(homeDirectory, { recursive: true });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+
+    const result = await execFileAsync(
+      process.execPath,
+      [
+        bridgePath,
+        "encryption",
+        "setup",
+        "--company",
+        testCompany.slug,
+        "--json",
+        "--origin",
+        origin,
+      ],
+      {
+        cwd: temporaryDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: { ...process.env, HOME: homeDirectory },
+      },
+    );
+    assert.deepEqual(JSON.parse(result.stdout), {
+      schemaVersion: 1,
+      status: "not_required",
+      company: { slug: testCompany.slug },
+      encryptionState: "plain",
+      selfTest: null,
+    });
+    assert.equal(requests.some(({ method }) => method !== "GET"), false);
+    assert.equal(requests.some(({ url }) => String(url).includes("/runs")), false);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("company runtime consent requires a real loopback form decision before server grant", async () => {
@@ -3004,6 +3134,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "instruction-management.md",
     "meetings.md",
     "scope-and-context.md",
+    "accepted-workspace-read.md",
     "dossier-transfer.md",
     "task-controls.md",
     "task-comment-proposals.md",
@@ -3066,6 +3197,16 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /unclear whole-\s+dossier disclosure require a question/u);
   assert.match(scopeReference, /A weak hit does not/u);
   assert.match(scopeReference, /exact-read the relation before retry/u);
+  const acceptedReadReference = await readFile(
+    path.join(workerDirectory, "references", "accepted-workspace-read.md"),
+    "utf8",
+  );
+  assert.match(mainSkill, /references\/accepted-workspace-read\.md/u);
+  assert.match(acceptedReadReference, /Call `prepare_agent_workspace_read` once/u);
+  assert.match(acceptedReadReference, /exact\s+`trelio-workspace inspect --workspace \.\.\.`/u);
+  assert.match(acceptedReadReference, /creates no Run, lease, checkpoint, task-status proposal/u);
+  assert.match(acceptedReadReference, /read `\.\.\/context\/agent-instructions\.md`, then/u);
+  assert.match(acceptedReadReference, /Never reinterpret read intent\s+as permission to create a Run/u);
   const taskControlsReference = await readFile(
     path.join(workerDirectory, "references", "task-controls.md"),
     "utf8",
@@ -3194,12 +3335,18 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /metadata-only `encryptionState`/u);
-  assert.match(onboardingSkill, /For every non-`plain` state, do not call `get_agent_instructions`/u);
+  assert.match(onboardingSkill, /For `encrypted`, do not call `get_agent_instructions`/u);
+  assert.match(onboardingSkill, /For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state/u);
   assert.match(onboardingSkill, /For every non-`plain` company, skip this entire section/u);
   assert.match(onboardingSkill, /do not call\s+`list_agent_skills`/u);
-  assert.match(onboardingSkill, /successful bridge login proves only the ordinary\s+local device session/u);
-  assert.match(onboardingSkill, /does not prove that this device has an encryption\s+identity or a company-key envelope/u);
-  assert.match(onboardingSkill, /owner must grant the displayed Agent Workspaces device/u);
+  assert.match(onboardingSkill, /successful bridge login proves only the ordinary\s+local\s+device session/u);
+  assert.match(onboardingSkill, /trelio-workspace encryption setup --company <exact-slug> --json/u);
+  assert.match(onboardingSkill, /mandatory encrypted-device onboarding step/u);
+  assert.match(onboardingSkill, /round-trips a random local canary through the\s+production `TRELIOE1` codec/u);
+  assert.match(onboardingSkill, /creates no Workspace, Agent Run, lease/u);
+  assert.match(onboardingSkill, /require `encryptionState=encrypted` and\s+`selfTest\.status=passed`/u);
+  assert.match(onboardingSkill, /repeat the same setup command rather than starting a Run/u);
+  assert.match(onboardingSkill, /company owner must grant that exact Agent Workspaces device/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
   assert.match(onboardingSkill, /codex plugin list --json/u);
@@ -6673,15 +6820,213 @@ test("bridge resumes external object registration from durable per-file progress
   }
 });
 
-test("bridge help advertises the related context sync command", async () => {
+test("bridge inspects an accepted Workspace read-only without creating an Agent Run", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-workspace-inspect-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const workspaceId = "44444444-4444-4444-8444-444444444444";
+  const rulesRevisionId = "55555555-5555-4555-8555-555555555555";
+  const profileRevisionId = "66666666-6666-4666-8666-666666666666";
+  const rulesMarkdown = "# Рабочие правила\n\nСначала прочитай принятые материалы.\n";
+  const rulesSha256 = createHash("sha256").update(rulesMarkdown, "utf8").digest("hex");
+  const accepted = await createExportBundle(path.join(temporaryDirectory, "accepted"), {
+    "WORKSPACE_CONTEXT.md": "# Задача №56\n\nПроверенный контекст Workspace.\n",
+    "artifacts/result.md": "# Результат\n\nПринятый материал.\n",
+  });
+  const requests = [];
+  let serverError = null;
+  const server = createServer(async (request, response) => {
+    try {
+      requests.push({ method: request.method, url: request.url });
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+
+      if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.setHeader("content-type", "application/json");
+        const rulesAreCurrent = (
+          request.headers["x-trelio-agent-rules-sha256"] === rulesSha256
+        );
+        response.end(JSON.stringify({
+          supported: true,
+          minimumVersion: BRIDGE_VERSION,
+          agentRules: {
+            status: rulesAreCurrent ? "current" : "update_required",
+            revisionId: rulesRevisionId,
+            version: 1,
+            sha256: rulesSha256,
+            ...(rulesAreCurrent ? {} : { rulesMarkdown }),
+          },
+        }));
+        return;
+      }
+
+      if (request.url === `/api/agent-workspaces/workspaces/${workspaceId}/read-snapshot`) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          schemaVersion: 1,
+          workspace: {
+            id: workspaceId,
+            scopeType: "task",
+            scopeKey: "task:77777777-7777-4777-8777-777777777777",
+            acceptedHead: accepted.head,
+          },
+          company: testCompany,
+          encryption: { state: "plain" },
+          agentInstructionsSnapshot: {
+            schemaVersion: 2,
+            platform: {
+              revisionId: rulesRevisionId,
+              version: 1,
+              sha256: rulesSha256,
+              rulesMarkdown,
+            },
+            company: null,
+            project: null,
+            compiledMarkdown: rulesMarkdown,
+          },
+          userProfileSnapshot: {
+            schemaVersion: 1,
+            profile: { revisionId: profileRevisionId, version: 2 },
+            compiledMarkdown: "# Как агенту работать со мной\n\nПиши коротко.\n",
+          },
+        }));
+        return;
+      }
+
+      if (request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          suite: COMPANY_ENCRYPTION_SUITE,
+          state: "plain",
+          company: testCompany,
+        }));
+        return;
+      }
+
+      if (
+        request.url
+        === `/api/agent-workspaces/workspaces/${workspaceId}/bundle?head=${accepted.head}`
+      ) {
+        response.setHeader("content-type", "application/octet-stream");
+        response.setHeader("x-trelio-accepted-head", accepted.head);
+        response.end(accepted.bundle);
+        return;
+      }
+
+      throw new Error(`Unexpected inspection request: ${request.method} ${request.url}`);
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(homeDirectory, { recursive: true });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const origin = `http://127.0.0.1:${address.port}`;
+    await writeTestCredential(homeDirectory, origin);
+
+    const inspected = await execFileAsync(
+      process.execPath,
+      [bridgePath, "inspect", "--origin", origin, "--workspace", workspaceId],
+      {
+        cwd: temporaryDirectory,
+        encoding: "utf8",
+        timeout: 15_000,
+        env: { ...process.env, HOME: homeDirectory },
+      },
+    );
+    const inspectionRoot = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "workspace-inspections",
+      workspaceId,
+    );
+    const workspaceDirectory = path.join(inspectionRoot, "workspace");
+    const contextDirectory = path.join(inspectionRoot, "context");
+
+    assert.equal(inspected.stdout.trim(), workspaceDirectory);
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, "artifacts", "result.md"), "utf8"),
+      "# Результат\n\nПринятый материал.\n",
+    );
+    assert.equal(
+      await readFile(path.join(contextDirectory, "agent-instructions.md"), "utf8"),
+      rulesMarkdown,
+    );
+    assert.match(
+      await readFile(path.join(contextDirectory, "user-profile.md"), "utf8"),
+      /Пиши коротко/u,
+    );
+    const index = JSON.parse(await readFile(path.join(contextDirectory, "index.json"), "utf8"));
+    assert.equal(index.mode, "read_only_accepted_workspace");
+    assert.equal(index.workspace.acceptedHead, accepted.head);
+    assert.equal(index.agentInstructions.path, path.join(contextDirectory, "agent-instructions.md"));
+    assert.equal(await pathExists(path.join(inspectionRoot, ".trelio-run.json")), false);
+    assert.equal(await pathExists(path.join(workspaceDirectory, ".trelio-run.json")), false);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(workspaceDirectory)).mode & 0o222, 0);
+      assert.equal((await stat(contextDirectory)).mode & 0o222, 0);
+      assert.equal((await stat(path.join(workspaceDirectory, "artifacts", "result.md"))).mode & 0o222, 0);
+    }
+    assert.equal(requests.some(({ method }) => method !== "GET"), false);
+    assert.equal(requests.some(({ url }) => String(url).includes("/runs")), false);
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    const inspectionRoot = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "workspace-inspections",
+      workspaceId,
+    );
+    if (process.platform !== "win32") {
+      await execFileAsync("chmod", ["-R", "u+w", inspectionRoot]).catch(() => undefined);
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge help advertises encryption setup, read-only inspection and context sync", async () => {
   const result = await execFileAsync(process.execPath, [bridgePath, "help"], { encoding: "utf8" });
   assert.match(result.stdout, new RegExp(`Bridge ${BRIDGE_VERSION.replaceAll(".", "\\.")}`));
   assert.match(result.stdout, /trelio-workspace doctor \[--json\] \[--origin URL\]/);
+  assert.match(result.stdout, /trelio-workspace encryption setup --company SLUG \[--json\]/);
+  assert.match(result.stdout, /trelio-workspace inspect --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context sync/);
   assert.match(result.stdout, /trelio-workspace context attach --workspace UUID/);
   assert.match(result.stdout, /trelio-workspace context fetch --path/);
   assert.match(result.stdout, /trelio-workspace clean --dry-run/);
   assert.match(result.stdout, /--format fields-json/);
+});
+
+test("read-only Workspace inspection rejects a tracked symlink", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-inspection-symlink-"));
+  const repositoryDirectory = path.join(temporaryDirectory, "repository");
+
+  try {
+    await mkdir(repositoryDirectory, { recursive: true });
+    await runGit(repositoryDirectory, ["init", "--initial-branch=main"]);
+    await writeFile(path.join(temporaryDirectory, "outside.txt"), "outside\n", "utf8");
+    await symlink("../outside.txt", path.join(repositoryDirectory, "legacy-link.txt"));
+    await runGit(repositoryDirectory, ["add", "legacy-link.txt"]);
+
+    await assert.rejects(
+      assertMaterializedWorkspaceFileTypes(repositoryDirectory),
+      /неподдерживаемый тип файла: legacy-link\.txt/u,
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("bridge recognizes exact object pointers and classifies binary bytes", async () => {

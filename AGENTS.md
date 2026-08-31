@@ -227,21 +227,29 @@ provider-tag workflow или внутренние release playbooks в этот 
   сохраняет её wrapped private bundle вместе с локальным unlock key только в
   owner-only private config. Ключ шифрования нельзя просить в chat/prompt,
   передавать через MCP/HTTP, argv, environment, stdin, clipboard или писать в
-  Workspace. Повторный Run обязан использовать remembered device без нового
-  ввода; access pending завершается явным owner-grant blocker-ом без plaintext
-  fallback.
+  Workspace. Повторные setup/inspect/Run обязаны использовать remembered device
+  без нового ввода; access pending завершается явным owner-grant blocker-ом без
+  plaintext fallback.
 - Folder onboarding всегда сверяет компанию по metadata-only `list_companies`,
   сохраняет exact явно указанный slug и не подменяет его похожим именем либо
   названием папки. Для любого non-`plain` `encryptionState` он не вызывает
-  remote `get_agent_instructions`/`list_agent_skills`, а завершает binding и
-  pairing локального bridge; успешный `login` не считается доказательством
-  созданной encryption identity или выданного owner envelope.
+  remote `get_agent_instructions`/`list_agent_skills`. Для exact `encrypted`
+  после binding/pairing он обязан выполнить отдельный `encryption setup` через
+  bridge и считать доступ готовым только после открытого owner envelope и
+  локального `TRELIOE1` self-test; transitional state блокирует content work.
+  Успешный `login` сам по себе не доказывает encryption readiness.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
   bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанный
   manifest без Git paths, blobs и plaintext digests. Локальный bridge перед
   upload заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
+- Чистое чтение уже принятого task/dossier Workspace использует
+  `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
+  создания Run, lease, checkpoint или task mutation. Bridge materialize-ит
+  exact accepted head и текущие instruction/profile snapshots в private
+  read-only state; агент не просит пользователя вручную запускать Run только
+  ради чтения и не превращает inspection-каталог в writable workspace.
 - Signed runtime запускается только после authenticated exact-release resolve,
   проверки signature/package/files/paths и с host-authored allowlist окружения.
 - `company_unverified` runtime, загруженный owner/admin компании, не становится

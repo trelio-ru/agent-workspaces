@@ -1,19 +1,14 @@
 ---
 name: trelio-workspace-worker
 description: >-
-  Work through private Trelio meetings, company/project agent rules, and
-  dossier or task Agent Workspaces with MCP and the local Git bridge. Use when the user supplies
-  a meeting transcript; asks Codex to take, continue, analyze, prepare materials
-  for, complete, restore, or preserve OCR/vision output for work tied to Trelio;
-  asks for an editable task-comment proposal or reply with or without an Agent
-  Run; asks to change a task status or prepare a separate editable status
-  proposal, including the one-shot start-of-work decision for a task Run; needs
-  checklist completion-state review or a separate checklist proposal; needs
-  durable dossier context, a dossier transfer, or task controls;
-  requests personal/company/project agent-rule changes; or needs recovery from
-  a blocker or concurrent Agent Runs encountered during that work. Use the
-  dedicated trelio-diagnostics skill for a direct setup health check or a
-  standalone plugin, hook, MCP, OAuth, Git, Node, pairing, or version failure.
+  Work through Trelio meetings, company/project agent rules, and task or
+  dossier Agent Workspaces via MCP and the local Git bridge. Use for accepted
+  Workspace read/review, a meeting transcript, task/dossier work, an editable task-comment proposal or reply with or without an Agent
+  Run, when the user asks to change a task status or prepare a separate editable status
+  proposal, the one-shot start-of-work decision for a task Run,
+  checklist completion-state review or a separate checklist proposal, controls,
+  rules, or an in-workflow blocker. Use the dedicated trelio-diagnostics skill for a standalone plugin,
+  hook, MCP, OAuth, Git, Node, pairing, version, or setup health check.
 ---
 
 # Trelio Workspace Worker
@@ -48,6 +43,10 @@ References are additive; do not read unrelated files speculatively.
 - **Task, dossier, project/company binding, writable scope, related context,
   task relation, or work case discovery:** read
   [`references/scope-and-context.md`](references/scope-and-context.md).
+- **Read/review an accepted task or dossier Workspace without changing it:**
+  read [`references/accepted-workspace-read.md`](references/accepted-workspace-read.md),
+  plus scope/context only when the target is not exact. Never start a Run only to
+  read; load Run references if the user later requests writes.
 - **Existing dossier transfer:** read
   [`references/dossier-transfer.md`](references/dossier-transfer.md), plus the
   scope reference when either side is not already exact.
@@ -122,7 +121,8 @@ arguments, shell input, environment, stdin, clipboard, or workspace files. On
 do not use plaintext or server-search fallback. Search an opened encrypted
 workspace only in its locally materialized files with bounded local tools such
 as `rg`, without sending queries, paths, content, or derived plaintext to
-Trelio.
+Trelio. A read-only snapshot is not a Run: never edit/checkpoint it or ask the
+user to start a Run only for reading.
 
 An explicit request to develop, debug, audit, release, or live-verify source in
 an identified canonical Trelio or Agent Skill repository is a maintainer route.

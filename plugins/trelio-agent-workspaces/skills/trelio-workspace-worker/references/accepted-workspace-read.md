@@ -1,0 +1,34 @@
+# Accepted Workspace read
+
+Read this file completely before reading, reviewing, summarizing, comparing, or
+answering from already accepted task/dossier Workspace materials without changing
+them.
+
+## Materialize without a Run
+
+1. Resolve the exact task or dossier UUID through `scope-and-context.md` unless it
+   is already known. A working-folder binding does not prove an accepted Workspace
+   exists.
+2. Call `prepare_agent_workspace_read` once with exact `scopeType` and `scopeId`.
+   It rechecks read ACL and returns the current accepted head plus exact
+   `trelio-workspace inspect --workspace ...`. If no accepted materials exist,
+   report that fact; do not call `ensure_agent_workspace`,
+   `prepare_agent_workspace_run`, or `start_agent_workspace_run` to create them.
+3. Execute the returned command through this loaded plugin's logical launcher.
+   It creates no Run, lease, checkpoint, task-status proposal, or Trelio mutation.
+   For company E2EE it downloads pinned ciphertext and decrypts it only inside
+   private bridge state. A tracked symlink, gitlink, or other non-regular file
+   blocks inspection rather than exposing a path outside the snapshot.
+4. In the printed directory read `../context/agent-instructions.md`, then
+   `../context/user-profile.md`, then accepted files. Use
+   `../context/index.json` as provenance for the exact head. Keep the snapshot
+   read-only; do not edit it, run checkpoint/finish, or use it as a writable
+   checkout.
+5. For encrypted content use only bounded local file inspection. Never copy a
+   query, path, filename, plaintext, snippet, or derived summary into a remote
+   Trelio content tool. Answer directly from the local snapshot.
+
+A later request for durable changes is a new writable intent: read the Run
+references and call `prepare_agent_workspace_run`. Never reinterpret read intent
+as permission to create a Run or ask the user to open Trelio and start one
+manually.

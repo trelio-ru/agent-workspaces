@@ -216,6 +216,13 @@ const COMPANY_ENCRYPTION_DEVICE_DIRECTORY = path.join(
   CONFIG_DIRECTORY,
   "company-encryption",
 );
+// Read-only accepted snapshots live in private bridge state rather than the
+// user's project. One exact directory per workspace is atomically refreshed,
+// so decrypted content cannot accidentally enter an unrelated Git checkout.
+const WORKSPACE_INSPECTION_DIRECTORY = path.join(
+  CONFIG_DIRECTORY,
+  "workspace-inspections",
+);
 const SECRET_BROWSER_PROFILE_DIRECTORY = path.join(
   SECRET_BROWSER_DIRECTORY,
   "profile",
@@ -3981,6 +3988,24 @@ const readCompanyEncryptionRuntime = async ({
   return runtime;
 };
 
+const assertEncryptedCompanyRuntimeState = (runtime) => {
+  if (runtime.state === "encrypted") return;
+
+  const stateExplanations = {
+    encrypting: "Компания ещё шифруется. Дождитесь завершения операции в настройках компании.",
+    decrypting: "Компания сейчас расшифровывается. Настройка encrypted device недоступна до завершения операции.",
+    failed: "Переход компании в режим шифрования завершился ошибкой. Сначала устраните её в настройках компании.",
+  };
+  const explanation = stateExplanations[runtime.state]
+    || `Trelio вернул неподдерживаемое состояние шифрования: ${String(runtime.state || "unknown")}.`;
+
+  // Transitional and unknown states are deliberately fail-closed. Creating a
+  // device while the company key hierarchy is unstable could bind the local
+  // identity to an envelope that is already obsolete, so the bridge never
+  // guesses that every non-plain state is equivalent to `encrypted`.
+  throw new Error(`Шифрование Agent Workspaces пока не готово. ${explanation}`);
+};
+
 /**
  * Open the company scope for the local bridge without ever placing a private
  * key or the user's phrase in argv, stdout, a Workspace, or an API request.
@@ -3998,6 +4023,7 @@ export const ensureCompanyEncryptionContext = async ({
   });
 
   if (initialRuntime.state === "plain") return null;
+  assertEncryptedCompanyRuntimeState(initialRuntime);
   if (!initialRuntime.viewer?.userId) {
     throw new Error("Trelio не вернул пользователя для локального encryption device.");
   }
@@ -4035,6 +4061,7 @@ export const ensureCompanyEncryptionContext = async ({
     companySlug: initialRuntime.company.slug,
     fingerprint: device.fingerprint,
   });
+  assertEncryptedCompanyRuntimeState(runtime);
 
   if (runtime.accessState === "registration_required") {
     await registerCompanyEncryptionDevice({ origin, token, runtime, device });
@@ -4044,6 +4071,7 @@ export const ensureCompanyEncryptionContext = async ({
       companySlug: initialRuntime.company.slug,
       fingerprint: device.fingerprint,
     });
+    assertEncryptedCompanyRuntimeState(runtime);
   }
 
   if (runtime.accessState === "access_pending") {
@@ -4084,6 +4112,153 @@ export const ensureCompanyEncryptionContext = async ({
       suite: runtime.suite,
     },
   };
+};
+
+/**
+ * Prove that the exact company scope opened for this device can round-trip the
+ * production TRELIOE1 container. The canary contains only random local bytes,
+ * never creates a Workspace/Run, and is removed before the command succeeds.
+ */
+export const runCompanyEncryptionSelfTest = async (companyEncryption) => {
+  const runtime = companyEncryption?.runtime;
+  const device = companyEncryption?.device;
+  const scopePrivateEncryptionKey = companyEncryption?.scopePrivateEncryptionKey;
+
+  if (
+    runtime?.state !== "encrypted"
+    || runtime?.accessState !== "ready"
+    || !runtime.scope?.publicEncryptionJwk
+    || !runtime.device?.id
+    || !device?.privateKeys?.signingPrivateKey
+    || !scopePrivateEncryptionKey?.privateKey
+    || !scopePrivateEncryptionKey?.privateJwk
+  ) {
+    throw new Error("Локальный encryption self-test получил неполный ready-контекст компании.");
+  }
+
+  const temporaryDirectory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    "trelio-company-encryption-self-test-",
+  ));
+  const sourcePath = path.join(temporaryDirectory, "canary.bin");
+  const encryptedPath = path.join(temporaryDirectory, "canary.trelioe1");
+  const decryptedPath = path.join(temporaryDirectory, "canary.opened.bin");
+  const canary = crypto.randomBytes(64);
+  let openedCanary = null;
+
+  try {
+    await fs.writeFile(sourcePath, canary, { mode: 0o600 });
+    const encrypted = await encryptFileToCompanyContainer({
+      sourcePath,
+      destinationPath: encryptedPath,
+      scopePublicEncryptionJwk: runtime.scope.publicEncryptionJwk,
+      aad: {
+        companyId: requireUuid(runtime.company.id, "company"),
+        scopeId: requireUuid(runtime.scope.id, "scope"),
+        scopeEpoch: runtime.scope.epoch,
+        entityType: "agent_workspace_encryption_self_test",
+        entityId: crypto.randomUUID(),
+        entityRevision: 1,
+        schemaVersion: 1,
+      },
+      originalName: "agent-workspaces-self-test.bin",
+      mimeType: "application/octet-stream",
+      writerDeviceId: runtime.device.id,
+      signingPrivateKey: device.privateKeys.signingPrivateKey,
+    });
+    const decrypted = await decryptFileFromCompanyContainer({
+      sourcePath: encryptedPath,
+      destinationPath: decryptedPath,
+      scopePrivateKey: scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: scopePrivateEncryptionKey.privateJwk,
+      expectedCiphertextSha256: encrypted.ciphertextSha256,
+    });
+    openedCanary = await fs.readFile(decryptedPath);
+
+    if (
+      decrypted.originalName !== "agent-workspaces-self-test.bin"
+      || openedCanary.byteLength !== canary.byteLength
+      || !crypto.timingSafeEqual(openedCanary, canary)
+    ) {
+      throw new Error("Локальный TRELIOE1 self-test вернул другие данные.");
+    }
+
+    return {
+      status: "passed",
+      format: "TRELIOE1",
+      suite: runtime.suite,
+    };
+  } finally {
+    // Canary bytes are not company data, but clearing the in-memory buffers and
+    // deleting the exact private temp directory keeps the diagnostic contract
+    // as strict as the real encrypted Workspace flow.
+    canary.fill(0);
+    openedCanary?.fill(0);
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const requireCompanySlugOption = (options) => {
+  const companySlug = readSingleRuntimeOption(options, "company");
+
+  if (
+    !companySlug
+    || companySlug.length > 255
+    || !RUNTIME_POLICY_COMPANY_SLUG_PATTERN.test(companySlug)
+  ) {
+    throw new Error("Параметр --company должен содержать точный slug компании.");
+  }
+  return companySlug;
+};
+
+const setupCompanyEncryption = async (origin, options) => {
+  const companySlug = requireCompanySlugOption(options);
+  if (options.json !== undefined && options.json !== true) {
+    throw new Error("Параметр --json не принимает значение.");
+  }
+
+  const token = await requireToken(origin);
+  await ensureBridgeCompatibility(origin, token);
+  const companyEncryption = await ensureCompanyEncryptionContext({
+    origin,
+    token,
+    company: { slug: companySlug },
+  });
+  const result = companyEncryption
+    ? {
+        schemaVersion: 1,
+        status: "ready",
+        company: {
+          id: companyEncryption.runtime.company.id,
+          slug: companyEncryption.runtime.company.slug,
+          name: companyEncryption.runtime.company.name,
+        },
+        encryptionState: companyEncryption.runtime.state,
+        deviceFingerprint: companyEncryption.runtime.device.fingerprint,
+        selfTest: await runCompanyEncryptionSelfTest(companyEncryption),
+      }
+    : {
+        schemaVersion: 1,
+        status: "not_required",
+        company: { slug: companySlug },
+        encryptionState: "plain",
+        selfTest: null,
+      };
+
+  if (options.json === true) {
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+  } else if (result.status === "ready") {
+    process.stdout.write(
+      `Шифрование Agent Workspaces готово для ${result.company.slug}: `
+      + `устройство ${result.deviceFingerprint}, локальный TRELIOE1 self-test пройден.\n`,
+    );
+  } else {
+    process.stdout.write(
+      `Компания ${result.company.slug} работает без company E2EE; отдельная настройка не требуется.\n`,
+    );
+  }
+
+  return result;
 };
 
 const ENCRYPTED_TEXT_MARKER_PATTERN = /^~e1:([0-9a-f-]{36}):([a-z][a-z0-9_]{0,63})~$/u;
@@ -6475,6 +6650,22 @@ const listTrackedWorkspacePaths = async (workspaceDirectory) => {
   return result.stdout.split("\0").filter(Boolean);
 };
 
+export const assertMaterializedWorkspaceFileTypes = async (workspaceDirectory) => {
+  const trackedPaths = await listTrackedWorkspacePaths(workspaceDirectory);
+
+  for (const filePath of trackedPaths) {
+    const metadata = await fs.lstat(path.join(workspaceDirectory, filePath));
+
+    // A Git symlink can point outside the inspection root even though its path
+    // is tracked. Read-only accepted snapshots therefore admit regular files
+    // only; otherwise an agent could follow legacy content into unrelated
+    // local data, and chmod must never follow that link while hardening.
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error(`Workspace содержит неподдерживаемый тип файла: ${filePath}`);
+    }
+  }
+};
+
 const isForbiddenWorkspaceSecretPath = (filePath) => {
   const normalized = filePath.replaceAll("\\", "/").toLowerCase();
   const segments = normalized.split("/");
@@ -6975,8 +7166,16 @@ const makeReadOnly = async (directory) => {
 
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
+    const metadata = await fs.lstat(entryPath);
 
-    if (entry.isDirectory()) {
+    // chmod follows symlinks on supported POSIX hosts. Skipping them protects
+    // paths outside a bridge-owned tree even if an old accepted Git revision
+    // or a same-user race introduced a link before hardening.
+    if (metadata.isSymbolicLink()) {
+      continue;
+    }
+
+    if (metadata.isDirectory()) {
       await makeReadOnly(entryPath);
       await fs.chmod(entryPath, 0o555);
     } else {
@@ -6994,8 +7193,15 @@ const makeWritable = async (directory) => {
 
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
+    const metadata = await fs.lstat(entryPath);
 
-    if (entry.isDirectory()) {
+    // Removal needs writable parent directories, not permissions on symlink
+    // targets. Never follow a link while restoring a bridge-owned tree.
+    if (metadata.isSymbolicLink()) {
+      continue;
+    }
+
+    if (metadata.isDirectory()) {
       await fs.chmod(entryPath, 0o755);
       await makeWritable(entryPath);
     } else {
@@ -7335,7 +7541,7 @@ const normalizeAgentInstructionsSnapshot = (rawSnapshot) => {
     : "";
 
   if (!compiledMarkdown || Buffer.byteLength(compiledMarkdown, "utf8") > 300 * 1024) {
-    throw new Error("Agent Run содержит некорректный снимок рабочих правил.");
+    throw new Error("Trelio вернул некорректный снимок рабочих правил.");
   }
 
   const normalizeRevision = (revision) => (
@@ -7366,7 +7572,7 @@ const normalizeAgentInstructionsSnapshot = (rawSnapshot) => {
 const DEFAULT_USER_PROFILE_MARKDOWN = [
   "# Как агенту работать со мной",
   "",
-  "Личные настройки инициатора этого Agent Run для компании пока не заданы.",
+  "Личные настройки пользователя для этой компании пока не заданы.",
   "",
 ].join("\n");
 
@@ -7388,7 +7594,7 @@ const normalizeUserProfileSnapshot = (rawSnapshot) => {
     : "";
 
   if (!compiledMarkdown || Buffer.byteLength(compiledMarkdown, "utf8") > 128 * 1024) {
-    throw new Error("Agent Run содержит некорректный снимок личного профиля.");
+    throw new Error("Trelio вернул некорректный снимок личного профиля.");
   }
 
   const profile = snapshot.profile
@@ -8089,6 +8295,248 @@ const openWorkspace = async (origin, options) => {
     throw error;
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const validateWorkspaceReadSnapshot = (rawSnapshot, workspaceId) => {
+  const acceptedHead = String(rawSnapshot?.workspace?.acceptedHead || "");
+  const company = rawSnapshot?.company;
+
+  if (
+    rawSnapshot?.schemaVersion !== 1
+    || rawSnapshot.workspace?.id !== workspaceId
+    || !GIT_OBJECT_PATTERN.test(acceptedHead)
+    || !UUID_PATTERN.test(String(company?.id || ""))
+    || typeof company?.slug !== "string"
+    || !company.slug
+    || typeof company?.name !== "string"
+    || !rawSnapshot.agentInstructionsSnapshot
+  ) {
+    throw new Error("Trelio вернул некорректный read-only snapshot Agent Workspace.");
+  }
+
+  return { acceptedHead, company };
+};
+
+const writeWorkspaceInspectionContext = async ({
+  rootDirectory,
+  publishedRootDirectory,
+  workspace,
+  company,
+  acceptedHead,
+  agentInstructionsSnapshot,
+  userProfileSnapshot,
+}) => {
+  const agentInstructions = await writeAgentInstructionsSnapshot(
+    rootDirectory,
+    agentInstructionsSnapshot,
+  );
+  const userProfile = await writeUserProfileSnapshot(
+    rootDirectory,
+    userProfileSnapshot,
+  );
+  const contextDirectory = path.join(rootDirectory, "context");
+  const indexPath = path.join(contextDirectory, "index.json");
+  await fs.writeFile(indexPath, `${JSON.stringify({
+    schemaVersion: 1,
+    mode: "read_only_accepted_workspace",
+    generatedAt: new Date().toISOString(),
+    workspace: {
+      id: workspace.id,
+      scopeType: workspace.scopeType,
+      scopeKey: workspace.scopeKey,
+      acceptedHead,
+    },
+    company,
+    agentInstructions: {
+      ...agentInstructions,
+      path: path.join(publishedRootDirectory, "context", "agent-instructions.md"),
+    },
+    userProfile: {
+      ...userProfile,
+      path: path.join(publishedRootDirectory, "context", "user-profile.md"),
+    },
+  }, null, 2)}\n`, { mode: 0o600 });
+
+  if (process.platform !== "win32") {
+    await fs.chmod(indexPath, 0o444);
+  }
+  await makeReadOnly(contextDirectory);
+  if (process.platform !== "win32") {
+    await fs.chmod(contextDirectory, 0o555);
+  }
+};
+
+const removePreviousWorkspaceInspection = async (rootDirectory, workspaceId) => {
+  try {
+    const rootStat = await fs.lstat(rootDirectory);
+
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error(`Read-only Workspace path имеет небезопасный тип: ${rootDirectory}`);
+    }
+    const metadata = await readPrivateJsonFile(
+      path.join(rootDirectory, ".trelio-inspection.json"),
+    );
+    if (
+      metadata.schemaVersion !== 1
+      || metadata.mode !== "read_only_accepted_workspace"
+      || metadata.workspaceId !== workspaceId
+      || path.resolve(String(metadata.workspaceDirectory || ""))
+        !== path.join(path.resolve(rootDirectory), "workspace")
+    ) {
+      throw new Error(
+        `Существующий каталог не принадлежит read-only Workspace ${workspaceId}: ${rootDirectory}`,
+      );
+    }
+
+    // Only an exact bridge-owned root with matching private metadata can be
+    // replaced. This avoids following or deleting a user-created directory
+    // that happens to use the same workspace UUID.
+    await makeWritable(rootDirectory);
+    await fs.rm(rootDirectory, { recursive: true, force: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+};
+
+const materializeWorkspaceInspection = async ({
+  origin,
+  token,
+  workspaceId,
+  rawSnapshot,
+  companyEncryption,
+}) => {
+  const { acceptedHead } = validateWorkspaceReadSnapshot(rawSnapshot, workspaceId);
+  const snapshot = await hydrateAgentCompanyEncryptedJson({
+    value: rawSnapshot,
+    origin,
+    token,
+    companyEncryption,
+  });
+  validateWorkspaceReadSnapshot(snapshot, workspaceId);
+  await ensurePrivateDirectory(WORKSPACE_INSPECTION_DIRECTORY);
+  const targetRoot = path.join(WORKSPACE_INSPECTION_DIRECTORY, workspaceId);
+  const stagingRoot = await fs.mkdtemp(path.join(
+    WORKSPACE_INSPECTION_DIRECTORY,
+    `.${workspaceId}.staging-`,
+  ));
+  const temporaryDirectory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    "trelio-workspace-inspection-",
+  ));
+  const workspaceDirectory = path.join(stagingRoot, "workspace");
+  const bundlePath = path.join(temporaryDirectory, "accepted.bundle");
+  let published = false;
+
+  try {
+    const endpoint = companyEncryption
+      ? `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-bundle`
+      : `/api/agent-workspaces/workspaces/${workspaceId}/bundle`;
+    const response = await request(
+      origin,
+      token,
+      `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`,
+    );
+    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+      throw new Error("Trelio вернул read-only bundle другой принятой ревизии.");
+    }
+    if (companyEncryption) {
+      await writeAndDecryptCompanyWorkspaceBundle({
+        response,
+        destination: bundlePath,
+        companyEncryption,
+      });
+    } else {
+      await writeResponseToFile(response, bundlePath);
+    }
+    await materializeBundle({
+      bundlePath,
+      directory: workspaceDirectory,
+      head: acceptedHead,
+      branch: "trelio-readonly",
+    });
+    await assertMaterializedWorkspaceFileTypes(workspaceDirectory);
+    // chmod-based protection must not appear as content changes when accepted
+    // files carry executable bits. The snapshot has no Run metadata or submit
+    // route, and this config adds a second local guard on POSIX.
+    await runGit(["config", "core.fileMode", "false"], { cwd: workspaceDirectory });
+    await makeReadOnly(workspaceDirectory);
+    if (process.platform !== "win32") {
+      await fs.chmod(workspaceDirectory, 0o555);
+    }
+    await writeWorkspaceInspectionContext({
+      rootDirectory: stagingRoot,
+      publishedRootDirectory: targetRoot,
+      workspace: snapshot.workspace,
+      company: snapshot.company,
+      acceptedHead,
+      agentInstructionsSnapshot: snapshot.agentInstructionsSnapshot,
+      userProfileSnapshot: snapshot.userProfileSnapshot,
+    });
+    await writePrivateJsonFile(path.join(stagingRoot, ".trelio-inspection.json"), {
+      schemaVersion: 1,
+      mode: "read_only_accepted_workspace",
+      origin,
+      pluginVersion: BRIDGE_VERSION,
+      workspaceId,
+      acceptedHead,
+      company: snapshot.company,
+      encryption: companyEncryption?.metadata ?? { enabled: false },
+      workspaceDirectory: path.join(targetRoot, "workspace"),
+      createdAt: new Date().toISOString(),
+    });
+    await removePreviousWorkspaceInspection(targetRoot, workspaceId);
+    await fs.rename(stagingRoot, targetRoot);
+    published = true;
+    return path.join(targetRoot, "workspace");
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    if (!published) {
+      await makeWritable(stagingRoot).catch(() => undefined);
+      await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+};
+
+const inspectWorkspace = async (origin, options) => {
+  const workspaceId = requireUuid(options.workspace, "workspace");
+  const token = await requireToken(origin);
+  await ensureBridgeCompatibility(origin, token);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const rawSnapshot = await readJsonResponse(await request(
+        origin,
+        token,
+        `/api/agent-workspaces/workspaces/${workspaceId}/read-snapshot`,
+      ));
+      const { company } = validateWorkspaceReadSnapshot(rawSnapshot, workspaceId);
+      const companyEncryption = await ensureCompanyEncryptionContext({
+        origin,
+        token,
+        company,
+      });
+      const workspaceDirectory = await materializeWorkspaceInspection({
+        origin,
+        token,
+        workspaceId,
+        rawSnapshot,
+        companyEncryption,
+      });
+      process.stdout.write(`${workspaceDirectory}\n`);
+      return;
+    } catch (error) {
+      // The accepted head may legitimately advance between the read-snapshot
+      // response and the pinned bundle download. Both operations are read-only,
+      // so rebuilding from the new exact head is safe and avoids stale context.
+      if (
+        !(error instanceof TrelioApiError)
+        || error.code !== "WORKSPACE_OUTDATED"
+        || attempt === 2
+      ) {
+        throw error;
+      }
+    }
   }
 };
 
@@ -10687,6 +11135,8 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace doctor [--json] [--origin URL]\n");
   process.stdout.write("  trelio-workspace login [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace login --legacy-oauth [--origin https://trelio.ru]\n");
+  process.stdout.write("  trelio-workspace encryption setup --company SLUG [--json] [--origin https://trelio.ru]\n");
+  process.stdout.write("  trelio-workspace inspect --workspace UUID [--origin https://trelio.ru]\n");
   process.stdout.write("  trelio-workspace open --workspace UUID [--run UUID] [--dir PATH]\n");
   process.stdout.write("  trelio-workspace status\n");
   process.stdout.write("  trelio-workspace heartbeat\n");
@@ -10930,6 +11380,16 @@ const main = async () => {
     } else {
       await pairBridge(origin);
     }
+  } else if (command === "encryption") {
+    if (positional[0] !== "setup" || positional.length !== 1) {
+      throw new Error("Команда encryption поддерживает только подкоманду setup.");
+    }
+    await setupCompanyEncryption(origin, options);
+  } else if (command === "inspect") {
+    if (positional.length !== 0) {
+      throw new Error("Команда inspect не принимает позиционные параметры.");
+    }
+    await inspectWorkspace(origin, options);
   } else if (command === "open") {
     await openWorkspace(origin, options);
   } else if (command === "status") {

@@ -4,6 +4,7 @@
 
 - Выбор scope
 - Контекст и файлы
+- Read-only inspection без Run
 - Agent Run
 - Task-scoped результат
 - Blocker и продолжение
@@ -97,6 +98,15 @@ weak hit игнорируется, а partial fit получает более у
 read-only context они остаются пятистрочными object pointers до exact
 `trelio-workspace context fetch --path <path>`. Bulk hydration запрещена.
 Проверенные bytes кэшируются по SHA-256 и копируются без mutable hardlink.
+
+Для запроса только на чтение `prepare_agent_workspace_read` возвращает exact
+`trelio-workspace inspect` command. Она materialize-ит current accepted head и
+актуальные `agent-instructions.md` / `user-profile.md` в private read-only
+каталоге без Agent Run, lease, checkpoint или task mutation. Encrypted bundle
+остаётся ciphertext на backend и открывается только локальным bridge. Агент
+читает authority snapshots до accepted файлов, не редактирует inspection root
+и не просит пользователя вручную запускать Run ради доступа к материалам.
+Writable intent позже начинает отдельный обычный `prepare_agent_workspace_run`.
 
 Рекомендуемая структура:
 

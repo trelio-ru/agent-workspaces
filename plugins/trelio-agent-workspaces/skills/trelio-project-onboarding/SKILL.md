@@ -157,11 +157,17 @@ current task.
      optional project before making substantive setup changes. Follow the
      effective working rules and authenticated user's personal profile without
      copying either into the local working-folder binding.
-   - For every non-`plain` state, do not call `get_agent_instructions`: remote
-     MCP cannot read those encrypted rules. Continue folder binding and local
-     bridge setup from the open company metadata only. Do not claim that the
-     rules were loaded. A later exact task/dossier Workspace Run receives its
-     pinned encrypted rules through the bridge and materializes them locally.
+   - For `encrypted`, do not call `get_agent_instructions`: remote MCP cannot
+     read those encrypted rules. Continue folder binding and local bridge setup
+     from the open company metadata only. Do not claim that the rules were
+     loaded. The local encryption setup below must open this device's company
+     envelope and pass its crypto self-test before onboarding is complete.
+   - For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state,
+     do not call `get_agent_instructions` and do not treat the company as ready.
+     The folder binding and ordinary bridge pairing may be completed, but stop
+     encrypted content work with the exact state and required company-settings
+     action. Never create a Run or use plaintext fallback to probe through a
+     transitional state.
 
 ## Create or extend the local instruction file
 
@@ -297,14 +303,31 @@ If login reports a one-time pairing request, immediately call
 verifier. Do not open a company workspace, start a work run, or create and
 cancel a disposable result merely to test the connection.
 
-For a non-`plain` company, successful bridge login proves only the ordinary
-local device session. It does not prove that this device has an encryption
-identity or a company-key envelope. Do not ask for the encryption key during
-onboarding and do not claim encrypted content is ready. The first later exact
-Workspace Run lets the bridge open its protected `127.0.0.1` key form when
-needed. If that bridge reports `access_pending`, tell the user that the company
-owner must grant the displayed Agent Workspaces device in company encryption
-settings, then stop without a plaintext fallback.
+For exact `encrypted`, successful bridge login proves only the ordinary local
+device session. Immediately run this loaded plugin's bundled bridge through
+the same `launch-trelio-node` launcher with:
+
+```text
+trelio-workspace encryption setup --company <exact-slug> --json
+```
+
+This is the mandatory encrypted-device onboarding step. It may open a protected
+`127.0.0.1` form; the user enters the key only there, never in chat, MCP, argv,
+environment, stdin, clipboard, or a Workspace. The command creates or reuses
+the local encryption/signing identity, registers its fingerprint, opens the
+exact company envelope, and round-trips a random local canary through the
+production `TRELIOE1` codec. It creates no Workspace, Agent Run, lease,
+checkpoint, task status change, or server content row.
+
+On `status=ready`, require `encryptionState=encrypted` and
+`selfTest.status=passed` before reporting encrypted Workspace access ready. On
+`access_pending`, show the returned fingerprint and settings URL and tell the
+user that the company owner must grant that exact Agent Workspaces device;
+after the grant, repeat the same setup command rather than starting a Run. On
+`status=not_required`, the state changed to `plain`: repeat `list_companies` and
+the ordinary instruction/catalog route before completion. Any transitional,
+unknown, envelope, scope, or self-test error blocks encrypted content work
+without a plaintext fallback.
 
 ## Offer the live Trelio skills
 
@@ -395,10 +418,13 @@ Summarize:
    `требуется настройка администратором компании`;
 4. the exact next action for every incomplete item.
 
-For a non-`plain` company, include its current encryption state, say that the
-remote skill catalog was intentionally not queried, and distinguish bridge
-pairing from the still-untested encryption-device grant. Do not present the
-company as absent merely because a content tool is unavailable.
+For a non-`plain` company, include its current encryption state and say that
+the remote skill catalog was intentionally not queried. For exact `encrypted`,
+report bridge pairing and encrypted-device readiness separately, including the
+local self-test result; never call the device ready before the setup command
+returns its complete `ready` result. For transitional states, report the exact
+blocker. Do not present the company as absent merely because a content tool is
+unavailable.
 
 If `AGENTS.md` or `AGENTS.override.md` changed, tell the user that future tasks
 or Claude sessions opened in this folder will use the binding automatically
