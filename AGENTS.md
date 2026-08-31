@@ -113,14 +113,17 @@ provider-tag workflow или внутренние release playbooks в этот 
   `AGENT_SKILL_RELEASE_CHANGED`.
 - Один известный exact task читается через `get_task`, а 2-20 distinct exact
   targets – одним `get_tasks`; последовательные `get_task` для уже известного
-  набора запрещены. Task-read schema v2 хранит уникальные Markdown-слои один
+  набора запрещены. Task-read schema v3 хранит уникальные Markdown-слои один
   раз в `effectiveInstructions.layers`, а каждый `tasks[]` item применяет только
   собственный exact `instructionScope.orderedLayerKeys` в указанном порядке.
-  Каждый item содержит одну structured `task`, без производного `document.text`.
-  `content` является только компактным summary, полный payload читается из
-  `structuredContent`; company/project/personal layer нельзя переносить на
-  непривязанную задачу. Legacy schema v1 допустима только как rollout fallback,
-  пока backend ещё не объявляет `get_tasks`.
+  Каждый item содержит одну structured compact `task`, без производного
+  `document.text`; тяжёлые данные перечислены в `task.deferredSections` и
+  выбираются одним `get_task_sections` только для exact нужного subset.
+  Supplemental read не повторяет authority, core, connections или dossiers,
+  а `content` остаётся компактным summary. Company/project/personal layer
+  нельзя переносить на непривязанную задачу. Schema v1/v2 больше не являются
+  поддерживаемым task-read ABI: их получение означает version mismatch и
+  требует обновления плагина/backend, а не client-side fallback.
 - Structured `MCP_SEARCH_TIMEOUT` является подтверждённым backend-ом
   превышением бюджета read-only поиска, а не transport 504. Bundled discovery
   и diagnostics не применяют к нему три одинаковых network retry: допустим один

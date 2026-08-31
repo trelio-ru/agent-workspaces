@@ -45,16 +45,20 @@ company/project discriminator. Bare HTTP 504 остаётся transport failure.
 Правила компании и проекта не входят в поисковый ranking. После выбора exact
 scope обычные `fetch`, `get_dossier`, `get_project_meta` и
 `get_task_create_meta` возвращают envelope `effectiveInstructions`. Task reads
-используют schema v2: уникальные инструкции находятся один раз в
+используют schema v3: уникальные инструкции находятся один раз в
 `effectiveInstructions.layers`, а каждый элемент `tasks[]` задаёт собственный
 точный порядок через `instructionScope.orderedLayerKeys`. Агент применяет только
 привязанные слои и не переносит project/company/profile rules между задачами;
-полный payload читается из `structuredContent`, а компактный `content` его не
-дублирует. Статус `loaded` применяется сразу, без отдельного
+compact core читается из `structuredContent`, а `task.deferredSections`
+направляет один выборочный `get_task_sections` к нужным comments, checklists,
+attachments, controls или другим тяжёлым данным. Supplemental read не повторяет
+authority/core, а компактный `content` не дублирует payload. Статус `loaded` применяется сразу, без отдельного
 `get_agent_instructions`; `requires_scope` запускает стандартный consent и
 повторное чтение правил. Внутри уже подготовленного Run более новая revision из
 exact read не заменяет pinned `agent-instructions.md` и `user-profile.md` этого
-Run.
+Run. Schema v1/v2 не поддерживаются plugin `1.14.1`: совместимая пара
+plugin/backend обязана использовать schema v3 и `get_task_sections`, а version
+mismatch завершается обновлением вместо fallback к монолитному payload.
 
 Company dossier требует конкретной причины и явного подтверждения широкой
 видимости. Связанный участник задачи может читать dossier, но не получает

@@ -2724,7 +2724,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.14.0");
+  assert.equal(BRIDGE_VERSION, "1.14.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -2996,14 +2996,27 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /without a\s+project filter/u);
   assert.match(scopeReference, /Company\/project rules are not\s+search documents/u);
   assert.match(scopeReference, /call `get_tasks` once.*do not make repeated `get_task` calls/su);
-  assert.match(scopeReference, /Current `get_task` and `get_tasks` return `schemaVersion: 2`/u);
-  assert.match(scopeReference, /Treat text `content` only as a compact summary/u);
-  assert.match(scopeReference, /one structured `task`, not\s+a derived `document\.text` copy/u);
+  assert.match(scopeReference, /Current `get_task` and `get_tasks` return `schemaVersion: 3`/u);
+  assert.match(scopeReference, /Text `content` is only a summary/u);
+  assert.match(scopeReference, /one structured `task`, never a derived `document\.text` copy/u);
   assert.match(scopeReference, /Resolve every key in\s+the item's `instructionScope\.orderedLayerKeys`/u);
   assert.match(scopeReference, /Never concatenate the whole catalog for every task/u);
-  assert.match(scopeReference, /legacy `get_task` schema v1/u);
+  assert.match(scopeReference, /inspect `task\.deferredSections`/u);
+  assert.match(scopeReference, /Call `get_task_sections`\s+once/u);
+  assert.match(scopeReference, /do not repeat `get_task` or\s+request all sections as a default/u);
+  assert.match(scopeReference, /`itemCount: 0` means known-empty; `null`\s+means not counted/u);
+  assert.match(scopeReference, /comments with bounded `commentsPage`/u);
+  assert.match(scopeReference, /without repeating effective instructions,\s+core fields, connections, or linked dossiers/u);
+  assert.match(scopeReference, /Schema v1\/v2 are not supported/u);
+  assert.match(scopeReference, /plugin\/backend version mismatch/u);
   assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and `user-profile\.md` remain authoritative/u);
   assert.match(scopeReference, /Do not call\s+`get_agent_instructions` again after loaded instructions/u);
+  const taskControlsReference = await readFile(
+    path.join(workerDirectory, "references", "task-controls.md"),
+    "utf8",
+  );
+  assert.match(taskControlsReference, /`get_task_sections\.sections\.controls`/u);
+  assert.match(taskControlsReference, /authenticated user's personal\s+controls/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");

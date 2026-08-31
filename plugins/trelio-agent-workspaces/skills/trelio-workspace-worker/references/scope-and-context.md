@@ -86,10 +86,9 @@ failure and follows the dedicated diagnostics path.
 
 ## Resolve task-read instructions
 
-Current `get_task` and `get_tasks` return `schemaVersion: 2` with the complete
-payload in `structuredContent`. Every item contains one structured `task`, not
-a derived `document.text` copy. Treat text `content` only as a compact summary;
-it intentionally does not repeat full task or instruction Markdown.
+Current `get_task` and `get_tasks` return `schemaVersion: 3` with a compact task
+core. Each item has one structured `task`, never a derived `document.text` copy.
+Text `content` is only a summary and does not repeat task or instruction Markdown.
 
 For every item in `tasks[]` independently:
 
@@ -105,12 +104,18 @@ For every item in `tasks[]` independently:
 4. Keep `effectiveRevisionKey` as the exact task-scope fingerprint when a later
    step needs to establish whether the effective order changed.
 
-During the ordered plugin-before-backend rollout only, a server that does not
-advertise `get_tasks` may still return legacy `get_task` schema v1 with one
-leading `effectiveInstructions` envelope and a top-level task. Apply that
-loaded envelope exactly as returned. Once `get_tasks` is advertised, always use
-the v2 routing above for multiple exact targets; do not voluntarily fall back
-to repeated legacy reads.
+After instructions, inspect `task.deferredSections`. Call `get_task_sections`
+once with the same locator and exact needed subset; do not repeat `get_task` or
+request all sections as a default. `itemCount: 0` means known-empty; `null`
+means not counted. Use rich description, comments with bounded `commentsPage`,
+and checklists only when content, discussion, or requirements need them; load
+the other named sections only when relevant. Attachments are metadata, not
+bytes. The supplement rechecks ACL without repeating effective instructions,
+core fields, connections, or linked dossiers.
+
+Schema v1/v2 are not supported by plugin `1.14.1`. Treat either as a
+plugin/backend version mismatch and stop for the normal upgrade path instead
+of interpreting a legacy payload.
 
 `search_tasks` and `search_agent_workspace_files` remain optional refinement
 tools, not consecutive mandatory procedures. Use `search_tasks` when ambiguity
