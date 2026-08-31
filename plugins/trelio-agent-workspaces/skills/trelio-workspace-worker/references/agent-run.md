@@ -61,7 +61,6 @@ task communication, handoff, submit, or final reporting.
    Run without waiting for the user's decision. Never repeat this start check
    after a tool action, checkpoint, pause, resumed turn, or later progress
    update.
-
 ## Read and use materialized context
 
 1. Work in the path printed by `open`.
@@ -165,8 +164,7 @@ task communication, handoff, submit, or final reporting.
   select an exact head, then `restore_agent_workspace_revision` with current
   head as `expectedHead` and a meaningful reason. Restore creates a new accepted
   commit with the old tree and still rejects concurrency.
-- Never delete Run directories manually. `trelio-workspace clean --dry-run`
-  shows only backend-confirmed terminal, retention-expired, locally clean roots
-  and reclaimable cache bytes. Explicit `clean` removes that exact plan.
-  Backend outage makes automatic pruning a no-op; active, unknown, or dirty
-  Runs remain.
+- Never delete Workspace roots manually. `trelio-workspace clean --dry-run`
+  lists only roots unused for 30 days, backend-terminal, locally clean and not
+  opening, plus cache bytes. `clean` deletes that exact local plan, never the
+  server revision. Backend outage is a no-op; active, unknown or dirty roots remain.

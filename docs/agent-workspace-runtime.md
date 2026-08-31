@@ -108,6 +108,26 @@ read-only context они остаются пятистрочными object poin
 `trelio-workspace context fetch --path <path>`. Bulk hydration запрещена.
 Проверенные bytes кэшируются по SHA-256 и копируются без mutable hardlink.
 
+По умолчанию writable-копия одного task/dossier Workspace постоянно живёт в
+одном локальном root:
+
+```text
+~/Trelio Workspaces/<workspace-id>/
+├── workspace/          # видимые рабочие файлы агента
+├── context/            # защищённый pinned-контекст текущего Run
+└── .trelio-run.json    # private metadata bridge
+```
+
+Следующие Run переиспользуют тот же `workspace/`, а не создают копию по
+`run-id`. Перед `start` или `claim` bridge получает live server overview,
+проверяет terminal status предыдущего локального Run и чистоту Git, сравнивает
+локальный head с current `acceptedHead` и при необходимости синхронизирует
+tracked tree. Dirty/diverged данные не перезаписываются; неизвестный server
+status или недоступный backend не допускает новый writable Run. В одном
+persistent root одновременно открывается только один локальный Run. Уже
+начатый legacy Run из `<workspace-id>/<run-id>/workspace` продолжается на месте;
+после его безопасного завершения новые Run переходят на общий root.
+
 Для запроса только на чтение `prepare_agent_workspace_read` возвращает exact
 `trelio-workspace inspect` command. Она materialize-ит current accepted head и
 актуальные `agent-instructions.md` / `user-profile.md` в private read-only
@@ -203,11 +223,15 @@ diverged локальное дерево никогда не перезапис�
 
 ## Restore и cleanup
 
-`trelio-workspace clean --dry-run` показывает exact terminal roots и
-reclaimable bytes. Удаляются только retention-expired, backend-confirmed и
-локально чистые Runs. Active, unknown и dirty roots сохраняются; backend outage
-делает auto-prune no-op.
+`trelio-workspace clean --dry-run` показывает exact persistent Workspace roots
+и reclaimable bytes. Root становится кандидатом после 30 дней без локальной
+или server Run-активности, только если связанный локальный Run terminal, в
+Workspace нет другого открытого Run, Git чист и root сейчас не открывается.
+Active, unknown и dirty roots сохраняются;
+backend outage делает auto-prune no-op. Настройка
+`workspaceRetentionDays` меняет срок в пределах 1–365 дней; старый
+`terminalRunRetentionDays` читается как совместимый alias.
 
 Object cache очищается по возрасту/LRU/лимиту, signed runtime packages – только
-целыми проверенными digest-каталогами. Успешный submit лишь помечает Run
-eligible, но не удаляет его сразу.
+целыми проверенными digest-каталогами. Очистка удаляет лишь локальную копию;
+accepted revision и история Run остаются на сервере Trelio.

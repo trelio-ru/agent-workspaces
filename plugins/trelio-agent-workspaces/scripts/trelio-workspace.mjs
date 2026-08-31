@@ -204,6 +204,8 @@ const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
+const WORKSPACE_OPEN_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "workspace-open-locks");
+const WORKSPACE_OPEN_LOCK_INITIALIZATION_STALE_MS = 5 * 60 * 1000;
 const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
 // Local Agent Secrets живут рядом с device-session, но в отдельном private
 // namespace. Каталог не зависит от workspace path и поэтому не может случайно
@@ -303,7 +305,7 @@ const SKILL_RUNTIME_CACHE_DIRECTORY = path.join(
   "skill-runtimes",
 );
 const DEFAULT_LOCAL_SETTINGS = Object.freeze({
-  terminalRunRetentionDays: 7,
+  workspaceRetentionDays: 30,
   objectCacheMaxAgeDays: 30,
   objectCacheMaxBytes: 10 * 1024 * 1024 * 1024,
   skillRuntimeCacheMaxAgeDays: 90,
@@ -6931,10 +6933,18 @@ const fastForwardMaterializedBundle = async ({
   workspaceDirectory,
   head,
   knownObjects,
+  allowHistoryReplacement = false,
+  expectedLocalHead = null,
 }) => {
   const localHead = (await runGit(["rev-parse", "HEAD"], {
     cwd: workspaceDirectory,
   })).stdout.trim();
+
+  if (expectedLocalHead && localHead !== expectedLocalHead) {
+    throw new Error(
+      "Локальная Git-история изменилась во время server sync. Автоматическая перезапись запрещена.",
+    );
+  }
 
   if (localHead === head) {
     return false;
@@ -6959,14 +6969,16 @@ const fastForwardMaterializedBundle = async ({
     { cwd: workspaceDirectory },
   );
   await runGit(["cat-file", "-e", `${head}^{commit}`], { cwd: workspaceDirectory });
-  const mergeBase = (await runGit(["merge-base", localHead, head], {
-    cwd: workspaceDirectory,
-  })).stdout.trim();
+  if (!allowHistoryReplacement) {
+    const mergeBase = (await runGit(["merge-base", localHead, head], {
+      cwd: workspaceDirectory,
+    })).stdout.trim();
 
-  if (mergeBase !== localHead) {
-    throw new Error(
-      "Локальная история Run расходится с server draft. Автоматическая перезапись запрещена.",
-    );
+    if (mergeBase !== localHead) {
+      throw new Error(
+        "Локальная история Run расходится с server draft. Автоматическая перезапись запрещена.",
+      );
+    }
   }
 
   await setSkipWorktree(
@@ -6983,6 +6995,15 @@ const fastForwardMaterializedBundle = async ({
   // сохранить тот же путь, и Git иначе справедливо откажется перекрывать
   // untracked-файл. Пользовательскую или изменённую версию не трогаем.
   await removeGeneratedUntrackedWorklog(workspaceDirectory);
+  const headBeforeCheckout = (await runGit(["rev-parse", "HEAD"], {
+    cwd: workspaceDirectory,
+  })).stdout.trim();
+
+  if (headBeforeCheckout !== localHead) {
+    throw new Error(
+      "Локальная Git-история изменилась непосредственно перед checkout. Автоматическая перезапись запрещена.",
+    );
+  }
   await runGit(["checkout", "-B", "trelio-candidate", head], {
     cwd: workspaceDirectory,
   });
@@ -7509,10 +7530,20 @@ const readLocalSettings = async () => {
       : fallback;
   };
 
+  // `terminalRunRetentionDays` остаётся только совместимым alias для уже
+  // настроенных клиентов. Новый ключ описывает фактическую единицу хранения:
+  // один переиспользуемый локальный root на Workspace, а не каталог каждого Run.
+  const legacyWorkspaceRetentionDays = readBoundedInteger(
+    rawSettings.terminalRunRetentionDays,
+    DEFAULT_LOCAL_SETTINGS.workspaceRetentionDays,
+    1,
+    365,
+  );
+
   return {
-    terminalRunRetentionDays: readBoundedInteger(
-      rawSettings.terminalRunRetentionDays,
-      DEFAULT_LOCAL_SETTINGS.terminalRunRetentionDays,
+    workspaceRetentionDays: readBoundedInteger(
+      rawSettings.workspaceRetentionDays,
+      legacyWorkspaceRetentionDays,
       1,
       365,
     ),
@@ -7894,75 +7925,407 @@ export const ensureBridgeCompatibility = async (
   }
 };
 
-const preflightExistingRunDirectory = async ({ workspaceId, runId, directoryOption }) => {
-  const rootDirectory = path.resolve(String(
-    directoryOption || path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId, runId),
-  ));
+const TERMINAL_RUN_STATUSES = new Set(["accepted", "cancelled"]);
 
+const readOptionalRunMetadata = async (rootDirectory) => {
   try {
-    const rootStat = await fs.stat(rootDirectory);
-
-    if (!rootStat.isDirectory()) {
-      throw new Error("Выбранный --dir существует и не является каталогом.");
-    }
-
-    const metadata = JSON.parse(await fs.readFile(path.join(rootDirectory, ".trelio-run.json"), "utf8"));
-
-    if (metadata.runId !== runId || metadata.workspaceId !== workspaceId) {
-      throw new Error("Выбранный каталог уже принадлежит другому Trelio Run.");
-    }
-
-    const gitDirectoryStat = await fs.stat(path.join(rootDirectory, "workspace", ".git"));
-
-    if (!gitDirectoryStat.isDirectory()) {
-      throw new Error("Каталог Run повреждён: локальный Git workspace отсутствует.");
-    }
+    return JSON.parse(await fs.readFile(
+      path.join(rootDirectory, ".trelio-run.json"),
+      "utf8",
+    ));
   } catch (error) {
-    if (error.code === "ENOENT") {
-      // Отсутствующий root безопасно создаст bridge. Но существующий каталог
-      // без metadata не должен проходить: иначе claim отзовёт живую аренду до
-      // того, как локальная ошибка станет видна оператору.
-      try {
-        await fs.stat(rootDirectory);
-      } catch (rootError) {
-        if (rootError.code === "ENOENT") {
-          return;
-        }
-        throw rootError;
-      }
-      throw new Error("Выбранный --dir уже существует, но не принадлежит этому Trelio Run.");
-    }
+    if (error.code === "ENOENT") return null;
     throw error;
   }
 };
 
-const openWorkspace = async (origin, options) => {
+const isProcessRunning = (pid) => {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but is owned by another account. Such a
+    // lock must remain fail-closed; only ESRCH proves that its owner is gone.
+    return error.code !== "ESRCH";
+  }
+};
+
+const acquireWorkspaceOpenLock = async (workspaceId) => {
+  await ensurePrivateDirectory(CONFIG_DIRECTORY);
+  // Lock-и находятся вне видимого Workspace, но всё равно являются частью
+  // trust boundary bridge. Проверяем owner/mode/type каталога, а не только
+  // создаём его рекурсивно: существующий symlink здесь недопустим.
+  await ensurePrivateDirectory(WORKSPACE_OPEN_LOCK_DIRECTORY);
+  const lockPath = path.join(WORKSPACE_OPEN_LOCK_DIRECTORY, `${workspaceId}.lock`);
+  const ownerToken = crypto.randomUUID();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await fs.mkdir(lockPath, { mode: 0o700 });
+      try {
+        await fs.writeFile(
+          path.join(lockPath, "owner.json"),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            workspaceId,
+            pid: process.pid,
+            ownerToken,
+            startedAt: new Date().toISOString(),
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      } catch (error) {
+        await fs.rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+      }
+      return { lockPath, ownerToken };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+
+    let owner = null;
+    let lockStat = null;
+
+    try {
+      [owner, lockStat] = await Promise.all([
+        readPrivateJsonFile(path.join(lockPath, "owner.json")).catch((error) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        }),
+        fs.lstat(lockPath),
+      ]);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+
+    const validOwner = owner?.workspaceId === workspaceId
+      && Number.isSafeInteger(Number(owner.pid));
+    const liveOwner = validOwner && isProcessRunning(Number(owner.pid));
+    const initializing = !validOwner && lockStat.isDirectory()
+      && !lockStat.isSymbolicLink()
+      && Date.now() - lockStat.mtimeMs < WORKSPACE_OPEN_LOCK_INITIALIZATION_STALE_MS;
+
+    if (liveOwner || initializing) {
+      const lockError = new Error(
+        "Этот Agent Workspace уже открывается другим локальным процессом. Дождитесь завершения открытия и повторите команду.",
+      );
+      lockError.code = "TRELIO_WORKSPACE_OPEN_LOCKED";
+      throw lockError;
+    }
+
+    // Удаляется только exact lock-directory мёртвого процесса или оборванной
+    // инициализации. Содержимое Workspace находится в другом namespace.
+    await fs.rm(lockPath, { recursive: true, force: true });
+  }
+
+  throw new Error("Не удалось получить локальную блокировку Agent Workspace.");
+};
+
+const releaseWorkspaceOpenLock = async ({ lockPath, ownerToken }) => {
+  try {
+    const owner = await readPrivateJsonFile(path.join(lockPath, "owner.json"));
+
+    if (owner.ownerToken === ownerToken && owner.pid === process.pid) {
+      await fs.rm(lockPath, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+};
+
+const withWorkspaceOpenLock = async (workspaceId, handler) => {
+  const lock = await acquireWorkspaceOpenLock(workspaceId);
+
+  try {
+    return await handler();
+  } finally {
+    await releaseWorkspaceOpenLock(lock);
+  }
+};
+
+const resolveWorkspaceRootDirectory = async ({ workspaceId, runId, directoryOption }) => {
+  if (directoryOption) return path.resolve(String(directoryOption));
+
+  const persistentRoot = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
+
+  if (!runId || await readOptionalRunMetadata(persistentRoot)) {
+    return persistentRoot;
+  }
+
+  // До persistent-layout каждый Run жил в отдельном UUID-каталоге. Уже
+  // начатый legacy Run продолжается на месте, чтобы ни один dirty draft не
+  // пришлось копировать или молча бросать при обновлении bridge.
+  const legacyRoot = path.join(persistentRoot, runId);
+  const legacyMetadata = await readOptionalRunMetadata(legacyRoot);
+
+  return legacyMetadata?.workspaceId === workspaceId && legacyMetadata?.runId === runId
+    ? legacyRoot
+    : persistentRoot;
+};
+
+const assertValidMaterializedRoot = async (
+  rootDirectory,
+  metadata,
+  workspaceId,
+  origin,
+) => {
+  if (
+    metadata.workspaceId !== workspaceId
+    || !UUID_PATTERN.test(String(metadata.runId || ""))
+    || normalizeOrigin(metadata.origin || DEFAULT_ORIGIN) !== origin
+    || path.resolve(String(metadata.workspaceDirectory || ""))
+      !== path.join(rootDirectory, "workspace")
+  ) {
+    throw new Error("Локальный каталог принадлежит другому или повреждённому Trelio Workspace.");
+  }
+
+  const gitDirectoryStat = await fs.stat(path.join(rootDirectory, "workspace", ".git"));
+
+  if (!gitDirectoryStat.isDirectory()) {
+    throw new Error("Каталог Workspace повреждён: локальный Git workspace отсутствует.");
+  }
+};
+
+const resolveRecordedMaterializedHead = (metadata) => [
+  metadata.materializedHead,
+  metadata.candidateHead,
+  metadata.draftHead,
+  metadata.baseHead,
+].map((value) => String(value || "")).find((value) => GIT_OBJECT_PATTERN.test(value)) || null;
+
+const preflightWorkspaceDirectory = async ({
+  workspaceId,
+  origin,
+  requestedRunId,
+  rootDirectory,
+  directoryOption,
+  overview,
+}) => {
+  let rootStat;
+
+  try {
+    rootStat = await fs.lstat(rootDirectory);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return { rootDirectoryExists: false, existingMetadata: null, legacyContainer: false };
+    }
+    throw error;
+  }
+
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Выбранный локальный root существует и не является безопасным каталогом.");
+  }
+
+  const existingMetadata = await readOptionalRunMetadata(rootDirectory);
+
+  if (existingMetadata) {
+    await assertValidMaterializedRoot(rootDirectory, existingMetadata, workspaceId, origin);
+    if (
+      existingMetadata.company?.id
+      && overview?.company?.id
+      && existingMetadata.company.id !== overview.company.id
+    ) {
+      throw new Error("Локальный Workspace принадлежит другой компании Trelio.");
+    }
+    const localRunState = overview?.runs?.find((run) => run.id === existingMetadata.runId);
+    const continuingSameRun = requestedRunId === existingMetadata.runId;
+
+    if (!continuingSameRun) {
+      if (!localRunState || !TERMINAL_RUN_STATUSES.has(localRunState.status)) {
+        throw new Error(
+          "В локальной папке уже находится незавершённый Agent Run этого Workspace. Завершите или отмените его перед новым запуском.",
+        );
+      }
+
+      const localHead = (await runGit(["rev-parse", "HEAD"], {
+        cwd: existingMetadata.workspaceDirectory,
+      })).stdout.trim();
+      const recordedHead = resolveRecordedMaterializedHead(existingMetadata);
+      const acceptedHead = String(overview?.workspace?.acceptedHead || "");
+
+      if (!recordedHead || (localHead !== recordedHead && localHead !== acceptedHead)) {
+        throw new Error(
+          "Локальная Git-история расходится со служебным снимком предыдущего Run. Bridge не будет заменять даже clean committed changes.",
+        );
+      }
+
+      if (await getGitStatus(
+        existingMetadata.workspaceDirectory,
+        existingMetadata.objects || [],
+      )) {
+        throw new Error(
+          "Локальная папка содержит несохранённые изменения предыдущего Run. Bridge не будет перезаписывать их новым запуском.",
+        );
+      }
+    }
+
+    return { rootDirectoryExists: true, existingMetadata, legacyContainer: false };
+  }
+
+  const defaultPersistentRoot = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
+
+  if (directoryOption || path.resolve(rootDirectory) !== path.resolve(defaultPersistentRoot)) {
+    throw new Error("Выбранный --dir уже существует, но не принадлежит Trelio Workspace.");
+  }
+
+  // Старый layout оставлял под workspace-id только UUID-каталоги Run. Новый
+  // persistent root может быть создан рядом с ними, но лишь после проверки
+  // каждого legacy Run по серверу и локальному Git.
+  const entries = await fs.readdir(rootDirectory, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !UUID_PATTERN.test(entry.name)) {
+      throw new Error(
+        "Каталог Workspace содержит неизвестные файлы и не может быть автоматически переведён на persistent-layout.",
+      );
+    }
+
+    const legacyRoot = path.join(rootDirectory, entry.name);
+    const legacyMetadata = await readOptionalRunMetadata(legacyRoot);
+
+    if (!legacyMetadata) {
+      throw new Error("Legacy Run не содержит служебный metadata-файл; автоматическая миграция остановлена.");
+    }
+    await assertValidMaterializedRoot(legacyRoot, legacyMetadata, workspaceId, origin);
+    if (
+      legacyMetadata.company?.id
+      && overview?.company?.id
+      && legacyMetadata.company.id !== overview.company.id
+    ) {
+      throw new Error("Legacy Run принадлежит другой компании Trelio.");
+    }
+    const legacyRunState = overview?.runs?.find((run) => run.id === legacyMetadata.runId);
+
+    if (!legacyRunState || !TERMINAL_RUN_STATUSES.has(legacyRunState.status)) {
+      throw new Error(
+        "В старой локальной структуре найден незавершённый Agent Run. Сначала продолжите или отмените его.",
+      );
+    }
+    if (await getGitStatus(legacyMetadata.workspaceDirectory, legacyMetadata.objects || [])) {
+      throw new Error(
+        "В старой локальной структуре найден Run с несохранёнными изменениями. Автоматическая миграция запрещена.",
+      );
+    }
+  }
+
+  return { rootDirectoryExists: true, existingMetadata: null, legacyContainer: true };
+};
+
+const synchronizePersistentWorkspaceToAcceptedHead = async ({
+  origin,
+  token,
+  workspaceId,
+  acceptedHead,
+  metadata,
+  companyEncryption,
+}) => {
+  if (!GIT_OBJECT_PATTERN.test(String(acceptedHead || ""))) {
+    throw new Error("Trelio не вернул корректную принятую ревизию Workspace.");
+  }
+
+  const workspaceDirectory = metadata.workspaceDirectory;
+  const localHead = (await runGit(["rev-parse", "HEAD"], {
+    cwd: workspaceDirectory,
+  })).stdout.trim();
+
+  if (localHead === acceptedHead) return false;
+
+  if (localHead !== resolveRecordedMaterializedHead(metadata)) {
+    throw new Error(
+      "Локальная Git-история изменилась после preflight. Новый Run не создан; committed changes сохранены.",
+    );
+  }
+
+  // Статус проверяется второй раз непосредственно перед заменой tracked tree:
+  // пользователь мог изменить файл, пока bridge получал server overview.
+  if (await getGitStatus(workspaceDirectory, metadata.objects || [])) {
+    throw new Error(
+      "Локальная папка изменилась во время сверки с сервером. Новый Run не создан; локальные файлы сохранены.",
+    );
+  }
+
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-accepted-sync-"));
+  const bundlePath = path.join(temporaryDirectory, "accepted.bundle");
+
+  try {
+    const endpoint = companyEncryption
+      ? `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-bundle`
+      : `/api/agent-workspaces/workspaces/${workspaceId}/bundle`;
+    const response = await request(
+      origin,
+      token,
+      `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`,
+    );
+
+    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+      throw new Error("Trelio вернул bundle другой принятой ревизии Workspace.");
+    }
+    if (companyEncryption) {
+      await writeAndDecryptCompanyWorkspaceBundle({
+        response,
+        destination: bundlePath,
+        companyEncryption,
+      });
+    } else {
+      await writeResponseToFile(response, bundlePath);
+    }
+
+    // Между завершёнными Run история может законно расходиться: например,
+    // отменённый draft не является предком нового accepted head. Замена
+    // разрешена только после server-terminal + clean проверок выше.
+    await fastForwardMaterializedBundle({
+      bundlePath,
+      workspaceDirectory,
+      head: acceptedHead,
+      knownObjects: metadata.objects || [],
+      allowHistoryReplacement: true,
+      expectedLocalHead: localHead,
+    });
+    return true;
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const openWorkspaceLocked = async (origin, options, workspaceId) => {
   const token = await requireToken(origin);
   let compatibility = await ensureBridgeCompatibility(origin, token);
   let activeAgentRules = compatibility?.agentRules ?? null;
-  await cleanLocalRuns({
-    origin,
-    token,
-    dryRun: false,
-    automatic: true,
-  }).catch(() => undefined);
-  const workspaceId = requireUuid(options.workspace, "workspace");
   // Exact open-команду строит уже допущенный MCP-вызов. Новая схема передаёт
   // только server-side runtime-session id; legacy self-attestation остаётся на
   // один rolling-upgrade цикл и не используется новым hook.
   const runtimeSessionId = parseRuntimeSessionOption(options);
   const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
+  const requestedRunId = options.run ? requireUuid(options.run, "run") : null;
+  const rootDirectory = await resolveWorkspaceRootDirectory({
+    workspaceId,
+    runId: requestedRunId,
+    directoryOption: options.dir,
+  });
+  let rootDirectoryExists = false;
+
+  try {
+    const rootStat = await fs.lstat(rootDirectory);
+
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error("Выбранный локальный root существует и не является безопасным каталогом.");
+    }
+    rootDirectoryExists = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
   let runPayload;
   let runOverview = null;
   let companyEncryption = null;
 
-  if (options.run) {
-    const runId = requireUuid(options.run, "run");
-    await preflightExistingRunDirectory({
-      workspaceId,
-      runId,
-      directoryOption: options.dir,
-    });
+  // Любой reuse существующего root сначала получает live server state. Без
+  // этой сверки bridge не может доказать terminal status прежнего Run и не
+  // имеет права ни перезаписывать файлы, ни создавать новый writable Run.
+  if (requestedRunId || rootDirectoryExists) {
     const rawOverview = await readJsonResponse(await request(
       origin,
       token,
@@ -7990,7 +8353,39 @@ const openWorkspace = async (origin, options) => {
       companyEncryption,
     });
     runOverview = overview;
-    const existingRun = overview.runs.find((item) => item.id === runId);
+  }
+
+  const directoryPreflight = await preflightWorkspaceDirectory({
+    workspaceId,
+    origin,
+    requestedRunId,
+    rootDirectory,
+    directoryOption: options.dir,
+    overview: runOverview,
+  });
+
+  if (!requestedRunId && directoryPreflight.existingMetadata) {
+    const acceptedHead = runOverview?.workspace?.acceptedHead;
+    await synchronizePersistentWorkspaceToAcceptedHead({
+      origin,
+      token,
+      workspaceId,
+      acceptedHead,
+      metadata: directoryPreflight.existingMetadata,
+      companyEncryption,
+    });
+    // Даже если последующий server start временно не состоится, локальная
+    // сверка является активностью и metadata должна честно описывать уже
+    // materialized accepted head, а не прежний terminal Run snapshot.
+    await writeRunMetadata(path.join(rootDirectory, ".trelio-run.json"), {
+      ...directoryPreflight.existingMetadata,
+      materializedHead: acceptedHead,
+      lastUsedAt: new Date().toISOString(),
+    });
+  }
+
+  if (requestedRunId) {
+    const existingRun = runOverview.runs.find((item) => item.id === requestedRunId);
 
     if (!existingRun) {
       throw new Error("Run не найден в указанном workspace или недоступен пользователю.");
@@ -8007,7 +8402,7 @@ const openWorkspace = async (origin, options) => {
     const claimedRun = await readJsonResponse(await request(
       origin,
       token,
-      `/api/agent-workspaces/runs/${runId}/claim`,
+      `/api/agent-workspaces/runs/${requestedRunId}/claim`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -8025,8 +8420,8 @@ const openWorkspace = async (origin, options) => {
     ));
     runPayload = {
       run: claimedRun,
-      workspace: overview.workspace,
-      company: overview.company,
+      workspace: runOverview.workspace,
+      company: runOverview.company,
     };
   } else {
     // Если super-admin опубликовал новую revision между preflight и start,
@@ -8096,14 +8491,6 @@ const openWorkspace = async (origin, options) => {
     token,
     companyEncryption,
   });
-  if (runOverview) {
-    runOverview = await hydrateAgentCompanyEncryptedJson({
-      value: runOverview,
-      origin,
-      token,
-      companyEncryption,
-    });
-  }
   const agentRun = runPayload.run;
   const pinnedRunAgentRules = agentRun.agentInstructionsSnapshotJson?.platform;
 
@@ -8115,145 +8502,129 @@ const openWorkspace = async (origin, options) => {
     ? String(agentRun.draftHead)
     : String(agentRun.baseHead);
   const latestRunCheckpoint = findLatestRunCheckpoint(runOverview, runId);
-  const rootDirectory = path.resolve(String(options.dir || path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId, runId)));
   const workspaceDirectory = path.join(rootDirectory, "workspace");
   const metadataPath = path.join(rootDirectory, ".trelio-run.json");
-  let rootDirectoryExists = false;
 
-  try {
-    const rootStat = await fs.stat(rootDirectory);
+  const existingMetadata = await readOptionalRunMetadata(rootDirectory);
 
-    if (!rootStat.isDirectory()) {
-      throw new Error("Выбранный --dir существует и не является каталогом.");
-    }
-    rootDirectoryExists = true;
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-  }
+  if (existingMetadata) {
+    await assertValidMaterializedRoot(rootDirectory, existingMetadata, workspaceId, origin);
+    const continuingSameRun = existingMetadata.runId === runId;
+    const localHead = (await runGit(["rev-parse", "HEAD"], {
+      cwd: workspaceDirectory,
+    })).stdout.trim();
 
-  try {
-    const existingMetadata = JSON.parse(await fs.readFile(metadataPath, "utf8"));
+    if (localHead !== materializedHead) {
+      const syncDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-draft-sync-"));
+      const syncBundlePath = path.join(syncDirectory, "run.bundle");
 
-    if (existingMetadata.runId === runId && existingMetadata.workspaceId === workspaceId) {
-      const gitDirectoryStat = await fs.stat(path.join(workspaceDirectory, ".git"));
-
-      if (!gitDirectoryStat.isDirectory()) {
-        throw new Error("Каталог Run повреждён: локальный Git workspace отсутствует.");
-      }
-      const localHead = (await runGit(["rev-parse", "HEAD"], {
-        cwd: workspaceDirectory,
-      })).stdout.trim();
-
-      if (localHead !== materializedHead) {
-        const syncDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-draft-sync-"));
-        const syncBundlePath = path.join(syncDirectory, "run.bundle");
-
-        try {
-          const bundleResponse = await request(
-            origin,
-            token,
-            `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
-          );
-          if (companyEncryption) {
-            await writeAndDecryptCompanyWorkspaceBundle({
-              response: bundleResponse,
-              destination: syncBundlePath,
-              companyEncryption,
-            });
-          } else {
-            await writeResponseToFile(bundleResponse, syncBundlePath);
-          }
-          await fastForwardMaterializedBundle({
-            bundlePath: syncBundlePath,
-            workspaceDirectory,
-            head: materializedHead,
-            knownObjects: existingMetadata.objects || [],
+      try {
+        const bundleResponse = await request(
+          origin,
+          token,
+          `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
+        );
+        if (companyEncryption) {
+          await writeAndDecryptCompanyWorkspaceBundle({
+            response: bundleResponse,
+            destination: syncBundlePath,
+            companyEncryption,
           });
-        } finally {
-          await fs.rm(syncDirectory, { recursive: true, force: true });
+        } else {
+          await writeResponseToFile(bundleResponse, syncBundlePath);
         }
+        await fastForwardMaterializedBundle({
+          bundlePath: syncBundlePath,
+          workspaceDirectory,
+          head: materializedHead,
+          knownObjects: existingMetadata.objects || [],
+          // Новый Run переиспользует clean папку завершённого Run. Его base
+          // уже server-pinned, поэтому здесь допустима смена ветви истории;
+          // продолжение того же Run по-прежнему допускает лишь fast-forward.
+          allowHistoryReplacement: !continuingSameRun,
+          expectedLocalHead: localHead,
+        });
+      } finally {
+        await fs.rm(syncDirectory, { recursive: true, force: true });
       }
-      await materializeRuntimeControlFiles(workspaceDirectory);
-      // Claim всегда ротирует lease/fencing pair. Даже если Git-каталог уже
-      // материализован, локальный metadata обязан получить новые значения до
-      // возврата управления агенту, иначе первый heartbeat будет закономерно
-      // отклонён как запрос от прежнего владельца аренды.
-      const refreshedMetadata = {
-        ...existingMetadata,
-        schemaVersion: 3,
-        origin,
-        pluginVersion: BRIDGE_VERSION,
-        scopeType: runPayload.workspace?.scopeType || existingMetadata.scopeType || null,
-        company: runPayload.company,
-        encryption: companyEncryption?.metadata ?? { enabled: false },
-        leaseId: agentRun.leaseId,
-        fencingToken: agentRun.fencingToken,
-        baseHead: agentRun.baseHead,
-        draftHead: agentRun.draftHead || null,
-        materializedHead,
-        workspaceDirectory,
-        contextHeads: agentRun.contextHeadsJson || {},
-        agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
-        userProfileSnapshot: agentRun.userProfileSnapshotJson,
-        runtimePolicySnapshot: agentRun.runtimePolicySnapshotJson,
-        runtimeAttestation: agentRun.runtimeAttestationJson,
-        claimedAt: new Date().toISOString(),
-      };
-      // Новая lease-пара сохраняется до сетевой синхронизации контекста. Если
-      // download related bundle временно упадёт, следующий вызов `context sync`
-      // продолжит работу с уже актуальным fencing, а не со старой арендой.
-      await writeRunMetadata(metadataPath, refreshedMetadata);
-      const contexts = await materializeRunContexts({
-        origin,
-        token,
-        rootDirectory,
-        runId,
-        contextHeads: refreshedMetadata.contextHeads,
-        companyEncryption,
-      });
-      const objects = await materializeWorkspaceObjects({
-        origin,
-        token,
-        runId,
-        workspaceDirectory,
-        knownObjects: existingMetadata.objects || [],
-      });
-      await writeContextIndex(
-        rootDirectory,
-        contexts,
-        agentRun.agentInstructionsSnapshotJson,
-        agentRun.userProfileSnapshotJson,
-        latestRunCheckpoint,
-        runId,
-      );
-      await writeRunMetadata(metadataPath, {
-        ...refreshedMetadata,
-        contexts: serializeMaterializedContexts(contexts),
-        agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
-        userProfileSnapshot: agentRun.userProfileSnapshotJson,
-        runtimePolicySnapshot: agentRun.runtimePolicySnapshotJson,
-        runtimeAttestation: agentRun.runtimeAttestationJson,
-        objects,
-      });
-      await registerRunRoot(rootDirectory);
-      process.stdout.write(`${workspaceDirectory}\n`);
-      return;
     }
-    throw new Error("Выбранный каталог уже принадлежит другому Trelio Run.");
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
+    await materializeRuntimeControlFiles(workspaceDirectory);
+    const now = new Date().toISOString();
+    // Claim всегда ротирует lease/fencing pair, а новый Run меняет всю
+    // server-pinned identity. Metadata публикуется до context sync, чтобы
+    // повторный open продолжал уже exact новый Run после сетевого сбоя.
+    const refreshedMetadata = {
+      ...existingMetadata,
+      schemaVersion: 3,
+      origin,
+      pluginVersion: BRIDGE_VERSION,
+      scopeType: runPayload.workspace?.scopeType || existingMetadata.scopeType || null,
+      company: runPayload.company,
+      encryption: companyEncryption?.metadata ?? { enabled: false },
+      workspaceId,
+      runId,
+      leaseId: agentRun.leaseId,
+      fencingToken: agentRun.fencingToken,
+      baseHead: agentRun.baseHead,
+      draftHead: agentRun.draftHead || null,
+      materializedHead,
+      workspaceDirectory,
+      contextHeads: agentRun.contextHeadsJson || {},
+      agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
+      userProfileSnapshot: agentRun.userProfileSnapshotJson,
+      runtimePolicySnapshot: agentRun.runtimePolicySnapshotJson,
+      runtimeAttestation: agentRun.runtimeAttestationJson,
+      contexts: [],
+      contextObjects: [],
+      terminalStatus: undefined,
+      terminalAt: undefined,
+      cleanupEligibleAfterDays: undefined,
+      claimedAt: now,
+      lastUsedAt: now,
+    };
+    await writeRunMetadata(metadataPath, refreshedMetadata);
+    const contexts = await materializeRunContexts({
+      origin,
+      token,
+      rootDirectory,
+      runId,
+      contextHeads: refreshedMetadata.contextHeads,
+      companyEncryption,
+    });
+    const objects = await materializeWorkspaceObjects({
+      origin,
+      token,
+      runId,
+      workspaceDirectory,
+      knownObjects: existingMetadata.objects || [],
+    });
+    await writeContextIndex(
+      rootDirectory,
+      contexts,
+      agentRun.agentInstructionsSnapshotJson,
+      agentRun.userProfileSnapshotJson,
+      latestRunCheckpoint,
+      runId,
+    );
+    await writeRunMetadata(metadataPath, {
+      ...refreshedMetadata,
+      contexts: serializeMaterializedContexts(contexts),
+      objects,
+      lastUsedAt: new Date().toISOString(),
+    });
+    await registerRunRoot(rootDirectory);
+    process.stdout.write(`${workspaceDirectory}\n`);
+    return;
   }
 
-  if (rootDirectoryExists) {
-    throw new Error("Выбранный --dir уже существует, но не принадлежит этому Trelio Run.");
+  if (rootDirectoryExists && !directoryPreflight.legacyContainer) {
+    throw new Error("Локальный root существует, но не прошёл persistent Workspace preflight.");
   }
 
-  await fs.mkdir(rootDirectory, { recursive: true, mode: 0o700 });
-  let ownsRootDirectory = true;
+  if (!rootDirectoryExists) {
+    await fs.mkdir(rootDirectory, { recursive: true, mode: 0o700 });
+  }
+  let ownsRootDirectory = !rootDirectoryExists;
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-workspace-"));
 
   try {
@@ -8304,6 +8675,7 @@ const openWorkspace = async (origin, options) => {
       runId,
     );
 
+    const now = new Date().toISOString();
     const metadata = {
       schemaVersion: 3,
       origin,
@@ -8326,23 +8698,56 @@ const openWorkspace = async (origin, options) => {
       runtimeAttestation: agentRun.runtimeAttestationJson,
       contexts: serializeMaterializedContexts(contexts),
       objects,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
+      claimedAt: now,
+      lastUsedAt: now,
     };
     await writeRunMetadata(metadataPath, metadata);
     await registerRunRoot(rootDirectory);
     process.stdout.write(`${workspaceDirectory}\n`);
   } catch (error) {
     // Не оставляем полуматериализованный Run: следующий open должен либо найти
-    // полностью готовый metadata, либо начать в чистом каталоге. Удалять можно
-    // только exact root, отсутствие которого bridge проверил перед созданием.
+    // полностью готовый metadata, либо начать в чистом каталоге. Для нового
+    // root удаляется exact каталог; в legacy-container удаляются только три
+    // новых пути persistent-layout, а старые UUID-каталоги не затрагиваются.
     if (ownsRootDirectory) {
       await fs.rm(rootDirectory, { recursive: true, force: true });
       ownsRootDirectory = false;
+    } else if (directoryPreflight.legacyContainer) {
+      await Promise.all([
+        makeWritable(workspaceDirectory).catch(() => undefined),
+        makeWritable(path.join(rootDirectory, "context")).catch(() => undefined),
+      ]);
+      await Promise.all([
+        fs.rm(workspaceDirectory, { recursive: true, force: true }),
+        fs.rm(path.join(rootDirectory, "context"), { recursive: true, force: true }),
+        fs.rm(metadataPath, { force: true }),
+      ]);
     }
     throw error;
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
+};
+
+const openWorkspace = async (origin, options) => {
+  const workspaceId = requireUuid(options.workspace, "workspace");
+
+  await withWorkspaceOpenLock(
+    workspaceId,
+    () => openWorkspaceLocked(origin, options, workspaceId),
+  );
+
+  // Автоочистка запускается только после публикации metadata нового/claimed
+  // Run. Поэтому текущий persistent root уже non-terminal и не может попасть
+  // в кандидаты, даже если перед open он был старше retention-порога.
+  const token = await requireToken(origin);
+  await cleanLocalRuns({
+    origin,
+    token,
+    dryRun: false,
+    automatic: true,
+  }).catch(() => undefined);
 };
 
 const validateWorkspaceReadSnapshot = (rawSnapshot, workspaceId) => {
@@ -8622,7 +9027,20 @@ const withRun = async (handler) => {
   const companyEncryption = company?.slug
     ? await ensureCompanyEncryptionContext({ origin, token, company })
     : null;
-  return handler({ metadata, metadataPath, origin, token, companyEncryption });
+  const activeMetadata = {
+    ...metadata,
+    lastUsedAt: new Date().toISOString(),
+  };
+  // Любая явная команда внутри папки считается локальной активностью. Это
+  // отделяет 30-дневный retention Workspace от давности terminal status Run.
+  await writeRunMetadata(metadataPath, activeMetadata);
+  return handler({
+    metadata: activeMetadata,
+    metadataPath,
+    origin,
+    token,
+    companyEncryption,
+  });
 };
 
 const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
@@ -9883,7 +10301,8 @@ const submit = async (options) => withRun(async ({
           candidateHead: head,
           terminalStatus: "accepted",
           terminalAt: result.run.acceptedAt || new Date().toISOString(),
-          cleanupEligibleAfterDays: (await readLocalSettings()).terminalRunRetentionDays,
+          lastUsedAt: new Date().toISOString(),
+          cleanupEligibleAfterDays: (await readLocalSettings()).workspaceRetentionDays,
         });
         process.stdout.write("Зашифрованный результат записан в рабочее пространство Trelio.\n");
         return;
@@ -9912,7 +10331,8 @@ const submit = async (options) => withRun(async ({
         candidateHead: head,
         terminalStatus: "accepted",
         terminalAt: result.run.acceptedAt || new Date().toISOString(),
-        cleanupEligibleAfterDays: (await readLocalSettings()).terminalRunRetentionDays,
+        lastUsedAt: new Date().toISOString(),
+        cleanupEligibleAfterDays: (await readLocalSettings()).workspaceRetentionDays,
       });
       process.stdout.write("Результат записан в рабочее пространство Trelio.\n");
       process.stdout.write("Статус: принят автоматически.\n");
@@ -10757,6 +11177,9 @@ const discoverDefaultRunRoots = async () => {
     }
 
     const workspaceDirectory = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceEntry.name);
+    if (await readOptionalRunMetadata(workspaceDirectory)) {
+      roots.push(workspaceDirectory);
+    }
     const runEntries = await fs.readdir(workspaceDirectory, { withFileTypes: true });
 
     for (const runEntry of runEntries) {
@@ -10805,6 +11228,8 @@ const discoverRegisteredRunRoots = async () => {
 
 const readRunStatusMap = async ({ origin, token, roots }) => {
   const statusByRunId = new Map();
+  const latestRunActivityByWorkspaceId = new Map();
+  const workspacesWithOpenRuns = new Set();
   const workspaceIds = [...new Set(
     roots
       .filter((item) => normalizeOrigin(item.metadata.origin || DEFAULT_ORIGIN) === origin)
@@ -10820,22 +11245,107 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
 
     for (const run of Array.isArray(overview.runs) ? overview.runs : []) {
       statusByRunId.set(run.id, run);
+      const activityAt = Math.max(...[
+        run.updatedAt,
+        run.acceptedAt,
+        run.cancelledAt,
+        run.draftUpdatedAt,
+        run.createdAt,
+      ].map((value) => Date.parse(String(value || ""))).filter(Number.isFinite));
+
+      if (Number.isFinite(activityAt)) {
+        latestRunActivityByWorkspaceId.set(
+          workspaceId,
+          Math.max(latestRunActivityByWorkspaceId.get(workspaceId) || 0, activityAt),
+        );
+      }
+      if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+        workspacesWithOpenRuns.add(workspaceId);
+      }
     }
   }
 
-  return statusByRunId;
+  return {
+    statusByRunId,
+    latestRunActivityByWorkspaceId,
+    workspacesWithOpenRuns,
+  };
+};
+
+const hasUnmanagedIgnoredWorkspaceFiles = async (workspaceDirectory) => {
+  const result = await runGit(
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"],
+    { cwd: workspaceDirectory },
+  );
+  const ignoredPaths = result.stdout.split("\0").filter(Boolean);
+
+  for (const ignoredPath of ignoredPaths) {
+    if (ignoredPath === "AGENTS.md") {
+      if (
+        await fs.readFile(path.join(workspaceDirectory, ignoredPath), "utf8")
+        === AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN
+      ) {
+        continue;
+      }
+    }
+    if (ignoredPath === "CLAUDE.md") {
+      if (
+        await fs.readFile(path.join(workspaceDirectory, ignoredPath), "utf8")
+        === AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN
+      ) {
+        continue;
+      }
+    }
+    if (ignoredPath === WORKLOG_FILE_NAME) {
+      const worklog = await inspectWorkspaceWorklog(workspaceDirectory);
+
+      if (worklog.exists && worklog.isDefault) continue;
+    }
+
+    return true;
+  }
+
+  return false;
 };
 
 const isWritableWorkspaceDirty = async (root) => {
   try {
-    const result = await runGit(
-      ["status", "--porcelain", "--untracked-files=all"],
-      { cwd: root.metadata.workspaceDirectory },
-    );
-    return Boolean(result.stdout.trim());
+    const localHead = (await runGit(["rev-parse", "HEAD"], {
+      cwd: root.metadata.workspaceDirectory,
+    })).stdout.trim();
+
+    if (localHead !== resolveRecordedMaterializedHead(root.metadata)) {
+      // A clean working tree may still contain unpublished commits. Retention
+      // treats that divergence as user data and never removes the root.
+      return true;
+    }
+
+    if (await hasUnmanagedIgnoredWorkspaceFiles(root.metadata.workspaceDirectory)) {
+      return true;
+    }
+
+    return Boolean(await getGitStatus(
+      root.metadata.workspaceDirectory,
+      root.metadata.objects || [],
+    ));
   } catch {
     // Неизвестное состояние безопаснее считать dirty, чем пытаться удалить.
     return true;
+  }
+};
+
+const isWorkspaceOpenLocked = async (workspaceId) => {
+  try {
+    const lockStat = await fs.lstat(path.join(
+      WORKSPACE_OPEN_LOCK_DIRECTORY,
+      `${workspaceId}.lock`,
+    ));
+    // Cleanup never tries to repair locks: an uncertain/opening Workspace is
+    // simply not reclaimable in this pass.
+    return lockStat.isDirectory() || lockStat.isSymbolicLink();
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
   }
 };
 
@@ -11038,10 +11548,19 @@ const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
   }
 };
 
-const planTerminalRunCleanup = async ({ origin, token, settings }) => {
+const planWorkspaceCleanup = async ({
+  origin,
+  token,
+  settings,
+  ignoredOpenLockWorkspaceIds = new Set(),
+}) => {
   const roots = await discoverRegisteredRunRoots();
-  const statusByRunId = await readRunStatusMap({ origin, token, roots });
-  const retentionMs = settings.terminalRunRetentionDays * 24 * 60 * 60 * 1000;
+  const {
+    statusByRunId,
+    latestRunActivityByWorkspaceId,
+    workspacesWithOpenRuns,
+  } = await readRunStatusMap({ origin, token, roots });
+  const retentionMs = settings.workspaceRetentionDays * 24 * 60 * 60 * 1000;
   const candidates = [];
 
   for (const root of roots) {
@@ -11051,7 +11570,11 @@ const planTerminalRunCleanup = async ({ origin, token, settings }) => {
 
     const runState = statusByRunId.get(root.metadata.runId);
 
-    if (!runState || !["accepted", "cancelled"].includes(runState.status)) {
+    if (!runState || !TERMINAL_RUN_STATUSES.has(runState.status)) {
+      continue;
+    }
+
+    if (workspacesWithOpenRuns.has(root.metadata.workspaceId)) {
       continue;
     }
 
@@ -11061,8 +11584,41 @@ const planTerminalRunCleanup = async ({ origin, token, settings }) => {
       || runState.updatedAt
       || "",
     );
+    const localActivityAt = Math.max(...[
+      root.metadata.lastUsedAt,
+      root.metadata.claimedAt,
+      root.metadata.createdAt,
+    ].map((value) => Date.parse(String(value || ""))).filter(Number.isFinite));
+    const inactiveSince = Math.max(
+      Number.isFinite(terminalAt) ? terminalAt : Number.NEGATIVE_INFINITY,
+      Number.isFinite(localActivityAt) ? localActivityAt : Number.NEGATIVE_INFINITY,
+      latestRunActivityByWorkspaceId.get(root.metadata.workspaceId)
+        || Number.NEGATIVE_INFINITY,
+    );
 
-    if (!Number.isFinite(terminalAt) || Date.now() - terminalAt < retentionMs) {
+    if (!Number.isFinite(inactiveSince) || Date.now() - inactiveSince < retentionMs) {
+      continue;
+    }
+
+    if (
+      !ignoredOpenLockWorkspaceIds.has(root.metadata.workspaceId)
+      && await isWorkspaceOpenLocked(root.metadata.workspaceId)
+    ) {
+      continue;
+    }
+
+    const rootEntries = await fs.readdir(root.rootDirectory, { withFileTypes: true });
+    const containsUnmanagedRootEntry = rootEntries.some((entry) => ![
+      ".trelio-run.json",
+      "context",
+      "workspace",
+    ].includes(entry.name));
+
+    if (containsUnmanagedRootEntry) {
+      // При rolling migration persistent root может временно соседствовать со
+      // старыми `<workspaceId>/<runId>` roots. Родителя нельзя удалить вместе
+      // с ними. Любой другой неизвестный top-level path также может содержать
+      // пользовательские данные и поэтому делает весь root non-reclaimable.
       continue;
     }
 
@@ -11073,7 +11629,8 @@ const planTerminalRunCleanup = async ({ origin, token, settings }) => {
     candidates.push({
       ...root,
       status: runState.status,
-      terminalAt: new Date(terminalAt).toISOString(),
+      terminalAt: Number.isFinite(terminalAt) ? new Date(terminalAt).toISOString() : null,
+      lastUsedAt: new Date(inactiveSince).toISOString(),
       sizeBytes: await calculateDirectoryBytes(root.rootDirectory),
     });
   }
@@ -11086,7 +11643,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
   let cleanupPlan;
 
   try {
-    cleanupPlan = await planTerminalRunCleanup({ origin, token, settings });
+    cleanupPlan = await planWorkspaceCleanup({ origin, token, settings });
   } catch (error) {
     if (automatic) {
       // Backend недоступен или статус не доказан — автоматическая очистка
@@ -11111,7 +11668,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
   ].reduce((sum, item) => sum + item.sizeBytes, 0);
 
   if (!automatic || dryRun) {
-    process.stdout.write(`Terminal Run roots: ${cleanupPlan.candidates.length}\n`);
+    process.stdout.write(`Inactive Workspace roots: ${cleanupPlan.candidates.length}\n`);
     for (const candidate of cleanupPlan.candidates) {
       process.stdout.write(
         `- ${candidate.rootDirectory} · ${candidate.status} · ${formatBytes(candidate.sizeBytes)}\n`,
@@ -11137,9 +11694,59 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     };
   }
 
-  for (const candidate of cleanupPlan.candidates) {
-    assertSafeRegisteredRunRoot(candidate, registeredRoots);
-    await fs.rm(candidate.rootDirectory, { recursive: true, force: true });
+  const workspaceLocks = new Map();
+  const initiallyPlannedRoots = new Set(
+    cleanupPlan.candidates.map((item) => path.resolve(item.rootDirectory)),
+  );
+  let deletionCandidates = [];
+
+  try {
+    // Между dry-plan и rm другой процесс мог начать open. Берём тот же lock,
+    // который защищает materialization, затем полностью перечитываем backend,
+    // metadata и Git. Ни один root не удаляется по устаревшему плану.
+    for (const candidate of cleanupPlan.candidates) {
+      const workspaceId = candidate.metadata.workspaceId;
+
+      if (workspaceLocks.has(workspaceId)) continue;
+
+      try {
+        workspaceLocks.set(workspaceId, await acquireWorkspaceOpenLock(workspaceId));
+      } catch (error) {
+        if (error.code !== "TRELIO_WORKSPACE_OPEN_LOCKED") throw error;
+      }
+    }
+
+    let refreshedCleanupPlan;
+
+    try {
+      refreshedCleanupPlan = await planWorkspaceCleanup({
+        origin,
+        token,
+        settings,
+        // Собственные locks этой cleanup-транзакции не делают root active;
+        // locks другого процесса по-прежнему исключают его из fresh plan.
+        ignoredOpenLockWorkspaceIds: new Set(workspaceLocks.keys()),
+      });
+    } catch (error) {
+      if (automatic) {
+        return { skipped: true, reason: error instanceof Error ? error.message : String(error) };
+      }
+      throw error;
+    }
+
+    deletionCandidates = refreshedCleanupPlan.candidates.filter((candidate) => (
+      initiallyPlannedRoots.has(path.resolve(candidate.rootDirectory))
+      && workspaceLocks.has(candidate.metadata.workspaceId)
+    ));
+
+    for (const candidate of deletionCandidates) {
+      assertSafeRegisteredRunRoot(candidate, registeredRoots);
+      await fs.rm(candidate.rootDirectory, { recursive: true, force: true });
+    }
+  } finally {
+    for (const lock of workspaceLocks.values()) {
+      await releaseWorkspaceOpenLock(lock);
+    }
   }
 
   for (const candidate of cacheCandidates) {
@@ -11159,7 +11766,9 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     await fs.rm(resolvedDirectory, { recursive: true, force: true });
   }
 
-  const deletedRootSet = new Set(cleanupPlan.candidates.map((item) => path.resolve(item.rootDirectory)));
+  const deletedRootSet = new Set(
+    deletionCandidates.map((item) => path.resolve(item.rootDirectory)),
+  );
   await writeRunRegistry(
     (await readRunRegistry()).filter((item) => !deletedRootSet.has(path.resolve(item))),
   );
@@ -11169,7 +11778,7 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
   }
 
   return {
-    deletedRuns: cleanupPlan.candidates.length,
+    deletedRuns: deletionCandidates.length,
     deletedCacheObjects: cacheCandidates.length,
     deletedSkillRuntimePackages: skillRuntimeCacheCandidates.length,
     reclaimableBytes,

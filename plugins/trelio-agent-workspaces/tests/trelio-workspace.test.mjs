@@ -1955,6 +1955,278 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
   }
 });
 
+test("future Runs reuse one persistent Workspace folder and sync accepted head before start", {
+  timeout: 20_000,
+}, async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-persistent-"));
+  const homeDirectory = path.join(temporaryDirectory, "home");
+  const workspaceId = "44444444-4444-4444-8444-444444444444";
+  const secondRunId = "55555555-5555-4555-8555-555555555555";
+  const thirdRunId = "66666666-6666-4666-8666-666666666666";
+  const firstExport = await createExportBundle(path.join(temporaryDirectory, "first"), {
+    "WORKSPACE_CONTEXT.md": "# Persistent workspace\n",
+    "shared.md": "first accepted version\n",
+  });
+  const secondExport = await createExportBundle(path.join(temporaryDirectory, "second"), {
+    "WORKSPACE_CONTEXT.md": "# Persistent workspace\n",
+    "shared.md": "second accepted version\n",
+    "reused.md": "same local folder\n",
+  });
+  const events = [];
+  let acceptedHead = firstExport.head;
+  let firstRunStatus = "running";
+  let secondRunStatus = null;
+  let startCount = 0;
+  let serverError = null;
+  let markFirstStartSeen;
+  let releaseFirstStart;
+  const firstStartSeen = new Promise((resolve) => {
+    markFirstStartSeen = resolve;
+  });
+  const firstStartGate = new Promise((resolve) => {
+    releaseFirstStart = resolve;
+  });
+
+  const serializeRun = (id, head, status) => ({
+    id,
+    status,
+    leaseId: id === runId
+      ? "77777777-7777-4777-8777-777777777777"
+      : "88888888-8888-4888-8888-888888888888",
+    fencingToken: 1,
+    baseHead: head,
+    draftHead: null,
+    contextHeadsJson: {},
+    agentInstructionsSnapshotJson: {
+      schemaVersion: 1,
+      company: null,
+      project: null,
+      compiledMarkdown: "# Рабочие правила агентов Trelio\n",
+    },
+    userProfileSnapshotJson: {
+      schemaVersion: 1,
+      profile: null,
+      compiledMarkdown: "# Как агенту работать со мной\n",
+    },
+  });
+
+  const server = createServer(async (request, response) => {
+    try {
+      assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers.authorization, "Bearer integration-token");
+
+      if (request.url === "/api/agent-workspaces/bridge-compatibility") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        return;
+      }
+
+      if (request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          suite: "trelio-e2ee-v1",
+          state: "plain",
+          company: testCompany,
+        }));
+        return;
+      }
+
+      if (
+        request.method === "GET"
+        && request.url === `/api/agent-workspaces/workspaces/${workspaceId}`
+      ) {
+        events.push("overview");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          workspace: { id: workspaceId, acceptedHead },
+          company: testCompany,
+          runs: [
+            serializeRun(runId, firstExport.head, firstRunStatus),
+            ...(secondRunStatus
+              ? [serializeRun(secondRunId, secondExport.head, secondRunStatus)]
+              : []),
+          ],
+          checkpoints: [],
+        }));
+        return;
+      }
+
+      if (
+        request.method === "POST"
+        && request.url === `/api/agent-workspaces/workspaces/${workspaceId}/runs`
+      ) {
+        startCount += 1;
+        events.push(`start-${startCount}`);
+        if (startCount === 1) {
+          markFirstStartSeen();
+          await firstStartGate;
+        }
+        const currentRun = startCount === 1
+          ? serializeRun(runId, firstExport.head, firstRunStatus)
+          : startCount === 2
+            ? serializeRun(secondRunId, secondExport.head, "running")
+            : serializeRun(thirdRunId, secondExport.head, "running");
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          run: currentRun,
+          workspace: { id: workspaceId, acceptedHead },
+          company: testCompany,
+        }));
+        return;
+      }
+
+      if (request.url === `/api/agent-workspaces/runs/${runId}/bundle`) {
+        response.setHeader("content-type", "application/vnd.git.bundle");
+        response.end(firstExport.bundle);
+        return;
+      }
+
+      if (request.url === `/api/agent-workspaces/runs/${secondRunId}/bundle`) {
+        response.setHeader("content-type", "application/vnd.git.bundle");
+        response.end(secondExport.bundle);
+        return;
+      }
+
+      if (
+        request.url
+        === `/api/agent-workspaces/workspaces/${workspaceId}/bundle?head=${secondExport.head}`
+      ) {
+        events.push("accepted-bundle");
+        response.setHeader("content-type", "application/vnd.git.bundle");
+        response.setHeader("x-trelio-accepted-head", secondExport.head);
+        response.end(secondExport.bundle);
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end();
+    } catch (error) {
+      serverError = error;
+      response.statusCode = 500;
+      response.end(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  try {
+    await mkdir(homeDirectory, { recursive: true });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const serverAddress = server.address();
+    assert.ok(serverAddress && typeof serverAddress === "object");
+    const origin = `http://127.0.0.1:${serverAddress.port}`;
+    await writeTestCredential(homeDirectory, origin);
+    const command = [
+      bridgePath,
+      "open",
+      "--origin",
+      origin,
+      "--workspace",
+      workspaceId,
+    ];
+    const executionOptions = {
+      cwd: temporaryDirectory,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, HOME: homeDirectory },
+    };
+    const expectedWorkspaceDirectory = path.join(
+      homeDirectory,
+      "Trelio Workspaces",
+      workspaceId,
+      "workspace",
+    );
+
+    const firstOpenPromise = execFileAsync(process.execPath, command, executionOptions);
+    await firstStartSeen;
+    try {
+      await assert.rejects(
+        execFileAsync(process.execPath, command, executionOptions),
+        /уже открывается другим локальным процессом/u,
+      );
+      assert.equal(startCount, 1, "concurrent open must stop at the local lock");
+    } finally {
+      releaseFirstStart();
+    }
+    const firstOpen = await firstOpenPromise;
+    assert.equal(firstOpen.stdout.trim(), expectedWorkspaceDirectory);
+    assert.equal(
+      await readFile(path.join(expectedWorkspaceDirectory, "shared.md"), "utf8"),
+      "first accepted version\n",
+    );
+    assert.equal(
+      await pathExists(path.join(homeDirectory, "Trelio Workspaces", workspaceId, runId)),
+      false,
+      "new layout must not create a per-Run directory",
+    );
+    await assert.rejects(
+      execFileAsync(process.execPath, command, executionOptions),
+      /незавершённый Agent Run/u,
+    );
+    assert.equal(startCount, 1, "one local Workspace root permits only one active Run");
+
+    firstRunStatus = "accepted";
+    acceptedHead = secondExport.head;
+    secondRunStatus = "running";
+    const eventOffset = events.length;
+    const secondOpen = await execFileAsync(process.execPath, command, executionOptions);
+    assert.equal(secondOpen.stdout.trim(), expectedWorkspaceDirectory);
+    assert.equal(
+      await readFile(path.join(expectedWorkspaceDirectory, "shared.md"), "utf8"),
+      "second accepted version\n",
+    );
+    assert.equal(
+      await readFile(path.join(expectedWorkspaceDirectory, "reused.md"), "utf8"),
+      "same local folder\n",
+    );
+    const secondEvents = events.slice(eventOffset);
+    assert.ok(
+      secondEvents.indexOf("accepted-bundle") < secondEvents.indexOf("start-2"),
+      "accepted head must be downloaded before the next server Run is created",
+    );
+    const metadata = JSON.parse(await readFile(
+      path.join(homeDirectory, "Trelio Workspaces", workspaceId, ".trelio-run.json"),
+      "utf8",
+    ));
+    assert.equal(metadata.runId, secondRunId);
+    assert.equal(metadata.baseHead, secondExport.head);
+    assert.ok(Number.isFinite(Date.parse(metadata.lastUsedAt)));
+
+    secondRunStatus = "accepted";
+    await writeFile(path.join(expectedWorkspaceDirectory, "local-only.md"), "do not overwrite\n");
+    await assert.rejects(
+      execFileAsync(process.execPath, command, executionOptions),
+      /несохранённые изменения предыдущего Run/u,
+    );
+    assert.equal(startCount, 2, "dirty reuse must fail before creating another server Run");
+    assert.equal(
+      await readFile(path.join(expectedWorkspaceDirectory, "local-only.md"), "utf8"),
+      "do not overwrite\n",
+    );
+    await rm(path.join(expectedWorkspaceDirectory, "local-only.md"));
+    await writeFile(
+      path.join(expectedWorkspaceDirectory, "committed-only.md"),
+      "clean working tree but unpublished commit\n",
+    );
+    await runGit(expectedWorkspaceDirectory, ["add", "committed-only.md"]);
+    await runGit(expectedWorkspaceDirectory, ["commit", "-m", "Local unpublished commit"]);
+    await assert.rejects(
+      execFileAsync(process.execPath, command, executionOptions),
+      /clean committed changes/u,
+    );
+    assert.equal(startCount, 2, "diverged clean history must also fail before server start");
+    assert.equal(
+      await readFile(path.join(expectedWorkspaceDirectory, "committed-only.md"), "utf8"),
+      "clean working tree but unpublished commit\n",
+    );
+    assert.ifError(serverError);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("blocker checkpoint transfers the exact draft and continuation state to another device", {
   timeout: 20_000,
 }, async () => {
@@ -2746,15 +3018,47 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-clean-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
   const configDirectory = path.join(homeDirectory, ".config", "trelio", "workspace-bridge");
-  const workspaceId = "44444444-4444-4444-8444-444444444444";
   const acceptedRunId = runId;
   const dirtyRunId = "66666666-6666-4666-8666-666666666666";
   const activeRunId = "77777777-7777-4777-8777-777777777777";
   const unknownRunId = "88888888-8888-4888-8888-888888888888";
+  const recentRunId = "99999999-9999-4999-8999-999999999999";
+  const unmanagedRunId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const committedRunId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const ignoredRunId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const busyTerminalRunId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+  const busyActiveRunId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const runStates = new Map([
+    [acceptedRunId, "accepted"],
+    [dirtyRunId, "accepted"],
+    [activeRunId, "active"],
+    [recentRunId, "accepted"],
+    [unmanagedRunId, "accepted"],
+    [committedRunId, "accepted"],
+    [ignoredRunId, "accepted"],
+    [busyTerminalRunId, "accepted"],
+  ]);
+  const workspaceIdByRunId = new Map(
+    [...runStates.keys(), unknownRunId].map((currentRunId, index) => [
+      currentRunId,
+      `dddddddd-dddd-4ddd-8ddd-${String(index + 1).padStart(12, "0")}`,
+    ]),
+  );
   const roots = new Map();
   let serverError = null;
 
-  const createLocalRunRoot = async (origin, name, currentRunId, dirty = false) => {
+  const createLocalRunRoot = async (
+    origin,
+    name,
+    currentRunId,
+    {
+      dirty = false,
+      committed = false,
+      ignored = false,
+      lastUsedAt = null,
+      unmanaged = false,
+    } = {},
+  ) => {
     const rootDirectory = path.join(temporaryDirectory, name);
     const workspaceDirectory = path.join(rootDirectory, "workspace");
     await mkdir(workspaceDirectory, { recursive: true });
@@ -2762,11 +3066,27 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     await runGit(workspaceDirectory, ["config", "user.name", "Trelio Bridge Test"]);
     await runGit(workspaceDirectory, ["config", "user.email", "bridge-test@trelio.local"]);
     await writeFile(path.join(workspaceDirectory, "README.md"), "# Clean test\n", "utf8");
-    await runGit(workspaceDirectory, ["add", "README.md"]);
+    if (ignored) {
+      await writeFile(path.join(workspaceDirectory, ".gitignore"), "*.private\n", "utf8");
+    }
+    await runGit(workspaceDirectory, ["add", "README.md", ...(ignored ? [".gitignore"] : [])]);
     await runGit(workspaceDirectory, ["commit", "-m", "Clean base"]);
+    const materializedHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"]))
+      .stdout.trim();
 
     if (dirty) {
       await writeFile(path.join(workspaceDirectory, "local-draft.md"), "Do not delete\n", "utf8");
+    }
+    if (committed) {
+      await writeFile(path.join(workspaceDirectory, "local-commit.md"), "Do not delete\n", "utf8");
+      await runGit(workspaceDirectory, ["add", "local-commit.md"]);
+      await runGit(workspaceDirectory, ["commit", "-m", "Unpublished local commit"]);
+    }
+    if (ignored) {
+      await writeFile(path.join(workspaceDirectory, "local.private"), "Ignored user data\n", "utf8");
+    }
+    if (unmanaged) {
+      await writeFile(path.join(rootDirectory, "keep-me.txt"), "Unknown user data\n", "utf8");
     }
 
     await writeFile(
@@ -2775,11 +3095,14 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         schemaVersion: 3,
         origin,
         pluginVersion: BRIDGE_VERSION,
-        workspaceId,
+        workspaceId: workspaceIdByRunId.get(currentRunId),
         runId: currentRunId,
         workspaceDirectory,
+        materializedHead,
         objects: [],
         contextObjects: [],
+        lastUsedAt: lastUsedAt
+          || new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
       }, null, 2)}\n`,
       { mode: 0o600 },
     );
@@ -2798,16 +3121,29 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         return;
       }
 
-      if (request.url === `/api/agent-workspaces/workspaces/${workspaceId}`) {
+      const workspaceMatch = request.url?.match(
+        /^\/api\/agent-workspaces\/workspaces\/([0-9a-f-]+)$/iu,
+      );
+      if (workspaceMatch) {
         const oldTimestamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+        const currentRunEntry = [...workspaceIdByRunId.entries()]
+          .find(([, currentWorkspaceId]) => currentWorkspaceId === workspaceMatch[1]);
+        const currentRunId = currentRunEntry?.[0] || null;
+        const currentStatus = currentRunId ? runStates.get(currentRunId) : null;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({
-          runs: [
-            { id: acceptedRunId, status: "accepted", acceptedAt: oldTimestamp },
-            { id: dirtyRunId, status: "accepted", acceptedAt: oldTimestamp },
-            { id: activeRunId, status: "active", updatedAt: oldTimestamp },
-          ],
-        }));
+        const currentRuns = currentStatus
+          ? [{
+                id: currentRunId,
+                status: currentStatus,
+                ...(currentStatus === "accepted"
+                  ? { acceptedAt: oldTimestamp }
+                  : { updatedAt: oldTimestamp }),
+              }]
+          : [];
+        if (currentRunId === busyTerminalRunId) {
+          currentRuns.push({ id: busyActiveRunId, status: "running", updatedAt: oldTimestamp });
+        }
+        response.end(JSON.stringify({ runs: currentRuns }));
         return;
       }
 
@@ -2831,14 +3167,27 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     const origin = `http://127.0.0.1:${serverAddress.port}`;
     await writeTestCredential(homeDirectory, origin);
     const acceptedRoot = await createLocalRunRoot(origin, "accepted-clean", acceptedRunId);
-    const dirtyRoot = await createLocalRunRoot(origin, "accepted-dirty", dirtyRunId, true);
+    const dirtyRoot = await createLocalRunRoot(origin, "accepted-dirty", dirtyRunId, { dirty: true });
     const activeRoot = await createLocalRunRoot(origin, "active", activeRunId);
     const unknownRoot = await createLocalRunRoot(origin, "unknown", unknownRunId);
+    const recentRoot = await createLocalRunRoot(origin, "recent", recentRunId, {
+      lastUsedAt: new Date().toISOString(),
+    });
+    const unmanagedRoot = await createLocalRunRoot(origin, "unmanaged", unmanagedRunId, {
+      unmanaged: true,
+    });
+    const committedRoot = await createLocalRunRoot(origin, "committed", committedRunId, {
+      committed: true,
+    });
+    const ignoredRoot = await createLocalRunRoot(origin, "ignored", ignoredRunId, {
+      ignored: true,
+    });
+    const busyRoot = await createLocalRunRoot(origin, "workspace-with-active-run", busyTerminalRunId);
     await mkdir(configDirectory, { recursive: true });
     await writeFile(
       path.join(configDirectory, "settings.json"),
       `${JSON.stringify({
-        terminalRunRetentionDays: 1,
+        workspaceRetentionDays: 1,
         objectCacheMaxAgeDays: 30,
         objectCacheMaxBytes: 10 * 1024 * 1024 * 1024,
       }, null, 2)}\n`,
@@ -2848,7 +3197,17 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
       path.join(configDirectory, "runs.json"),
       `${JSON.stringify({
         schemaVersion: 1,
-        roots: [acceptedRoot, dirtyRoot, activeRoot, unknownRoot],
+        roots: [
+          acceptedRoot,
+          dirtyRoot,
+          activeRoot,
+          unknownRoot,
+          recentRoot,
+          unmanagedRoot,
+          committedRoot,
+          ignoredRoot,
+          busyRoot,
+        ],
       }, null, 2)}\n`,
       { mode: 0o600 },
     );
@@ -2862,7 +3221,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         env: { ...process.env, HOME: homeDirectory },
       },
     );
-    assert.match(preview.stdout, /Terminal Run roots: 1/);
+    assert.match(preview.stdout, /Inactive Workspace roots: 1/);
     assert.match(preview.stdout, /accepted-clean/);
     assert.doesNotMatch(preview.stdout, /accepted-dirty/);
     assert.equal(await pathExists(acceptedRoot), true, "dry-run must not delete candidates");
@@ -2881,6 +3240,11 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     assert.equal(await pathExists(dirtyRoot), true);
     assert.equal(await pathExists(activeRoot), true);
     assert.equal(await pathExists(unknownRoot), true);
+    assert.equal(await pathExists(recentRoot), true, "recent local use restarts retention");
+    assert.equal(await pathExists(unmanagedRoot), true, "unknown root data is never deleted");
+    assert.equal(await pathExists(committedRoot), true, "unpublished clean commits are never deleted");
+    assert.equal(await pathExists(ignoredRoot), true, "ignored user files are never deleted");
+    assert.equal(await pathExists(busyRoot), true, "any open Run keeps the Workspace root active");
     assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));
