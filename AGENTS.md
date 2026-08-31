@@ -200,6 +200,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   Workspace. Повторный Run обязан использовать remembered device без нового
   ввода; access pending завершается явным owner-grant blocker-ом без plaintext
   fallback.
+- Folder onboarding всегда сверяет компанию по metadata-only `list_companies`,
+  сохраняет exact явно указанный slug и не подменяет его похожим именем либо
+  названием папки. Для любого non-`plain` `encryptionState` он не вызывает
+  remote `get_agent_instructions`/`list_agent_skills`, а завершает binding и
+  pairing локального bridge; успешный `login` не считается доказательством
+  созданной encryption identity или выданного owner envelope.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
   bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанный
   manifest без Git paths, blobs и plaintext digests. Локальный bridge перед

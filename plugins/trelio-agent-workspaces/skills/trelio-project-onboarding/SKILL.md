@@ -1,14 +1,15 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in one durable local working folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog, and guide selected company or personal connections without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in one durable local working folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
 ---
 
 # Trelio Working-Folder Onboarding
 
 Set up one durable local working folder in Codex or Claude Code without starting
 a disposable Trelio workspace run. Keep the binding durable in that folder's
-instruction file, but always read the current skill catalog and connection
-state from Trelio.
+instruction file. Read live company metadata from Trelio. Read the current
+skill catalog and company-content instructions only when the selected company
+is in ordinary `plain` mode; encrypted content stays on the local bridge.
 
 Discovery and pairing/session recovery remain available without runtime
 admission so setup can be repaired. Protected context/mutation calls receive a
@@ -130,7 +131,9 @@ current task.
    skip this live installation check.
 2. Resolve the exact company before `get_agent_instructions` or any local file
    write. Call `list_companies` unless a live response in the current turn has
-   already returned the accessible companies.
+   already returned the accessible companies. Read each returned company's
+   metadata-only `encryptionState`; a legacy item without that field may be
+   treated as `plain`.
    - Treat an explicit company slug from the current page, instructions, or the
      user's request as an exact selector, not as a hint. Continue only when the
      returned slug matches it exactly. If that slug is absent, stop and report
@@ -149,10 +152,16 @@ current task.
 3. Bind a project slug only when the user wants this whole working folder
    restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
-4. Call `get_agent_instructions` for the resolved company and optional project
-   before making substantive setup changes. Follow the effective working rules
-   and authenticated user's personal profile without copying either into the
-   local working-folder binding.
+4. Route by the selected company's exact `encryptionState`:
+   - For `plain`, call `get_agent_instructions` for the resolved company and
+     optional project before making substantive setup changes. Follow the
+     effective working rules and authenticated user's personal profile without
+     copying either into the local working-folder binding.
+   - For every non-`plain` state, do not call `get_agent_instructions`: remote
+     MCP cannot read those encrypted rules. Continue folder binding and local
+     bridge setup from the open company metadata only. Do not claim that the
+     rules were loaded. A later exact task/dossier Workspace Run receives its
+     pinned encrypted rules through the bridge and materializes them locally.
 
 ## Create or extend the local instruction file
 
@@ -288,10 +297,25 @@ If login reports a one-time pairing request, immediately call
 verifier. Do not open a company workspace, start a work run, or create and
 cancel a disposable result merely to test the connection.
 
+For a non-`plain` company, successful bridge login proves only the ordinary
+local device session. It does not prove that this device has an encryption
+identity or a company-key envelope. Do not ask for the encryption key during
+onboarding and do not claim encrypted content is ready. The first later exact
+Workspace Run lets the bridge open its protected `127.0.0.1` key form when
+needed. If that bridge reports `access_pending`, tell the user that the company
+owner must grant the displayed Agent Workspaces device in company encryption
+settings, then stop without a plaintext fallback.
+
 ## Offer the live Trelio skills
 
 This onboarding step is an explicit whole-catalog inventory; it does not
 replace `search_agent_skills` as the standard route for an ordinary task.
+
+For every non-`plain` company, skip this entire section: do not call
+`list_agent_skills`, do not present a blocked response as an empty catalog, and
+do not offer remote integrations that require company plaintext. State instead
+that encrypted Workspace content is handled by the local bridge and that skill
+catalog readiness was not queried in this onboarding.
 
 1. Call `list_agent_skills` once for the exact effective scope. Use only
    `companySlug` for a company-wide working folder; include `projectSlug` for a
@@ -370,6 +394,11 @@ Summarize:
 3. each offered skill as ready, awaiting personal setup, or
    `требуется настройка администратором компании`;
 4. the exact next action for every incomplete item.
+
+For a non-`plain` company, include its current encryption state, say that the
+remote skill catalog was intentionally not queried, and distinguish bridge
+pairing from the still-untested encryption-device grant. Do not present the
+company as absent merely because a content tool is unavailable.
 
 If `AGENTS.md` or `AGENTS.override.md` changed, tell the user that future tasks
 or Claude sessions opened in this folder will use the binding automatically

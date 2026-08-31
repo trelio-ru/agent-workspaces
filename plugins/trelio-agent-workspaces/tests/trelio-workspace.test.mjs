@@ -3125,6 +3125,13 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   );
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
+  assert.match(onboardingSkill, /metadata-only `encryptionState`/u);
+  assert.match(onboardingSkill, /For every non-`plain` state, do not call `get_agent_instructions`/u);
+  assert.match(onboardingSkill, /For every non-`plain` company, skip this entire section/u);
+  assert.match(onboardingSkill, /do not call\s+`list_agent_skills`/u);
+  assert.match(onboardingSkill, /successful bridge login proves only the ordinary\s+local device session/u);
+  assert.match(onboardingSkill, /does not prove that this device has an encryption\s+identity or a company-key envelope/u);
+  assert.match(onboardingSkill, /owner must grant the displayed Agent Workspaces device/u);
   assert.match(onboardingSkill, /trelio-workspace login/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
   assert.match(onboardingSkill, /codex plugin list --json/u);
