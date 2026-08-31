@@ -92,6 +92,12 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 - При изменении `plugins/trelio-agent-workspaces/**` полностью прочитай
   соответствующий `SKILL.md` и только относящиеся к сценарию references.
+- Working-folder onboarding разрешает company scope только по exact slug из
+  live `list_companies`, по единственному exact display-name match либо при
+  единственной доступной компании без явного selector. Имя/путь папки,
+  repository name, соседние файлы и fuzzy similarity не являются company
+  evidence. Недоступный explicit slug и несколько кандидатов блокируют
+  `get_agent_instructions` и запись локальной привязки до выбора пользователя.
 - Plugin change допустим для общего security/fail-closed defect,
   несовместимости Codex/Claude/MCP/OAuth/hooks, дефекта generic host либо нового
   общего primitive, который нельзя безопасно доставить независимым runtime.

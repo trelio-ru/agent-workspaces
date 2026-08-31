@@ -3131,6 +3131,22 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
   assert.match(onboardingSkill, /a listed marketplace is not proof that its\s+plugin is installed/u);
   assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
+  assert.match(
+    onboardingSkill,
+    /Resolve the exact company before `get_agent_instructions` or any local file\s+write/u,
+  );
+  assert.match(onboardingSkill, /explicit company slug[\s\S]{0,180}exact selector, not as a hint/u);
+  assert.match(
+    onboardingSkill,
+    /If that slug is absent, stop[\s\S]{0,180}never substitute another\s+company/u,
+  );
+  assert.match(onboardingSkill, /one unique\s+exact display-name match/u);
+  assert.match(
+    onboardingSkill,
+    /working-folder name or path, repository name, nearby files[\s\S]{0,180}never company evidence/u,
+  );
+  assert.match(onboardingSkill, /If several are accessible, ask the user before any\s+scoped read or write/u);
+  assert.match(onboardingSkill, /A user correction invalidates the previous candidate/u);
   assert.match(onboardingSkill, /resolve-node\.ps1/u);
   assert.match(onboardingSkill, /durable\s+machine\/user PATH\s+values/u);
   assert.match(onboardingSkill, /launch-trelio-node/u);

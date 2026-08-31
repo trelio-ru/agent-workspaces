@@ -128,10 +128,24 @@ current task.
    `codex plugin add trelio-agent-workspaces@trelio-plugins`. Treat
    `INSTALLED_BY_DEFAULT` only as a host optimization, never as a reason to
    skip this live installation check.
-2. Resolve the exact company. Reuse an explicit company slug from current
-   instructions or the user's request; otherwise call `list_companies`.
-   Automatically continue only when one accessible company or one exact match
-   remains. Ask the user to choose when several companies are plausible.
+2. Resolve the exact company before `get_agent_instructions` or any local file
+   write. Call `list_companies` unless a live response in the current turn has
+   already returned the accessible companies.
+   - Treat an explicit company slug from the current page, instructions, or the
+     user's request as an exact selector, not as a hint. Continue only when the
+     returned slug matches it exactly. If that slug is absent, stop and report
+     that the requested company is unavailable; never substitute another
+     company with a similar name or slug.
+   - When the user supplied only a display name, continue only for one unique
+     exact display-name match. With no match or more than one exact match, show
+     the concise returned `display name (slug)` choices and ask the user.
+   - A working-folder name or path, repository name, nearby files, and fuzzy,
+     substring, or semantic similarity are never company evidence and cannot
+     remove candidates from the user's choice.
+   - Without an explicit selector, continue automatically only when exactly one
+     company is accessible. If several are accessible, ask the user before any
+     scoped read or write. A user correction invalidates the previous candidate
+     and requires this resolution again before continuing.
 3. Bind a project slug only when the user wants this whole working folder
    restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
