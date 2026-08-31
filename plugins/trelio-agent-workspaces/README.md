@@ -17,6 +17,8 @@
 - подписанные локальные runtime-пакеты и декларативные Remote MCP;
 - private-встречи с отдельным результатом и подтверждаемым планом переноса;
 - Agent Secrets с одноразовой выдачей точному локальному executable;
+- installation-managed credentials с явной server-owned one-use либо
+  time-bound policy без локального кеша value;
 - backend-managed интеграции с независимыми от плагина runtime-релизами;
 - переносимые blocker-checkpoint и read-only контекст других workspace;
 - управляемые правила компании, проекта и личный профиль пользователя;
@@ -232,6 +234,9 @@ OS-account и не выдаёт private config за Keychain/DPAPI-хранил�
 - Bridge использует отдельную узкую device-session вместо MCP token.
 - Agent Secrets выдаются один раз точному executable и не попадают в prompt,
   argv или workspace.
+- Только явно помеченный backend-ом стабильный installation-managed credential
+  может повторно использовать exact grant в том же Run/release до `expiresAt`;
+  plugin не расширяет этот срок и не сохраняет value.
 - Личные integration credentials и sessions хранятся локально вне Git и
   Trelio workspace.
 - Signed runtimes проверяются по Ed25519 и SHA-256 и запускаются без shell.

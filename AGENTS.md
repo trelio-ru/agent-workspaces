@@ -192,9 +192,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,
   затем системный Node. Возвращать в `.mcp.json` bare `node`, машинный absolute
   path или менять `hooks.json` ради PATH-совместимости нельзя.
-- Secret передаётся только exact executable через scoped one-use delivery и не
-  попадает в model-visible output, argv, ambient environment, workspace,
-  comments, checkpoints, handoff или logs.
+- Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
+  только exact executable через scoped one-use delivery. Стабильный
+  installation-managed API key/client secret может повторно использоваться
+  лишь когда backend явно вернул `time_bound` policy, в том же Run/release и
+  до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
+  Любой credential не попадает в model-visible output, argv, ambient
+  environment, workspace, comments, checkpoints, handoff или logs.
 - Для зашифрованной компании bridge получает ключ шифрования только через
   одноразовую loopback-форму `127.0.0.1`, создаёт отдельную device identity и
   сохраняет её wrapped private bundle вместе с локальным unlock key только в

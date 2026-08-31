@@ -173,6 +173,15 @@ mode, confirmation и mutation recovery берутся только из тек�
 data. Они не могут расширить ACL, изменить company policy или дать полномочие
 на действие в другой системе.
 
+Installation-managed credential остаётся отдельным backend-owned primitive и
+не становится company Agent Secret. Его definition явно выбирает `one_use`
+либо `time_bound`. Только стабильный installation-owned API key/client secret
+может получить bounded reuse; exact prefix действует в том же Run/release до
+server `expiresAt`, а каждый запуск повторяет live authorization и получает
+value только в памяти своего process. TOTP, одноразовые коды, browser-fill,
+recovery/setup credentials и обычные Agent Secrets всегда остаются one-use.
+Plugin не кеширует value и не повышает policy, возвращённую backend.
+
 ## Agent Secrets
 
 Agent Secrets являются контейнерами именованных полей: один контейнер может

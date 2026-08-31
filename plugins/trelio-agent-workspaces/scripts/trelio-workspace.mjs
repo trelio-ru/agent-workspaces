@@ -5600,9 +5600,11 @@ export const buildAgentSkillRuntimeEnvironment = ({
           TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
         }
       : {}),
-    // A consumed one-use grant is not ambient parent environment. It is
-    // supplied only by the in-process secret-exec -> exact skill-run handoff
+    // A server-authorized checkout is not ambient parent environment. It is
+    // supplied only by this process's secret-exec -> exact skill-run handoff
     // below, after live release resolution, and cannot override host identity.
+    // Whether the opaque grant may authorize a later process is decided and
+    // rechecked by backend; this host never caches or broadens that policy.
     ...normalizedGrantedEnvironment,
   };
 };
@@ -9652,8 +9654,11 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
     throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
   }
 
-  // Endpoint атомарно consume-ит одноразовый grant. Ответ держим только в
-  // памяти bridge и никогда не печатаем, не пишем в metadata и не передаём MCP.
+  // Endpoint атомарно учитывает текущее использование grant. Обычные Agent
+  // Secrets остаются one-use; installation-managed grant может быть
+  // time-bound только по server policy. Ответ в любом случае живёт лишь в
+  // памяти этого bridge process и не печатается, не пишется в metadata и не
+  // передаётся MCP.
   const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
     method: "POST",
     headers: { "content-type": "application/json" },

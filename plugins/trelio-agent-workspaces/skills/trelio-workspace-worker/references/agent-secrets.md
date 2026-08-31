@@ -87,6 +87,13 @@ value once through the authorized stdin, scoped env, or private temporary-file
 mode. Never replace the executable with a shell, logger, `env`, `printenv`,
 `cat`, or another value-revealing program.
 
+An installation-managed credential is a separate provider contract, not an
+Agent Secret. Follow the exact `prepare_agent_skill_managed_credential_checkout`
+response: only `reusePolicy.mode=time_bound` permits reusing the unchanged
+`bridge.argvPrefix`, only in the same Run and release and only before its
+server `expiresAt`. Never extend that lease to an Agent Secret, TOTP,
+browser-fill or recovery/setup credential, and never cache the value locally.
+
 ## Browser authentication
 
 Before requesting checkout or browser fill, use the selected service runtime's
