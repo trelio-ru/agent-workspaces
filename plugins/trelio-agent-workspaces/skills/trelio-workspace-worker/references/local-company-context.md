@@ -9,38 +9,30 @@ with the ordinary native tool named by the current operation.
 
 ## The first local read performs one bounded sync
 
-Call `trelio-remote-skills.continue_trelio_local_context` for the requested
-`search`, `list`, `get_task`, or `fetch` operation. On the first local content
-call in a new MCP host process, the trusted host automatically performs the
-fresh company sync before answering; this is not an agent choice and there is
-no manual mirror-sync operation for the agent to remember.
+Call `trelio-remote-skills.continue_trelio_local_context` with the exact returned
+operation: `search`, `list`, `get_task`, `fetch`, `search_workspace_files`, or
+`get_workspace_file`. The first mirror-backed call in each MCP host process
+automatically syncs the company; there is no agent-facing manual sync.
 
-The trusted host downloads only canonical projections that passed the current
-user's ordinary company/project/task/dossier ACL, resolves their E2EE markers
-on the device, opens accepted Workspace bundles in private temporary storage,
-and publishes one encrypted local mirror generation. It never sends decrypted
-content, search queries, snippets, paths, or private keys to Trelio.
+The host downloads only ACL-filtered canonical projections, resolves E2EE
+markers on-device, opens accepted Workspace bundles in private temporary
+storage, and publishes one encrypted mirror generation. Decrypted content,
+queries, snippets, paths, and keys never go to Trelio.
 
-Sync is incremental. Unchanged task revisions and accepted Workspace heads are
-reused. The host resolves E2EE markers from all changed task/domain projections
-in bounded mirror-wide batches; transport request count does not grow one-for-one
-with the number of tasks. One short per-company writer lock protects publication,
-while readers keep using an immutable prior generation. A second process may wait
-for that writer; it must not delete the mirror, create a plaintext fallback, or
-broaden the scope. A live writer refreshes its lock. Stale-lock takeover is bounded
-and owner-checked.
+Sync reuses unchanged revisions/accepted heads and hydrates changed markers in
+bounded mirror-wide batches. A short per-company writer lock protects atomic
+publication while readers retain the prior immutable generation. Contenders may
+wait; they never delete the mirror, widen scope, or create plaintext fallback.
+Lock refresh and stale takeover are bounded and owner-checked.
 
-After the automatic sync, `search`, `list`, `get_task`, and `fetch` read the
-encrypted mirror locally. In the same MCP host process those queries remain
-available without a network freshness call. A later MCP host process
-automatically syncs again. A generation change during the bounded build is
-retried by the host; do not invent a refresh call before every query.
+After sync, mirror-backed reads stay local for that process; a later host process
+syncs again. The host retries a generation change during build. Do not invent a
+refresh before each query.
 
-The immutable generation stays encrypted on disk. The host decrypts at most
-one current generation per company into process memory and builds its lexical
-index lazily. That plaintext mirror and index have a hard 600-second residency
-TTL; expiry removes the strong references even when the host is idle. A later
-operation reopens the encrypted local generation without another network sync.
+Disk generations remain encrypted. At most one current generation per company
+and its lazy lexical index are plaintext in process memory, with a hard
+600-second TTL even while idle. Later access reopens the encrypted generation
+without another network sync.
 
 ## Search locally and reveal only selected results
 
@@ -55,24 +47,16 @@ Use `search` with one to five faithful formulations and a bounded result count:
 }
 ```
 
-Search spans every currently accessible project, task detail, dossier,
-knowledge-base page, contact, registry, private meeting, and safe text file
-from accepted task/dossier Workspaces in the company mirror. Each optional
-domain is included only when the bridge's source OAuth grant carries its normal
-read scope.
-Ranking and previews are computed locally. Treat result IDs as opaque. Call
-`fetch` only for the small relevant set; never paste or load the whole mirror
-into the model context.
+Search spans accessible projects, task details, dossiers, knowledge pages,
+contacts, registries, private meetings, and safe accepted Workspace text;
+optional domains still require their OAuth scope. Ranking/previews stay local.
+Treat IDs as opaque and `fetch` only a small relevant set, never the whole mirror.
 
-Use `list` only for explicit inventory or when an exact task is known by
-project but not number. It accepts
-`resource=projects|tasks|dossiers|knowledge_pages|contacts|registries|meetings`,
-optional `projectSlug`, `offset`, and a maximum `limit` of 100. Use `get_task` with exact
-`projectSlug` and positive `taskNumber`. These calls return the effective
-company/project instructions and personal profile with the selected task.
-The local provider resolves both the current project slug and an exact historical
-slug from a pre-encryption or renamed project URL; the returned task and opaque
-result IDs continue to use the current canonical project slug.
+Use `list` only for explicit inventory or a task known by project but not number;
+it accepts the documented resource, optional project/offset, and `limit<=100`.
+Use `get_task` with exact project slug and positive number. It returns effective
+rules/profile and resolves an exact pre-encryption or renamed project slug while
+returning only the current canonical slug.
 
 An accepted Workspace search result includes the exact native
 `prepare_agent_workspace_read` target. Reading it remains read-only. A writable
@@ -81,6 +65,35 @@ bridge commands, with the same per-Workspace leases, fencing tokens,
 checkpoints, submit, acceptance, and optimistic head checks as every other
 company. Never create a company-wide Run lock: neighboring tasks must remain
 independent.
+
+When native `search_agent_workspace_files` selects this provider, repeat its
+queries through `operation=search_workspace_files`; the host filters to accepted
+Workspace text before applying the bounded top-N, so ordinary task or dossier
+matches cannot displace a relevant file. `operation=get_workspace_file` accepts
+the exact `workspaceId`, `workspaceHead`, and `filePath` from that result and
+preserves the native accepted-head fence. These routes do not start a Run or
+expose historical Git bytes.
+
+## Continue Workspace history and cancellation locally
+
+When native list/restore/cancel selects
+`providerSelection.tool=continue_trelio_local_workspace`, use that exact company
+and matching operation:
+
+- `list_revisions`: pass `workspaceId`; select only a head returned by this live
+  result.
+- `restore_revision`: pass workspace, current/target heads, meaningful plaintext
+  audit reason, and returned runtime session when present. The host protects the
+  reason, restores the old user tree in a separate Run, preserves current
+  controls, normalizes legacy context, and submits a current-head descendant.
+  An ambiguous prepare is resolved by one exact marker read-back, never a
+  speculative second Run.
+- `cancel_run`: pass `runId` and concrete reason. The host protects it; only
+  transport/5xx or malformed success can retry, bounded and with the same marker.
+
+Never infer this route or reproduce its bundle/decrypt/Git/retry steps. Leave an
+incomplete restore Run intact and continue that exact Run. An unconfirmed
+prepare or lost post-acceptance response never authorizes a second restore.
 
 ## Use the same proposal lifecycle
 
@@ -107,38 +120,22 @@ same server-side ACL, advisory locks, optimistic state revisions, public-comment
 snapshot hashes, and idempotent apply/dismiss/publication behavior as native
 Trelio.
 
+When one response needs two or more cards and native
+`render_task_proposals` or compatibility `render_task_comment_proposals`
+selects this local route, make one `continue_trelio_local_proposal` call with
+`kind=bundle`, `operation=save`, and `payload.blocks` copied from the intended
+native bundle. All direct task blocks must name this same exact company; Run
+blocks are checked server-side against it. The host preserves text/card order,
+canonicalizes historical project slugs, encrypts every card through its normal
+kind-specific save path, and returns one bundle whose per-card conflicts remain
+independent. Context reads and final publish/apply/dismiss actions stay separate
+per card. After an ambiguous transport result, reread every affected context
+before retrying; do not repeat the whole bundle blindly.
+
 The returned `reviewUrl` opens the exact task. If the client cannot show an MCP
 App, present the hydrated editable proposal and ask for the same explicit
 publish/apply/dismiss decision; do not silently convert a proposal into a direct
 mutation.
-
-## Continue Workspace history and cancellation locally
-
-When native `list_agent_workspace_revisions`,
-`restore_agent_workspace_revision`, or `cancel_agent_workspace_run` returns
-`providerSelection.tool=continue_trelio_local_workspace`, call that tool with
-the same exact company and matching operation:
-
-- `list_revisions`: pass `workspaceId`; select only a head returned by this live
-  result.
-- `restore_revision`: pass `workspaceId`, current `expectedHead`, selected
-  `targetHead`, the meaningful plaintext audit `reason`, and the returned
-  `runtimeSessionId` when present. The trusted host protects the reason,
-  opens the historical user tree locally in a separate Run, retains current
-  `AGENTS.md`/`CLAUDE.md`/`.trelio` controls, normalizes legacy context, creates
-  a descendant of current head, and submits it through the ordinary encrypted
-  Run lifecycle. A lost prepare response is resolved by one exact audit-marker
-  read-back; the host never creates a second restore Run speculatively.
-- `cancel_run`: pass `runId` and the concrete plaintext audit `reason`. The host
-  protects it before the normal cancellation request. Only transport/5xx or a
-  malformed success response can trigger bounded retries, always with the same
-  protected marker; explicit API errors are returned unchanged.
-
-Do not call these operations from an inferred company state. Do not download a
-bundle, decrypt it, run Git, retry submit, or cancel a partially prepared restore
-outside the tool. If restore reports an incomplete Run, leave it intact and
-inspect/continue that exact Run. An unconfirmed prepare or a lost response after
-acceptance must not cause a second restore.
 
 ## Fail closed
 

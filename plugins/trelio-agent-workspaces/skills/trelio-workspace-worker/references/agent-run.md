@@ -162,13 +162,11 @@ task communication, handoff, submit, or final reporting.
 - On `WORKSPACE_OUTDATED`, preserve the rejected candidate, start a new Run from
   current accepted head, compare concurrent changes, and merge/reapply without
   force-updating canonical history.
-- To undo accepted workspace changes, call `list_agent_workspace_revisions`,
-  select an exact head, then `restore_agent_workspace_revision` with current
-  head as `expectedHead` and a meaningful reason. For either native call, obey an
-  exact `providerSelection.tool=continue_trelio_local_workspace` response and use
-  its matching `list_revisions` or `restore_revision` operation. Restore creates
-  a new accepted commit with the old tree and still rejects concurrency; never
-  open or rewrite encrypted history with improvised Git/HTTP commands.
+- To undo accepted changes, list revisions, select an exact head, then restore
+  with current `expectedHead` and a meaningful reason. If either native call
+  selects `continue_trelio_local_workspace`, use its matching list/restore
+  operation. Restore adds a descendant and rejects concurrency; never improvise
+  encrypted Git/HTTP history access.
 - Never delete Workspace roots manually. `trelio-workspace clean --dry-run`
   lists only roots unused for 30 days, backend-terminal, locally clean and not
   opening, plus cache bytes. `clean` deletes that exact local plan, never the

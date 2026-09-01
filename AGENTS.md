@@ -254,6 +254,15 @@ provider-tag workflow или внутренние release playbooks в этот 
   backend-selected routes. Agent не выводит provider из metadata: plain остаётся
   native, а детали exact local context/proposal route загружаются только из lazy
   worker reference после такого ответа. Always-visible schemas provider-neutral.
+- Encrypted routing принимает только explicit capabilities: current content read,
+  proposal, local Workspace list/restore/cancel либо logical bridge checkpoint.
+  Unsupported/new native method fail-closed и не маскируется generic local search.
+  Workspace-only query имеет exact company scope; current-head file и revision
+  metadata читаются локально, audited restore проходит local Run, а прямые
+  server-side historical Git diff/read не получают plaintext fallback.
+- Combined encrypted proposal bundle выбирает provider до per-card preparation,
+  canonicalize-ит historical project aliases локально и отклоняет mixed-company
+  payload до первого save; confirmed card error не блокирует независимых siblings.
 - Чистое чтение уже принятого task/dossier Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит

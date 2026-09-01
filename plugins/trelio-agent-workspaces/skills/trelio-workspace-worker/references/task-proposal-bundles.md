@@ -17,6 +17,13 @@ that response. Several standalone MCP
 App results are not a bundle: a host may persist every server draft while only
 one result remains visible to the user.
 
+If that one native renderer returns the authoritative
+`providerSelection.provider=local_company_context` route, read
+`local-company-context.md` and continue the same ordered blocks once through
+`continue_trelio_local_proposal` with `kind=bundle` and `operation=save`.
+Do not split them into singular local calls. This is still one bundle result;
+each card keeps its own later human decision.
+
 Read the matching fresh context separately for every exact target:
 
 - `get_task_comment_proposal_context` for each `commentProposal` block;

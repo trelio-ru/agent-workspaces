@@ -12,13 +12,17 @@ import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  buildEncryptedRestoreHandoffArguments,
   fetchMirrorResult,
   findPreparedEncryptedRestoreRun,
+  getWorkspaceFileFromMirror,
   hydrateChangedCompanyMirrorRecords,
   listCompanyContextMirror,
   materializeHistoricalWorkspaceTreeForRestore,
+  prepareLocalProposalBundle,
   resolveMirrorPaths,
   searchCompanyContextMirror,
+  searchWorkspaceFilesFromMirror,
   selectEncryptedProposalFilesFromManifest,
 } from "../scripts/trelio-local-context.mjs";
 
@@ -97,6 +101,29 @@ test("local mirror search ranks structured and workspace context without remote 
   assert.equal(result.results.some(({ type }) => type === "task"), true);
   assert.equal(result.results.some(({ type }) => type === "workspace_file"), true);
   assert.equal(JSON.stringify(result).includes("remote"), false);
+});
+
+test("workspace-only local refinement and exact file read preserve the accepted-head fence", () => {
+  const searched = searchWorkspaceFilesFromMirror(mirror, ["fencing token"], 10);
+
+  assert.deepEqual(searched.results.map(({ type }) => type), ["workspace_file"]);
+  const file = getWorkspaceFileFromMirror(mirror, {
+    workspaceId: "55555555-5555-4555-8555-555555555555",
+    workspaceHead: "c".repeat(40),
+    filePath: "notes/decision.md",
+  });
+  assert.equal(file.file.text, "Конфликты разрешаются optimistic CAS и fencing token.");
+  assert.throws(
+    () => getWorkspaceFileFromMirror(mirror, {
+      workspaceId: "55555555-5555-4555-8555-555555555555",
+      workspaceHead: "d".repeat(40),
+      filePath: "notes/decision.md",
+    }),
+    (error) => (
+      error?.code === "LOCAL_CONTEXT_WORKSPACE_OUTDATED"
+      && error?.details?.currentHead === "c".repeat(40)
+    ),
+  );
 });
 
 test("local mirror includes first-class company documents in search, list and fetch", () => {
@@ -188,12 +215,21 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
   assert.doesNotMatch(schemas, /encrypt|e2ee|cipher|private key/iu);
   assert.deepEqual(TRELIO_LOCAL_CONTEXT_TOOL.inputSchema.properties.operation.enum, [
     "search",
+    "search_workspace_files",
     "list",
     "get_task",
     "fetch",
+    "get_workspace_file",
   ]);
   assert.equal(TRELIO_LOCAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
   assert.equal(TRELIO_LOCAL_PROPOSAL_TOOL.annotations.readOnlyHint, false);
+  assert.deepEqual(TRELIO_LOCAL_PROPOSAL_TOOL.inputSchema.properties.kind.enum, [
+    "comment",
+    "status",
+    "control_clear",
+    "checklist",
+    "bundle",
+  ]);
   assert.deepEqual(TRELIO_LOCAL_WORKSPACE_TOOL.inputSchema.properties.operation.enum, [
     "list_revisions",
     "restore_revision",
@@ -250,6 +286,18 @@ test("ambiguous restore prepare is recovered only by one exact audit marker", ()
   }), null);
 });
 
+test("encrypted restore handoff remains valid for a protected-path-only revision", () => {
+  const dossierArguments = buildEncryptedRestoreHandoffArguments("dossier");
+  assert.deepEqual(
+    dossierArguments.slice(dossierArguments.indexOf("--file"), dossierArguments.indexOf("--file") + 2),
+    ["--file", "WORKSPACE_CONTEXT.md"],
+  );
+  assert.equal(dossierArguments.includes("--task-outcome"), false);
+  assert.deepEqual(
+    buildEncryptedRestoreHandoffArguments("task").slice(-2),
+    ["--task-outcome", "no_status_change"],
+  );
+});
 test("local restore keeps current control paths and normalizes legacy context", async () => {
   const repository = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-local-restore-test-"));
   const git = (argumentsList) => execFileAsync("git", argumentsList, {
@@ -318,6 +366,86 @@ test("local restore keeps current control paths and normalizes legacy context", 
   } finally {
     await fs.rm(repository, { recursive: true, force: true });
   }
+});
+
+test("local proposal bundle preserves order, canonicalizes aliases and isolates card errors", async () => {
+  const saves = [];
+  const result = await prepareLocalProposalBundle({
+    companySlug: "acme",
+    rawBlocks: [
+      { type: "text", markdown: "Проверьте оба решения." },
+      {
+        type: "commentProposal",
+        companySlug: "acme",
+        projectSlug: "mobile-legacy",
+        taskNumber: 17,
+        proposalText: "Подготовил исправление.",
+        expectedStateRevision: 4,
+        expectedPublicCommentsSnapshotHash: "a".repeat(64),
+      },
+      {
+        type: "statusProposal",
+        companySlug: "acme",
+        projectSlug: "mobile-legacy",
+        taskNumber: 17,
+        expectedStateRevision: 2,
+        expectedStatusId: "77777777-7777-4777-8777-777777777777",
+        targetStatusCode: "done",
+        reason: "Задача готова.",
+      },
+    ],
+    canonicalizeTarget: async (target) => canonicalizeProposalTargetFromMirror(mirror, target),
+    saveProposal: async (input) => {
+      saves.push(input);
+      if (input.kind === "status") {
+        const error = new Error("The task status changed before this card was saved.");
+        error.code = "TASK_STATUS_PROPOSAL_OUTDATED";
+        throw error;
+      }
+      return { currentDraft: { proposalId: "88888888-8888-4888-8888-888888888888" } };
+    },
+  });
+
+  assert.deepEqual(saves.map(({ kind, rawPayload }) => ({
+    kind,
+    target: rawPayload.target,
+  })), [
+    { kind: "comment", target: { projectSlug: "mobile", taskNumber: 17 } },
+    { kind: "status", target: { projectSlug: "mobile", taskNumber: 17 } },
+  ]);
+  assert.equal(result.provider, "local_company_context");
+  assert.equal(result.proposalBundle.blocks[0].type, "text");
+  assert.equal(result.proposalBundle.blocks[1].status, "ready");
+  assert.deepEqual(result.proposalBundle.blocks[2].error, {
+    code: "TASK_STATUS_PROPOSAL_OUTDATED",
+    message: "The task status changed before this card was saved.",
+  });
+});
+
+test("local proposal bundle rejects a mixed company before saving any card", async () => {
+  let saveCount = 0;
+
+  await assert.rejects(
+    prepareLocalProposalBundle({
+      companySlug: "acme",
+      rawBlocks: [{
+        type: "commentProposal",
+        companySlug: "other-company",
+        projectSlug: "mobile",
+        taskNumber: 17,
+        proposalText: "Не должно сохраниться.",
+        expectedStateRevision: 0,
+        expectedPublicCommentsSnapshotHash: "a".repeat(64),
+      }],
+      canonicalizeTarget: async (target) => target,
+      saveProposal: async () => {
+        saveCount += 1;
+        return {};
+      },
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
+  );
+  assert.equal(saveCount, 0);
 });
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {

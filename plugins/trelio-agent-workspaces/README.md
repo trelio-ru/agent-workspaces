@@ -9,8 +9,8 @@
 - отдельную value-free диагностику plugin, hooks, MCP/OAuth, Node.js, Git,
   pairing и runtime sessions;
 - Agent Workspaces компании, проекта, досье и задачи с ACL и Git-версиями;
-- локальный bridge с `pause` для переносимого blocker и `finish` для единого
-  handoff/heartbeat/submit;
+- локальный bridge с `pause` для переносимого blocker, `cancel` для защищённого
+  отказа от exact Run и `finish` для единого handoff/heartbeat/submit;
 - локальную расшифровку Agent Workspaces зашифрованной компании без передачи
   ключа или Git-содержимого backend-у;
 - полный локальный поиск по доступному контексту зашифрованной компании через
@@ -81,7 +81,9 @@ comment/status/control/checklist proposal flow.
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Плагин шифрует текст и причины
 до HTTP, backend применяет прежние ACL/revisions/locks, а final action требует
-отдельного явного решения пользователя.
+отдельного явного решения пользователя. Несколько карточек сохраняются одним
+локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
+готовые соседние и не подтверждает их final actions.
 
 Исполняемый навык компании явно помечается как не проверенный Trelio. До его
 materialization и исполнения агент показывает publisher и причину публикации,
@@ -270,6 +272,13 @@ proposal или иной Trelio mutation, поэтому пользовател�
    `finish`, которая проверяет полный candidate delta вместе с уже сохранённым
    draft checkpoint, создаёт handoff и отправляет candidate без фиктивной правки.
 6. Candidate принимается атомарно, только пока base head актуален.
+
+Явно брошенный Run отменяется после native route через
+`continue_trelio_local_workspace` / `cancel_run`. В encrypted-компании reason
+шифруется локально; backend получает только подписанную ссылку и всё равно
+повторно проверяет автора/approver и terminal state. Тот же provider-neutral
+tool перечисляет revisions и восстанавливает выбранную encrypted revision новым
+локальным Run с current-head CAS; старое дерево не раскрывается backend-у.
 
 При первом `open` bridge создаёт короткую pairing-заявку. Агент передаёт её
 уже авторизованному Trelio MCP и повторяет исходную команду. MCP token bridge

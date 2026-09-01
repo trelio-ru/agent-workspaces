@@ -68,9 +68,18 @@ const MAX_SEARCH_RESULTS = 50;
 const MAX_PROPOSAL_BROWSER_MANIFEST_BYTES = 32 * 1024 * 1024;
 const MIRROR_GENERATION_PATTERN = /^[0-9a-f]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const GIT_OBJECT_PATTERN = /^[0-9a-f]{40,64}$/u;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const AGENT_TASK_PROPOSAL_ENCRYPTED_ENTITY_TYPE = "agent_task.proposal";
 const PROPOSAL_KINDS = new Set(["comment", "status", "control_clear", "checklist"]);
+const PROPOSAL_BUNDLE_KIND_BY_BLOCK_TYPE = new Map([
+  ["commentProposal", "comment"],
+  ["statusProposal", "status"],
+  ["controlClearProposal", "control_clear"],
+  ["checklistProposal", "checklist"],
+]);
+const MAX_PROPOSAL_BUNDLE_BLOCKS = 64;
+const MAX_PROPOSAL_BUNDLE_CARDS = 20;
 const localCompanyProviderCache = new Map();
 // Decrypted company content must never become a persistent cache.  Keeping one
 // immutable generation in the MCP process avoids decrypting and parsing the
@@ -1132,6 +1141,24 @@ export const searchCompanyContextMirror = (mirror, rawQueries, rawLimit = 20) =>
   };
 };
 
+export const searchWorkspaceFilesFromMirror = (mirror, rawQueries, rawLimit) => {
+  const search = searchCompanyContextMirror(
+    {
+      ...mirror,
+      // Reuse the canonical ranking/snippet implementation, but make this
+      // compatibility operation genuinely Workspace-only. Filtering after a
+      // global top-N would incorrectly lose a lower-ranked matching file.
+      projects: [],
+      tasks: [],
+      dossiers: [],
+      contextDocuments: [],
+    },
+    rawQueries,
+    rawLimit,
+  );
+  return { ...search, resultType: "workspace_file" };
+};
+
 const resolveMirrorProjectBySlug = (mirror, projectSlug) => {
   const matches = (mirror.projects ?? []).filter((project) => (
     project?.slug === projectSlug
@@ -1378,6 +1405,66 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     return { schemaVersion: 1, provider: "local_company_context", project };
   }
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context result id.");
+};
+
+export const getWorkspaceFileFromMirror = (
+  mirror,
+  { workspaceId: rawWorkspaceId, workspaceHead: rawWorkspaceHead, filePath: rawFilePath },
+) => {
+  const workspaceId = normalizeUuid(rawWorkspaceId, "workspaceId");
+  const workspaceHead = normalizeBoundedString(rawWorkspaceHead, "workspaceHead", 64)
+    .toLowerCase();
+  const filePath = normalizeBoundedString(rawFilePath, "filePath", 2_048);
+
+  if (!GIT_OBJECT_PATTERN.test(workspaceHead)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "workspaceHead must contain one exact lowercase Git object id.",
+    );
+  }
+
+  const workspace = (mirror.workspaces ?? []).find((candidate) => candidate.id === workspaceId);
+  if (!workspace) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Workspace is absent from the current local company generation.",
+    );
+  }
+  if (workspace.acceptedHead !== workspaceHead) {
+    // Preserve the native exact-head fence. A caller must repeat discovery
+    // against the fresh immutable generation instead of silently reading a
+    // different accepted revision under an old search result.
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_WORKSPACE_OUTDATED",
+      "Agent Workspace accepted revision changed after the file was selected.",
+      { currentHead: workspace.acceptedHead },
+    );
+  }
+  const file = (workspace.documents ?? []).find((candidate) => candidate.path === filePath);
+  if (!file) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Workspace file is absent from the exact accepted local revision.",
+    );
+  }
+
+  return {
+    schemaVersion: 1,
+    provider: "local_company_context",
+    generation: mirror.generation,
+    workspace: {
+      id: workspace.id,
+      scopeType: workspace.scopeType,
+      scopeKey: workspace.scopeKey,
+      acceptedHead: workspace.acceptedHead,
+    },
+    file,
+    materialize: {
+      nativeTool: "prepare_agent_workspace_read",
+      scopeType: workspace.scopeType,
+      scopeId: workspace.taskId ?? workspace.dossierId,
+    },
+  };
 };
 
 const normalizeProposalKind = (value) => {
@@ -1693,6 +1780,176 @@ const buildProposalLocalResult = (origin, hydrated) => {
     provider: "local_company_context",
     proposal: hydrated,
     ...(taskUrl ? { reviewUrl: taskUrl } : {}),
+  };
+};
+
+const normalizeProposalBundleBlocks = (companySlug, rawBlocks) => {
+  if (
+    !Array.isArray(rawBlocks)
+    || rawBlocks.length < 1
+    || rawBlocks.length > MAX_PROPOSAL_BUNDLE_BLOCKS
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `payload.blocks must contain between 1 and ${MAX_PROPOSAL_BUNDLE_BLOCKS} ordered blocks.`,
+    );
+  }
+
+  let proposalCardCount = 0;
+  const blocks = rawBlocks.map((rawBlock, index) => {
+    if (!rawBlock || typeof rawBlock !== "object" || Array.isArray(rawBlock)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        `payload.blocks[${index}] must be an object.`,
+      );
+    }
+
+    const type = String(rawBlock.type || "");
+    if (type === "text") {
+      return {
+        type,
+        markdown: normalizeBoundedString(
+          rawBlock.markdown,
+          `payload.blocks[${index}].markdown`,
+          20_000,
+        ),
+      };
+    }
+
+    const kind = PROPOSAL_BUNDLE_KIND_BY_BLOCK_TYPE.get(type);
+    if (!kind) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        `payload.blocks[${index}].type must be text or a supported proposal card.`,
+      );
+    }
+    proposalCardCount += 1;
+    if (proposalCardCount > MAX_PROPOSAL_BUNDLE_CARDS) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        `payload.blocks must contain at most ${MAX_PROPOSAL_BUNDLE_CARDS} proposal cards.`,
+      );
+    }
+
+    const target = normalizeProposalTarget(rawBlock);
+    if (!target.runId) {
+      const blockCompanySlug = normalizeCompanySlug(rawBlock.companySlug);
+      if (blockCompanySlug !== companySlug) {
+        // One local host call owns one exact company key and provider check.
+        // Reject a mixed-company bundle before encrypting or saving any card,
+        // instead of partially applying a payload under the wrong scope.
+        throw new TrelioLocalContextError(
+          "LOCAL_CONTEXT_INVALID_INPUT",
+          `payload.blocks[${index}].companySlug must match the selected company.`,
+        );
+      }
+    }
+
+    const {
+      type: _type,
+      companySlug: _companySlug,
+      projectSlug: _projectSlug,
+      taskNumber: _taskNumber,
+      runId: _runId,
+      ...payload
+    } = rawBlock;
+    return { type, kind, target, payload };
+  });
+
+  if (proposalCardCount === 0) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "payload.blocks must contain at least one proposal card.",
+    );
+  }
+  return blocks;
+};
+
+const serializeLocalProposalBundleError = (error) => ({
+  code: typeof error?.code === "string"
+    ? error.code
+    : Number.isSafeInteger(error?.statusCode)
+      ? `HTTP_${error.statusCode}`
+      : "LOCAL_CONTEXT_PROPOSAL_FAILED",
+  message: error instanceof Error ? error.message : "Local proposal preparation failed.",
+});
+
+/**
+ * Prepare an ordered multi-card result through the same per-kind encrypted
+ * save path as singular proposals.  The injected callbacks keep the ordering,
+ * duplicate and partial-error contract testable without credentials or keys;
+ * production still performs every provider/ACL/CAS check in those callbacks.
+ */
+export const prepareLocalProposalBundle = async ({
+  companySlug,
+  rawBlocks,
+  canonicalizeTarget,
+  saveProposal,
+}) => {
+  const blocks = normalizeProposalBundleBlocks(companySlug, rawBlocks);
+  const preparedBlocks = [];
+  const seenTargets = new Set();
+  let proposalOrdinal = 0;
+
+  for (const block of blocks) {
+    if (block.type === "text") {
+      preparedBlocks.push(block);
+      continue;
+    }
+
+    proposalOrdinal += 1;
+    const itemId = `proposal-${proposalOrdinal}`;
+    try {
+      const target = await canonicalizeTarget(block.target);
+      const targetKey = target.runId
+        ? `${block.kind}:run:${target.runId}`
+        : `${block.kind}:task:${companySlug}/${target.projectSlug}/${target.taskNumber}`;
+      if (seenTargets.has(targetKey)) {
+        preparedBlocks.push({
+          type: block.type,
+          itemId,
+          status: "error",
+          error: {
+            code: "DUPLICATE_TARGET",
+            message: "The same target cannot have two proposal cards of one kind in a bundle.",
+          },
+        });
+        continue;
+      }
+      seenTargets.add(targetKey);
+
+      const proposal = await saveProposal({
+        kind: block.kind,
+        rawPayload: { ...block.payload, target },
+      });
+      preparedBlocks.push({
+        type: block.type,
+        itemId,
+        status: "ready",
+        proposal,
+      });
+    } catch (error) {
+      // Each proposal kind owns independent server state and optimistic CAS,
+      // so a confirmed failure remains local to this card just like the native
+      // renderer. An ambiguous transport result is surfaced with its exact
+      // code; callers must reread contexts before retrying the bundle.
+      preparedBlocks.push({
+        type: block.type,
+        itemId,
+        status: "error",
+        error: serializeLocalProposalBundleError(error),
+      });
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    provider: "local_company_context",
+    proposalBundle: {
+      schemaVersion: 1,
+      kind: "taskProposalBlocks",
+      blocks: preparedBlocks,
+    },
   };
 };
 
@@ -2095,6 +2352,9 @@ export const handleTrelioLocalContextOperation = async (
 ) => {
   const operation = String(rawInput?.operation || "").trim();
   const companySlug = normalizeCompanySlug(rawInput?.companySlug);
+  const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
+  if (provider.nativeProvider) return provider.result;
+
   const ready = await getReadyMirror({
     origin,
     companySlug,
@@ -2104,6 +2364,9 @@ export const handleTrelioLocalContextOperation = async (
 
   if (operation === "search") {
     return searchCompanyContextMirror(ready.mirror, rawInput?.queries, rawInput?.limit);
+  }
+  if (operation === "search_workspace_files") {
+    return searchWorkspaceFilesFromMirror(ready.mirror, rawInput?.queries, rawInput?.limit);
   }
   if (operation === "list") {
     return listCompanyContextMirror(
@@ -2125,9 +2388,16 @@ export const handleTrelioLocalContextOperation = async (
   if (operation === "fetch") {
     return fetchMirrorResult(ready.mirror, rawInput?.resultId);
   }
+  if (operation === "get_workspace_file") {
+    return getWorkspaceFileFromMirror(ready.mirror, {
+      workspaceId: rawInput?.workspaceId,
+      workspaceHead: rawInput?.workspaceHead,
+      filePath: rawInput?.filePath,
+    });
+  }
   throw new TrelioLocalContextError(
     "LOCAL_CONTEXT_INVALID_INPUT",
-    "operation must be search, list, get_task or fetch.",
+    "operation must be search, search_workspace_files, list, get_task, fetch or get_workspace_file.",
   );
 };
 
@@ -2138,7 +2408,8 @@ export const handleTrelioLocalProposalOperation = async (
 ) => {
   const companySlug = normalizeCompanySlug(rawInput?.companySlug);
   const operation = String(rawInput?.operation || "").trim();
-  const kind = normalizeProposalKind(rawInput?.kind);
+  const rawKind = String(rawInput?.kind || "").trim();
+  const kind = rawKind === "bundle" ? rawKind : normalizeProposalKind(rawKind);
   const rawPayload = rawInput?.payload;
   if (!rawPayload || typeof rawPayload !== "object" || Array.isArray(rawPayload)) {
     throw new TrelioLocalContextError(
@@ -2148,6 +2419,45 @@ export const handleTrelioLocalProposalOperation = async (
   }
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   if (provider.nativeProvider) return provider.result;
+
+  if (kind === "bundle") {
+    if (operation !== "save") {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "A proposal bundle supports only operation=save; context and final actions remain per card.",
+      );
+    }
+    let ready = null;
+    return prepareLocalProposalBundle({
+      companySlug,
+      rawBlocks: rawPayload.blocks,
+      canonicalizeTarget: async (target) => {
+        if (target.runId) return target;
+        // One mirror generation canonicalizes every old project alias in the
+        // bundle; getReadyMirror reuses the startup sync and in-memory object.
+        ready ??= await getReadyMirror({ origin, companySlug, signal });
+        return canonicalizeProposalTargetFromMirror(ready.mirror, target);
+      },
+      saveProposal: async ({ kind: blockKind, rawPayload: blockPayload }) => {
+        const rawResult = await saveLocalProposal({
+          origin,
+          token: provider.token,
+          companyEncryption: provider.companyEncryption,
+          companySlug,
+          kind: blockKind,
+          rawPayload: blockPayload,
+          signal,
+        });
+        return hydrateAgentCompanyEncryptedJson({
+          value: rawResult,
+          origin,
+          token: provider.token,
+          companyEncryption: provider.companyEncryption,
+          signal,
+        });
+      },
+    });
+  }
 
   let proposalTarget = null;
   if (operation === "context" || operation === "save") {
@@ -2520,6 +2830,30 @@ const recoverPreparedEncryptedRestore = async ({
   };
 };
 
+export const buildEncryptedRestoreHandoffArguments = (scopeType) => {
+  // A historical revision can differ from the current one only in protected
+  // control paths. Those paths are intentionally retained, leaving an empty
+  // user diff; name the canonical durable context explicitly so the ordinary
+  // handoff contract remains valid without pretending a protected file changed.
+  const argumentsList = [
+    "checkpoint",
+    "--type",
+    "handoff",
+    "--summary",
+    "Подготовлено локальное восстановление ранее принятой версии Workspace",
+    "--evidence",
+    "Исторический encrypted snapshot расшифрован и проверен локальным bridge",
+    "--file",
+    WORKSPACE_CONTEXT_FILE_NAME,
+    "--next-action",
+    "Продолжить работу с восстановленной принятой версией",
+  ];
+  if (scopeType === "task") {
+    argumentsList.push("--task-outcome", "no_status_change");
+  }
+  return argumentsList;
+};
+
 const restoreEncryptedWorkspaceLocally = async ({
   origin,
   token,
@@ -2696,20 +3030,7 @@ const restoreEncryptedWorkspaceLocally = async ({
       await fs.rm(temporaryDirectory, { recursive: true, force: true });
     }
 
-    const checkpointArguments = [
-      "checkpoint",
-      "--type",
-      "handoff",
-      "--summary",
-      "Подготовлено локальное восстановление ранее принятой версии Workspace",
-      "--evidence",
-      "Исторический encrypted snapshot расшифрован и проверен локальным bridge",
-      "--next-action",
-      "Продолжить работу с восстановленной принятой версией",
-    ];
-    if (metadata.scopeType === "task") {
-      checkpointArguments.push("--task-outcome", "no_status_change");
-    }
+    const checkpointArguments = buildEncryptedRestoreHandoffArguments(metadata.scopeType);
     await runWorkspaceBridge(origin, checkpointArguments, { cwd: workspaceDirectory, signal });
     await runWorkspaceBridge(
       origin,
@@ -2802,7 +3123,10 @@ export const handleTrelioLocalWorkspaceOperation = async (
       raw?.workspace?.id !== workspaceId
       || raw?.company?.id !== provider.companyEncryption.runtime.company.id
       || raw?.company?.slug !== provider.companyEncryption.runtime.company.slug
+      || !Array.isArray(raw?.revisions)
     ) {
+      // The selected company owns the local key. Never hydrate revision
+      // markers returned for another readable company or Workspace.
       throw new TrelioLocalContextError(
         "LOCAL_WORKSPACE_COMPANY_MISMATCH",
         "Trelio returned Workspace history for another company or Workspace.",
@@ -2908,13 +3232,23 @@ export const handleTrelioLocalWorkspaceOperation = async (
 export const TRELIO_LOCAL_CONTEXT_TOOL = {
   name: "continue_trelio_local_context",
   title: "Continue a Trelio local context route",
-  description: "Continue only the exact local-context route selected by Trelio. The trusted host chooses the data provider automatically; do not use this tool when a native Trelio content tool succeeded.",
+  description: "Continue the exact local context route selected by Trelio; use only after its native provider response.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["operation", "companySlug"],
     properties: {
-      operation: { type: "string", enum: ["search", "list", "get_task", "fetch"] },
+      operation: {
+        type: "string",
+        enum: [
+          "search",
+          "search_workspace_files",
+          "list",
+          "get_task",
+          "fetch",
+          "get_workspace_file",
+        ],
+      },
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
       projectSlug: { type: "string", minLength: 1, maxLength: 120 },
       taskNumber: { type: "integer", minimum: 1 },
@@ -2926,6 +3260,9 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
       },
       limit: { type: "integer", minimum: 1, maximum: MAX_SEARCH_RESULTS },
       resultId: { type: "string", minLength: 1, maxLength: 4096 },
+      workspaceId: { type: "string", minLength: 36, maxLength: 36 },
+      workspaceHead: { type: "string", minLength: 40, maxLength: 64 },
+      filePath: { type: "string", minLength: 1, maxLength: 2048 },
       resource: {
         type: "string",
         enum: [
@@ -2951,7 +3288,7 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
 export const TRELIO_LOCAL_PROPOSAL_TOOL = {
   name: "continue_trelio_local_proposal",
   title: "Continue a Trelio local proposal route",
-  description: "Continue only an exact proposal route selected by Trelio. The trusted host protects content and rechecks the provider; final actions require a separate explicit user decision.",
+  description: "Continue the exact local proposal route selected by Trelio; final actions require explicit user confirmation.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -2961,7 +3298,7 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
       kind: {
         type: "string",
-        enum: ["comment", "status", "control_clear", "checklist"],
+        enum: ["comment", "status", "control_clear", "checklist", "bundle"],
       },
       payload: {
         type: "object",
@@ -2979,7 +3316,7 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
 export const TRELIO_LOCAL_WORKSPACE_TOOL = {
   name: "continue_trelio_local_workspace",
   title: "Continue a Trelio local Workspace route",
-  description: "Continue only the exact Workspace revision, restore, or cancellation route selected by Trelio. Protected reasons and Git bytes remain on the trusted local host.",
+  description: "Continue the exact local Workspace route selected by Trelio.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
