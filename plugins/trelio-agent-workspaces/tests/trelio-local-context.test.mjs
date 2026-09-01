@@ -286,12 +286,9 @@ test("ambiguous restore prepare is recovered only by one exact audit marker", ()
   }), null);
 });
 
-test("encrypted restore handoff remains valid for a protected-path-only revision", () => {
+test("encrypted restore handoff lets the bridge report the exact changed paths", () => {
   const dossierArguments = buildEncryptedRestoreHandoffArguments("dossier");
-  assert.deepEqual(
-    dossierArguments.slice(dossierArguments.indexOf("--file"), dossierArguments.indexOf("--file") + 2),
-    ["--file", "WORKSPACE_CONTEXT.md"],
-  );
+  assert.equal(dossierArguments.includes("--file"), false);
   assert.equal(dossierArguments.includes("--task-outcome"), false);
   assert.deepEqual(
     buildEncryptedRestoreHandoffArguments("task").slice(-2),

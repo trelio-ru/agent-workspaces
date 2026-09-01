@@ -49,6 +49,7 @@ import {
   resolveTrustedPythonInvocation,
   sanitizeAgentSkillInheritedEnvironment,
   buildWindowsPrivateAclPowerShellInvocation,
+  canOmitAgentWorkspaceHandoffFiles,
   buildRunContextSpecifications,
   buildBridgeRequestHeaders,
   collectAgentSkillDeviceConsentThroughLoopback,
@@ -3465,7 +3466,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.16.5");
+  assert.equal(BRIDGE_VERSION, "1.16.6");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4366,6 +4367,29 @@ test("task handoff requires an explicit outcome and keeps unresolved work out of
     }),
     /только для checkpoint типа handoff/u,
   );
+});
+
+test("only a server-created restore handoff may keep an exact empty file delta", () => {
+  assert.equal(canOmitAgentWorkspaceHandoffFiles({
+    checkpointType: "handoff",
+    clientKind: "workspace_restore",
+    clientMetadataSource: "local_encrypted_restore",
+  }), true);
+  assert.equal(canOmitAgentWorkspaceHandoffFiles({
+    checkpointType: "handoff",
+    clientKind: "workspace_restore",
+    clientMetadataSource: "mcp",
+  }), false);
+  assert.equal(canOmitAgentWorkspaceHandoffFiles({
+    checkpointType: "handoff",
+    clientKind: "workspace-bridge",
+    clientMetadataSource: "local_encrypted_restore",
+  }), false);
+  assert.equal(canOmitAgentWorkspaceHandoffFiles({
+    checkpointType: "draft",
+    clientKind: "workspace_restore",
+    clientMetadataSource: "local_encrypted_restore",
+  }), false);
 });
 
 test("workspace skill routes direct proposals independently of maintainer work and compaction", async () => {

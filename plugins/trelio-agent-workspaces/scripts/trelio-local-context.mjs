@@ -2831,10 +2831,10 @@ const recoverPreparedEncryptedRestore = async ({
 };
 
 export const buildEncryptedRestoreHandoffArguments = (scopeType) => {
-  // A historical revision can differ from the current one only in protected
-  // control paths. Those paths are intentionally retained, leaving an empty
-  // user diff; name the canonical durable context explicitly so the ordinary
-  // handoff contract remains valid without pretending a protected file changed.
+  // Do not pass an invented --file value. The bridge derives the exact net
+  // delta from baseHead..HEAD after the restore commit, including deletions.
+  // A protected-path-only restore is the one audited Run kind allowed to have
+  // an empty file list because those control paths deliberately remain current.
   const argumentsList = [
     "checkpoint",
     "--type",
@@ -2843,8 +2843,6 @@ export const buildEncryptedRestoreHandoffArguments = (scopeType) => {
     "Подготовлено локальное восстановление ранее принятой версии Workspace",
     "--evidence",
     "Исторический encrypted snapshot расшифрован и проверен локальным bridge",
-    "--file",
-    WORKSPACE_CONTEXT_FILE_NAME,
     "--next-action",
     "Продолжить работу с восстановленной принятой версией",
   ];

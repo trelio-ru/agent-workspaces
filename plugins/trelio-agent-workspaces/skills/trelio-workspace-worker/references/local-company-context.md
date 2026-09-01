@@ -86,8 +86,10 @@ and matching operation:
   audit reason, and returned runtime session when present. The host protects the
   reason, restores the old user tree in a separate Run, preserves current
   controls, normalizes legacy context, and submits a current-head descendant.
-  An ambiguous prepare is resolved by one exact marker read-back, never a
-  speculative second Run.
+  The handoff derives `filesChanged` from the exact base-to-restored Git delta,
+  including deletions; a protected-control-only restore records an empty list
+  instead of inventing a changed durable file. An ambiguous prepare is resolved
+  by one exact marker read-back, never a speculative second Run.
 - `cancel_run`: pass `runId` and concrete reason. The host protects it; only
   transport/5xx or malformed success can retry, bounded and with the same marker.
 

@@ -52,7 +52,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.16.5";
+export const BRIDGE_VERSION = "1.16.6";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -8662,6 +8662,10 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       encryption: companyEncryption?.metadata ?? { enabled: false },
       workspaceId,
       runId,
+      clientKind: agentRun.clientKind || null,
+      clientMetadataSource: typeof agentRun.clientMetadataJson?.source === "string"
+        ? agentRun.clientMetadataJson.source
+        : null,
       leaseId: agentRun.leaseId,
       fencingToken: agentRun.fencingToken,
       baseHead: agentRun.baseHead,
@@ -8786,6 +8790,10 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       encryption: companyEncryption?.metadata ?? { enabled: false },
       workspaceId,
       runId,
+      clientKind: agentRun.clientKind || null,
+      clientMetadataSource: typeof agentRun.clientMetadataJson?.source === "string"
+        ? agentRun.clientMetadataJson.source
+        : null,
       leaseId: agentRun.leaseId,
       fencingToken: agentRun.fencingToken,
       baseHead: agentRun.baseHead,
@@ -9703,6 +9711,16 @@ export const validateHandoffTaskOutcome = ({
   }
 };
 
+export const canOmitAgentWorkspaceHandoffFiles = ({
+  checkpointType,
+  clientKind,
+  clientMetadataSource,
+}) => (
+  checkpointType === "handoff"
+  && clientKind === "workspace_restore"
+  && clientMetadataSource === "local_encrypted_restore"
+);
+
 const buildAgentEncryptedPayloadSignatureRecord = (payload) => ({
   suite: payload.suite,
   scopeId: payload.scopeId,
@@ -9856,7 +9874,14 @@ const checkpoint = async (options) => withRun(async ({
       throw new Error("Для handoff добавьте хотя бы один результат или проверку через --evidence.");
     }
 
-    if (filesChanged.length === 0) {
+    if (
+      filesChanged.length === 0
+      && !canOmitAgentWorkspaceHandoffFiles({
+        checkpointType,
+        clientKind: metadata.clientKind,
+        clientMetadataSource: metadata.clientMetadataSource,
+      })
+    ) {
       throw new Error("Для handoff укажите материал через --file или оставьте изменения в workspace.");
     }
 

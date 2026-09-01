@@ -278,7 +278,9 @@ proposal или иной Trelio mutation, поэтому пользовател�
 шифруется локально; backend получает только подписанную ссылку и всё равно
 повторно проверяет автора/approver и terminal state. Тот же provider-neutral
 tool перечисляет revisions и восстанавливает выбранную encrypted revision новым
-локальным Run с current-head CAS; старое дерево не раскрывается backend-у.
+локальным Run с current-head CAS; `filesChanged` берётся из фактической Git-
+дельты, включая удаления, а при изменениях только в сохраняемых control paths
+остаётся пустым. Старое дерево не раскрывается backend-у.
 
 При первом `open` bridge создаёт короткую pairing-заявку. Агент передаёт её
 уже авторизованному Trelio MCP и повторяет исходную команду. MCP token bridge
