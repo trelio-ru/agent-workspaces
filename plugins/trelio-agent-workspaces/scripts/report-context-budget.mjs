@@ -6,6 +6,7 @@ import { AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN } from "./trelio-workspace.mjs"
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_WORKSPACE_TOOL,
 } from "./trelio-local-context.mjs";
 
 export const PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION = 1;
@@ -98,6 +99,7 @@ export const buildPluginContextBudgetReport = async () => {
     ...measureContextText(JSON.stringify([
       TRELIO_LOCAL_CONTEXT_TOOL,
       TRELIO_LOCAL_PROPOSAL_TOOL,
+      TRELIO_LOCAL_WORKSPACE_TOOL,
     ])),
   };
   const runtimeAgents = {
@@ -142,7 +144,7 @@ export const buildPluginContextBudgetReport = async () => {
         runtimeAgents,
         taskRunWithProposalBundle,
       ]),
-      // Ordinary companies see only two compact provider-neutral schemas. The
+      // Ordinary companies see only three compact provider-neutral schemas. The
       // complete protected-provider manual remains absent from their skill
       // path and therefore cannot consume their task context window.
       plainCompanyTaskRunPluginLayer: sumMeasurements([

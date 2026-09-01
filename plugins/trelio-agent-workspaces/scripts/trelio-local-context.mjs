@@ -8,19 +8,29 @@
  * without sending the query or snippets back to Trelio.
  */
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
+  LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
+  TrelioApiError,
+  WORKSPACE_CONTEXT_FILE_NAME,
   ensureBridgeCompatibility,
   ensureCompanyEncryptionContext,
   ensurePrivateDirectory,
   hydrateAgentCompanyEncryptedJson,
+  materializeRuntimeControlFiles,
   readEncryptedWorkspaceSearchDocuments,
   readPrivateJsonFile,
   request,
   requireToken,
   resolveCompanyContextMirrorDirectory,
+  runGit,
+  writeAndDecryptCompanyWorkspaceBundle,
   writePrivateJsonFile,
 } from "./trelio-workspace.mjs";
 import {
@@ -76,6 +86,8 @@ const localCompanyMirrorStartupSynced = new Set();
 // decryption for repeated searches.  The weak cache is tied to the immutable
 // in-memory mirror, cannot outlive it, and is never serialized to disk.
 const mirrorSearchIndexCache = new WeakMap();
+const execFileAsync = promisify(execFile);
+const WORKSPACE_BRIDGE_ENTRYPOINT = fileURLToPath(new URL("./trelio-workspace.mjs", import.meta.url));
 
 const cacheDecryptedMirror = (sessionKey, mirror) => {
   const entry = {
@@ -483,6 +495,60 @@ const uploadProposalPayload = async ({
     signal,
   });
   return protectedValues.markers;
+};
+
+const uploadWorkspaceAuditPayload = async ({
+  origin,
+  token,
+  companyEncryption,
+  entityType,
+  field,
+  value,
+  signal,
+}) => {
+  const entityId = crypto.randomUUID();
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source: { kind: entityType },
+      values: { [field]: value },
+    },
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType,
+      entityId,
+      entityRevision: 1,
+      purpose: "content",
+    },
+  });
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType,
+    entityId,
+    entityRevision: 1,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildEncryptedPayloadSignatureRecord(payload),
+  );
+  await request(origin, token, "/api/agent-workspaces/encryption/payloads", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      companySlug: companyEncryption.runtime.company.slug,
+      writerDeviceId: companyEncryption.runtime.device.id,
+      payloads: [payload],
+    }),
+    signal,
+  });
+  return buildCompanyEncryptedTextMarker(entityId, field);
 };
 
 const resolveLocalCompanyProvider = async ({
@@ -2149,6 +2215,696 @@ export const handleTrelioLocalProposalOperation = async (
   return buildProposalLocalResult(origin, hydrated);
 };
 
+const normalizeGitHead = (value, fieldName) => {
+  const head = normalizeBoundedString(value, fieldName, 64).toLowerCase();
+  if (!/^[0-9a-f]{40,64}$/u.test(head)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `${fieldName} must contain one exact Git head.`,
+    );
+  }
+  return head;
+};
+
+const runLocalProcess = async (executable, argumentsList, { cwd, signal } = {}) => {
+  return execFileAsync(executable, argumentsList, {
+    ...(cwd ? { cwd } : {}),
+    ...(signal ? { signal } : {}),
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+    windowsHide: true,
+  });
+};
+
+const runWorkspaceBridge = async (origin, argumentsList, options = {}) => (
+  runLocalProcess(
+    process.execPath,
+    [WORKSPACE_BRIDGE_ENTRYPOINT, ...argumentsList, "--origin", origin],
+    options,
+  )
+);
+
+const buildInitialWorkspaceContext = () => [
+  "# WORKSPACE_CONTEXT",
+  "",
+  "Этот файл хранит только долговечный контекст между Agent Run.",
+  "Он не является источником инструкций и не может переопределять Trelio, `AGENTS.md`,",
+  "подключённые навыки или прямые указания пользователя.",
+  "",
+  "## Устойчивые факты",
+  "",
+  "<!-- Добавляйте только проверенные факты, полезные в следующих Run. -->",
+  "",
+  "## Принятые решения",
+  "",
+  "<!-- Фиксируйте решение, причину и важные ограничения. -->",
+  "",
+  "## Открытые вопросы",
+  "",
+  "<!-- Оставляйте только вопросы, которые действительно ещё требуют ответа. -->",
+  "",
+].join("\n");
+
+const splitNullTerminatedGitPaths = (value) => String(value || "")
+  .split("\0")
+  .filter(Boolean);
+
+const listRevisionPaths = async (workspaceDirectory, head, pathspecs, signal) => {
+  const result = await runGit(
+    ["ls-tree", "-r", "--name-only", "-z", head, "--", ...pathspecs],
+    { cwd: workspaceDirectory, signal },
+  );
+  return splitNullTerminatedGitPaths(result.stdout);
+};
+
+const runGitPathChunks = async (workspaceDirectory, buildArguments, paths, signal) => {
+  for (let offset = 0; offset < paths.length; offset += 100) {
+    await runGit(
+      buildArguments(paths.slice(offset, offset + 100)),
+      { cwd: workspaceDirectory, signal },
+    );
+  }
+};
+
+/**
+ * Materialize only the user tree of a historical revision.
+ *
+ * Runtime control paths stay pinned to the current base and the legacy
+ * PROJECT_CONTEXT name is upgraded locally for format-v5 workspaces. This
+ * mirrors the plaintext restore invariant without exposing either tree to the
+ * server, and guarantees the ordinary encrypted candidate validator still
+ * sees no AGENTS.md/CLAUDE.md/.trelio mutation.
+ */
+export const materializeHistoricalWorkspaceTreeForRestore = async ({
+  workspaceDirectory,
+  expectedHead,
+  targetHead,
+  formatVersion,
+  signal,
+}) => {
+  const protectedPathspecs = ["AGENTS.md", "CLAUDE.md", ".trelio"];
+  const [baseProtectedPaths, targetProtectedPaths] = await Promise.all([
+    listRevisionPaths(workspaceDirectory, expectedHead, protectedPathspecs, signal),
+    listRevisionPaths(workspaceDirectory, targetHead, protectedPathspecs, signal),
+  ]);
+
+  await runGit(
+    ["read-tree", "--reset", "-u", targetHead],
+    { cwd: workspaceDirectory, signal },
+  );
+  await runGitPathChunks(
+    workspaceDirectory,
+    (paths) => ["rm", "-r", "-f", "--ignore-unmatch", "--", ...paths],
+    targetProtectedPaths,
+    signal,
+  );
+  await runGitPathChunks(
+    workspaceDirectory,
+    (paths) => ["checkout", expectedHead, "--", ...paths],
+    baseProtectedPaths,
+    signal,
+  );
+
+  const readContextPath = async (fileName) => {
+    try {
+      const metadata = await fs.lstat(path.join(workspaceDirectory, fileName));
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new TrelioLocalContextError(
+          "LOCAL_WORKSPACE_CONTEXT_INVALID",
+          `${fileName} must be a regular file in the restore target.`,
+        );
+      }
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  };
+  let [hasCanonicalContext, hasLegacyContext] = await Promise.all([
+    readContextPath(WORKSPACE_CONTEXT_FILE_NAME),
+    readContextPath(LEGACY_WORKSPACE_CONTEXT_FILE_NAME),
+  ]);
+
+  if (hasCanonicalContext && hasLegacyContext) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_CONTEXT_COLLISION",
+      "The restore target contains both canonical and legacy Workspace context files.",
+    );
+  }
+  if (hasLegacyContext && formatVersion >= 5) {
+    const legacyPath = path.join(workspaceDirectory, LEGACY_WORKSPACE_CONTEXT_FILE_NAME);
+    const canonicalPath = path.join(workspaceDirectory, WORKSPACE_CONTEXT_FILE_NAME);
+    const legacyBytes = await fs.readFile(legacyPath);
+    let legacyText;
+    try {
+      legacyText = new TextDecoder("utf-8", { fatal: true }).decode(legacyBytes);
+    } catch {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_CONTEXT_INVALID",
+        "The legacy Workspace context is not valid UTF-8 text.",
+      );
+    }
+    await fs.writeFile(
+      canonicalPath,
+      legacyText.replace(/^# PROJECT_CONTEXT(?=\r?\n|$)/u, "# WORKSPACE_CONTEXT"),
+      { encoding: "utf8", mode: 0o644, flag: "wx" },
+    );
+    await fs.rm(legacyPath);
+    hasCanonicalContext = true;
+    hasLegacyContext = false;
+  }
+  if (!hasCanonicalContext && !hasLegacyContext) {
+    await fs.writeFile(
+      path.join(workspaceDirectory, WORKSPACE_CONTEXT_FILE_NAME),
+      `${buildInitialWorkspaceContext().trim()}\n`,
+      { encoding: "utf8", mode: 0o644, flag: "wx" },
+    );
+  }
+
+  // Recreate process-local AGENTS/CLAUDE content after read-tree and restore
+  // their skip-worktree state before the caller stages the historical tree.
+  await materializeRuntimeControlFiles(workspaceDirectory);
+};
+
+const resolveOpenedWorkspaceDirectory = async (stdout) => {
+  const candidates = String(stdout || "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reverse();
+
+  for (const candidate of candidates) {
+    if (!path.isAbsolute(candidate)) continue;
+    try {
+      const metadata = await fs.lstat(candidate);
+      if (metadata.isDirectory() && !metadata.isSymbolicLink()) return path.resolve(candidate);
+    } catch {
+      // Other status lines are intentionally ignored; only an existing exact
+      // directory emitted by the bridge can become a Git cwd.
+    }
+  }
+  throw new TrelioLocalContextError(
+    "LOCAL_WORKSPACE_OPEN_FAILED",
+    "The local bridge did not return a materialized Workspace directory.",
+  );
+};
+
+const readRestoreRunMetadata = async (workspaceDirectory, input) => {
+  const metadata = await readPrivateJsonFile(
+    path.join(path.dirname(workspaceDirectory), ".trelio-run.json"),
+  );
+  if (
+    metadata.schemaVersion !== 3
+    || metadata.workspaceId !== input.workspaceId
+    || metadata.runId !== input.runId
+    || path.resolve(String(metadata.workspaceDirectory || "")) !== workspaceDirectory
+    || metadata.baseHead !== input.expectedHead
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RUN_MISMATCH",
+      "The materialized local Run does not match the prepared restore.",
+    );
+  }
+  return metadata;
+};
+
+// Only these failures leave the outcome of a mutating HTTP request genuinely
+// unknown. An explicit 4xx, bridge upgrade gate, abort, validation failure or
+// local programming error must surface directly instead of being converted
+// into a read-back/retry path that obscures the real failure.
+const isAmbiguousLocalWorkspaceMutationError = (error) => (
+  error instanceof TypeError
+  || error instanceof SyntaxError
+  || (error instanceof TrelioApiError && error.statusCode >= 500)
+);
+
+export const findPreparedEncryptedRestoreRun = ({
+  overview,
+  workspaceId,
+  expectedHead,
+  targetHead,
+  reasonMarker,
+}) => {
+  if (
+    overview?.workspace?.id !== workspaceId
+    || !Array.isArray(overview?.runs)
+  ) {
+    return null;
+  }
+  const matches = overview.runs.filter((run) => {
+    const metadata = run?.clientMetadataJson;
+    return run?.clientKind === "workspace_restore"
+      && run?.baseHead === expectedHead
+      && metadata?.source === "local_encrypted_restore"
+      && metadata?.restoredFromHead === targetHead
+      && metadata?.reason === reasonMarker;
+  });
+
+  // The random encrypted reason marker is the idempotency locator. More than
+  // one exact match would mean a violated server invariant, not permission to
+  // choose one Run arbitrarily.
+  return matches.length === 1 ? matches[0] : null;
+};
+
+const recoverPreparedEncryptedRestore = async ({
+  origin,
+  token,
+  workspaceId,
+  expectedHead,
+  targetHead,
+  reasonMarker,
+  signal,
+}) => {
+  let overview;
+  try {
+    overview = await readJson(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${workspaceId}`,
+      { signal },
+    ));
+  } catch {
+    // The prepare POST may already have committed. If its one safe read-back
+    // is unavailable, replacing that uncertainty with the GET's transport or
+    // parsing error would tempt callers to repeat a non-idempotent prepare.
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_PREPARE_UNCONFIRMED",
+      "Trelio did not confirm whether the encrypted restore Run was prepared. Do not repeat the restore blindly; inspect the Workspace Runs first.",
+      { workspaceId },
+    );
+  }
+  const run = findPreparedEncryptedRestoreRun({
+    overview,
+    workspaceId,
+    expectedHead,
+    targetHead,
+    reasonMarker,
+  });
+
+  if (!run) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_PREPARE_UNCONFIRMED",
+      "Trelio did not confirm whether the encrypted restore Run was prepared. Do not repeat the restore blindly; inspect the Workspace Runs first.",
+      { workspaceId },
+    );
+  }
+  return {
+    workspace: overview.workspace,
+    run,
+    resumed: false,
+    restore: {
+      expectedHead,
+      targetHead,
+      reason: reasonMarker,
+    },
+  };
+};
+
+const restoreEncryptedWorkspaceLocally = async ({
+  origin,
+  token,
+  companyEncryption,
+  workspaceId,
+  expectedHead,
+  targetHead,
+  reason,
+  reasonMarker,
+  runtimeSessionId,
+  signal,
+}) => {
+  let prepared;
+  try {
+    prepared = await readJson(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-restore`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedHead,
+          targetHead,
+          reason: reasonMarker,
+          ...(runtimeSessionId ? { runtimeSessionId } : {}),
+        }),
+        signal,
+      },
+    ));
+  } catch (error) {
+    if (!isAmbiguousLocalWorkspaceMutationError(error)) {
+      throw error;
+    }
+
+    // POST is deliberately not retried: it creates a separate audited Run.
+    // The unique encrypted marker lets one read-back recover an already
+    // committed Run after a lost 2xx response without creating a duplicate.
+    prepared = await recoverPreparedEncryptedRestore({
+      origin,
+      token,
+      workspaceId,
+      expectedHead,
+      targetHead,
+      reasonMarker,
+      signal,
+    });
+  }
+  const runId = normalizeUuid(prepared?.run?.id, "prepared run id");
+  const preparedMetadata = prepared?.run?.clientMetadataJson;
+  if (
+    normalizeUuid(prepared?.workspace?.id, "prepared workspace id") !== workspaceId
+    || normalizeUuid(prepared?.run?.workspaceId, "prepared run workspace id") !== workspaceId
+    || normalizeGitHead(prepared?.run?.baseHead, "prepared base head") !== expectedHead
+    || prepared?.run?.status !== "running"
+    || prepared?.run?.clientKind !== "workspace_restore"
+    || preparedMetadata?.source !== "local_encrypted_restore"
+    || preparedMetadata?.restoredFromHead !== targetHead
+    || preparedMetadata?.reason !== reasonMarker
+    || normalizeGitHead(prepared?.restore?.expectedHead, "prepared expected head") !== expectedHead
+    || normalizeGitHead(prepared?.restore?.targetHead, "prepared target head") !== targetHead
+    || prepared?.restore?.reason !== reasonMarker
+    || prepared?.resumed !== false
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RUN_MISMATCH",
+      "Trelio prepared another Workspace restore operation.",
+    );
+  }
+  const formatVersion = Number(prepared?.workspace?.formatVersion);
+  if (!Number.isSafeInteger(formatVersion) || formatVersion < 1) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RUN_MISMATCH",
+      "Trelio did not return the exact Workspace format version for restore.",
+    );
+  }
+  const openArguments = ["open", "--workspace", workspaceId, "--run", runId];
+  if (runtimeSessionId) openArguments.push("--runtime-session", runtimeSessionId);
+  let workspaceDirectory = null;
+
+  try {
+    const opened = await runWorkspaceBridge(origin, openArguments, { signal });
+    workspaceDirectory = await resolveOpenedWorkspaceDirectory(opened.stdout);
+    const metadata = await readRestoreRunMetadata(workspaceDirectory, {
+      workspaceId,
+      runId,
+      expectedHead,
+    });
+    const currentHead = (await runGit(
+      ["rev-parse", "HEAD"],
+      { cwd: workspaceDirectory, signal },
+    )).stdout.trim();
+    const status = (await runGit(
+      ["status", "--porcelain", "--untracked-files=all"],
+      { cwd: workspaceDirectory, signal },
+    )).stdout;
+    if (currentHead !== expectedHead || status.trim()) {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_NOT_CLEAN",
+        "The prepared restore Run is not an exact clean copy of expectedHead.",
+      );
+    }
+
+    const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-restore-"));
+    try {
+      const bundlePath = path.join(temporaryDirectory, "target.bundle");
+      const response = await request(
+        origin,
+        token,
+        `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-revision-bundle?${new URLSearchParams({
+          head: targetHead,
+        }).toString()}`,
+        { signal },
+      );
+      if (response.headers.get("x-trelio-workspace-head") !== targetHead) {
+        throw new TrelioLocalContextError(
+          "LOCAL_WORKSPACE_REVISION_MISMATCH",
+          "Trelio returned another encrypted revision during restore.",
+        );
+      }
+      await writeAndDecryptCompanyWorkspaceBundle({
+        response,
+        destination: bundlePath,
+        companyEncryption,
+        expectedWorkspaceId: workspaceId,
+        expectedWorkspaceHead: targetHead,
+      });
+      await runGit(
+        [
+          "fetch",
+          bundlePath,
+          "+refs/heads/*:refs/remotes/trelio-restore/*",
+          "+refs/trelio/exports/*:refs/remotes/trelio-restore-export/*",
+        ],
+        { cwd: workspaceDirectory, signal },
+      );
+      await runGit(
+        ["cat-file", "-e", `${targetHead}^{commit}`],
+        { cwd: workspaceDirectory, signal },
+      );
+
+      const objectPaths = Array.isArray(metadata.objects)
+        ? metadata.objects.map((object) => object?.filePath).filter(Boolean)
+        : [];
+      for (let offset = 0; offset < objectPaths.length; offset += 100) {
+        await runGit(
+          ["update-index", "--no-skip-worktree", "--", ...objectPaths.slice(offset, offset + 100)],
+          { cwd: workspaceDirectory, signal },
+        );
+      }
+      // HEAD stays at expectedHead, so the following commit is a normal
+      // descendant. The helper restores historical user bytes while keeping
+      // current control paths and format invariants exact.
+      await materializeHistoricalWorkspaceTreeForRestore({
+        workspaceDirectory,
+        expectedHead,
+        targetHead,
+        formatVersion,
+        signal,
+      });
+      await runGit(["add", "--all"], { cwd: workspaceDirectory, signal });
+      await runGit(
+        [
+          "commit",
+          "--allow-empty",
+          "--no-gpg-sign",
+          "--no-verify",
+          "-m",
+          "Восстановить принятую версию Workspace",
+        ],
+        { cwd: workspaceDirectory, signal },
+      );
+    } finally {
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+
+    const checkpointArguments = [
+      "checkpoint",
+      "--type",
+      "handoff",
+      "--summary",
+      "Подготовлено локальное восстановление ранее принятой версии Workspace",
+      "--evidence",
+      "Исторический encrypted snapshot расшифрован и проверен локальным bridge",
+      "--next-action",
+      "Продолжить работу с восстановленной принятой версией",
+    ];
+    if (metadata.scopeType === "task") {
+      checkpointArguments.push("--task-outcome", "no_status_change");
+    }
+    await runWorkspaceBridge(origin, checkpointArguments, { cwd: workspaceDirectory, signal });
+    await runWorkspaceBridge(
+      origin,
+      ["submit", "--message", "Восстановить принятую версию Workspace"],
+      { cwd: workspaceDirectory, signal },
+    );
+  } catch (error) {
+    // Cancellation is authoritative. Do not turn an explicit caller abort
+    // into a second network request or an apparently recoverable Run error.
+    if (signal?.aborted) throw error;
+
+    // A response can be lost after the encrypted candidate was accepted. Read
+    // live state once before reporting failure; never cancel or repeat a
+    // mutation whose outcome is ambiguous.
+    const rawOverview = await readJson(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${workspaceId}`,
+      { signal },
+    )).catch(() => null);
+    const acceptedRun = rawOverview?.runs?.find((run) => run.id === runId && run.status === "accepted");
+    if (!acceptedRun) {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_RESTORE_INCOMPLETE",
+        "Encrypted restore did not reach a confirmed accepted state. The prepared Run was left intact for safe inspection or continuation.",
+        { workspaceId, runId },
+      );
+    }
+  }
+
+  const rawOverview = await readJson(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/workspaces/${workspaceId}`,
+    { signal },
+  ));
+  const overview = await hydrateAgentCompanyEncryptedJson({
+    value: rawOverview,
+    origin,
+    token,
+    companyEncryption,
+    signal,
+  });
+  const acceptedRun = overview?.runs?.find((run) => run.id === runId);
+  if (
+    overview?.workspace?.id !== workspaceId
+    || acceptedRun?.status !== "accepted"
+    || !acceptedRun?.candidateHead
+    || overview?.workspace?.acceptedHead !== acceptedRun.candidateHead
+    || overview.workspace.acceptedHead === expectedHead
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RESTORE_UNCONFIRMED",
+      "Trelio did not confirm the accepted encrypted restore revision.",
+      { workspaceId, runId },
+    );
+  }
+  return {
+    workspace: overview.workspace,
+    run: acceptedRun,
+    restoredFromHead: targetHead,
+    // The server stores only the authenticated marker. Returning the original
+    // local value avoids an unnecessary resolve round-trip and never widens
+    // the plaintext boundary beyond the process that supplied it.
+    reason,
+  };
+};
+
+export const handleTrelioLocalWorkspaceOperation = async (
+  origin,
+  rawInput,
+  { signal } = {},
+) => {
+  const companySlug = normalizeCompanySlug(rawInput?.companySlug);
+  const operation = String(rawInput?.operation || "").trim();
+  const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
+  if (provider.nativeProvider) return provider.result;
+  const workspaceId = operation === "cancel_run"
+    ? null
+    : normalizeUuid(rawInput?.workspaceId, "workspaceId");
+
+  if (operation === "list_revisions") {
+    const raw = await readJson(await request(
+      origin,
+      provider.token,
+      `/api/agent-workspaces/workspaces/${workspaceId}/revisions`,
+      { signal },
+    ));
+    if (
+      raw?.workspace?.id !== workspaceId
+      || raw?.company?.id !== provider.companyEncryption.runtime.company.id
+      || raw?.company?.slug !== provider.companyEncryption.runtime.company.slug
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_COMPANY_MISMATCH",
+        "Trelio returned Workspace history for another company or Workspace.",
+      );
+    }
+    return hydrateAgentCompanyEncryptedJson({
+      value: raw,
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      signal,
+    });
+  }
+  if (operation === "cancel_run") {
+    const runId = normalizeUuid(rawInput?.runId, "runId");
+    const reason = normalizeBoundedString(rawInput?.reason, "reason", 2000);
+    const reasonMarker = await uploadWorkspaceAuditPayload({
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      entityType: "agent_workspace.cancellation",
+      field: "cancellation_reason",
+      value: reason,
+      signal,
+    });
+    const pathname = `/api/agent-workspaces/runs/${runId}/cancel`;
+    const body = JSON.stringify({ reason: reasonMarker });
+    let raw;
+    let lastError;
+
+    // Backend cancellation is idempotent for the exact encrypted marker. A
+    // bounded retry therefore confirms a lost response without changing the
+    // audit reason or issuing another semantic mutation.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        raw = await readJson(await request(
+          origin,
+          provider.token,
+          pathname,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body,
+            signal,
+          },
+        ));
+        break;
+      } catch (error) {
+        lastError = error;
+        if (
+          !isAmbiguousLocalWorkspaceMutationError(error)
+          || attempt === 3
+        ) {
+          throw error;
+        }
+        await delay(150 * attempt);
+      }
+    }
+    if (!raw) throw lastError;
+    return hydrateAgentCompanyEncryptedJson({
+      value: { run: raw },
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      signal,
+    });
+  }
+  if (operation === "restore_revision") {
+    const expectedHead = normalizeGitHead(rawInput?.expectedHead, "expectedHead");
+    const targetHead = normalizeGitHead(rawInput?.targetHead, "targetHead");
+    const reason = normalizeBoundedString(rawInput?.reason, "reason", 2000);
+    const runtimeSessionId = rawInput?.runtimeSessionId
+      ? normalizeUuid(rawInput.runtimeSessionId, "runtimeSessionId")
+      : null;
+    const reasonMarker = await uploadWorkspaceAuditPayload({
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      entityType: "agent_workspace.restore",
+      field: "restore_reason",
+      value: reason,
+      signal,
+    });
+    return restoreEncryptedWorkspaceLocally({
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      workspaceId,
+      expectedHead,
+      targetHead,
+      reason,
+      reasonMarker,
+      runtimeSessionId,
+      signal,
+    });
+  }
+  throw new TrelioLocalContextError(
+    "LOCAL_CONTEXT_INVALID_INPUT",
+    "operation must be list_revisions, restore_revision or cancel_run.",
+  );
+};
+
 export const TRELIO_LOCAL_CONTEXT_TOOL = {
   name: "continue_trelio_local_context",
   title: "Continue a Trelio local context route",
@@ -2216,6 +2972,35 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
   annotations: {
     readOnlyHint: false,
     destructiveHint: false,
+    openWorldHint: false,
+  },
+};
+
+export const TRELIO_LOCAL_WORKSPACE_TOOL = {
+  name: "continue_trelio_local_workspace",
+  title: "Continue a Trelio local Workspace route",
+  description: "Continue only the exact Workspace revision, restore, or cancellation route selected by Trelio. Protected reasons and Git bytes remain on the trusted local host.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["operation", "companySlug"],
+    properties: {
+      operation: {
+        type: "string",
+        enum: ["list_revisions", "restore_revision", "cancel_run"],
+      },
+      companySlug: { type: "string", minLength: 1, maxLength: 120 },
+      workspaceId: { type: "string", format: "uuid" },
+      runId: { type: "string", format: "uuid" },
+      expectedHead: { type: "string", pattern: "^[0-9a-f]{40,64}$" },
+      targetHead: { type: "string", pattern: "^[0-9a-f]{40,64}$" },
+      reason: { type: "string", minLength: 1, maxLength: 2000 },
+      runtimeSessionId: { type: "string", format: "uuid" },
+    },
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
     openWorldHint: false,
   },
 };

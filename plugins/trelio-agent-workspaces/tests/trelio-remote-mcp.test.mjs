@@ -1633,6 +1633,7 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.deepEqual(response.result.tools.map(({ name }) => name), [
     "continue_trelio_local_context",
     "continue_trelio_local_proposal",
+    "continue_trelio_local_workspace",
     "plan_company_private_agent_skill_create",
     "create_company_private_agent_skill",
     "plan_company_private_agent_skill_release",
@@ -2012,5 +2013,5 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 10);
+  assert.equal(frames[1].result.tools.length, 11);
 });

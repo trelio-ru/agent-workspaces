@@ -112,6 +112,34 @@ App, present the hydrated editable proposal and ask for the same explicit
 publish/apply/dismiss decision; do not silently convert a proposal into a direct
 mutation.
 
+## Continue Workspace history and cancellation locally
+
+When native `list_agent_workspace_revisions`,
+`restore_agent_workspace_revision`, or `cancel_agent_workspace_run` returns
+`providerSelection.tool=continue_trelio_local_workspace`, call that tool with
+the same exact company and matching operation:
+
+- `list_revisions`: pass `workspaceId`; select only a head returned by this live
+  result.
+- `restore_revision`: pass `workspaceId`, current `expectedHead`, selected
+  `targetHead`, the meaningful plaintext audit `reason`, and the returned
+  `runtimeSessionId` when present. The trusted host protects the reason,
+  opens the historical user tree locally in a separate Run, retains current
+  `AGENTS.md`/`CLAUDE.md`/`.trelio` controls, normalizes legacy context, creates
+  a descendant of current head, and submits it through the ordinary encrypted
+  Run lifecycle. A lost prepare response is resolved by one exact audit-marker
+  read-back; the host never creates a second restore Run speculatively.
+- `cancel_run`: pass `runId` and the concrete plaintext audit `reason`. The host
+  protects it before the normal cancellation request. Only transport/5xx or a
+  malformed success response can trigger bounded retries, always with the same
+  protected marker; explicit API errors are returned unchanged.
+
+Do not call these operations from an inferred company state. Do not download a
+bundle, decrypt it, run Git, retry submit, or cancel a partially prepared restore
+outside the tool. If restore reports an incomplete Run, leave it intact and
+inspect/continue that exact Run. An unconfirmed prepare or a lost response after
+acceptance must not cause a second restore.
+
 ## Fail closed
 
 Let the bridge own local unlock and materialization. Never request an encryption

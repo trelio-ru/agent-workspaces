@@ -144,7 +144,9 @@ task communication, handoff, submit, or final reporting.
 ## Blockers, restore, concurrency, and cleanup
 
 - Cancel only when the user explicitly abandons/withdraws an open Run; call
-  `cancel_agent_workspace_run` with a concrete audit reason. A temporary
+  `cancel_agent_workspace_run` with a concrete audit reason. If it returns
+  `providerSelection.tool=continue_trelio_local_workspace`, continue that exact
+  `cancel_run` route instead; the host protects the reason locally. A temporary
   blocker or failed command is not cancellation.
 - A later `trelio-workspace open --workspace <uuid> --run <uuid>` can claim the
   same waiting Run on another computer, materialize the server draft, and expose
@@ -162,8 +164,11 @@ task communication, handoff, submit, or final reporting.
   force-updating canonical history.
 - To undo accepted workspace changes, call `list_agent_workspace_revisions`,
   select an exact head, then `restore_agent_workspace_revision` with current
-  head as `expectedHead` and a meaningful reason. Restore creates a new accepted
-  commit with the old tree and still rejects concurrency.
+  head as `expectedHead` and a meaningful reason. For either native call, obey an
+  exact `providerSelection.tool=continue_trelio_local_workspace` response and use
+  its matching `list_revisions` or `restore_revision` operation. Restore creates
+  a new accepted commit with the old tree and still rejects concurrency; never
+  open or rewrite encrypted history with improvised Git/HTTP commands.
 - Never delete Workspace roots manually. `trelio-workspace clean --dry-run`
   lists only roots unused for 30 days, backend-terminal, locally clean and not
   opening, plus cache bytes. `clean` deletes that exact local plan, never the

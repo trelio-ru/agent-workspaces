@@ -51,9 +51,11 @@ import {
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_WORKSPACE_TOOL,
   TrelioLocalContextError,
   handleTrelioLocalContextOperation,
   handleTrelioLocalProposalOperation,
+  handleTrelioLocalWorkspaceOperation,
 } from "./trelio-local-context.mjs";
 
 const DEFAULT_ORIGIN = "https://trelio.ru";
@@ -2938,6 +2940,7 @@ const companySkillApplySchema = {
 const LOCAL_TOOLS = [
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_WORKSPACE_TOOL,
   {
     name: "plan_company_private_agent_skill_create",
     title: "Plan a company-private Agent Skill",
@@ -3100,6 +3103,13 @@ export const handleToolCall = async (
   }
   if (name === TRELIO_LOCAL_PROPOSAL_TOOL.name) {
     return buildTextResult(await handleTrelioLocalProposalOperation(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
+  if (name === TRELIO_LOCAL_WORKSPACE_TOOL.name) {
+    return buildTextResult(await handleTrelioLocalWorkspaceOperation(
       origin,
       rawArguments,
       { signal },

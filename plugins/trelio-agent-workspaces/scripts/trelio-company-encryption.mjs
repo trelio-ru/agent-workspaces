@@ -14,7 +14,7 @@ import {
   scrypt as scryptCallback,
   webcrypto,
 } from "node:crypto";
-import { open as openFile, stat } from "node:fs/promises";
+import { open as openFile, rm, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 
 export const COMPANY_ENCRYPTION_SUITE = "trelio-e2ee-v1";
@@ -889,11 +889,40 @@ const buildEncryptedFileHeaderSignatureRecord = (header) => ({
   writerIdentityId: header.writerIdentityId,
 });
 
+export const writeAll = async (handle, bytes, position) => {
+  const buffer = toBytes(bytes);
+  let written = 0;
+
+  // FileHandle.write is allowed to complete fewer bytes than requested.
+  // Advance both buffer and absolute file offsets until the exact frame is on
+  // disk; zero progress would otherwise spin forever and produce a corrupt
+  // container that still receives a digest for bytes never written.
+  while (written < buffer.byteLength) {
+    const remaining = buffer.byteLength - written;
+    const result = await handle.write(
+      buffer,
+      written,
+      remaining,
+      position + written,
+    );
+    if (
+      !Number.isSafeInteger(result.bytesWritten)
+      || result.bytesWritten <= 0
+      || result.bytesWritten > remaining
+    ) {
+      throw new Error("Encrypted file write made no progress.");
+    }
+    written += result.bytesWritten;
+  }
+
+  return position + written;
+};
+
 const writeAndHash = async (handle, hash, bytes, position) => {
   const buffer = toBytes(bytes);
-  await handle.write(buffer, 0, buffer.byteLength, position);
+  const nextPosition = await writeAll(handle, buffer, position);
   hash.update(buffer);
-  return position + buffer.byteLength;
+  return nextPosition;
 };
 
 /** Encrypt a file in constant memory into the browser-compatible TRELIOE1 format. */
@@ -963,11 +992,13 @@ export const encryptFileToCompanyContainer = async ({
   const headerLength = Buffer.alloc(4);
   headerLength.writeUInt32BE(headerBytes.byteLength, 0);
   const source = await openFile(sourcePath, "r");
-  const destination = await openFile(destinationPath, "wx", 0o600);
+  let destination = null;
   const digest = createHash("sha256");
   let outputOffset = 0;
+  let completed = false;
 
   try {
+    destination = await openFile(destinationPath, "wx", 0o600);
     outputOffset = await writeAndHash(destination, digest, COMPANY_ENCRYPTED_FILE_MAGIC, outputOffset);
     outputOffset = await writeAndHash(destination, digest, headerLength, outputOffset);
     outputOffset = await writeAndHash(destination, digest, headerBytes, outputOffset);
@@ -977,16 +1008,13 @@ export const encryptFileToCompanyContainer = async ({
         COMPANY_ENCRYPTION_FILE_CHUNK_BYTES,
         sourceStat.size - chunkIndex * COMPANY_ENCRYPTION_FILE_CHUNK_BYTES,
       ));
-      const plaintext = Buffer.alloc(plaintextLength);
-      if (plaintextLength > 0) {
-        const read = await source.read(
-          plaintext,
-          0,
-          plaintextLength,
-          chunkIndex * COMPANY_ENCRYPTION_FILE_CHUNK_BYTES,
-        );
-        if (read.bytesRead !== plaintextLength) throw new Error("Encrypted source was truncated during reading.");
-      }
+      const plaintext = plaintextLength > 0
+        ? await readExact(
+            source,
+            plaintextLength,
+            chunkIndex * COMPANY_ENCRYPTION_FILE_CHUNK_BYTES,
+          )
+        : Buffer.alloc(0);
       try {
         const ciphertext = await webcrypto.subtle.encrypt(
           {
@@ -1004,6 +1032,7 @@ export const encryptFileToCompanyContainer = async ({
       }
     }
     await destination.sync();
+    completed = true;
     return {
       header,
       ciphertextSha256: digest.digest("hex"),
@@ -1011,14 +1040,32 @@ export const encryptFileToCompanyContainer = async ({
     };
   } finally {
     dataKeyBytes.fill(0);
-    await Promise.allSettled([source.close(), destination.close()]);
+    await Promise.allSettled([source.close(), destination?.close()]);
+    if (destination && !completed) {
+      // Never leave a partial ciphertext that a retry or operator could
+      // mistake for an authenticated completed container.
+      await rm(destinationPath, { force: true }).catch(() => undefined);
+    }
   }
 };
 
-const readExact = async (handle, length, position) => {
+export const readExact = async (handle, length, position) => {
   const bytes = Buffer.alloc(length);
-  const result = await handle.read(bytes, 0, length, position);
-  if (result.bytesRead !== length) throw new Error("Encrypted file is truncated.");
+  let read = 0;
+
+  while (read < length) {
+    const remaining = length - read;
+    const result = await handle.read(bytes, read, remaining, position + read);
+    if (
+      !Number.isSafeInteger(result.bytesRead)
+      || result.bytesRead <= 0
+      || result.bytesRead > remaining
+    ) {
+      throw new Error("Encrypted file is truncated.");
+    }
+    read += result.bytesRead;
+  }
+
   return bytes;
 };
 
@@ -1032,10 +1079,12 @@ export const decryptFileFromCompanyContainer = async ({
 }) => {
   const sourceStat = await stat(sourcePath);
   const source = await openFile(sourcePath, "r");
-  const destination = await openFile(destinationPath, "wx", 0o600);
+  let destination = null;
   let dataKeyBytes;
+  let completed = false;
 
   try {
+    destination = await openFile(destinationPath, "wx", 0o600);
     const prefix = await readExact(source, COMPANY_ENCRYPTED_FILE_MAGIC.byteLength + 4, 0);
     if (!prefix.subarray(0, COMPANY_ENCRYPTED_FILE_MAGIC.byteLength).equals(COMPANY_ENCRYPTED_FILE_MAGIC)) {
       throw new Error("File is not a TRELIOE1 encrypted container.");
@@ -1113,8 +1162,7 @@ export const decryptFileFromCompanyContainer = async ({
         ownedArrayBuffer(ciphertext),
       ));
       try {
-        await destination.write(plaintext, 0, plaintext.byteLength, outputOffset);
-        outputOffset += plaintext.byteLength;
+        outputOffset = await writeAll(destination, plaintext, outputOffset);
       } finally {
         plaintext.fill(0);
       }
@@ -1140,6 +1188,7 @@ export const decryptFileFromCompanyContainer = async ({
       }
     }
 
+    completed = true;
     return {
       header,
       originalName: String(metadata.originalName || "file"),
@@ -1148,7 +1197,12 @@ export const decryptFileFromCompanyContainer = async ({
     };
   } finally {
     dataKeyBytes?.fill(0);
-    await Promise.allSettled([source.close(), destination.close()]);
+    await Promise.allSettled([source.close(), destination?.close()]);
+    if (destination && !completed) {
+      // Authentication can fail after earlier chunks were written. A partial
+      // plaintext file must not survive that failure boundary.
+      await rm(destinationPath, { force: true }).catch(() => undefined);
+    }
   }
 };
 

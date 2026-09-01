@@ -1,18 +1,28 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   canonicalizeProposalTargetFromMirror,
   TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS,
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_WORKSPACE_TOOL,
   fetchMirrorResult,
+  findPreparedEncryptedRestoreRun,
   hydrateChangedCompanyMirrorRecords,
   listCompanyContextMirror,
+  materializeHistoricalWorkspaceTreeForRestore,
   resolveMirrorPaths,
   searchCompanyContextMirror,
   selectEncryptedProposalFilesFromManifest,
 } from "../scripts/trelio-local-context.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const mirror = {
   schemaVersion: 1,
@@ -168,7 +178,11 @@ test("ambiguous project routing aliases fail closed", () => {
 });
 
 test("always-visible local schemas stay compact and provider-neutral", () => {
-  const schemas = JSON.stringify([TRELIO_LOCAL_CONTEXT_TOOL, TRELIO_LOCAL_PROPOSAL_TOOL]);
+  const schemas = JSON.stringify([
+    TRELIO_LOCAL_CONTEXT_TOOL,
+    TRELIO_LOCAL_PROPOSAL_TOOL,
+    TRELIO_LOCAL_WORKSPACE_TOOL,
+  ]);
 
   assert.equal(Buffer.byteLength(schemas, "utf8") <= 3_000, true);
   assert.doesNotMatch(schemas, /encrypt|e2ee|cipher|private key/iu);
@@ -180,6 +194,130 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
   ]);
   assert.equal(TRELIO_LOCAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
   assert.equal(TRELIO_LOCAL_PROPOSAL_TOOL.annotations.readOnlyHint, false);
+  assert.deepEqual(TRELIO_LOCAL_WORKSPACE_TOOL.inputSchema.properties.operation.enum, [
+    "list_revisions",
+    "restore_revision",
+    "cancel_run",
+  ]);
+  assert.equal(TRELIO_LOCAL_WORKSPACE_TOOL.annotations.readOnlyHint, false);
+});
+
+test("ambiguous restore prepare is recovered only by one exact audit marker", () => {
+  const workspaceId = "55555555-5555-4555-8555-555555555555";
+  const expectedHead = "a".repeat(40);
+  const targetHead = "b".repeat(40);
+  const reasonMarker = "~e1:77777777-7777-4777-8777-777777777777:restore_reason~";
+  const exactRun = {
+    id: "88888888-8888-4888-8888-888888888888",
+    clientKind: "workspace_restore",
+    baseHead: expectedHead,
+    clientMetadataJson: {
+      source: "local_encrypted_restore",
+      restoredFromHead: targetHead,
+      reason: reasonMarker,
+    },
+  };
+  const input = {
+    workspaceId,
+    expectedHead,
+    targetHead,
+    reasonMarker,
+  };
+
+  assert.equal(findPreparedEncryptedRestoreRun({
+    ...input,
+    overview: { workspace: { id: workspaceId }, runs: [exactRun] },
+  }), exactRun);
+  assert.equal(findPreparedEncryptedRestoreRun({
+    ...input,
+    overview: {
+      workspace: { id: workspaceId },
+      runs: [{
+        ...exactRun,
+        clientMetadataJson: {
+          ...exactRun.clientMetadataJson,
+          reason: "~e1:99999999-9999-4999-8999-999999999999:restore_reason~",
+        },
+      }],
+    },
+  }), null);
+  assert.equal(findPreparedEncryptedRestoreRun({
+    ...input,
+    overview: {
+      workspace: { id: workspaceId },
+      runs: [exactRun, { ...exactRun, id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+    },
+  }), null);
+});
+
+test("local restore keeps current control paths and normalizes legacy context", async () => {
+  const repository = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-local-restore-test-"));
+  const git = (argumentsList) => execFileAsync("git", argumentsList, {
+    cwd: repository,
+    encoding: "utf8",
+  });
+
+  try {
+    await git(["init", "--initial-branch=main"]);
+    await git(["config", "user.name", "Trelio tests"]);
+    await git(["config", "user.email", "tests@trelio.local"]);
+    await fs.mkdir(path.join(repository, ".trelio"), { recursive: true });
+    await fs.mkdir(path.join(repository, "work"), { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(repository, "AGENTS.md"), "historical control\n"),
+      fs.writeFile(path.join(repository, "CLAUDE.md"), "historical claude\n"),
+      fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "historical metadata\n"),
+      fs.writeFile(path.join(repository, "PROJECT_CONTEXT.md"), "# PROJECT_CONTEXT\n\nold fact\n"),
+      fs.writeFile(path.join(repository, "work", "result.md"), "historical result\n"),
+    ]);
+    await git(["add", "--all"]);
+    await git(["commit", "-m", "historical"]);
+    const targetHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+
+    await Promise.all([
+      fs.writeFile(path.join(repository, "AGENTS.md"), "current control\n"),
+      fs.writeFile(path.join(repository, "CLAUDE.md"), "current claude\n"),
+      fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "current metadata\n"),
+      fs.writeFile(path.join(repository, "WORKSPACE_CONTEXT.md"), "# WORKSPACE_CONTEXT\n\ncurrent fact\n"),
+      fs.writeFile(path.join(repository, "work", "result.md"), "current result\n"),
+      fs.rm(path.join(repository, "PROJECT_CONTEXT.md")),
+    ]);
+    await git(["add", "--all"]);
+    await git(["commit", "-m", "current"]);
+    const expectedHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+
+    await materializeHistoricalWorkspaceTreeForRestore({
+      workspaceDirectory: repository,
+      expectedHead,
+      targetHead,
+      formatVersion: 5,
+    });
+
+    assert.equal(await fs.readFile(path.join(repository, "work", "result.md"), "utf8"), "historical result\n");
+    assert.equal(
+      await fs.readFile(path.join(repository, "WORKSPACE_CONTEXT.md"), "utf8"),
+      "# WORKSPACE_CONTEXT\n\nold fact\n",
+    );
+    await assert.rejects(fs.stat(path.join(repository, "PROJECT_CONTEXT.md")), /ENOENT/u);
+    assert.equal((await git(["show", ":AGENTS.md"])).stdout, "current control\n");
+    assert.equal((await git(["show", ":CLAUDE.md"])).stdout, "current claude\n");
+    assert.equal((await git(["show", ":.trelio/workspace.json"])).stdout, "current metadata\n");
+    assert.equal(
+      (await git([
+        "diff",
+        "--cached",
+        "--name-only",
+        expectedHead,
+        "--",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".trelio",
+      ])).stdout,
+      "",
+    );
+  } finally {
+    await fs.rm(repository, { recursive: true, force: true });
+  }
 });
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {

@@ -47,6 +47,7 @@ import {
   openScopePrivateKey,
   signCompanyEncryptionRecord,
   unlockRememberedAgentEncryptionDevice,
+  writeAll,
   wrapAndRememberAgentEncryptionDevice,
 } from "./trelio-company-encryption.mjs";
 
@@ -640,7 +641,7 @@ const requireGitRuntime = async () => {
   return resolvedGit;
 };
 
-const runGit = async (args, options = {}) => {
+export const runGit = async (args, options = {}) => {
   const resolvedGit = await requireGitRuntime();
 
   // Agent Workspace Git must be deterministic across macOS and Windows. User
@@ -4650,10 +4651,12 @@ const writeResponseToFile = async (response, destination) => {
   );
 };
 
-const writeAndDecryptCompanyWorkspaceBundle = async ({
+export const writeAndDecryptCompanyWorkspaceBundle = async ({
   response,
   destination,
   companyEncryption,
+  expectedWorkspaceId,
+  expectedWorkspaceHead,
 }) => {
   if (!companyEncryption) {
     throw new Error("Encrypted Agent Workspace response requires an unlocked local company key.");
@@ -4662,10 +4665,17 @@ const writeAndDecryptCompanyWorkspaceBundle = async ({
   const expectedDigest = response.headers.get("x-trelio-ciphertext-sha256");
   const responseScopeId = response.headers.get("x-trelio-scope-id");
   const responseScopeEpoch = Number(response.headers.get("x-trelio-scope-epoch"));
+  const responseHeads = [
+    response.headers.get("x-trelio-workspace-head"),
+    response.headers.get("x-trelio-accepted-head"),
+    response.headers.get("x-trelio-materialized-head"),
+  ];
 
   if (
     response.headers.get("x-trelio-e2ee") !== "v1"
     || !/^[0-9a-f]{64}$/u.test(expectedDigest || "")
+    || response.headers.get("x-trelio-workspace-id") !== expectedWorkspaceId
+    || !responseHeads.includes(expectedWorkspaceHead)
     || responseScopeId !== companyEncryption.runtime.scope.id
     || responseScopeEpoch !== companyEncryption.runtime.scope.epoch
   ) {
@@ -4686,6 +4696,13 @@ const writeAndDecryptCompanyWorkspaceBundle = async ({
       || decrypted.header.aad.scopeId !== companyEncryption.runtime.scope.id
       || decrypted.header.aad.scopeEpoch !== companyEncryption.runtime.scope.epoch
       || decrypted.header.aad.entityType !== "agent_workspace_revision"
+      || decrypted.header.aad.schemaVersion !== 1
+      || decrypted.header.aad.purpose !== "file"
+      || !UUID_PATTERN.test(String(decrypted.header.aad.entityId || ""))
+      || !Number.isSafeInteger(decrypted.header.aad.entityRevision)
+      || decrypted.header.aad.entityRevision < 1
+      || decrypted.originalName !== "workspace.bundle"
+      || decrypted.mimeType !== "application/vnd.git.bundle"
     ) {
       throw new Error("Расшифрованный Workspace bundle привязан к другой компании или сущности.");
     }
@@ -7493,6 +7510,8 @@ const replaceMaterializedContext = async ({
         response: contextResponse,
         destination: bundlePath,
         companyEncryption,
+        expectedWorkspaceId: specification.workspaceId,
+        expectedWorkspaceHead: specification.head,
       });
     } else {
       await writeResponseToFile(contextResponse, bundlePath);
@@ -8344,6 +8363,8 @@ const synchronizePersistentWorkspaceToAcceptedHead = async ({
         response,
         destination: bundlePath,
         companyEncryption,
+        expectedWorkspaceId: workspaceId,
+        expectedWorkspaceHead: acceptedHead,
       });
     } else {
       await writeResponseToFile(response, bundlePath);
@@ -8605,6 +8626,8 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
             response: bundleResponse,
             destination: syncBundlePath,
             companyEncryption,
+            expectedWorkspaceId: workspaceId,
+            expectedWorkspaceHead: materializedHead,
           });
         } else {
           await writeResponseToFile(bundleResponse, syncBundlePath);
@@ -8715,6 +8738,8 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
         response: baseResponse,
         destination: baseBundlePath,
         companyEncryption,
+        expectedWorkspaceId: workspaceId,
+        expectedWorkspaceHead: materializedHead,
       });
     } else {
       await writeResponseToFile(baseResponse, baseBundlePath);
@@ -8979,6 +9004,8 @@ const materializeWorkspaceInspection = async ({
         response,
         destination: bundlePath,
         companyEncryption,
+        expectedWorkspaceId: workspaceId,
+        expectedWorkspaceHead: acceptedHead,
       });
     } else {
       await writeResponseToFile(response, bundlePath);
@@ -9089,6 +9116,8 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
       response,
       destination: bundlePath,
       companyEncryption,
+      expectedWorkspaceId: normalizedWorkspaceId,
+      expectedWorkspaceHead: acceptedHead,
     });
     await materializeBundle({
       bundlePath,
@@ -10438,24 +10467,14 @@ const appendFileToHandle = async ({ sourcePath, destinationHandle, position }) =
 
   for await (const rawChunk of createReadStream(sourcePath)) {
     const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
-    const write = await destinationHandle.write(chunk, 0, chunk.byteLength, outputOffset);
-
-    if (write.bytesWritten !== chunk.byteLength) {
-      throw new Error("Не удалось полностью записать encrypted browser projection.");
-    }
-    outputOffset += write.bytesWritten;
+    outputOffset = await writeAll(destinationHandle, chunk, outputOffset);
   }
 
   return outputOffset;
 };
 
 const writeBufferToHandle = async ({ buffer, destinationHandle, position }) => {
-  const write = await destinationHandle.write(buffer, 0, buffer.byteLength, position);
-
-  if (write.bytesWritten !== buffer.byteLength) {
-    throw new Error("Не удалось полностью записать заголовок encrypted browser projection.");
-  }
-  return position + write.bytesWritten;
+  return writeAll(destinationHandle, buffer, position);
 };
 
 /**

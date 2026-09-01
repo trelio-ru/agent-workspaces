@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, webcrypto } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -19,9 +19,46 @@ import {
   encryptFileToCompanyContainer,
   hpkeOpen,
   hpkeSeal,
+  readExact,
   unlockRememberedAgentEncryptionDevice,
+  writeAll,
   wrapAndRememberAgentEncryptionDevice,
 } from "../scripts/trelio-company-encryption.mjs";
+
+test("encrypted file helpers complete short reads and writes", async () => {
+  const source = Buffer.from("short IO must not truncate encrypted frames", "utf8");
+  const destination = Buffer.alloc(source.byteLength);
+  const writeHandle = {
+    async write(buffer, offset, length, position) {
+      const bytesWritten = Math.min(3, length);
+      buffer.copy(destination, position, offset, offset + bytesWritten);
+      return { bytesWritten };
+    },
+  };
+  const finalPosition = await writeAll(writeHandle, source, 0);
+  assert.equal(finalPosition, source.byteLength);
+  assert.deepEqual(destination, source);
+
+  const readHandle = {
+    async read(buffer, offset, length, position) {
+      const bytesRead = Math.min(2, length, source.byteLength - position);
+      if (bytesRead > 0) source.copy(buffer, offset, position, position + bytesRead);
+      return { bytesRead };
+    },
+  };
+  assert.deepEqual(await readExact(readHandle, source.byteLength, 0), source);
+});
+
+test("encrypted file helpers reject zero-progress IO", async () => {
+  await assert.rejects(
+    writeAll({ write: async () => ({ bytesWritten: 0 }) }, Buffer.from("x"), 0),
+    /made no progress/u,
+  );
+  await assert.rejects(
+    readExact({ read: async () => ({ bytesRead: 0 }) }, 1, 0),
+    /truncated/u,
+  );
+});
 
 test("encrypted workspace records bind accepted revision to its browser projection", () => {
   const common = {
@@ -191,6 +228,8 @@ test("bridge streams a browser-compatible multi-chunk TRELIOE1 file", async () =
   const sourcePath = path.join(directory, "source.bundle");
   const encryptedPath = path.join(directory, "encrypted.bin");
   const decryptedPath = path.join(directory, "decrypted.bundle");
+  const corruptedPath = path.join(directory, "corrupted.bin");
+  const rejectedPlaintextPath = path.join(directory, "rejected.bundle");
   const scope = await webcrypto.subtle.generateKey(
     { name: "ECDH", namedCurve: "P-256" },
     true,
@@ -238,6 +277,20 @@ test("bridge streams a browser-compatible multi-chunk TRELIOE1 file", async () =
     assert.equal(decryptedInMemory.originalName, "workspace.bundle");
     assert.deepEqual(decryptedInMemory.bytes, bytes);
     decryptedInMemory.bytes.fill(0);
+
+    const corrupted = await readFile(encryptedPath);
+    corrupted[corrupted.byteLength - 1] ^= 0xff;
+    await writeFile(corruptedPath, corrupted);
+    await assert.rejects(decryptFileFromCompanyContainer({
+      sourcePath: corruptedPath,
+      destinationPath: rejectedPlaintextPath,
+      scopePrivateKey: scope.privateKey,
+      scopePrivateJwk: privateJwk,
+    }));
+    await assert.rejects(
+      stat(rejectedPlaintextPath),
+      (error) => error?.code === "ENOENT",
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
