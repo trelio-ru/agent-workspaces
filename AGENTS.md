@@ -250,6 +250,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
+- `list_companies.contentProvider` и structured `providerSelection` – только
+  backend-selected routes. Agent не выводит provider из metadata: plain остаётся
+  native, а детали exact local context/proposal route загружаются только из lazy
+  worker reference после такого ответа. Always-visible schemas provider-neutral.
 - Чистое чтение уже принятого task/dossier Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит
@@ -300,7 +304,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   метрики – UTF-8 bytes, а `estimatedTokensUtf8Div4` является только прозрачной
   сравнительной эвристикой. `context-budget.test.mjs` фиксирует regression
   ceilings отдельно для runtime `AGENTS.md`, worker `SKILL.md`, обязательных
-  task Run references и варианта с proposal bundle. Эти потолки не являются
+  task Run references, варианта с proposal bundle, compact provider-neutral
+  schemas и отдельных plain/encrypted company scenarios. Lazy
+  `local-company-context.md` запрещено включать в plain required path. Эти потолки не являются
   целевыми размерами: осознанное увеличение требует объяснения, а оптимизация
   должна уменьшать фактический отчёт без удаления security-инвариантов.
   Runtime `AGENTS.md` хранит только неизменяемое safety/lifecycle-ядро, а

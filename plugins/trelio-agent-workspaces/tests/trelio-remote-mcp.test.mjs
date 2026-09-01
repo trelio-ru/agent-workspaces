@@ -41,7 +41,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "1.15.0");
+  }), "1.16.0");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -1622,7 +1622,7 @@ test("personal credential path follows the stable local integration namespace", 
   );
 });
 
-test("local MCP exposes four private-skill management and four execution tools", async () => {
+test("local MCP exposes bounded provider routes plus skill-management and execution tools", async () => {
   const response = await handleLocalMcpMessage({
     jsonrpc: "2.0",
     id: 1,
@@ -1631,6 +1631,8 @@ test("local MCP exposes four private-skill management and four execution tools",
   });
 
   assert.deepEqual(response.result.tools.map(({ name }) => name), [
+    "continue_trelio_local_context",
+    "continue_trelio_local_proposal",
     "plan_company_private_agent_skill_create",
     "create_company_private_agent_skill",
     "plan_company_private_agent_skill_release",
@@ -1649,6 +1651,9 @@ test("local MCP exposes four private-skill management and four execution tools",
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.match(tool.description, /exact Trelio settings URL/u);
   }
+  const providerTools = response.result.tools.slice(0, 2);
+  assert.equal(Buffer.byteLength(JSON.stringify(providerTools), "utf8") <= 3_000, true);
+  assert.doesNotMatch(JSON.stringify(providerTools), /encrypt|e2ee|cipher|private key/iu);
   assert.doesNotMatch(JSON.stringify(response), /personal-test-token/u);
 });
 
@@ -1692,6 +1697,7 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
   assert.match(instructions, /do not run skill search merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
   assert.match(instructions, /does not weaken secret, personal-session, approval, or confirmation boundaries/u);
+  assert.match(instructions, /Provider selection is runtime-authoritative, not an agent choice/u);
 });
 
 test("platform routing sends a provider-neutral signed skill through runtimeExecution", async () => {
@@ -2001,10 +2007,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.15.0");
+  assert.equal(frames[0].result.serverInfo.version, "1.16.0");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 8);
+  assert.equal(frames[1].result.tools.length, 10);
 });

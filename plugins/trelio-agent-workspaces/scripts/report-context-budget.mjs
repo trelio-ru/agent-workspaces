@@ -3,6 +3,10 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN } from "./trelio-workspace.mjs";
+import {
+  TRELIO_LOCAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_TOOL,
+} from "./trelio-local-context.mjs";
 
 export const PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION = 1;
 
@@ -25,6 +29,8 @@ export const TASK_RUN_REQUIRED_SKILL_PATHS = [
 
 export const TASK_RUN_PROPOSAL_BUNDLE_PATH =
   "skills/trelio-workspace-worker/references/task-proposal-bundles.md";
+export const LOCAL_COMPANY_CONTEXT_PATH =
+  "skills/trelio-workspace-worker/references/local-company-context.md";
 
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
@@ -36,6 +42,9 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   taskRunWithProposalBundleBytes: 55_000,
   requiredTaskRunPluginLayerBytes: 61_000,
   taskRunWithProposalBundlePluginLayerBytes: 64_000,
+  localProviderToolSchemasBytes: 3_000,
+  plainCompanyTaskRunPluginLayerBytes: 64_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 73_000,
 });
 
 export const measureContextText = (text) => {
@@ -82,6 +91,15 @@ export const buildPluginContextBudgetReport = async () => {
     TASK_RUN_REQUIRED_SKILL_PATHS.map(readMeasuredFile),
   );
   const proposalBundleFile = await readMeasuredFile(TASK_RUN_PROPOSAL_BUNDLE_PATH);
+  const localCompanyContextFile = await readMeasuredFile(LOCAL_COMPANY_CONTEXT_PATH);
+  const localProviderToolSchemas = {
+    id: "local-provider-tool-schemas",
+    source: "scripts/trelio-local-context.mjs#local-provider-tools",
+    ...measureContextText(JSON.stringify([
+      TRELIO_LOCAL_CONTEXT_TOOL,
+      TRELIO_LOCAL_PROPOSAL_TOOL,
+    ])),
+  };
   const runtimeAgents = {
     id: "runtime-agents",
     source: "scripts/trelio-workspace.mjs#AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN",
@@ -110,6 +128,8 @@ export const buildPluginContextBudgetReport = async () => {
       workerSkill,
       requiredSkillFiles,
       proposalBundleFile,
+      localCompanyContextFile,
+      localProviderToolSchemas,
     },
     scenarios: {
       requiredTaskRunSkills,
@@ -121,6 +141,20 @@ export const buildPluginContextBudgetReport = async () => {
       taskRunWithProposalBundlePluginLayer: sumMeasurements([
         runtimeAgents,
         taskRunWithProposalBundle,
+      ]),
+      // Ordinary companies see only two compact provider-neutral schemas. The
+      // complete protected-provider manual remains absent from their skill
+      // path and therefore cannot consume their task context window.
+      plainCompanyTaskRunPluginLayer: sumMeasurements([
+        runtimeAgents,
+        requiredTaskRunSkills,
+        localProviderToolSchemas,
+      ]),
+      encryptedCompanyTaskRunPluginLayer: sumMeasurements([
+        runtimeAgents,
+        requiredTaskRunSkills,
+        localProviderToolSchemas,
+        localCompanyContextFile,
       ]),
     },
     limits: PLUGIN_CONTEXT_BUDGET_LIMITS,
@@ -151,6 +185,12 @@ export const formatPluginContextBudgetReport = (report) => [
   formatMeasurement(
     "Plugin layer + proposal bundle",
     report.scenarios.taskRunWithProposalBundlePluginLayer,
+  ),
+  formatMeasurement("Local provider tool schemas", report.layers.localProviderToolSchemas),
+  formatMeasurement("Plain-company task Run layer", report.scenarios.plainCompanyTaskRunPluginLayer),
+  formatMeasurement(
+    "Encrypted-company task Run layer",
+    report.scenarios.encryptedCompanyTaskRunPluginLayer,
   ),
   "",
   "Token values are estimates: ceil(UTF-8 bytes / 4). Compare exact bytes in CI.",

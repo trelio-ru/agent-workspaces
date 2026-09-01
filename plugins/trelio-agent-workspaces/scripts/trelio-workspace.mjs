@@ -51,7 +51,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.15.0";
+export const BRIDGE_VERSION = "1.16.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -226,6 +226,13 @@ const COMPANY_ENCRYPTION_DEVICE_DIRECTORY = path.join(
 const WORKSPACE_INSPECTION_DIRECTORY = path.join(
   CONFIG_DIRECTORY,
   "workspace-inspections",
+);
+const COMPANY_CONTEXT_MIRROR_DIRECTORY = path.join(
+  CONFIG_DIRECTORY,
+  "company-context-mirrors",
+);
+export const resolveCompanyContextMirrorDirectory = () => (
+  COMPANY_CONTEXT_MIRROR_DIRECTORY
 );
 const SECRET_BROWSER_PROFILE_DIRECTORY = path.join(
   SECRET_BROWSER_DIRECTORY,
@@ -4372,31 +4379,40 @@ export const hydrateAgentCompanyEncryptedJson = async ({
   origin,
   token,
   companyEncryption,
+  signal,
 }) => {
   if (!companyEncryption) return value;
   const references = collectAgentEncryptedReferences(value);
   if (references.size === 0) return value;
-  const response = await readJsonResponse(await request(
-    origin,
-    token,
-    "/api/agent-workspaces/encryption/payloads/resolve",
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        companySlug: companyEncryption.runtime.company.slug,
-        recipientDeviceId: companyEncryption.runtime.device.id,
-        entityIds: [...references.keys()],
-      }),
-    },
-  ));
   const decryptedByEntity = new Map();
-  for (const payload of response.payloads ?? []) {
-    decryptedByEntity.set(payload.entityId, await decryptCompanyPayload({
-      encryptedPayload: payload,
-      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
-      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
-    }));
+  const entityIds = [...references.keys()];
+
+  // The resolver deliberately caps one ACL-sensitive request at 250 ids.
+  // Company mirrors can contain thousands of protected leaves, so the bridge
+  // batches exact ids without ever sending plaintext values or search terms.
+  for (let offset = 0; offset < entityIds.length; offset += 250) {
+    const response = await readJsonResponse(await request(
+      origin,
+      token,
+      "/api/agent-workspaces/encryption/payloads/resolve",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          companySlug: companyEncryption.runtime.company.slug,
+          recipientDeviceId: companyEncryption.runtime.device.id,
+          entityIds: entityIds.slice(offset, offset + 250),
+        }),
+        signal,
+      },
+    ));
+    for (const payload of response.payloads ?? []) {
+      decryptedByEntity.set(payload.entityId, await decryptCompanyPayload({
+        encryptedPayload: payload,
+        scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+        scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+      }));
+    }
   }
   const resolveReference = (reference) => {
     const decrypted = decryptedByEntity.get(reference.entityId);
@@ -8974,6 +8990,129 @@ const materializeWorkspaceInspection = async ({
       await makeWritable(stagingRoot).catch(() => undefined);
       await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
     }
+  }
+};
+
+const COMPANY_CONTEXT_SEARCHABLE_EXTENSIONS = new Set([
+  "css", "csv", "html", "ini", "js", "json", "log", "markdown", "md", "mjs", "sql", "svg",
+  "toml", "ts", "tsx", "txt", "xml", "yaml", "yml",
+]);
+const COMPANY_CONTEXT_SEARCHABLE_FILE_BYTES = 1024 * 1024;
+const COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Open one accepted encrypted Workspace only long enough to build the local
+ * search generation.  The returned text stays in process memory; the private
+ * temporary Git tree and decrypted bundle are removed before this function
+ * resolves.  Persistent mirror generations are encrypted separately by the
+ * caller, while unchanged heads can reuse their previous encrypted records.
+ */
+export const readEncryptedWorkspaceSearchDocuments = async ({
+  origin,
+  token,
+  companyEncryption,
+  workspaceId,
+  acceptedHead,
+  signal,
+}) => {
+  const normalizedWorkspaceId = requireUuid(workspaceId, "workspace");
+  if (!GIT_OBJECT_PATTERN.test(String(acceptedHead || ""))) {
+    throw new Error("Accepted Workspace search head is invalid.");
+  }
+  if (!companyEncryption) {
+    throw new Error("Encrypted Workspace search requires a local company key context.");
+  }
+
+  const temporaryDirectory = await fs.mkdtemp(path.join(
+    os.tmpdir(),
+    `trelio-company-context-${normalizedWorkspaceId}-`,
+  ));
+  const bundlePath = path.join(temporaryDirectory, "accepted.bundle");
+  const workspaceDirectory = path.join(temporaryDirectory, "workspace");
+
+  try {
+    const response = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/workspaces/${normalizedWorkspaceId}/encrypted-bundle?${new URLSearchParams({
+        head: acceptedHead,
+      }).toString()}`,
+      { signal },
+    );
+    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+      throw new Error("Trelio returned another accepted head during company-context sync.");
+    }
+    await writeAndDecryptCompanyWorkspaceBundle({
+      response,
+      destination: bundlePath,
+      companyEncryption,
+    });
+    await materializeBundle({
+      bundlePath,
+      directory: workspaceDirectory,
+      head: acceptedHead,
+      branch: "trelio-context-search",
+    });
+    await assertMaterializedWorkspaceFileTypes(workspaceDirectory);
+
+    const candidates = [];
+    for (const filePath of await listTrackedWorkspacePaths(workspaceDirectory)) {
+      const normalizedPath = filePath.replaceAll("\\", "/");
+      const baseName = normalizedPath.split("/").at(-1) ?? "";
+      const extension = baseName.includes(".")
+        ? baseName.split(".").at(-1)?.toLowerCase() ?? ""
+        : "";
+      if (
+        !normalizedPath
+        || normalizedPath === "AGENTS.md"
+        || normalizedPath === "CLAUDE.md"
+        || normalizedPath === "README.md"
+        || normalizedPath.startsWith(".trelio/")
+        || baseName === ".gitkeep"
+        || !COMPANY_CONTEXT_SEARCHABLE_EXTENSIONS.has(extension)
+      ) {
+        continue;
+      }
+      const absolutePath = path.join(workspaceDirectory, ...normalizedPath.split("/"));
+      const metadata = await fs.lstat(absolutePath);
+      if (
+        !metadata.isFile()
+        || metadata.isSymbolicLink()
+        || metadata.size > COMPANY_CONTEXT_SEARCHABLE_FILE_BYTES
+      ) {
+        continue;
+      }
+      candidates.push({ path: normalizedPath, absolutePath, sizeBytes: metadata.size });
+    }
+
+    candidates.sort((left, right) => (
+      left.sizeBytes - right.sizeBytes || left.path.localeCompare(right.path)
+    ));
+    const documents = [];
+    let indexedBytes = 0;
+    for (const candidate of candidates) {
+      if (indexedBytes + candidate.sizeBytes > COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES) {
+        continue;
+      }
+      const bytes = await fs.readFile(candidate.absolutePath);
+      if (bytes.includes(0) || !isUtf8(bytes) || parseWorkspaceObjectPointer(bytes)) {
+        continue;
+      }
+      indexedBytes += bytes.byteLength;
+      documents.push({
+        kind: "workspace_file",
+        workspaceId: normalizedWorkspaceId,
+        workspaceHead: acceptedHead,
+        path: candidate.path,
+        name: candidate.path.split("/").at(-1) ?? candidate.path,
+        sizeBytes: candidate.sizeBytes,
+        text: bytes.toString("utf8"),
+      });
+    }
+
+    return documents;
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
 };
 

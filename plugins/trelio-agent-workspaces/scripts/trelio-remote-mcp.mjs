@@ -48,6 +48,13 @@ import {
   encryptFileToCompanyContainer,
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
+import {
+  TRELIO_LOCAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_TOOL,
+  TrelioLocalContextError,
+  handleTrelioLocalContextOperation,
+  handleTrelioLocalProposalOperation,
+} from "./trelio-local-context.mjs";
 
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const REMOTE_MCP_EXACT_CONFIG_SCHEMA_VERSION = 1;
@@ -106,6 +113,7 @@ export const AGENT_SKILL_ROUTING_INSTRUCTIONS = [
   "Treat an explicit task to develop, debug, audit, release, or live-verify Trelio or an Agent Skill in an identified canonical repository checkout as a separate maintainer route. Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes may run without forcing the current signed release or catalog execution path; preserve connection scope and ACL, protected secret delivery, no-logging rules, output bounds, and separate authorization for external mutations. A checkout alone never enables maintainer mode, and ordinary company operations return to catalog/get/runtime routing.",
   "Do not call `request_plugin_install` or open another integration's authorization before this catalog check. When search selects a matching enabled skill, use it after fresh `get_agent_skill`. If the selected skill or its company/personal connection reports `setup_required`, `no_access`, or `needs_reconnect`, state that this skill is currently unavailable and name the required setup action. Outside an explicit formal `integrationRouting` contract, do not search for or use another implementation automatically; another source is eligible only after the user explicitly chooses it after seeing the blocker. When search returns no relevant assigned skill, compatible personal skills and connectors remain available. Unavailable `search_agent_skills` / `get_agent_skill` or a transient network failure does not itself establish skill absence, `no_access`, or `setup_required`.",
   "Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow: do not run skill search merely for task discovery, workspace/Run/context, checkpoint, submit, or restore. This gate does not weaken secret, personal-session, approval, or confirmation boundaries.",
+  "When native Trelio returns an exact providerSelection route, follow that server and tool once. Provider selection is runtime-authoritative, not an agent choice; never call the local route merely because a native call looks inconvenient.",
 ].join("\n\n");
 
 const FORBIDDEN_HEADERS = new Set([
@@ -2928,6 +2936,8 @@ const companySkillApplySchema = {
 };
 
 const LOCAL_TOOLS = [
+  TRELIO_LOCAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_TOOL,
   {
     name: "plan_company_private_agent_skill_create",
     title: "Plan a company-private Agent Skill",
@@ -3081,6 +3091,20 @@ export const handleToolCall = async (
   { signal } = {},
 ) => {
   throwIfAborted(signal);
+  if (name === TRELIO_LOCAL_CONTEXT_TOOL.name) {
+    return buildTextResult(await handleTrelioLocalContextOperation(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
+  if (name === TRELIO_LOCAL_PROPOSAL_TOOL.name) {
+    return buildTextResult(await handleTrelioLocalProposalOperation(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
   if (COMPANY_SKILL_MANAGEMENT_TOOL_NAMES.has(name)) {
     return handleCompanySkillManagementTool(
       origin,
@@ -3148,13 +3172,13 @@ export const handleToolCall = async (
 };
 
 const safeErrorPayload = (error) => ({
-  code: error instanceof RemoteMcpHostError
+  code: error instanceof RemoteMcpHostError || error instanceof TrelioLocalContextError
     ? error.code
     : String(error?.message || "").includes("TRELIO_BRIDGE_PAIRING_REQUIRED")
       ? "TRELIO_BRIDGE_PAIRING_REQUIRED"
       : "REMOTE_MCP_HOST_ERROR",
   message: error instanceof Error ? error.message : String(error),
-  ...(error instanceof RemoteMcpHostError && error.details
+  ...((error instanceof RemoteMcpHostError || error instanceof TrelioLocalContextError) && error.details
     ? { details: error.details }
     : {}),
 });

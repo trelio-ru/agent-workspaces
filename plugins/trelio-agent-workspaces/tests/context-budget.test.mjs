@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  LOCAL_COMPANY_CONTEXT_PATH,
   PLUGIN_CONTEXT_BUDGET_LIMITS,
   TASK_RUN_REQUIRED_SKILL_PATHS,
   buildPluginContextBudgetReport,
@@ -16,6 +17,10 @@ test("typical task Run plugin context stays inside explicit regression ceilings"
   assert.deepEqual(
     layers.requiredSkillFiles.map((file) => file.source),
     TASK_RUN_REQUIRED_SKILL_PATHS,
+  );
+  assert.ok(
+    !TASK_RUN_REQUIRED_SKILL_PATHS.includes(LOCAL_COMPANY_CONTEXT_PATH),
+    "Ordinary company task Runs must not load the local-company provider manual",
   );
 
   assert.ok(
@@ -45,6 +50,27 @@ test("typical task Run plugin context stays inside explicit regression ceilings"
     scenarios.taskRunWithProposalBundlePluginLayer.bytesUtf8
       <= PLUGIN_CONTEXT_BUDGET_LIMITS.taskRunWithProposalBundlePluginLayerBytes,
     `Plugin layer with proposal bundle grew to ${scenarios.taskRunWithProposalBundlePluginLayer.bytesUtf8} bytes`,
+  );
+  assert.ok(
+    layers.localProviderToolSchemas.bytesUtf8
+      <= PLUGIN_CONTEXT_BUDGET_LIMITS.localProviderToolSchemasBytes,
+    `Provider-neutral local tool schemas grew to ${layers.localProviderToolSchemas.bytesUtf8} bytes`,
+  );
+  assert.ok(
+    scenarios.plainCompanyTaskRunPluginLayer.bytesUtf8
+      <= PLUGIN_CONTEXT_BUDGET_LIMITS.plainCompanyTaskRunPluginLayerBytes,
+    `Plain-company task Run layer grew to ${scenarios.plainCompanyTaskRunPluginLayer.bytesUtf8} bytes`,
+  );
+  assert.ok(
+    scenarios.encryptedCompanyTaskRunPluginLayer.bytesUtf8
+      <= PLUGIN_CONTEXT_BUDGET_LIMITS.encryptedCompanyTaskRunPluginLayerBytes,
+    `Encrypted-company task Run layer grew to ${scenarios.encryptedCompanyTaskRunPluginLayer.bytesUtf8} bytes`,
+  );
+  assert.equal(
+    scenarios.encryptedCompanyTaskRunPluginLayer.bytesUtf8
+      - scenarios.plainCompanyTaskRunPluginLayer.bytesUtf8,
+    layers.localCompanyContextFile.bytesUtf8,
+    "The protected-provider manual must be paid only by the encrypted-company scenario",
   );
 });
 

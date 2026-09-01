@@ -43,6 +43,9 @@ References are additive; do not read unrelated files speculatively.
 - **Task, dossier, project/company binding, writable scope, related context,
   task relation, or work case discovery:** read
   [`references/scope-and-context.md`](references/scope-and-context.md).
+- **Native Trelio returns `providerSelection.provider=local_company_context`:**
+  read [`references/local-company-context.md`](references/local-company-context.md)
+  and follow that exact route. Never choose this provider by inference.
 - **Read/review an accepted task or dossier Workspace without changing it:**
   read [`references/accepted-workspace-read.md`](references/accepted-workspace-read.md),
   plus scope/context only when the target is not exact. Never start a Run only to
@@ -113,16 +116,6 @@ relabel the error as missing Hooks. Never bypass admission with another MCP,
 HTTP, browser automation, or a shell script.
 
 ## Preserve operational boundaries
-
-For an encrypted company, let the exact bridge command own local unlock and
-materialization. Never request the encryption key through chat, MCP, tool
-arguments, shell input, environment, stdin, clipboard, or workspace files. On
-`access_pending`, stop content work until the owner grants the displayed device;
-do not use plaintext or server-search fallback. Search an opened encrypted
-workspace only in its locally materialized files with bounded local tools such
-as `rg`, without sending queries, paths, content, or derived plaintext to
-Trelio. A read-only snapshot is not a Run: never edit/checkpoint it or ask the
-user to start a Run only for reading.
 
 An explicit request to develop, debug, audit, release, or live-verify source in
 an identified canonical Trelio or Agent Skill repository is a maintainer route.
