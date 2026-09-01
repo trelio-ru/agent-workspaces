@@ -20,6 +20,7 @@ const mirror = {
   projects: [{
     id: "22222222-2222-4222-8222-222222222222",
     slug: "mobile",
+    slugAliases: ["mobile-legacy"],
     name: "Мобильное приложение",
     isArchived: false,
   }],
@@ -106,6 +107,38 @@ test("local inventory is bounded and task result ids round-trip exactly", () => 
   const fetched = fetchMirrorResult(mirror, listed.items[0].id);
   assert.equal(fetched.task.title, "Исправить офлайн синхронизацию");
   assert.equal(fetched.generation, mirror.generation);
+});
+
+test("legacy project slugs resolve to canonical mirror records", () => {
+  const listedTasks = listCompanyContextMirror(mirror, "tasks", 0, 50, "mobile-legacy");
+  const listedDossiers = listCompanyContextMirror(mirror, "dossiers", 0, 50, "mobile-legacy");
+  const listedRegistries = listCompanyContextMirror(mirror, "registries", 0, 50, "mobile-legacy");
+  const fetched = fetchMirrorResult(mirror, "task:acme/mobile-legacy/17");
+
+  assert.equal(listedTasks.total, 1);
+  assert.equal(listedTasks.items[0].projectSlug, "mobile");
+  assert.equal(listedDossiers.total, 1);
+  assert.equal(listedRegistries.total, 1);
+  assert.equal(fetched.task.title, "Исправить офлайн синхронизацию");
+});
+
+test("ambiguous project routing aliases fail closed", () => {
+  const ambiguousMirror = {
+    ...mirror,
+    projects: [
+      ...mirror.projects,
+      {
+        id: "77777777-7777-4777-8777-777777777777",
+        slug: "other",
+        slugAliases: ["mobile-legacy"],
+      },
+    ],
+  };
+
+  assert.throws(
+    () => listCompanyContextMirror(ambiguousMirror, "tasks", 0, 50, "mobile-legacy"),
+    (error) => error?.code === "LOCAL_CONTEXT_MIRROR_INVALID",
+  );
 });
 
 test("always-visible local schemas stay compact and provider-neutral", () => {

@@ -55,6 +55,7 @@ import {
   collectCompanyEncryptionKeyThroughLoopback,
   hardenWindowsPrivatePath,
   getGitStatus,
+  hydrateAgentCompanyEncryptedJson,
   inspectWorkspaceFile,
   isCodexPluginAutoUpdateEnvironment,
   isProtectedWorkspaceControlPath,
@@ -88,6 +89,7 @@ import {
   COMPANY_ENCRYPTION_SUITE,
   createAgentEncryptionDevice,
   decryptFileFromCompanyContainer,
+  encryptCompanyPayload,
 } from "../scripts/trelio-company-encryption.mjs";
 import {
   buildSecretBrowserArguments,
@@ -241,6 +243,89 @@ const pathExists = async (filePath) => {
     throw error;
   }
 };
+
+test("encrypted project routing slugs become process-only aliases", async () => {
+  const companyId = "11111111-1111-4111-8111-111111111111";
+  const scopeId = "22222222-2222-4222-8222-222222222222";
+  const entityId = "33333333-3333-4333-8333-333333333333";
+  const deviceId = "44444444-4444-4444-8444-444444444444";
+  const unrelatedEntityId = "55555555-5555-4555-8555-555555555555";
+  const scope = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const scopePublicEncryptionJwk = await webcrypto.subtle.exportKey("jwk", scope.publicKey);
+  const scopePrivateJwk = await webcrypto.subtle.exportKey("jwk", scope.privateKey);
+  const encryptedPayload = {
+    ...(await encryptCompanyPayload({
+      payload: { values: { slug: "readable-project" } },
+      scopePublicEncryptionJwk,
+      aad: {
+        companyId,
+        scopeId,
+        scopeEpoch: 1,
+        entityType: "api.browser_mutation",
+        entityId,
+        entityRevision: 1,
+        purpose: "content",
+      },
+    })),
+    scopeId,
+    scopeEpoch: 1,
+    entityId,
+    entityRevision: 1,
+  };
+  let resolverRequest = null;
+  let serverError = null;
+  const server = createServer(async (incoming, outgoing) => {
+    try {
+      resolverRequest = JSON.parse((await readRequestBody(incoming)).toString("utf8"));
+      outgoing.writeHead(200, { "content-type": "application/json" });
+      outgoing.end(JSON.stringify({ payloads: [encryptedPayload] }));
+    } catch (error) {
+      serverError = error;
+      outgoing.writeHead(500, { "content-type": "application/json" });
+      outgoing.end(JSON.stringify({ message: "test server failed" }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    const hydrated = await hydrateAgentCompanyEncryptedJson({
+      value: {
+        projects: [{
+          id: "66666666-6666-4666-8666-666666666666",
+          slug: `e-${entityId}`,
+          slugAliases: [],
+        }],
+        // Without slugAliases this is ordinary data, not a routing object.
+        unrelated: { slug: `e-${unrelatedEntityId}` },
+      },
+      origin: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+      companyEncryption: {
+        runtime: {
+          company: { id: companyId, slug: "encrypted-company" },
+          device: { id: deviceId },
+        },
+        scopePrivateEncryptionKey: {
+          privateKey: scope.privateKey,
+          privateJwk: scopePrivateJwk,
+        },
+      },
+    });
+
+    assert.ifError(serverError);
+    assert.deepEqual(resolverRequest.entityIds, [entityId]);
+    assert.equal(hydrated.projects[0].slug, `e-${entityId}`);
+    assert.deepEqual(hydrated.projects[0].slugAliases, ["readable-project"]);
+    assert.equal(hydrated.unrelated.slug, `e-${unrelatedEntityId}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
 
 test("platform rules handshake reuses a matching hash and verifies updated bytes", async () => {
   const rulesMarkdown = "# Platform rules\n\nLink only human-facing results.\n";
@@ -3380,7 +3465,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.16.1");
+  assert.equal(BRIDGE_VERSION, "1.16.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

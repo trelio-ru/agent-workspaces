@@ -70,6 +70,9 @@ project but not number. It accepts
 optional `projectSlug`, `offset`, and a maximum `limit` of 100. Use `get_task` with exact
 `projectSlug` and positive `taskNumber`. These calls return the effective
 company/project instructions and personal profile with the selected task.
+The local provider resolves both the current project slug and an exact historical
+slug from a pre-encryption or renamed project URL; the returned task and opaque
+result IDs continue to use the current canonical project slug.
 
 An accepted Workspace search result includes the exact native
 `prepare_agent_workspace_read` target. Reading it remains read-only. A writable

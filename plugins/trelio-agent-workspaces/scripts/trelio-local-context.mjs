@@ -31,7 +31,10 @@ import {
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
 
-const MIRROR_SCHEMA_VERSION = 1;
+// Version 2 adds decrypted project routing aliases to the process-only mirror.
+// A version-1 generation can otherwise look server-fresh forever even though
+// pre-encryption task URLs cannot resolve inside it.
+const MIRROR_SCHEMA_VERSION = 2;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -257,6 +260,12 @@ const acquireMirrorWriter = async (paths, { allowReadableFallback = false } = {}
 const readMirrorGeneration = async ({ paths, companyEncryption }) => {
   const pointer = await readPrivateJsonFile(paths.pointer);
   if (Object.keys(pointer).length === 0) return null;
+  if (pointer.schemaVersion === 1) {
+    // Version 1 remains encrypted and harmless on disk, but it lacks the
+    // process-only routing aliases introduced in version 2. Ignore it as a
+    // stale cache and let the normal writer publish a complete replacement.
+    return null;
+  }
   if (
     pointer.schemaVersion !== MIRROR_SCHEMA_VERSION
     || pointer.companyId !== companyEncryption.runtime.company.id
@@ -773,14 +782,25 @@ export const syncCompanyContextMirror = async ({
       if (previous?.serverGeneration === startingManifest.generation) {
         return { mirror: previous, changed: false, paths };
       }
-      const candidate = await buildMirror({
-        origin,
-        token,
-        companyEncryption,
-        rawManifest: startingManifest,
-        previous,
-        signal,
-      });
+      let candidate;
+      try {
+        candidate = await buildMirror({
+          origin,
+          token,
+          companyEncryption,
+          rawManifest: startingManifest,
+          previous,
+          signal,
+        });
+      } catch (error) {
+        if (error?.code !== "LOCAL_CONTEXT_GENERATION_CHANGED") throw error;
+        // A neighboring Run can advance one task/workspace revision between
+        // manifest and projection reads. That is an optimistic read conflict,
+        // not a broken mirror: restart from the next canonical manifest within
+        // the same three-attempt bound instead of leaking the raw API 409.
+        previous = await readMirrorGeneration({ paths, companyEncryption });
+        continue;
+      }
       const finishingManifest = await fetchManifest({
         origin,
         token,
@@ -1036,6 +1056,46 @@ export const searchCompanyContextMirror = (mirror, rawQueries, rawLimit = 20) =>
   };
 };
 
+const resolveMirrorProjectBySlug = (mirror, projectSlug) => {
+  const matches = (mirror.projects ?? []).filter((project) => (
+    project?.slug === projectSlug
+    || (
+      Array.isArray(project?.slugAliases)
+      && project.slugAliases.includes(projectSlug)
+    )
+  ));
+
+  // Current and historical project slugs are unique within one company. If
+  // an authenticated mirror ever violates that server invariant, choosing an
+  // arbitrary project could reveal the wrong task under a legacy URL. Treat
+  // the generation as invalid instead of guessing.
+  if (matches.length > 1) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_MIRROR_INVALID",
+      "The local company context contains an ambiguous project slug.",
+    );
+  }
+
+  return matches[0] ?? null;
+};
+
+const buildMirrorProjectScopeMatcher = (mirror, projectSlug) => {
+  if (!projectSlug) return () => true;
+  const project = resolveMirrorProjectBySlug(mirror, projectSlug);
+
+  // A pre-encryption or renamed project URL carries a historical slug while
+  // mirror records intentionally retain the current opaque/canonical slug.
+  // Once the project itself resolves that alias, compare immutable projectId
+  // rather than rewriting result ids or duplicating every alias per record.
+  if (project) {
+    return ({ projectId }) => projectId === project.id;
+  }
+
+  // Preserve exact matching for older mirror generations that predate the
+  // project-level slugAliases projection.
+  return ({ projectSlug: recordProjectSlug }) => recordProjectSlug === projectSlug;
+};
+
 export const listCompanyContextMirror = (
   mirror,
   rawResource,
@@ -1049,6 +1109,7 @@ export const listCompanyContextMirror = (
   const projectSlug = rawProjectSlug
     ? normalizeBoundedString(rawProjectSlug, "projectSlug", 120)
     : null;
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
   let items;
 
   if (resource === "projects") {
@@ -1060,7 +1121,7 @@ export const listCompanyContextMirror = (
     }));
   } else if (resource === "tasks") {
     items = (mirror.tasks ?? [])
-      .filter((task) => !projectSlug || task.projectSlug === projectSlug)
+      .filter(matchesProjectScope)
       .map((task) => {
         const payload = task.payload?.task ?? task.payload;
         return {
@@ -1074,9 +1135,10 @@ export const listCompanyContextMirror = (
         };
       });
   } else if (resource === "dossiers") {
-    items = (mirror.dossiers ?? []).filter((dossier) => (
-      !projectSlug || dossier.project?.slug === projectSlug
-    ));
+    items = (mirror.dossiers ?? []).filter((dossier) => matchesProjectScope({
+      projectId: dossier.project?.id ?? null,
+      projectSlug: dossier.project?.slug ?? null,
+    }));
   } else if (["knowledge_pages", "contacts", "registries", "meetings"].includes(resource)) {
     const expectedType = resource === "knowledge_pages"
       ? "knowledge_page"
@@ -1088,7 +1150,7 @@ export const listCompanyContextMirror = (
     items = (mirror.contextDocuments ?? [])
       .filter((document) => (
         document.type === expectedType
-        && (!projectSlug || document.projectSlug === projectSlug)
+        && matchesProjectScope(document)
       ))
       .map((document) => ({
         id: `context:${document.type}:${document.id}`,
@@ -1128,8 +1190,9 @@ const selectTaskInstructions = (mirror, task) => ({
 });
 
 const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
   const task = (mirror.tasks ?? []).find((candidate) => (
-    candidate.projectSlug === projectSlug && candidate.number === taskNumber
+    matchesProjectScope(candidate) && candidate.number === taskNumber
   ));
   if (!task) {
     throw new TrelioLocalContextError(

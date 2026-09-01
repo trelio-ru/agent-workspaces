@@ -1,6 +1,6 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "1.16.1",
+  "version": "1.16.2",
   "description": "Production integration for private Trelio meetings, guided setup diagnostics, working-folder onboarding, guarded project and private-skill management, scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and backend-managed signed runtimes.",
   "author": {
     "name": "Trelio"

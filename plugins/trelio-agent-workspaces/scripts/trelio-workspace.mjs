@@ -51,7 +51,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.16.1";
+export const BRIDGE_VERSION = "1.16.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -4326,6 +4326,7 @@ const setupCompanyEncryption = async (origin, options) => {
 
 const ENCRYPTED_TEXT_MARKER_PATTERN = /^~e1:([0-9a-f-]{36}):([a-z][a-z0-9_]{0,63})~$/u;
 const EMBEDDED_ENCRYPTED_TEXT_MARKER_PATTERN = /~e1:([0-9a-f-]{36}):([a-z][a-z0-9_]{0,63})~/gu;
+const ENCRYPTED_ROUTING_SLUG_PATTERN = /^e-([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u;
 
 const parseAgentEncryptedContentReference = (value) => {
   if (typeof value === "string") {
@@ -4374,6 +4375,27 @@ const collectAgentEncryptedReferences = (value, result = new Map()) => {
   return result;
 };
 
+const collectAgentRoutingAliasEntityIds = (value, result = new Set()) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectAgentRoutingAliasEntityIds(item, result));
+    return result;
+  }
+  if (!value || typeof value !== "object") return result;
+
+  // Only project-shaped responses expose slugAliases. An arbitrary business
+  // value beginning with `e-` must never cause an undeclared payload lookup.
+  if (Array.isArray(value.slugAliases)) {
+    for (const candidate of [value.slug, ...value.slugAliases]) {
+      const match = typeof candidate === "string"
+        ? ENCRYPTED_ROUTING_SLUG_PATTERN.exec(candidate.trim())
+        : null;
+      if (match) result.add(match[1]);
+    }
+  }
+  Object.values(value).forEach((item) => collectAgentRoutingAliasEntityIds(item, result));
+  return result;
+};
+
 export const hydrateAgentCompanyEncryptedJson = async ({
   value,
   origin,
@@ -4383,9 +4405,10 @@ export const hydrateAgentCompanyEncryptedJson = async ({
 }) => {
   if (!companyEncryption) return value;
   const references = collectAgentEncryptedReferences(value);
-  if (references.size === 0) return value;
+  const routingAliasEntityIds = collectAgentRoutingAliasEntityIds(value);
+  if (references.size === 0 && routingAliasEntityIds.size === 0) return value;
   const decryptedByEntity = new Map();
-  const entityIds = [...references.keys()];
+  const entityIds = [...new Set([...references.keys(), ...routingAliasEntityIds])];
 
   // The resolver deliberately caps one ACL-sensitive request at 250 ids.
   // Company mirrors can contain thousands of protected leaves, so the bridge
@@ -4424,6 +4447,25 @@ export const hydrateAgentCompanyEncryptedJson = async ({
     }
     return structuredClone(values[reference.field]);
   };
+  const appendRoutingAliases = (hydrated) => {
+    if (!Array.isArray(hydrated.slugAliases)) return hydrated;
+
+    const aliases = [...hydrated.slugAliases];
+    for (const candidate of [hydrated.slug, ...hydrated.slugAliases]) {
+      const match = typeof candidate === "string"
+        ? ENCRYPTED_ROUTING_SLUG_PATTERN.exec(candidate.trim())
+        : null;
+      if (!match) continue;
+      const resolved = resolveReference({ entityId: match[1], field: "slug" });
+      const alias = typeof resolved === "string" ? resolved.trim() : "";
+      // Keep the opaque route canonical. The decrypted human-readable slug is
+      // a process-only alias used to preserve old/pre-encryption task URLs.
+      if (alias && alias !== hydrated.slug && !aliases.includes(alias)) {
+        aliases.push(alias);
+      }
+    }
+    return { ...hydrated, slugAliases: aliases };
+  };
   const hydrate = async (current) => {
     const direct = parseAgentEncryptedContentReference(current);
     if (direct) return resolveReference(direct);
@@ -4438,10 +4480,11 @@ export const hydrateAgentCompanyEncryptedJson = async ({
     }
     if (Array.isArray(current)) return Promise.all(current.map(hydrate));
     if (current && typeof current === "object") {
-      return Object.fromEntries(await Promise.all(Object.entries(current).map(async ([key, child]) => [
+      const hydrated = Object.fromEntries(await Promise.all(Object.entries(current).map(async ([key, child]) => [
         key,
         await hydrate(child),
       ])));
+      return appendRoutingAliases(hydrated);
     }
     return current;
   };
