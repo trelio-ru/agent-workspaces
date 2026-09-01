@@ -50,10 +50,14 @@ import {
 } from "./trelio-company-encryption.mjs";
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_ACTION_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
+  TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   TrelioLocalContextError,
   handleTrelioLocalContextOperation,
+  handleTrelioLocalActionOperation,
   handleTrelioLocalProposalOperation,
   handleTrelioLocalWorkspaceOperation,
 } from "./trelio-local-context.mjs";
@@ -86,6 +90,30 @@ const COMPANY_PRIVATE_SKILL_CATEGORIES = new Set([
 ]);
 const COMPANY_SKILL_PLAN_TTL_MS = 30 * 60 * 1000;
 const COMPANY_SKILL_MANAGEMENT_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
+const LOCAL_PROPOSAL_APP_MAX_BYTES = 4 * 1024 * 1024;
+const LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES = 2_048;
+const LOCAL_PROPOSAL_BLOCK_TYPE_BY_KIND = new Map([
+  ["comment", "commentProposal"],
+  ["status", "statusProposal"],
+  ["control_clear", "controlClearProposal"],
+  ["checklist", "checklistProposal"],
+]);
+const LOCAL_PROPOSAL_APP_TOOL_ROUTE = new Map([
+  ["get_task_comment_proposal_context", { kind: "comment", operation: "context" }],
+  ["publish_task_comment_proposal", { kind: "comment", operation: "action", action: "publish" }],
+  ["dismiss_task_comment_proposal", { kind: "comment", operation: "action", action: "dismiss" }],
+  ["get_task_status_proposal_context", { kind: "status", operation: "context" }],
+  ["apply_task_status_proposal", { kind: "status", operation: "action", action: "apply" }],
+  ["dismiss_task_status_proposal", { kind: "status", operation: "action", action: "dismiss" }],
+  ["get_task_control_clear_proposal_context", { kind: "control_clear", operation: "context" }],
+  ["apply_task_control_clear_proposal", { kind: "control_clear", operation: "action", action: "apply" }],
+  ["dismiss_task_control_clear_proposal", { kind: "control_clear", operation: "action", action: "dismiss" }],
+  ["get_task_checklist_proposal_context", { kind: "checklist", operation: "context" }],
+  ["apply_task_checklist_proposal", { kind: "checklist", operation: "action", action: "apply" }],
+  ["dismiss_task_checklist_proposal", { kind: "checklist", operation: "action", action: "dismiss" }],
+]);
+const localProposalRouteById = new Map();
+const localProposalAppResourceCache = new Map();
 const COMPANY_SKILL_PLAN_DIRECTORY = path.join(
   resolveWorkspaceBridgeConfigDirectory(),
   "agent-skill-publication-plans",
@@ -2937,10 +2965,178 @@ const companySkillApplySchema = {
   },
 };
 
+const localProposalAppOnlyMeta = {
+  ui: { visibility: ["app"] },
+  // Older OpenAI hosts use this compatibility field instead of the shared
+  // MCP Apps visibility property.  Either way these implementation details do
+  // not enter the ordinary model tool catalog or an open-company context.
+  "openai/visibility": "private",
+};
+
+export const buildLocalProposalAppResourceMeta = () => ({
+  ui: {
+    prefersBorder: false,
+    csp: {
+      connectDomains: [],
+      resourceDomains: [],
+      // The shared v3 surface embeds the four reviewed single-proposal Apps as
+      // sandboxed data frames. Both modern MCP Apps hosts and older OpenAI
+      // hosts must receive the same permission on list and read responses.
+      frameDomains: ["data:"],
+    },
+  },
+  "openai/widgetDescription": "Независимые предложения комментариев, чек-листов, статусов и снятия контролей в одном ответе.",
+  "openai/widgetPrefersBorder": false,
+  "openai/widgetCSP": {
+    connect_domains: [],
+    resource_domains: [],
+    frame_domains: ["data:"],
+  },
+});
+
+const localProposalContextInputSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    runId: { type: "string", format: "uuid" },
+    companySlug: { type: "string", minLength: 1, maxLength: 120 },
+    projectSlug: { type: "string", minLength: 1, maxLength: 120 },
+    taskNumber: { type: ["integer", "string"] },
+    // Local App resources add this only for a Run-backed encrypted draft so a
+    // freshly restarted MCP process can recover the company route before it
+    // enables a human action.  It is never sent to native Trelio tools.
+    localCompanySlug: { type: "string", minLength: 1, maxLength: 120 },
+  },
+};
+
+const localProposalActionInputSchema = (extraProperties = {}) => ({
+  type: "object",
+  additionalProperties: false,
+  required: ["proposalId", "expectedRevision", ...Object.keys(extraProperties)],
+  properties: {
+    proposalId: { type: "string", format: "uuid" },
+    expectedRevision: { type: "integer", minimum: 1 },
+    ...extraProperties,
+  },
+});
+
+const buildLocalProposalAppTool = (name, title, inputSchema, readOnlyHint) => ({
+  name,
+  title,
+  description: "App-only continuation of the current encrypted Trelio proposal. Models must not call this tool.",
+  inputSchema,
+  annotations: {
+    readOnlyHint,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  _meta: localProposalAppOnlyMeta,
+});
+
+const LOCAL_PROPOSAL_APP_TOOLS = [
+  buildLocalProposalAppTool(
+    "get_task_comment_proposal_context",
+    "Refresh encrypted task comment proposal",
+    localProposalContextInputSchema,
+    true,
+  ),
+  buildLocalProposalAppTool(
+    "publish_task_comment_proposal",
+    "Publish encrypted task comment proposal",
+    localProposalActionInputSchema({
+      bodyText: { type: "string", minLength: 1, maxLength: 20_000 },
+      attachmentIds: {
+        type: "array",
+        maxItems: 10,
+        items: { type: "string", format: "uuid" },
+      },
+    }),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "dismiss_task_comment_proposal",
+    "Dismiss encrypted task comment proposal",
+    localProposalActionInputSchema(),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "get_task_status_proposal_context",
+    "Refresh encrypted task status proposal",
+    localProposalContextInputSchema,
+    true,
+  ),
+  buildLocalProposalAppTool(
+    "apply_task_status_proposal",
+    "Apply encrypted task status proposal",
+    localProposalActionInputSchema({
+      targetStatusCode: { type: "string", minLength: 1, maxLength: 120 },
+    }),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "dismiss_task_status_proposal",
+    "Dismiss encrypted task status proposal",
+    localProposalActionInputSchema(),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "get_task_control_clear_proposal_context",
+    "Refresh encrypted task control proposal",
+    localProposalContextInputSchema,
+    true,
+  ),
+  buildLocalProposalAppTool(
+    "apply_task_control_clear_proposal",
+    "Apply encrypted task control proposal",
+    localProposalActionInputSchema({
+      controlIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 20,
+        items: { type: "string", format: "uuid" },
+      },
+    }),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "dismiss_task_control_clear_proposal",
+    "Dismiss encrypted task control proposal",
+    localProposalActionInputSchema(),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "get_task_checklist_proposal_context",
+    "Refresh encrypted task checklist proposal",
+    localProposalContextInputSchema,
+    true,
+  ),
+  buildLocalProposalAppTool(
+    "apply_task_checklist_proposal",
+    "Apply encrypted task checklist proposal",
+    localProposalActionInputSchema({
+      itemIds: {
+        type: "array",
+        minItems: 1,
+        maxItems: 50,
+        items: { type: "string", format: "uuid" },
+      },
+    }),
+    false,
+  ),
+  buildLocalProposalAppTool(
+    "dismiss_task_checklist_proposal",
+    "Dismiss encrypted task checklist proposal",
+    localProposalActionInputSchema(),
+    false,
+  ),
+];
+
 const LOCAL_TOOLS = [
   TRELIO_LOCAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_ACTION_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  ...LOCAL_PROPOSAL_APP_TOOLS,
   {
     name: "plan_company_private_agent_skill_create",
     title: "Plan a company-private Agent Skill",
@@ -3087,6 +3283,284 @@ const buildTextResult = (payload) => ({
   }],
 });
 
+const rememberLocalProposalRoute = (key, route) => {
+  // Proposal ids and Run ids are opaque routing metadata, not decrypted
+  // content.  Keep only a small process-local LRU-like insertion window so an
+  // App button can recover the exact company/kind after its mandatory fresh
+  // context read without adding either field to the human action itself.
+  localProposalRouteById.delete(key);
+  localProposalRouteById.set(key, route);
+  while (localProposalRouteById.size > LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES) {
+    localProposalRouteById.delete(localProposalRouteById.keys().next().value);
+  }
+};
+
+const localizeProposalPayload = (value, companySlug, kind) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => localizeProposalPayload(item, companySlug, kind));
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const localized = Object.fromEntries(Object.entries(value).map(([field, child]) => [
+    field,
+    localizeProposalPayload(child, companySlug, kind),
+  ]));
+  const proposalId = typeof localized.proposalId === "string"
+    ? localized.proposalId.toLowerCase()
+    : "";
+  const contextRunId = typeof localized.contextRequest?.runId === "string"
+    ? localized.contextRequest.runId.toLowerCase()
+    : typeof localized.sourceRunId === "string"
+      ? localized.sourceRunId.toLowerCase()
+      : "";
+
+  if (UUID_PATTERN.test(proposalId)) {
+    localized.localCompanySlug = companySlug;
+    rememberLocalProposalRoute(`proposal:${proposalId}`, { companySlug, kind });
+  }
+  if (UUID_PATTERN.test(contextRunId)) {
+    rememberLocalProposalRoute(`run:${kind}:${contextRunId}`, { companySlug, kind });
+  }
+  return localized;
+};
+
+const buildLocalProposalRootPayload = ({ result, companySlug, kind, operation }) => {
+  if (result?.provider === "native_trelio") return result;
+
+  if (kind === "bundle") {
+    const bundle = result?.proposalBundle;
+    if (!bundle || bundle.kind !== "taskProposalBlocks" || !Array.isArray(bundle.blocks)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_PROPOSAL_INVALID",
+        "The local proposal bundle did not return the expected MCP App payload.",
+      );
+    }
+    return {
+      ...bundle,
+      provider: "local_company_context",
+      localOperation: operation,
+      blocks: bundle.blocks.map((block) => {
+        const blockKind = block?.type === "commentProposal"
+          ? "comment"
+          : block?.type === "statusProposal"
+            ? "status"
+            : block?.type === "controlClearProposal"
+              ? "control_clear"
+              : block?.type === "checklistProposal"
+                ? "checklist"
+                : null;
+        return blockKind && block?.proposal
+          ? {
+              ...block,
+              proposal: localizeProposalPayload(block.proposal, companySlug, blockKind),
+            }
+          : block;
+      }),
+    };
+  }
+
+  const blockType = LOCAL_PROPOSAL_BLOCK_TYPE_BY_KIND.get(kind);
+  if (!blockType || !result?.proposal) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_INVALID",
+      "The local proposal did not return the expected MCP App payload.",
+    );
+  }
+  return {
+    schemaVersion: 1,
+    kind: "taskProposalBlocks",
+    provider: "local_company_context",
+    localOperation: operation,
+    blocks: [{
+      type: blockType,
+      itemId: "proposal-1",
+      status: "ready",
+      proposal: localizeProposalPayload(result.proposal, companySlug, kind),
+    }],
+  };
+};
+
+export const buildLocalProposalRootResult = ({ result, companySlug, kind, operation }) => {
+  const structuredContent = buildLocalProposalRootPayload({
+    result,
+    companySlug,
+    kind,
+    operation,
+  });
+  return {
+    structuredContent,
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+    _meta: {
+      ui: { resourceUri: TRELIO_LOCAL_PROPOSAL_RESOURCE_URI },
+      "openai/outputTemplate": TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+    },
+  };
+};
+
+const buildLocalProposalChildResult = ({ result, companySlug, kind }) => {
+  if (!result?.proposal) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_INVALID",
+      "The local proposal action did not return the expected payload.",
+    );
+  }
+  const structuredContent = localizeProposalPayload(result.proposal, companySlug, kind);
+  return {
+    structuredContent,
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+  };
+};
+
+const resolveLocalProposalContextCompany = (kind, rawArguments) => {
+  const explicitCompanySlug = typeof rawArguments?.companySlug === "string"
+    ? rawArguments.companySlug
+    : typeof rawArguments?.localCompanySlug === "string"
+      ? rawArguments.localCompanySlug
+      : "";
+  if (explicitCompanySlug) return explicitCompanySlug;
+
+  const runId = typeof rawArguments?.runId === "string"
+    ? rawArguments.runId.toLowerCase()
+    : "";
+  const route = UUID_PATTERN.test(runId)
+    ? localProposalRouteById.get(`run:${kind}:${runId}`)
+    : null;
+  if (route?.companySlug) return route.companySlug;
+
+  throw new TrelioLocalContextError(
+    "LOCAL_CONTEXT_PROPOSAL_ROUTE_MISSING",
+    "The encrypted proposal route is no longer available. Reopen the proposal card so it can refresh its exact company context.",
+  );
+};
+
+const handleLocalProposalAppToolCall = async (
+  origin,
+  name,
+  rawArguments,
+  { signal } = {},
+) => {
+  const route = LOCAL_PROPOSAL_APP_TOOL_ROUTE.get(name);
+  if (!route) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_TOOL_INVALID",
+      "Unknown local proposal App tool.",
+    );
+  }
+
+  if (route.operation === "context") {
+    const companySlug = resolveLocalProposalContextCompany(route.kind, rawArguments);
+    const target = typeof rawArguments?.runId === "string"
+      ? { runId: rawArguments.runId }
+      : {
+          projectSlug: rawArguments?.projectSlug,
+          taskNumber: rawArguments?.taskNumber,
+        };
+    const result = await handleTrelioLocalProposalOperation(origin, {
+      companySlug,
+      kind: route.kind,
+      operation: "context",
+      payload: { target },
+    }, { signal });
+    return buildLocalProposalChildResult({ result, companySlug, kind: route.kind });
+  }
+
+  const proposalId = typeof rawArguments?.proposalId === "string"
+    ? rawArguments.proposalId.toLowerCase()
+    : "";
+  const proposalRoute = UUID_PATTERN.test(proposalId)
+    ? localProposalRouteById.get(`proposal:${proposalId}`)
+    : null;
+  if (!proposalRoute || proposalRoute.kind !== route.kind) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_ROUTE_MISSING",
+      "Refresh the proposal card before applying this encrypted action.",
+    );
+  }
+
+  const {
+    localCompanySlug: _localCompanySlug,
+    companySlug: _companySlug,
+    projectSlug: _projectSlug,
+    taskNumber: _taskNumber,
+    runId: _runId,
+    ...actionPayload
+  } = rawArguments || {};
+  const result = await handleTrelioLocalProposalOperation(origin, {
+    companySlug: proposalRoute.companySlug,
+    kind: route.kind,
+    operation: "action",
+    payload: {
+      ...actionPayload,
+      action: route.action,
+      // The hidden tool is reachable only from the MCP App.  Its call is the
+      // user's button action and therefore satisfies the same separate human
+      // confirmation boundary as the native proposal Apps.
+      confirmed: true,
+    },
+  }, { signal });
+  return buildLocalProposalChildResult({
+    result,
+    companySlug: proposalRoute.companySlug,
+    kind: route.kind,
+  });
+};
+
+export const readLocalProposalAppResource = async (
+  origin,
+  uri,
+  { signal } = {},
+) => {
+  if (uri !== TRELIO_LOCAL_PROPOSAL_RESOURCE_URI) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESOURCE_NOT_FOUND",
+      "Unknown local Trelio MCP App resource.",
+    );
+  }
+  const cached = localProposalAppResourceCache.get(origin);
+  if (cached) return cached;
+
+  const token = await requireToken(origin, { onStatus: () => undefined, signal });
+  const response = await request(
+    origin,
+    token,
+    "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
+    { signal },
+  );
+  const declaredLength = Number(response.headers.get("content-length") || 0);
+  if (declaredLength > LOCAL_PROPOSAL_APP_MAX_BYTES) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESOURCE_TOO_LARGE",
+      "The Trelio proposal MCP App exceeded its bounded resource size.",
+    );
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  try {
+    if (bytes.byteLength > LOCAL_PROPOSAL_APP_MAX_BYTES) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_RESOURCE_TOO_LARGE",
+        "The Trelio proposal MCP App exceeded its bounded resource size.",
+      );
+    }
+    const html = bytes.toString("utf8");
+    if (!/^<!doctype html>/iu.test(html) || !html.includes("taskProposalBlocks")) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_RESOURCE_INVALID",
+        "Trelio returned an invalid proposal MCP App resource.",
+      );
+    }
+    const resource = {
+      uri: TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+      mimeType: TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
+      text: html,
+      _meta: buildLocalProposalAppResourceMeta(),
+    };
+    localProposalAppResourceCache.set(origin, resource);
+    return resource;
+  } finally {
+    bytes.fill(0);
+  }
+};
+
 export const handleToolCall = async (
   origin,
   name,
@@ -3101,12 +3575,32 @@ export const handleToolCall = async (
       { signal },
     ));
   }
+  if (name === TRELIO_LOCAL_ACTION_TOOL.name) {
+    // Unlike the read/search helpers this continuation must preserve the
+    // native CallToolResult envelope, including isError, structuredContent
+    // and MCP App metadata. The local handler hydrates only protected values.
+    return handleTrelioLocalActionOperation(origin, rawArguments, { signal });
+  }
   if (name === TRELIO_LOCAL_PROPOSAL_TOOL.name) {
-    return buildTextResult(await handleTrelioLocalProposalOperation(
+    const result = await handleTrelioLocalProposalOperation(
       origin,
       rawArguments,
       { signal },
-    ));
+    );
+    return buildLocalProposalRootResult({
+      result,
+      companySlug: rawArguments?.companySlug,
+      kind: rawArguments?.kind,
+      operation: rawArguments?.operation,
+    });
+  }
+  if (LOCAL_PROPOSAL_APP_TOOL_ROUTE.has(name)) {
+    return handleLocalProposalAppToolCall(
+      origin,
+      name,
+      rawArguments,
+      { signal },
+    );
   }
   if (name === TRELIO_LOCAL_WORKSPACE_TOOL.name) {
     return buildTextResult(await handleTrelioLocalWorkspaceOperation(
@@ -3198,6 +3692,7 @@ export const handleLocalMcpMessage = async (
   {
     origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
     callTool = handleToolCall,
+    readResource = readLocalProposalAppResource,
     signal,
   } = {},
 ) => {
@@ -3210,7 +3705,10 @@ export const handleLocalMcpMessage = async (
       id: message.id,
       result: {
         protocolVersion: message.params?.protocolVersion || REMOTE_MCP_PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          resources: { listChanged: false, subscribe: false },
+        },
         serverInfo: {
           name: "trelio-remote-skills",
           version: BRIDGE_VERSION,
@@ -3231,6 +3729,47 @@ export const handleLocalMcpMessage = async (
       id: message.id,
       result: { tools: LOCAL_TOOLS },
     };
+  }
+  if (message.method === "resources/list") {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        resources: [{
+          uri: TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+          name: "trelio-local-task-proposals",
+          title: "Trelio encrypted task proposals",
+          description: "Interactive review cards for locally decrypted Trelio proposals.",
+          mimeType: TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
+          _meta: buildLocalProposalAppResourceMeta(),
+        }],
+      },
+    };
+  }
+  if (message.method === "resources/read") {
+    try {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          contents: [await readResource(
+            origin,
+            String(message.params?.uri || ""),
+            { signal },
+          )],
+        },
+      };
+    } catch (error) {
+      return {
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32002,
+          message: safeErrorPayload(error).message,
+          data: { code: safeErrorPayload(error).code },
+        },
+      };
+    }
   }
   if (message.method === "tools/call") {
     try {

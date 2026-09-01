@@ -38,6 +38,11 @@ const PLUGIN_UPGRADE_CODES = new Set([
   "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
 ]);
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/u;
+const TRELIO_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
+const LOCAL_ACTION_HOST_TOOL_PATTERNS = [
+  /^(?:mcp__)?trelio_remote_skills__continue_trelio_local_action$/iu,
+  /^(?:mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$/iu,
+];
 const RUNTIME_STATE_LOCK_WAIT_MILLISECONDS = 5_000;
 const RUNTIME_STATE_LOCK_STALE_MILLISECONDS = 15_000;
 const RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS = 11_000;
@@ -75,6 +80,10 @@ const resolveClientSessionId = (hookInput, environment = process.env) => {
 
 export const resolveTrelioMcpToolName = (hookInput) => {
   const rawName = String(hookInput?.tool_name || hookInput?.toolName || "");
+  if (LOCAL_ACTION_HOST_TOOL_PATTERNS.some((pattern) => pattern.test(rawName))) {
+    const nativeTool = String(resolveToolInput(hookInput)?.nativeTool || "").trim().toLowerCase();
+    return TRELIO_TOOL_NAME_PATTERN.test(nativeTool) ? nativeTool : null;
+  }
   const doubleUnderscore = rawName.match(/^(?:mcp__)?trelio__([a-z0-9_]+)$/iu);
   if (doubleUnderscore) return doubleUnderscore[1].toLowerCase();
   const separated = rawName.match(

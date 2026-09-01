@@ -13,7 +13,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 
 import {
   LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
@@ -35,17 +35,19 @@ import {
 } from "./trelio-workspace.mjs";
 import {
   COMPANY_ENCRYPTION_SUITE,
+  buildCompanyEncryptedJsonMarker,
   buildCompanyEncryptedTextMarker,
   decryptCompanyPayload,
   decryptFileFromCompanyContainerBytes,
   encryptCompanyPayload,
+  encryptFileToCompanyContainer,
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
 
-// Version 2 adds decrypted project routing aliases to the process-only mirror.
-// A version-1 generation can otherwise look server-fresh forever even though
-// pre-encryption task URLs cannot resolve inside it.
-const MIRROR_SCHEMA_VERSION = 2;
+// Version 3 additionally retains encrypted registry row locators beside the
+// hydrated mirror. They are never exposed to the model; local mutations need
+// them to preserve row identity without sending the clear row key to Trelio.
+const MIRROR_SCHEMA_VERSION = 3;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -55,6 +57,8 @@ const MIRROR_FIRST_SYNC_WAIT_MS = MIRROR_LOCK_STALE_MS + 30 * 1000;
 const MIRROR_LOCK_HEARTBEAT_MS = 20 * 1000;
 const MIRROR_GENERATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS = 600;
+export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v3.html";
+export const TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
 const LOCAL_MIRROR_MEMORY_TTL_MS = TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS * 1000;
 // The production company "Вкус" already has more than 5,000 readable active-
 // project tasks.  Ten thousand keeps that real scale inside the supported
@@ -80,6 +84,9 @@ const PROPOSAL_BUNDLE_KIND_BY_BLOCK_TYPE = new Map([
 ]);
 const MAX_PROPOSAL_BUNDLE_BLOCKS = 64;
 const MAX_PROPOSAL_BUNDLE_CARDS = 20;
+const LOCAL_ACTION_ENTITY_TYPE = "api.browser_mutation";
+const LOCAL_ACTION_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
+const LOCAL_ACTION_MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
 const localCompanyProviderCache = new Map();
 // Decrypted company content must never become a persistent cache.  Keeping one
 // immutable generation in the MCP process avoids decrypting and parsing the
@@ -506,6 +513,990 @@ const uploadProposalPayload = async ({
   return protectedValues.markers;
 };
 
+// Keep the local action field inventory aligned with the browser encryption
+// runtime. This table contains only human-authored content names; locators,
+// ids, dates, booleans and workflow codes remain server-readable so the
+// ordinary native ACL and validation logic can still run.
+const LOCAL_ACTION_PROTECTED_FIELDS = new Map([
+  ["title", "title"],
+  ["name", "name"],
+  ["publicDescription", "public_description"],
+  ["description", "description"],
+  ["descriptionJson", "description_json"],
+  ["descriptionPlainText", "description_plain_text"],
+  ["body", "body"],
+  ["bodyJson", "body_json"],
+  ["bodyPlainText", "body_plain_text"],
+  ["content", "content"],
+  ["contentText", "content_text"],
+  ["transcriptText", "content_text"],
+  ["note", "note"],
+  ["summary", "summary"],
+  ["reason", "reason"],
+  ["instruction", "instruction"],
+  ["message", "message"],
+  ["perspective", "perspective"],
+  ["rationale", "rationale"],
+  ["label", "label"],
+  ["options", "options"],
+  ["value", "value"],
+  ["valueJson", "value_json"],
+  ["valuesJson", "values_json"],
+  ["slug", "slug"],
+  ["instructionsMarkdown", "instructions_markdown"],
+  ["changeSummary", "change_summary"],
+  ["changeReason", "change_reason"],
+  ["resultMarkdown", "result_markdown"],
+  ["proposalMarkdown", "proposal_markdown"],
+  ["profileNote", "profile_note"],
+  ["companyScopeReason", "company_scope_reason"],
+  ["rowKey", "row_key"],
+  ["sourceRefs", "source_refs_json"],
+  ["resolutionNote", "resolution_note"],
+  ["completionSummary", "completion_summary"],
+  ["noContextUpdatesSummary", "completion_summary"],
+  ["resultSummary", "summary"],
+  ["maintenanceNotes", "maintenance_notes"],
+  ["aliases", "aliases_json"],
+  ["tags", "tags_json"],
+  ["searchTerms", "search_terms_json"],
+  ["originalName", "original_name"],
+  ["mimeType", "mime_type"],
+  ["fileName", "original_name"],
+  ["contentType", "mime_type"],
+  ["altText", "alt_text"],
+  ["displayName", "display_name"],
+  ["avatarUrl", "avatar_url"],
+  ["givenName", "given_name"],
+  ["familyName", "family_name"],
+  ["patronymic", "patronymic"],
+  ["preferredName", "preferred_name"],
+  ["legalName", "legal_name"],
+  ["legalForm", "legal_form"],
+  ["roleTitle", "role_title"],
+  ["department", "department"],
+  ["source", "source"],
+  ["href", "href"],
+  ["url", "url"],
+]);
+const LOCAL_ACTION_STRING_ARRAY_FIELDS = new Set(["aliases", "tags", "searchTerms", "options"]);
+const LOCAL_ACTION_CONTENT_SLUG_TOOLS = new Set([
+  "create_knowledge_base_page",
+  "update_knowledge_base_page",
+  "create_registry",
+  "update_registry_definition",
+]);
+const LOCAL_ACTION_CONTACT_VALUE_TOOLS = new Set(["create_contact", "update_contact"]);
+const LOCAL_ACTION_CUSTOM_FIELD_VALUE_TOOLS = new Set([
+  "update_task_custom_field",
+  "plan_task_update",
+  "apply_task_patch",
+  "batch_update_tasks",
+]);
+
+const isEmptyLocalActionValue = (value) => value === null
+  || typeof value === "undefined"
+  || value === ""
+  || (Array.isArray(value) && value.length === 0);
+
+const isEncryptedLocalActionMarker = (value) => {
+  if (typeof value === "string") {
+    return /^~e1:[0-9a-f-]{36}:[a-z][a-z0-9_]{0,63}~$/u.test(value);
+  }
+  const candidate = Array.isArray(value) && value.length === 1 ? value[0] : value;
+  return Boolean(
+    candidate
+    && typeof candidate === "object"
+    && !Array.isArray(candidate)
+    && candidate.$trelioE2ee,
+  );
+};
+
+const extractLocalRichTextPlainText = (value) => {
+  const fragments = [];
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "text" && typeof node.text === "string") fragments.push(node.text);
+    if (node.type === "hardBreak") fragments.push("\n");
+    if (node.type === "mention") {
+      const label = node.attrs?.username || node.attrs?.label || node.attrs?.id || "";
+      if (label) fragments.push(String(label).startsWith("@") ? String(label) : `@${label}`);
+    }
+    if (Array.isArray(node.content)) {
+      node.content.forEach(visit);
+      if (["paragraph", "blockquote", "listItem", "heading"].includes(node.type)) {
+        fragments.push("\n");
+      }
+    }
+  };
+  visit(value);
+  return fragments.join("").replace(/\n{3,}/gu, "\n\n").trim();
+};
+
+const buildLocalPlainTextDocument = (value) => {
+  const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  return {
+    type: "doc",
+    content: [{
+      type: "paragraph",
+      ...(lines.some((line) => line.length > 0)
+        ? {
+            content: lines.flatMap((line, index) => [
+              ...(index > 0 ? [{ type: "hardBreak" }] : []),
+              ...(line ? [{ type: "text", text: line }] : []),
+            ]),
+          }
+        : {}),
+    }],
+  };
+};
+
+/**
+ * Convert the common Markdown subset locally before encryption. The server
+ * cannot perform this conversion because it must never receive source
+ * Markdown. Unsupported block syntax remains visible text instead of being
+ * dropped, which preserves user bytes and is safer than a lossy "best guess".
+ */
+export const buildLocalMarkdownDocument = (value) => {
+  const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const content = [];
+  let paragraph = [];
+  let fenced = null;
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    content.push(buildLocalPlainTextDocument(paragraph.join("\n")).content[0]);
+    paragraph = [];
+  };
+
+  for (const line of lines) {
+    const fence = /^```([^\s`]*)\s*$/u.exec(line);
+    if (fence) {
+      if (fenced) {
+        content.push({
+          type: "codeBlock",
+          attrs: { language: fenced.language || null },
+          ...(fenced.lines.length > 0
+            ? { content: [{ type: "text", text: fenced.lines.join("\n") }] }
+            : {}),
+        });
+        fenced = null;
+      } else {
+        flushParagraph();
+        fenced = { language: fence[1] || "", lines: [] };
+      }
+      continue;
+    }
+    if (fenced) {
+      fenced.lines.push(line);
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
+    if (heading) {
+      flushParagraph();
+      content.push({
+        type: "heading",
+        attrs: { level: heading[1].length <= 2 ? 2 : 3 },
+        content: [{ type: "text", text: heading[2] }],
+      });
+      continue;
+    }
+    const bullet = /^\s*[-*+]\s+(.+)$/u.exec(line);
+    if (bullet) {
+      flushParagraph();
+      const previous = content[content.length - 1];
+      const list = previous?.type === "bulletList"
+        ? previous
+        : { type: "bulletList", content: [] };
+      if (list !== previous) content.push(list);
+      list.content.push({
+        type: "listItem",
+        content: [{ type: "paragraph", content: [{ type: "text", text: bullet[1] }] }],
+      });
+      continue;
+    }
+    const ordered = /^\s*(\d+)[.)]\s+(.+)$/u.exec(line);
+    if (ordered) {
+      flushParagraph();
+      const previous = content[content.length - 1];
+      const list = previous?.type === "orderedList"
+        ? previous
+        : { type: "orderedList", attrs: { start: Number(ordered[1]) }, content: [] };
+      if (list !== previous) content.push(list);
+      list.content.push({
+        type: "listItem",
+        content: [{ type: "paragraph", content: [{ type: "text", text: ordered[2] }] }],
+      });
+      continue;
+    }
+    if (/^\s*([-*_])(?:\s*\1){2,}\s*$/u.test(line)) {
+      flushParagraph();
+      content.push({ type: "horizontalRule" });
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      continue;
+    }
+    paragraph.push(line);
+  }
+  if (fenced) {
+    // An unclosed fence is kept literally so malformed Markdown never loses
+    // the opening delimiter or any following source text.
+    paragraph.push(`\`\`\`${fenced.language}`, ...fenced.lines);
+  }
+  flushParagraph();
+  return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
+};
+
+export const normalizeLocalActionRichTextInputs = (value) => {
+  if (Array.isArray(value)) return value.map(normalizeLocalActionRichTextInputs);
+  if (!value || typeof value !== "object") return value;
+  const result = Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    normalizeLocalActionRichTextInputs(child),
+  ]));
+
+  for (const prefix of ["description", "body"]) {
+    const textKey = `${prefix}Text`;
+    const markdownKey = `${prefix}Markdown`;
+    const jsonKey = `${prefix}Json`;
+    const present = [textKey, markdownKey, jsonKey].filter((key) => (
+      Object.hasOwn(result, key) && result[key] !== null && result[key] !== undefined
+    ));
+    // Preserve invalid multi-format requests unchanged so the authoritative
+    // native MCP schema returns its normal validation error.
+    if (present.length !== 1 || present[0] === jsonKey) continue;
+    result[jsonKey] = present[0] === markdownKey
+      ? buildLocalMarkdownDocument(result[markdownKey])
+      : buildLocalPlainTextDocument(result[textKey]);
+    delete result[textKey];
+    delete result[markdownKey];
+  }
+  return result;
+};
+
+const buildLocalActionEncryptedPayload = async ({
+  companyEncryption,
+  entityId,
+  values,
+  source,
+}) => {
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source,
+      values,
+    },
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType: LOCAL_ACTION_ENTITY_TYPE,
+      entityId,
+      entityRevision: 1,
+      purpose: "content",
+    },
+  });
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType: LOCAL_ACTION_ENTITY_TYPE,
+    entityId,
+    entityRevision: 1,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildEncryptedPayloadSignatureRecord(payload),
+  );
+  return payload;
+};
+
+const markerForLocalActionValue = (entityId, field, value) => (
+  typeof value === "string"
+    ? buildCompanyEncryptedTextMarker(entityId, field)
+    : buildCompanyEncryptedJsonMarker(entityId, field, Array.isArray(value) ? "array" : "object")
+);
+
+const resolveLocalActionRegistryDocument = (mirror, rawArguments) => {
+  const projectSlug = String(rawArguments?.projectSlug || "").trim();
+  const registrySlug = String(rawArguments?.registrySlug || rawArguments?.slug || "").trim();
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug || null);
+  return (mirror?.contextDocuments ?? []).find((document) => (
+    document?.type === "registry"
+    && matchesProjectScope(document)
+    && (
+      document.payload?.registry?.slug === registrySlug
+      || document.payload?.registry?.slugAliases?.includes?.(registrySlug)
+    )
+  )) ?? null;
+};
+
+const deriveLocalRegistryRowEntityId = (companyEncryption, registryId, rowKey) => {
+  const privateScalar = String(companyEncryption?.scopePrivateEncryptionKey?.privateJwk?.d || "");
+  if (!privateScalar || !UUID_PATTERN.test(String(registryId || ""))) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_REGISTRY_CONTEXT_INVALID",
+      "The local registry scope key or immutable registry id is unavailable.",
+    );
+  }
+  const digest = crypto.createHmac("sha256", Buffer.from(privateScalar, "base64url"))
+    .update("trelio:encrypted-registry-row-key:v1\0")
+    .update(String(registryId).toLowerCase())
+    .update("\0")
+    .update(rowKey)
+    .digest();
+  // RFC 4122 layout makes the keyed digest acceptable to every existing UUID
+  // schema while preserving 122 bits of collision resistance. The secret HMAC
+  // prevents the server from using the stable locator as a dictionary oracle.
+  digest[6] = (digest[6] & 0x0f) | 0x50;
+  digest[8] = (digest[8] & 0x3f) | 0x80;
+  const hex = digest.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+const deriveLocalActionEntityId = (companyEncryption, namespace) => {
+  const privateScalar = String(companyEncryption?.scopePrivateEncryptionKey?.privateJwk?.d || "");
+  if (!privateScalar) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_ENCRYPTION_CONTEXT_INVALID",
+      "The local company scope key is unavailable.",
+    );
+  }
+  const digest = crypto.createHmac("sha256", Buffer.from(privateScalar, "base64url"))
+    .update("trelio:encrypted-local-action:v1\0")
+    .update(namespace)
+    .digest();
+  digest[6] = (digest[6] & 0x0f) | 0x50;
+  digest[8] = (digest[8] & 0x3f) | 0x80;
+  const hex = digest.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+
+const registryValueMarkerField = (columnKey) => (
+  `registry_value_${crypto.createHash("sha256").update(String(columnKey)).digest("hex").slice(0, 16)}`
+);
+
+const validateLocalRegistryHumanValue = (column, value) => {
+  if (value === null || value === undefined || value === "") return;
+  if (typeof value !== "string") {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+      `Registry column "${column.key}" requires a string value.`,
+    );
+  }
+  const maximum = column.type === "text" ? 20_000 : column.type === "url" ? 2_048 : 160;
+  if (Buffer.byteLength(value, "utf8") > maximum * 4 || value.length > maximum) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+      `Registry column "${column.key}" exceeds its maximum length.`,
+    );
+  }
+  if (column.type === "select" && !column.options?.includes(value)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+      `Registry column "${column.key}" must use one configured option.`,
+    );
+  }
+  if (column.type === "url") {
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed || !["http:", "https:"].includes(parsed.protocol)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+        `Registry column "${column.key}" must contain an HTTP(S) URL.`,
+      );
+    }
+  }
+};
+
+export const protectLocalActionArguments = async ({
+  nativeTool,
+  arguments: rawArguments,
+  companyEncryption,
+  mirror = null,
+}) => {
+  const payloads = [];
+  const expectedPayloadValues = {};
+  let objectSequence = 0;
+  const normalizedArguments = normalizeLocalActionRichTextInputs(rawArguments);
+  const stableRequestId = typeof normalizedArguments.clientRequestId === "string"
+    ? normalizedArguments.clientRequestId.trim()
+    : "";
+  const createEntityId = (objectPath, purpose = "content") => stableRequestId
+    ? deriveLocalActionEntityId(
+        companyEncryption,
+        `${nativeTool}\0${stableRequestId}\0${purpose}\0${objectPath}`,
+      )
+    : crypto.randomUUID();
+  const registryRowTool = nativeTool === "upsert_registry_rows" || nativeTool === "archive_registry_rows";
+  const registryDocument = registryRowTool
+    ? resolveLocalActionRegistryDocument(mirror, normalizedArguments)
+    : null;
+  if (registryRowTool && !registryDocument) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_REGISTRY_NOT_FOUND",
+      "The registry is absent from the current ACL-filtered local company generation.",
+    );
+  }
+  const registryColumns = new Map(
+    (registryDocument?.payload?.registry?.columns ?? []).map((column) => [column.key, column]),
+  );
+  const registryRowsByKey = new Map(
+    (registryDocument?.payload?.rows ?? []).map((row) => [String(row.rowKey), row]),
+  );
+  const registryRowLocators = mirror?.registryRowLocators?.[registryDocument?.id] ?? {};
+  const seenRegistryRowKeys = new Set();
+
+  const addPayload = async ({ entityId, values, objectPath }) => {
+    objectSequence += 1;
+    payloads.push(await buildLocalActionEncryptedPayload({
+      companyEncryption,
+      entityId,
+      values,
+      source: { kind: "mcp_local_action", nativeTool, objectPath, sequence: objectSequence },
+    }));
+    expectedPayloadValues[entityId] = structuredClone(values);
+  };
+
+  /**
+   * Resolve the authoritative custom-field type from the ACL-filtered local
+   * task generation. The model must not be able to turn a date/number/member
+   * id into encrypted prose merely by adding a transport hint, while a text
+   * value must never reach the server in plaintext.
+   */
+  const resolveCustomFieldType = ({ fieldId, objectPath }) => {
+    if (!mirror) return null;
+    const operationMatch = /^\$\.operations\[(\d+)\]/u.exec(objectPath);
+    const locator = operationMatch
+      ? normalizedArguments.operations?.[Number(operationMatch[1])]
+      : normalizedArguments;
+    const projectSlug = String(locator?.projectSlug || "").trim();
+    const taskNumber = Number(locator?.taskNumber);
+    const task = (mirror.tasks ?? []).find((candidate) => (
+      candidate.number === taskNumber
+      && buildMirrorProjectScopeMatcher(mirror, projectSlug)(candidate)
+    ));
+    const fields = task?.payload?.task?.customFields?.fields;
+    const field = Array.isArray(fields)
+      ? fields.find((candidate) => String(candidate?.id || "") === String(fieldId || ""))
+      : null;
+    return typeof field?.fieldType === "string" ? field.fieldType : null;
+  };
+
+  const shouldProtectValueField = ({ current, objectPath }) => {
+    if (LOCAL_ACTION_CONTACT_VALUE_TOOLS.has(nativeTool)) {
+      return /\.(?:channels|identifiers)\[\d+\]$/u.test(objectPath);
+    }
+    if (!LOCAL_ACTION_CUSTOM_FIELD_VALUE_TOOLS.has(nativeTool)) return false;
+
+    const isCustomFieldObject = nativeTool === "update_task_custom_field"
+      ? objectPath === "$"
+      : /\.customFieldValues\[\d+\]$/u.test(objectPath);
+    if (!isCustomFieldObject) return false;
+    const fieldType = resolveCustomFieldType({ fieldId: current.fieldId, objectPath });
+    if (!fieldType) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_CUSTOM_FIELD_TYPE_UNKNOWN",
+        "The custom field is absent from the current ACL-filtered local task generation.",
+      );
+    }
+    return fieldType === "text";
+  };
+
+  const protectRegistryValues = async (rawValues, objectPath, visit) => {
+    if (!rawValues || typeof rawValues !== "object" || Array.isArray(rawValues)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+        "Registry row values must be an object.",
+      );
+    }
+    const result = {};
+    const protectedEntries = [];
+    for (const [columnKey, value] of Object.entries(rawValues)) {
+      const column = registryColumns.get(columnKey);
+      if (!column) {
+        throw new TrelioLocalContextError(
+          "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+          `Registry row contains unknown column "${columnKey}".`,
+        );
+      }
+      if (["text", "select", "url"].includes(column.type) && !isEmptyLocalActionValue(value)) {
+        validateLocalRegistryHumanValue(column, value);
+        protectedEntries.push([columnKey, value, registryValueMarkerField(columnKey)]);
+      } else {
+        result[columnKey] = await visit(value, `${objectPath}.${columnKey}`);
+      }
+    }
+    if (protectedEntries.length === 0) return result;
+    const entityId = createEntityId(objectPath, "registry_values");
+    const values = {};
+    for (const [columnKey, value, markerField] of protectedEntries) {
+      values[markerField] = value;
+      result[columnKey] = buildCompanyEncryptedTextMarker(entityId, markerField);
+    }
+    await addPayload({ entityId, values, objectPath });
+    return result;
+  };
+
+  const visit = async (current, objectPath = "$") => {
+    if (Array.isArray(current)) {
+      // Encryption performs asynchronous HPKE work. Visiting siblings in
+      // parallel makes payload order depend on scheduler timing, which in turn
+      // destabilizes exact retry fixtures and audit uploads even though the
+      // protected arguments are identical. Inputs are already tightly bounded,
+      // so preserve source order deliberately.
+      const items = [];
+      for (let index = 0; index < current.length; index += 1) {
+        items.push(await visit(current[index], `${objectPath}[${index}]`));
+      }
+      return items;
+    }
+    if (!current || typeof current !== "object") return current;
+    const result = {};
+    const protectedEntries = [];
+    for (const [field, child] of Object.entries(current)) {
+      const registryRowObject = registryRowTool && /^\$\.rows\[\d+\]$/u.test(objectPath);
+      if (registryRowObject && field === "rowKey") {
+        const rowKey = String(child || "").trim();
+        if (!rowKey) {
+          throw new TrelioLocalContextError(
+            "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+            "Registry rowKey cannot be empty.",
+          );
+        }
+        if (seenRegistryRowKeys.has(rowKey)) {
+          throw new TrelioLocalContextError(
+            "LOCAL_ACTION_REGISTRY_VALUE_INVALID",
+            `Registry row key "${rowKey}" is duplicated in the batch.`,
+          );
+        }
+        seenRegistryRowKeys.add(rowKey);
+        const existingRow = registryRowsByKey.get(rowKey);
+        if (existingRow) {
+          const locator = registryRowLocators[existingRow.id];
+          if (!isEncryptedLocalActionMarker(locator)) {
+            throw new TrelioLocalContextError(
+              "LOCAL_ACTION_REGISTRY_LOCATOR_MISSING",
+              "The encrypted registry row locator is absent from the current mirror.",
+            );
+          }
+          result[field] = locator;
+        } else if (nativeTool === "archive_registry_rows") {
+          throw new TrelioLocalContextError(
+            "LOCAL_ACTION_REGISTRY_ROW_NOT_FOUND",
+            `Registry row "${rowKey}" is absent from the current local generation.`,
+          );
+        } else {
+          const entityId = deriveLocalRegistryRowEntityId(
+            companyEncryption,
+            registryDocument.id,
+            rowKey,
+          );
+          await addPayload({
+            entityId,
+            values: { row_key: rowKey },
+            objectPath: `${objectPath}.rowKey`,
+          });
+          result[field] = buildCompanyEncryptedTextMarker(entityId, "row_key");
+        }
+        continue;
+      }
+      if (registryRowObject && field === "values" && nativeTool === "upsert_registry_rows") {
+        result[field] = await protectRegistryValues(child, `${objectPath}.values`, visit);
+        continue;
+      }
+      if (registryRowObject && field === "sourceRefs" && nativeTool === "upsert_registry_rows") {
+        // Keep exact Workspace routing coordinates structural while the nested
+        // label/URL leaves follow the normal protected-field inventory.
+        result[field] = await visit(child, `${objectPath}.sourceRefs`);
+        continue;
+      }
+      const statusDictionaryLabel = (field === "title" || field === "name" || field === "label")
+        && Object.hasOwn(current, "code")
+        && (Object.hasOwn(current, "color") || Object.hasOwn(current, "isFinal"));
+      const protectedField = LOCAL_ACTION_PROTECTED_FIELDS.has(field)
+        && !statusDictionaryLabel
+        && !isEmptyLocalActionValue(child)
+        && !isEncryptedLocalActionMarker(child)
+        && (field !== "value" || shouldProtectValueField({ current, objectPath }))
+        && (field !== "slug" || LOCAL_ACTION_CONTENT_SLUG_TOOLS.has(nativeTool))
+        && (
+          (field !== "href" && field !== "url")
+          || nativeTool === "update_knowledge_base_page"
+          || nativeTool === "upsert_registry_rows"
+        );
+      if (protectedField) protectedEntries.push([field, child, LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
+      else result[field] = await visit(child, `${objectPath}.${field}`);
+    }
+    if (protectedEntries.length === 0) return result;
+
+    const entityId = createEntityId(objectPath);
+    const values = {};
+    for (const [field, child, canonicalField] of protectedEntries) {
+      if (LOCAL_ACTION_STRING_ARRAY_FIELDS.has(field) && Array.isArray(child)) {
+        result[field] = child.map((item, index) => {
+          if (typeof item !== "string" || item.length === 0) return item;
+          const itemField = `${canonicalField}_${index}`;
+          values[itemField] = item;
+          return buildCompanyEncryptedTextMarker(entityId, itemField);
+        });
+      } else if (field === "slug" && typeof child === "string") {
+        values[canonicalField] = child;
+        result[field] = `e-${entityId}`;
+      } else {
+        values[canonicalField] = structuredClone(child);
+        result[field] = markerForLocalActionValue(entityId, canonicalField, child);
+      }
+      if (canonicalField === "description_json") {
+        values.description_plain_text = extractLocalRichTextPlainText(child);
+      } else if (canonicalField === "body_json") {
+        values.body_plain_text = extractLocalRichTextPlainText(child);
+      }
+    }
+    await addPayload({ entityId, values, objectPath });
+    return result;
+  };
+  return {
+    value: await visit(normalizedArguments),
+    payloads,
+    expectedPayloadValues,
+  };
+};
+
+const decodeVerifiedLocalActionUpload = (rawArguments) => {
+  const canonicalBase64 = String(rawArguments?.dataBase64 || "");
+  if (!canonicalBase64 || /\s/u.test(canonicalBase64)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD",
+      "dataBase64 must contain canonical base64 without whitespace.",
+    );
+  }
+  const bytes = Buffer.from(canonicalBase64, "base64");
+  if (bytes.toString("base64") !== canonicalBase64) {
+    bytes.fill(0);
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD",
+      "dataBase64 is not canonical base64.",
+    );
+  }
+  const expectedSize = Number(rawArguments?.sizeBytes);
+  const expectedSha256 = String(rawArguments?.sha256 || "").trim().toLowerCase();
+  if (
+    !Number.isSafeInteger(expectedSize)
+    || expectedSize <= 0
+    || bytes.byteLength !== expectedSize
+    || !SHA256_PATTERN.test(expectedSha256)
+    || sha256(bytes) !== expectedSha256
+  ) {
+    bytes.fill(0);
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD",
+      "Source file bytes do not match sizeBytes and sha256.",
+    );
+  }
+  return bytes;
+};
+
+const protectLocalActionUpload = async ({
+  nativeTool,
+  rawArguments,
+  companyEncryption,
+}) => {
+  const sourceBytes = decodeVerifiedLocalActionUpload(rawArguments);
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-mcp-upload-"));
+  const sourcePath = path.join(temporaryDirectory, "source.bin");
+  const destinationPath = path.join(temporaryDirectory, "encrypted.trelioe1");
+  const stableRequestId = typeof rawArguments?.clientRequestId === "string"
+    ? rawArguments.clientRequestId.trim()
+    : "";
+  const entityId = stableRequestId
+    ? deriveLocalActionEntityId(
+        companyEncryption,
+        `${nativeTool}\0${stableRequestId}\0file`,
+      )
+    : crypto.randomUUID();
+  const originalName = normalizeBoundedString(rawArguments.fileName, "fileName", 255);
+  const mimeType = String(rawArguments.contentType || "application/octet-stream")
+    .trim()
+    .toLowerCase()
+    .slice(0, 255) || "application/octet-stream";
+  const values = {
+    original_name: originalName,
+    mime_type: mimeType,
+    ...(typeof rawArguments.altText === "string" && rawArguments.altText.trim()
+      ? { alt_text: rawArguments.altText.trim().slice(0, 1000) }
+      : {}),
+  };
+
+  try {
+    await fs.writeFile(sourcePath, sourceBytes, { flag: "wx", mode: 0o600 });
+    const encrypted = await encryptFileToCompanyContainer({
+      sourcePath,
+      destinationPath,
+      scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+      aad: {
+        companyId: companyEncryption.runtime.company.id,
+        scopeId: companyEncryption.runtime.scope.id,
+        scopeEpoch: companyEncryption.runtime.scope.epoch,
+        entityType: "file.task_attachments",
+        entityId,
+        entityRevision: 1,
+      },
+      originalName,
+      mimeType,
+      writerDeviceId: companyEncryption.runtime.device.id,
+      signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+    });
+    const ciphertext = await fs.readFile(destinationPath);
+    const payload = await buildLocalActionEncryptedPayload({
+      companyEncryption,
+      entityId,
+      values,
+      source: { kind: "mcp_local_action_upload", nativeTool },
+    });
+    return {
+      value: {
+        ...rawArguments,
+        fileName: buildCompanyEncryptedTextMarker(entityId, "original_name"),
+        contentType: buildCompanyEncryptedTextMarker(entityId, "mime_type"),
+        sizeBytes: encrypted.ciphertextSizeBytes,
+        sha256: encrypted.ciphertextSha256,
+        dataBase64: ciphertext.toString("base64"),
+        ...(values.alt_text
+          ? { altText: buildCompanyEncryptedTextMarker(entityId, "alt_text") }
+          : {}),
+      },
+      payloads: [payload],
+      expectedPayloadValues: { [entityId]: values },
+    };
+  } finally {
+    sourceBytes.fill(0);
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
+const uploadLocalActionPayloads = async ({
+  origin,
+  token,
+  companyEncryption,
+  payloads,
+  expectedPayloadValues = {},
+  signal,
+}) => {
+  for (let offset = 0; offset < payloads.length; offset += 100) {
+    const batch = payloads.slice(offset, offset + 100);
+    try {
+      await request(origin, token, "/api/agent-workspaces/encryption/payloads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          companySlug: companyEncryption.runtime.company.slug,
+          writerDeviceId: companyEncryption.runtime.device.id,
+          payloads: batch,
+        }),
+        signal,
+      });
+    } catch (error) {
+      if (!(error instanceof TrelioApiError) || error.statusCode !== 409) throw error;
+      // A keyed registry row locator is intentionally stable across concurrent
+      // chats. If another chat won the immutable payload insert, decrypt the
+      // exact existing payload and accept it only when its protected values are
+      // byte-for-byte equivalent to this call's local plaintext intent.
+      const resolved = await readJson(await request(
+        origin,
+        token,
+        "/api/agent-workspaces/encryption/payloads/resolve",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            companySlug: companyEncryption.runtime.company.slug,
+            recipientDeviceId: companyEncryption.runtime.device.id,
+            entityIds: batch.map((payload) => payload.entityId),
+          }),
+          signal,
+        },
+      ));
+      const existingByEntity = new Map((resolved.payloads ?? []).map((payload) => [
+        payload.entityId,
+        payload,
+      ]));
+      let exactExisting = true;
+      for (const payload of batch) {
+        const existing = existingByEntity.get(payload.entityId);
+        const expected = expectedPayloadValues[payload.entityId];
+        if (!existing || existing.entityType !== LOCAL_ACTION_ENTITY_TYPE || !expected) {
+          exactExisting = false;
+          break;
+        }
+        const opened = await decryptCompanyPayload({
+          encryptedPayload: existing,
+          scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+          scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+        });
+        const actual = opened?.values && typeof opened.values === "object"
+          ? opened.values
+          : opened;
+        if (!isDeepStrictEqual(actual, expected)) {
+          exactExisting = false;
+          break;
+        }
+      }
+      if (!exactExisting) throw error;
+    }
+  }
+};
+
+const hydrateLocalActionTextContent = async ({
+  item,
+  origin,
+  token,
+  companyEncryption,
+  signal,
+}) => {
+  if (item?.type !== "text" || typeof item.text !== "string") {
+    return hydrateAgentCompanyEncryptedJson({
+      value: item,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    });
+  }
+  try {
+    const parsed = JSON.parse(item.text);
+    const hydrated = await hydrateAgentCompanyEncryptedJson({
+      value: parsed,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    });
+    return { ...item, text: JSON.stringify(hydrated) };
+  } catch {
+    const text = await hydrateAgentCompanyEncryptedJson({
+      value: item.text,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    });
+    return { ...item, text };
+  }
+};
+
+const hydrateLocalActionResult = async ({
+  rawResult,
+  origin,
+  token,
+  companyEncryption,
+  signal,
+}) => {
+  const hydrated = await hydrateAgentCompanyEncryptedJson({
+    value: rawResult,
+    origin,
+    token,
+    companyEncryption,
+    signal,
+  });
+  if (!Array.isArray(rawResult?.content)) return hydrated;
+  return {
+    ...hydrated,
+    content: await Promise.all(rawResult.content.map((item) => hydrateLocalActionTextContent({
+      item,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    }))),
+  };
+};
+
+const readBoundedLocalActionDownload = async (url, signal) => {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_DOWNLOAD",
+      "Encrypted attachment delivery must use HTTPS.",
+    );
+  }
+  const response = await fetch(parsed, { signal, redirect: "error" });
+  if (!response.ok) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_DOWNLOAD_FAILED",
+      `Encrypted attachment download failed with HTTP ${response.status}.`,
+    );
+  }
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > LOCAL_ACTION_MAX_RESPONSE_BYTES) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_DOWNLOAD_TOO_LARGE",
+      "Encrypted attachment exceeds the local MCP download limit.",
+    );
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength > LOCAL_ACTION_MAX_RESPONSE_BYTES) {
+    bytes.fill(0);
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_DOWNLOAD_TOO_LARGE",
+      "Encrypted attachment exceeds the local MCP download limit.",
+    );
+  }
+  return bytes;
+};
+
+const openLocalActionAttachmentResult = async ({
+  result,
+  companyEncryption,
+  signal,
+}) => {
+  if (result?.isError || !result?.structuredContent) return result;
+  const payload = result.structuredContent;
+  let ciphertext;
+  if (payload.delivery === "inline-base64" && typeof payload.dataBase64 === "string") {
+    ciphertext = Buffer.from(payload.dataBase64, "base64");
+  } else if (payload.delivery === "signed-url" && typeof payload.downloadUrl === "string") {
+    ciphertext = await readBoundedLocalActionDownload(payload.downloadUrl, signal);
+  } else {
+    return result;
+  }
+  let opened;
+  try {
+    opened = await decryptFileFromCompanyContainerBytes({
+      bytes: ciphertext,
+      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+      maximumPlaintextBytes: LOCAL_ACTION_MAX_RESPONSE_BYTES,
+    });
+    const structuredContent = {
+      ...payload,
+      originalName: opened.originalName,
+      mimeType: opened.mimeType,
+      sizeBytes: opened.plaintextSizeBytes,
+      delivery: "inline-base64",
+      dataBase64: opened.bytes.toString("base64"),
+    };
+    delete structuredContent.downloadUrl;
+    delete structuredContent.expiresInSeconds;
+    return {
+      ...result,
+      structuredContent,
+      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+    };
+  } finally {
+    ciphertext.fill(0);
+    opened?.bytes.fill(0);
+  }
+};
+
 const uploadWorkspaceAuditPayload = async ({
   origin,
   token,
@@ -777,7 +1768,11 @@ const buildMirror = async ({
       projectSlug: record.task.projectSlug,
       number: record.task.number,
       revisionToken: record.task.revisionToken,
-      payload: hydratedTaskRecords[index].task,
+      payload: {
+        ...hydratedTaskRecords[index].task,
+        connections: hydratedTaskRecords[index].connections ?? {},
+        linkedDossiers: hydratedTaskRecords[index].linkedDossiers ?? [],
+      },
     };
   });
   const previousWorkspaces = new Map(
@@ -813,17 +1808,35 @@ const buildMirror = async ({
       signal,
     }),
   });
+  const registryRowLocators = Object.fromEntries(
+    (rawManifest.contextDocuments ?? [])
+      .filter((document) => document?.type === "registry")
+      .map((document) => [
+        document.id,
+        Object.fromEntries((document.payload?.rows ?? []).flatMap((row) => (
+          row?.id
+          && typeof row.rowKey === "string"
+          && /^~e1:[0-9a-f-]{36}:row_key~$/u.test(row.rowKey)
+            ? [[row.id, row.rowKey]]
+            : []
+        ))),
+      ]),
+  );
 
   return {
     schemaVersion: MIRROR_SCHEMA_VERSION,
     serverGeneration: manifest.generation,
     createdAt: new Date().toISOString(),
+    origin,
     company: manifest.company,
     viewer: manifest.viewer,
+    viewerGroupIds: manifest.viewerGroupIds ?? [],
     projects: manifest.projects ?? [],
     dossiers: manifest.dossiers ?? [],
     contextDocuments,
+    registryRowLocators,
     instructions: manifest.instructions,
+    agentSkills: manifest.agentSkills ?? null,
     tasks,
     workspaces,
   };
@@ -1057,13 +2070,18 @@ const getSearchIndex = (mirror) => {
   return index;
 };
 
-export const searchCompanyContextMirror = (mirror, rawQueries, rawLimit = 20) => {
+export const searchCompanyContextMirror = (
+  mirror,
+  rawQueries,
+  rawLimit = 20,
+  { maximumQueries = MAX_SEARCH_QUERIES } = {},
+) => {
   const queries = [...new Map((Array.isArray(rawQueries) ? rawQueries : [])
     .map((query) => normalizeBoundedString(query, "query", 500))
     .map((query) => [normalizeSearchText(query), query]))
     .entries()]
     .filter(([normalized]) => normalized)
-    .slice(0, MAX_SEARCH_QUERIES);
+    .slice(0, maximumQueries);
   if (queries.length === 0) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
@@ -1310,6 +2328,992 @@ const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
     ...task.payload,
     effectiveInstructions: selectTaskInstructions(mirror, task),
   };
+};
+
+const LOCAL_TASK_SECTION_FIELDS = Object.freeze({
+  rich_description: ["descriptionJson"],
+  comments: [
+    "commentsIncluded",
+    "comments",
+    "commentsUnread",
+    "commentsPagination",
+    "subscriptions",
+    "viewerSubscription",
+  ],
+  checklists: ["checklists"],
+  attachments: ["attachments", "deletedAttachments"],
+  controls: ["controls"],
+  relationships: ["parentTask", "subtasks"],
+  workflow: ["statuses", "absenceConflicts"],
+  people: ["availableMembers", "availableMemberGroups", "mentionableMembers"],
+  templates: ["templates"],
+  custom_fields: ["customFields"],
+});
+const LOCAL_TASK_DEFERRED_FIELDS = new Set(Object.values(LOCAL_TASK_SECTION_FIELDS).flat());
+
+const getTaskRecordFromMirror = (mirror, rawLocator) => {
+  const projectSlug = normalizeBoundedString(rawLocator?.projectSlug, "projectSlug", 120);
+  const taskNumber = Number(rawLocator?.taskNumber);
+  if (!Number.isSafeInteger(taskNumber) || taskNumber <= 0) {
+    throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "taskNumber must be positive.");
+  }
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
+  const record = (mirror.tasks ?? []).find((candidate) => (
+    matchesProjectScope(candidate) && candidate.number === taskNumber
+  ));
+  if (!record) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_TASK_NOT_FOUND",
+      "Task was not found in the current ACL-filtered local company snapshot.",
+    );
+  }
+  return record;
+};
+
+const localTaskSectionItemCount = (task, section) => {
+  const arrayLength = (value) => Array.isArray(value) ? value.length : 0;
+  if (section === "rich_description") return String(task.descriptionPlainText || "").trim() ? 1 : 0;
+  if (section === "comments") {
+    const total = task.commentsPagination?.total;
+    return Number.isSafeInteger(total) && total >= 0 ? total : arrayLength(task.comments);
+  }
+  if (section === "checklists") return arrayLength(task.checklists);
+  if (section === "attachments") return arrayLength(task.attachments) + arrayLength(task.deletedAttachments);
+  if (section === "controls") return arrayLength(task.controls);
+  if (section === "relationships") return (task.parentTask ? 1 : 0) + arrayLength(task.subtasks);
+  if (section === "workflow") return arrayLength(task.statuses) + arrayLength(task.absenceConflicts);
+  if (section === "people") return arrayLength(task.availableMembers) + arrayLength(task.availableMemberGroups);
+  if (section === "templates") {
+    return Array.isArray(task.templates)
+      ? task.templates.length
+      : arrayLength(task.templates?.description) + arrayLength(task.templates?.checklist);
+  }
+  if (section === "custom_fields") {
+    return Array.isArray(task.customFields)
+      ? task.customFields.length
+      : arrayLength(task.customFields?.fields);
+  }
+  return null;
+};
+
+const buildLocalTaskCore = (record) => {
+  const task = record.payload?.task ?? {};
+  return {
+    ...Object.fromEntries(
+      Object.entries(task).filter(([field]) => !LOCAL_TASK_DEFERRED_FIELDS.has(field)),
+    ),
+    deferredSections: {
+      tool: "get_task_sections",
+      available: Object.keys(LOCAL_TASK_SECTION_FIELDS).map((name) => ({
+        name,
+        itemCount: localTaskSectionItemCount(task, name),
+      })),
+      instruction: "Call get_task_sections with this task locator and only the sections needed for the current work. Do not repeat get_task to load deferred data.",
+    },
+  };
+};
+
+const sha256LocalInstruction = (value) => crypto.createHash("sha256")
+  .update(String(value), "utf8")
+  .digest("hex");
+
+const buildLocalInstructionLayer = ({ kind, scope, revision, markdown }) => {
+  const normalizedMarkdown = String(markdown || "").trim();
+  const content = normalizedMarkdown ? `${normalizedMarkdown}\n` : "";
+  const markdownSha256 = sha256LocalInstruction(content);
+  return {
+    key: `instruction-layer:${sha256LocalInstruction(JSON.stringify({
+      kind,
+      scope,
+      revision,
+      markdownSha256,
+    }))}`,
+    kind,
+    scope,
+    revision,
+    sha256: markdownSha256,
+    markdown: content,
+  };
+};
+
+const buildLocalTaskInstructionSnapshot = (mirror, record) => {
+  const project = (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
+    ?? record.payload?.project
+    ?? { id: record.projectId, slug: record.projectSlug, name: null };
+  const scope = {
+    company: {
+      id: mirror.company.id,
+      slug: mirror.company.slug,
+      name: mirror.company.name,
+    },
+    project: {
+      id: project.id,
+      slug: project.slug,
+      name: project.name,
+    },
+  };
+  if (!mirror.instructions) {
+    return {
+      reference: {
+        status: "requires_scope",
+        scope,
+        requiredScope: "mcp:workspaces:read",
+      },
+      layers: [],
+    };
+  }
+  const workingRules = mirror.instructions.projects?.find((candidate) => (
+    candidate.projectId === record.projectId
+  ))?.snapshot ?? mirror.instructions.company;
+  const personalProfile = mirror.instructions.userProfile;
+  const layers = [];
+  if (workingRules?.compiledMarkdown) {
+    layers.push(buildLocalInstructionLayer({
+      kind: "project_rules",
+      scope: { type: "project", companyId: mirror.company.id, projectId: project.id },
+      revision: {
+        id: workingRules.project?.revisionId
+          ?? workingRules.company?.revisionId
+          ?? workingRules.platform?.revisionId
+          ?? null,
+        version: workingRules.project?.version
+          ?? workingRules.company?.version
+          ?? workingRules.platform?.version
+          ?? 0,
+      },
+      markdown: workingRules.compiledMarkdown,
+    }));
+  }
+  if (personalProfile?.profile && personalProfile.compiledMarkdown) {
+    layers.push(buildLocalInstructionLayer({
+      kind: "personal_profile",
+      scope: {
+        type: "personal",
+        companyId: mirror.company.id,
+        memberId: mirror.viewer.memberId,
+      },
+      revision: {
+        id: personalProfile.profile.revisionId,
+        version: personalProfile.profile.version,
+      },
+      markdown: personalProfile.compiledMarkdown,
+    }));
+  }
+  const orderedLayerKeys = layers.map((layer) => layer.key);
+  return {
+    reference: {
+      status: "loaded",
+      scope,
+      effectiveRevisionKey: sha256LocalInstruction(JSON.stringify({
+        schemaVersion: 3,
+        companyId: mirror.company.id,
+        projectId: project.id,
+        memberId: mirror.viewer.memberId,
+        orderedLayerKeys,
+      })),
+      orderedLayerKeys,
+    },
+    layers,
+  };
+};
+
+const buildLocalExactTaskRead = (mirror, rawLocators, knownInstructionLayerKeys = []) => {
+  const records = rawLocators.map((locator) => {
+    if (String(locator?.companySlug || "").toLowerCase() !== mirror.company.slug.toLowerCase()) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_COMPANY_MISMATCH",
+        "Every exact task locator must belong to the selected local company.",
+      );
+    }
+    return getTaskRecordFromMirror(mirror, locator);
+  });
+  if (new Set(records.map((record) => record.id)).size !== records.length) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "Exact task locators must resolve to distinct tasks.",
+    );
+  }
+  const instructionSnapshots = records.map((record) => buildLocalTaskInstructionSnapshot(mirror, record));
+  const instructionsLoaded = instructionSnapshots.every((snapshot) => snapshot.reference.status === "loaded");
+  const knownKeys = new Set(Array.isArray(knownInstructionLayerKeys) ? knownInstructionLayerKeys : []);
+  const layersByKey = new Map();
+  instructionSnapshots.forEach((snapshot) => snapshot.layers.forEach((layer) => {
+    const previous = layersByKey.get(layer.key);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(layer)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_MIRROR_INVALID",
+        `Instruction layer collision for ${layer.key}.`,
+      );
+    }
+    layersByKey.set(layer.key, layer);
+  }));
+  const reusedLayerKeys = [...layersByKey.keys()].filter((key) => knownKeys.has(key));
+  const effectiveInstructions = instructionsLoaded
+    ? {
+        schemaVersion: 3,
+        status: "loaded",
+        authority: "Resolve each task's instructionScope.orderedLayerKeys against this response and same-context reusedLayerKeys before interpreting or acting on that task. Inside a prepared Run, its pinned instructions remain authoritative.",
+        layers: [...layersByKey.values()].filter((layer) => !knownKeys.has(layer.key)),
+        reusedLayerKeys,
+      }
+    : {
+        schemaVersion: 3,
+        status: "requires_scope",
+        requiredScope: "mcp:workspaces:read",
+        instruction: "Authorize mcp:workspaces:read before substantive work so company, project and personal agent instructions can be loaded.",
+        layers: [],
+        reusedLayerKeys: [],
+      };
+
+  return {
+    effectiveInstructions,
+    tasks: records.map((record, index) => ({
+      locator: {
+        companySlug: mirror.company.slug,
+        projectSlug: record.projectSlug,
+        taskNumber: record.number,
+      },
+      instructionScope: instructionSnapshots[index].reference,
+      task: buildLocalTaskCore(record),
+      connections: record.payload?.connections ?? {},
+      linkedDossiers: record.payload?.linkedDossiers ?? [],
+    })),
+  };
+};
+
+const getTaskSectionsFromMirror = (mirror, rawInput) => {
+  const record = getTaskRecordFromMirror(mirror, rawInput);
+  const task = record.payload?.task ?? {};
+  const sections = Array.isArray(rawInput?.sections) ? rawInput.sections : [];
+  if (
+    sections.length === 0
+    || new Set(sections).size !== sections.length
+    || sections.some((section) => !Object.hasOwn(LOCAL_TASK_SECTION_FIELDS, section))
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "sections must contain distinct supported deferred task sections.",
+    );
+  }
+  if (rawInput?.commentsPage && !sections.includes("comments")) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "commentsPage requires the comments section.",
+    );
+  }
+
+  const payloads = Object.fromEntries(sections.map((section) => {
+    const payload = Object.fromEntries(LOCAL_TASK_SECTION_FIELDS[section].map((field) => [
+      field,
+      task[field],
+    ]));
+    if (section === "comments" && rawInput?.commentsPage) {
+      const order = rawInput.commentsPage.order === "desc" ? "desc" : "asc";
+      const offset = Math.max(0, Math.trunc(Number(rawInput.commentsPage.offset) || 0));
+      const limit = Math.max(
+        1,
+        Math.min(50, Math.trunc(Number(rawInput.commentsPage.limit) || 50)),
+      );
+      const comments = Array.isArray(task.comments) ? [...task.comments] : [];
+      if (order === "desc") comments.reverse();
+      payload.comments = comments.slice(offset, offset + limit);
+      payload.commentsPagination = {
+        order,
+        offset,
+        limit,
+        total: comments.length,
+        hasMore: offset + limit < comments.length,
+      };
+    }
+    return [section, payload];
+  }));
+
+  return {
+    schemaVersion: 3,
+    provider: "local_company_context",
+    generation: mirror.generation,
+    task: {
+      companySlug: mirror.company.slug,
+      projectSlug: record.projectSlug,
+      taskNumber: record.number,
+    },
+    sections: payloads,
+  };
+};
+
+const getTaskSectionsFromProvider = async ({
+  origin,
+  token,
+  companyEncryption,
+  mirror,
+  rawInput,
+  signal,
+}) => {
+  const record = getTaskRecordFromMirror(mirror, rawInput);
+  const sections = Array.isArray(rawInput?.sections) ? rawInput.sections : [];
+  if (
+    sections.length === 0
+    || new Set(sections).size !== sections.length
+    || sections.some((section) => !Object.hasOwn(LOCAL_TASK_SECTION_FIELDS, section))
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "sections must contain distinct supported deferred task sections.",
+    );
+  }
+  if (rawInput?.commentsPage && !sections.includes("comments")) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "commentsPage requires the comments section.",
+    );
+  }
+  const commentsPage = rawInput?.commentsPage
+    ? {
+        order: rawInput.commentsPage.order === "desc" ? "desc" : "asc",
+        offset: Math.max(0, Math.trunc(Number(rawInput.commentsPage.offset) || 0)),
+        limit: Math.max(1, Math.min(50, Math.trunc(Number(rawInput.commentsPage.limit) || 50))),
+      }
+    : undefined;
+  const response = await request(
+    origin,
+    token,
+    `/api/agent-workspaces/company-context/${encodeURIComponent(mirror.company.slug)}`
+      + `/tasks/${encodeURIComponent(record.projectSlug)}/${record.number}/sections/read`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: record.revisionToken,
+        sections,
+        ...(commentsPage ? { commentsPage } : {}),
+      }),
+      signal,
+    },
+  );
+  const rawProjection = await readJson(response);
+  const projection = await hydrateAgentCompanyEncryptedJson({
+    value: rawProjection,
+    origin,
+    token,
+    companyEncryption,
+    signal,
+  });
+  return {
+    schemaVersion: 3,
+    locator: {
+      companySlug: mirror.company.slug,
+      projectSlug: record.projectSlug,
+      taskNumber: record.number,
+    },
+    taskRevision: {
+      id: record.id,
+      updatedAt: record.payload?.task?.updatedAt ?? null,
+    },
+    sections: projection.sections,
+  };
+};
+
+const readTaskMemberId = (value) => String(value?.memberId || value?.id || "").toLowerCase();
+const readTaskGroupId = (value) => String(value?.groupId || "").toLowerCase();
+
+const buildLocalListedTask = (mirror, record, rawInput) => {
+  const detail = record.payload ?? {};
+  const task = detail.task ?? {};
+  const project = detail.project
+    ?? (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
+    ?? { id: record.projectId, slug: record.projectSlug, name: null };
+  const dueDate = typeof task.dueAt === "string" ? task.dueAt.slice(0, 10) : null;
+  const publicPath = task.publicPath
+    ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${record.number}/`;
+  const controlDateFrom = rawInput?.controlDateFrom || null;
+  const controlDateTo = rawInput?.controlDateTo || null;
+  const matchingControls = (task.controls ?? []).filter((control) => {
+    const date = String(control?.controlDate || control?.date || "").slice(0, 10);
+    return date
+      && (!controlDateFrom || date >= controlDateFrom)
+      && (!controlDateTo || date <= controlDateTo);
+  });
+
+  return {
+    id: record.id,
+    number: record.number,
+    title: task.title,
+    descriptionPreview: String(task.descriptionPlainText || "").trim().slice(0, 500),
+    publicPath,
+    url: mirror.origin ? new URL(publicPath, mirror.origin).toString() : publicPath,
+    archiveState: task.isArchived || task.archivedAt ? "archived" : "active",
+    urgency: task.urgency,
+    dueAt: task.dueAt ?? null,
+    dueDate,
+    deadlineTone: task.deadlineTone ?? null,
+    hasUnreadNotifications: Boolean(task.hasUnreadNotifications),
+    company: detail.company ?? mirror.company,
+    project: {
+      id: project.id,
+      slug: project.slug,
+      name: project.name,
+      publicPath: project.publicPath ?? `/${mirror.company.slug}/${project.slug}/`,
+    },
+    status: task.status ?? null,
+    createdBy: task.createdBy ?? null,
+    assignee: task.assignee ?? null,
+    participants: task.participants ?? [],
+    parentTask: task.parentTask ?? null,
+    ...(controlDateFrom || controlDateTo ? { controls: matchingControls } : {}),
+  };
+};
+
+const listTasksFromMirror = (mirror, rawInput, { personal = false } = {}) => {
+  const projectSlug = rawInput?.projectSlug
+    ? normalizeBoundedString(rawInput.projectSlug, "projectSlug", 120)
+    : null;
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
+  const viewerMemberId = String(mirror.viewer?.memberId || "").toLowerCase();
+  const query = normalizeSearchText(rawInput?.query || "");
+  const today = new Date().toISOString().slice(0, 10);
+  const archiveState = String(rawInput?.archiveState || "active");
+  const relation = String(rawInput?.relation || "all");
+  const offset = Math.max(0, Math.trunc(Number(rawInput?.offset) || 0));
+  const limit = Math.max(1, Math.min(100, Math.trunc(Number(rawInput?.limit) || 50)));
+  const projectNameById = new Map((mirror.projects ?? []).map((project) => [project.id, project.name]));
+  const archivedProjectIds = new Set((mirror.projects ?? [])
+    .filter((project) => project.isArchived)
+    .map((project) => project.id));
+  const viewerGroupIds = new Set((mirror.viewerGroupIds ?? []).map((id) => String(id).toLowerCase()));
+
+  const tasks = (mirror.tasks ?? []).filter((record) => {
+    if (!matchesProjectScope(record)) return false;
+    if (personal && !projectSlug && archivedProjectIds.has(record.projectId)) return false;
+    const task = record.payload?.task ?? {};
+    const isArchived = Boolean(task.isArchived || task.archivedAt);
+    if (archiveState === "active" && isArchived) return false;
+    if (archiveState === "archived" && !isArchived) return false;
+    if (rawInput?.statusCode && task.status?.code !== rawInput.statusCode) return false;
+    if (rawInput?.statusKind && task.status?.kind !== rawInput.statusKind) return false;
+    if (rawInput?.urgency !== undefined && Number(task.urgency) !== Number(rawInput.urgency)) return false;
+    if (rawInput?.assigneeMemberId && readTaskMemberId(task.assignee) !== String(rawInput.assigneeMemberId).toLowerCase()) return false;
+    if (rawInput?.assigneeGroupId && readTaskGroupId(task.assignee) !== String(rawInput.assigneeGroupId).toLowerCase()) return false;
+    if (rawInput?.createdByMemberId && readTaskMemberId(task.createdBy) !== String(rawInput.createdByMemberId).toLowerCase()) return false;
+    if (rawInput?.participantMemberId && !(task.participants ?? []).some((member) => readTaskMemberId(member) === String(rawInput.participantMemberId).toLowerCase())) return false;
+    if (rawInput?.participantGroupId && !(task.participants ?? []).some((participant) => readTaskGroupId(participant) === String(rawInput.participantGroupId).toLowerCase())) return false;
+
+    if (personal) {
+      const assigned = readTaskMemberId(task.assignee) === viewerMemberId
+        || viewerGroupIds.has(readTaskGroupId(task.assignee));
+      const created = readTaskMemberId(task.createdBy) === viewerMemberId;
+      const participant = (task.participants ?? []).some((candidate) => (
+        readTaskMemberId(candidate) === viewerMemberId
+        || viewerGroupIds.has(readTaskGroupId(candidate))
+      ));
+      if (relation === "assigned" && !assigned) return false;
+      if (relation === "created" && !created) return false;
+      if (relation === "participant" && !participant) return false;
+      if (relation === "all" && !assigned && !created && !participant) return false;
+    }
+
+    const dueDate = typeof task.dueAt === "string" ? task.dueAt.slice(0, 10) : null;
+    if (rawInput?.dueDateFrom && (!dueDate || dueDate < rawInput.dueDateFrom)) return false;
+    if (rawInput?.dueDateTo && (!dueDate || dueDate > rawInput.dueDateTo)) return false;
+    const dueState = String(rawInput?.dueState || "any");
+    if (dueState === "without_due_date" && dueDate) return false;
+    if (dueState === "with_due_date" && !dueDate) return false;
+    if (dueState === "today" && dueDate !== today) return false;
+    if (dueState === "upcoming" && (!dueDate || dueDate <= today)) return false;
+    if (dueState === "overdue" && (!dueDate || dueDate >= today || task.status?.kind === "done")) return false;
+
+    const controls = Array.isArray(task.controls) ? task.controls : [];
+    if ((rawInput?.controlDateFrom || rawInput?.controlDateTo) && !controls.some((control) => {
+      const date = String(control?.controlDate || control?.date || "").slice(0, 10);
+      return date
+        && (!rawInput.controlDateFrom || date >= rawInput.controlDateFrom)
+        && (!rawInput.controlDateTo || date <= rawInput.controlDateTo);
+    })) return false;
+
+    if (query) {
+      const text = normalizeSearchText(`${projectNameById.get(record.projectId) || ""}\n${buildTaskSearchText(record.payload)}`);
+      const tokens = query.split(" ").filter(Boolean);
+      if (!tokens.every((token) => text.includes(token))) return false;
+    }
+    return true;
+  }).map((record) => buildLocalListedTask(mirror, record, rawInput));
+
+  if (personal) {
+    tasks.sort((left, right) => (
+      String(left.dueDate || "9999-12-31").localeCompare(String(right.dueDate || "9999-12-31"))
+      || String(right.id).localeCompare(String(left.id))
+    ));
+  }
+
+  const page = tasks.slice(offset, offset + limit);
+  const filters = {
+    statusCode: rawInput?.statusCode ?? null,
+    statusKind: rawInput?.statusKind ?? null,
+    ...(personal
+      ? {}
+      : {
+          assigneeMemberId: rawInput?.assigneeMemberId ?? null,
+          assigneeGroupId: rawInput?.assigneeGroupId ?? null,
+          createdByMemberId: rawInput?.createdByMemberId ?? null,
+          participantMemberId: rawInput?.participantMemberId ?? null,
+          participantGroupId: rawInput?.participantGroupId ?? null,
+        }),
+    urgency: rawInput?.urgency ?? null,
+    dueDateFrom: rawInput?.dueDateFrom ?? null,
+    dueDateTo: rawInput?.dueDateTo ?? null,
+    dueState: rawInput?.dueState ?? "any",
+    controlDateFrom: rawInput?.controlDateFrom ?? null,
+    controlDateTo: rawInput?.controlDateTo ?? null,
+    query: rawInput?.query ?? null,
+  };
+
+  return personal
+    ? {
+        company: mirror.company,
+        viewer: mirror.viewer,
+        relation,
+        archiveState,
+        projectSlug: projectSlug
+          ? (mirror.projects ?? []).find((project) => project.id === page[0]?.project?.id)?.slug
+            ?? page[0]?.project?.slug
+            ?? projectSlug
+          : null,
+        filters,
+        tasks: page,
+        pagination: { limit, offset, total: tasks.length, hasMore: offset + page.length < tasks.length },
+      }
+    : {
+        company: page[0]?.company ?? mirror.company,
+        project: page[0]?.project
+          ?? (mirror.projects ?? []).find((project) => matchesProjectScope({
+            projectId: project.id,
+            projectSlug: project.slug,
+          }))
+          ?? null,
+        archiveState,
+        filters,
+        tasks: page,
+        pagination: { limit, offset, total: tasks.length, hasMore: offset + page.length < tasks.length },
+      };
+};
+
+const searchTasksFromMirror = (mirror, rawInput) => {
+  const queries = normalizeBoundedStringArray(rawInput?.queries, "queries", 12, 500);
+  if (queries.length === 0) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "At least one lexical task search query is required.",
+    );
+  }
+  const companySlugs = normalizeBoundedStringArray(
+    rawInput?.companySlugs,
+    "companySlugs",
+    50,
+    120,
+  ).map((slug) => slug.toLowerCase());
+  if (
+    companySlugs.length !== 1
+    || companySlugs[0] !== mirror.company.slug.toLowerCase()
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_COMPANY_MISMATCH",
+      "One encrypted local search call must target exactly the selected company.",
+    );
+  }
+  const requestedProjects = Array.isArray(rawInput?.projectSlugs)
+    ? rawInput.projectSlugs.map((slug) => String(slug || "").trim()).filter(Boolean)
+    : [];
+  const projectMatchers = requestedProjects.map((slug) => buildMirrorProjectScopeMatcher(mirror, slug));
+  const canonicalProjectSlugs = [...new Set(requestedProjects.map((slug) => {
+    const matches = buildMirrorProjectScopeMatcher(mirror, slug);
+    const project = (mirror.projects ?? []).find((candidate) => matches({
+      projectId: candidate.id,
+      projectSlug: candidate.slug,
+    }));
+    return project?.slug ?? slug;
+  }))];
+  const limit = Math.max(1, Math.min(100, Math.trunc(Number(rawInput?.limit) || 20)));
+  const sourcePriority = {
+    title: 6,
+    description: 5,
+    checklist: 4,
+    "custom-field": 3,
+    attachment: 2,
+    comment: 1,
+  };
+  const candidates = [];
+
+  /**
+   * PostgreSQL's Russian full-text dictionary normally absorbs common word
+   * endings. The encrypted route cannot send the query to that dictionary, so
+   * use a deliberately conservative six-character lexical stem locally. Six
+   * characters keeps `релевантный`/`релевантного` equivalent without turning
+   * short words into broad substring matches.
+   */
+  const localTaskQueryMatches = (text, normalizedQuery) => {
+    const normalizedText = normalizeSearchText(text);
+    if (!normalizedQuery) return false;
+    if (normalizedText.includes(normalizedQuery)) return true;
+    const textTokens = normalizedText.split(" ").filter(Boolean);
+    return normalizedQuery.split(" ").filter(Boolean).every((queryToken) => {
+      if (queryToken.length < 6) return textTokens.includes(queryToken);
+      const stem = queryToken.slice(0, 6);
+      return textTokens.some((textToken) => textToken.length >= 6 && textToken.startsWith(stem));
+    });
+  };
+
+  for (const record of mirror.tasks ?? []) {
+    if (projectMatchers.length > 0 && !projectMatchers.some((matches) => matches(record))) continue;
+    const detail = record.payload ?? {};
+    const task = detail.task ?? {};
+    const project = detail.project
+      ?? (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
+      ?? { id: record.projectId, slug: record.projectSlug, name: null };
+    const searchableFields = {
+      title: String(task.title || ""),
+      description: String(task.descriptionPlainText || ""),
+      checklist: collectText((task.checklists ?? []).map((checklist) => ({
+        title: checklist.title,
+        items: (checklist.items ?? []).map((item) => item.content),
+      }))).join("\n"),
+      "custom-field": collectText(task.customFields ?? {}).join("\n"),
+      attachment: collectText((task.attachments ?? []).map((attachment) => (
+        attachment.originalName
+      ))).join("\n"),
+      comment: collectText((task.comments ?? [])
+        .filter((comment) => comment?.kind === "manual" || comment?.type === "manual")
+        .map((comment) => comment.bodyPlainText ?? comment.content ?? "")).join("\n"),
+    };
+    const matches = [];
+    queries.forEach((query) => {
+      const normalizedQuery = normalizeSearchText(query);
+      const rankedSources = Object.entries(searchableFields)
+        .filter(([, text]) => localTaskQueryMatches(text, normalizedQuery))
+        .sort(([left], [right]) => sourcePriority[right] - sourcePriority[left]);
+      if (rankedSources.length === 0) return;
+      const [source, text] = rankedSources[0];
+      matches.push({
+        query,
+        source,
+        previewText: buildPreview(text, normalizedQuery),
+        resultRank: 0,
+      });
+    });
+    if (matches.length === 0) continue;
+    const publicPath = task.publicPath
+      ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${record.number}/`;
+    candidates.push({
+      id: `task:${mirror.company.slug}/${record.projectSlug}/${record.number}`,
+      taskId: record.id,
+      number: record.number,
+      title: task.title,
+      url: mirror.origin ? new URL(publicPath, mirror.origin).toString() : publicPath,
+      archivedAt: task.archivedAt ?? null,
+      isArchived: Boolean(task.isArchived || task.archivedAt),
+      company: detail.company ?? mirror.company,
+      project: {
+        id: project.id,
+        slug: project.slug,
+        name: project.name,
+        url: mirror.origin
+          ? new URL(project.publicPath ?? `/${mirror.company.slug}/${project.slug}/`, mirror.origin).toString()
+          : project.publicPath ?? `/${mirror.company.slug}/${project.slug}/`,
+      },
+      parentTask: task.parentTask
+        ? {
+            id: task.parentTask.id,
+            number: task.parentTask.number,
+            title: task.parentTask.title,
+            url: mirror.origin
+              ? new URL(
+                  task.parentTask.publicPath
+                    ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${task.parentTask.number}/`,
+                  mirror.origin,
+                ).toString()
+              : task.parentTask.publicPath
+                ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${task.parentTask.number}/`,
+          }
+        : null,
+      matches,
+    });
+  }
+
+  candidates.sort((left, right) => {
+    if (left.matches.length !== right.matches.length) return right.matches.length - left.matches.length;
+    const leftScore = left.matches.reduce((sum, match) => sum + sourcePriority[match.source], 0);
+    const rightScore = right.matches.reduce((sum, match) => sum + sourcePriority[match.source], 0);
+    return rightScore - leftScore || String(left.url).localeCompare(String(right.url), "ru");
+  });
+  candidates.forEach((candidate, resultRank) => {
+    candidate.matches.forEach((match) => { match.resultRank = resultRank; });
+  });
+  const tasks = candidates.slice(0, limit).map((candidate) => ({
+    ...candidate,
+    matchedQueries: candidate.matches.map((match) => match.query),
+    matchCount: candidate.matches.length,
+  }));
+  return {
+    searchMode: "lexical",
+    scope: { companySlugs: [mirror.company.slug], projectSlugs: canonicalProjectSlugs },
+    queries,
+    tasks,
+    pagination: {
+      limit,
+      total: candidates.length,
+      returned: tasks.length,
+      hasMore: candidates.length > tasks.length,
+    },
+  };
+};
+
+const resolveLocalAgentSkillScope = (mirror, rawProjectSlug) => {
+  if (!rawProjectSlug) {
+    return { project: null, skills: mirror.agentSkills?.company ?? [] };
+  }
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, rawProjectSlug);
+  const project = (mirror.projects ?? []).find((candidate) => matchesProjectScope({
+    projectId: candidate.id,
+    projectSlug: candidate.slug,
+  }));
+  if (!project) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Project was not found or is not available in the current local company snapshot.",
+    );
+  }
+  const scope = (mirror.agentSkills?.projects ?? []).find((candidate) => (
+    candidate.projectId === project.id
+  ));
+  return { project, skills: scope?.skills ?? [] };
+};
+
+const searchAgentSkillsFromMirror = (mirror, rawInput) => {
+  const query = normalizeBoundedString(rawInput?.query, "query", 500);
+  const hints = Array.isArray(rawInput?.hints)
+    ? rawInput.hints.slice(0, 12).map((hint) => normalizeBoundedString(hint, "hint", 120))
+    : [];
+  const limit = Math.max(1, Math.min(10, Math.trunc(Number(rawInput?.limit) || 5)));
+  const { project, skills } = resolveLocalAgentSkillScope(mirror, rawInput?.projectSlug);
+  const phrase = normalizeSearchText(query);
+  const terms = [...new Set(
+    [query, ...hints]
+      .flatMap((value) => normalizeSearchText(value).split(" "))
+      .filter((value) => value.length >= 2),
+  )];
+
+  const ranked = skills.map((skill) => {
+    const fields = {
+      id: normalizeSearchText(`${skill.id || ""} ${skill.catalogSlug || ""}`),
+      title: normalizeSearchText(skill.title),
+      description: normalizeSearchText(skill.description),
+      search_terms: normalizeSearchText((skill.searchTerms ?? []).join(" ")),
+    };
+    const weights = { id: 5, title: 6, description: 2, search_terms: 4 };
+    const matchedFields = Object.entries(fields)
+      .filter(([, text]) => terms.some((term) => text.includes(term)))
+      .map(([field]) => field);
+    const matchedTerms = terms.filter((term) => Object.values(fields).some((text) => (
+      text.includes(term)
+    )));
+    const phraseScore = phrase
+      ? Object.entries(fields).reduce((score, [field, text]) => (
+          score + (text.includes(phrase) ? weights[field] * 3 : 0)
+        ), 0)
+      : 0;
+    const score = phraseScore + matchedFields.reduce((total, field) => (
+      total + weights[field] * matchedTerms.length
+    ), 0);
+    return { skill, score, matchedTerms, matchedFields };
+  }).filter((candidate) => candidate.score > 0)
+    .sort((left, right) => (
+      right.score - left.score
+      || String(left.skill.title).localeCompare(String(right.skill.title), "ru")
+    ))
+    .slice(0, limit);
+
+  return {
+    company: mirror.company,
+    project: project ? { id: project.id, slug: project.slug, name: project.name } : null,
+    query: { text: query, hints },
+    skills: ranked.map(({ skill, matchedTerms, matchedFields }, index) => ({
+      id: skill.id,
+      catalogSlug: skill.catalogSlug,
+      title: skill.title,
+      description: skill.description,
+      version: skill.version,
+      catalogVisibility: skill.catalogVisibility,
+      sources: skill.sources,
+      integrationRouting: skill.integrationRouting,
+      readiness: skill.readiness,
+      connection: skill.connection,
+      match: {
+        rank: index + 1,
+        matchedTerms,
+        matchedFields,
+      },
+    })),
+    updatePolicy: "current",
+  };
+};
+
+const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
+  const query = normalizeSearchText(rawInput?.query || "");
+  const projectSlug = rawInput?.projectSlug ? String(rawInput.projectSlug).trim() : null;
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
+  const offset = Math.max(0, Math.trunc(Number(rawInput?.offset) || 0));
+  const limit = Math.max(1, Math.min(500, Math.trunc(Number(rawInput?.limit) || 100)));
+  const items = (mirror.contextDocuments ?? []).filter((document) => {
+    if (document.type !== type || !matchesProjectScope(document)) return false;
+    const payload = document.payload ?? {};
+    if (rawInput?.includeArchived !== true) {
+      const archived = Boolean(
+        payload?.page?.archivedAt
+        || payload?.contact?.isArchived
+        || payload?.registry?.state === "archived"
+        || payload?.meeting?.archivedAt,
+      );
+      if (archived) return false;
+    }
+    if (type === "contact" && rawInput?.kind && payload?.contact?.kind !== rawInput.kind) return false;
+    if (type === "meeting") {
+      const occurredAt = String(payload?.meeting?.occurredAt || "");
+      if (rawInput?.occurredFrom && occurredAt < rawInput.occurredFrom) return false;
+      if (rawInput?.occurredTo && occurredAt > rawInput.occurredTo) return false;
+    }
+    if (!query) return true;
+    return query.split(" ").filter(Boolean).every((token) => (
+      normalizeSearchText(collectText(payload).join("\n")).includes(token)
+    ));
+  }).map((document) => ({
+    id: document.id,
+    resultId: `context:${document.type}:${document.id}`,
+    type: document.type,
+    title: document.title,
+    projectSlug: document.projectSlug ?? null,
+    revisionToken: document.revisionToken,
+    summary: document.payload?.[type === "knowledge_page" ? "page" : type] ?? null,
+  }));
+  return {
+    schemaVersion: 1,
+    provider: "local_company_context",
+    company: mirror.company,
+    generation: mirror.generation,
+    offset,
+    limit,
+    total: items.length,
+    hasMore: offset + limit < items.length,
+    items: items.slice(offset, offset + limit),
+  };
+};
+
+const getDomainDocumentFromMirror = (mirror, type, predicate) => {
+  const document = (mirror.contextDocuments ?? []).find((candidate) => (
+    candidate.type === type && predicate(candidate)
+  ));
+  if (!document) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "The requested object is absent from the current ACL-filtered local company generation.",
+    );
+  }
+  return fetchMirrorResult(mirror, `context:${document.type}:${document.id}`);
+};
+
+const listDossiersFromMirror = (mirror, rawInput) => {
+  const projectSlug = rawInput?.projectSlug ? String(rawInput.projectSlug).trim() : null;
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
+  const dossiers = (mirror.dossiers ?? []).filter((dossier) => {
+    if (rawInput?.includeArchived !== true && (dossier.isArchived || dossier.archivedAt)) return false;
+    return matchesProjectScope({
+      projectId: dossier.project?.id ?? null,
+      projectSlug: dossier.project?.slug ?? null,
+    });
+  });
+  return {
+    schemaVersion: 1,
+    provider: "local_company_context",
+    company: mirror.company,
+    generation: mirror.generation,
+    dossiers,
+  };
+};
+
+export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) => {
+  const input = rawArguments && typeof rawArguments === "object" && !Array.isArray(rawArguments)
+    ? rawArguments
+    : {};
+  if (nativeTool === "search") {
+    return searchCompanyContextMirror(
+      mirror,
+      Array.isArray(input.queries) ? input.queries : [input.query].filter(Boolean),
+      input.limit,
+    );
+  }
+  if (nativeTool === "search_tasks") return searchTasksFromMirror(mirror, input);
+  if (nativeTool === "search_agent_skills") return searchAgentSkillsFromMirror(mirror, input);
+  if (nativeTool === "search_agent_workspace_files") {
+    return searchWorkspaceFilesFromMirror(
+      mirror,
+      Array.isArray(input.queries) ? input.queries : [input.query].filter(Boolean),
+      input.limit,
+    );
+  }
+  if (nativeTool === "fetch") return fetchMirrorResult(mirror, input.id);
+  if (nativeTool === "list_projects") {
+    return listCompanyContextMirror(mirror, "projects", 0, 100);
+  }
+  if (nativeTool === "list_project_tasks") return listTasksFromMirror(mirror, input);
+  if (nativeTool === "list_my_tasks") return listTasksFromMirror(mirror, input, { personal: true });
+  if (nativeTool === "get_task") {
+    return buildLocalExactTaskRead(mirror, [input], input.knownInstructionLayerKeys);
+  }
+  if (nativeTool === "get_tasks") {
+    if (!Array.isArray(input.tasks) || input.tasks.length < 2 || input.tasks.length > 20) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "get_tasks requires from 2 to 20 exact task locators.",
+      );
+    }
+    return buildLocalExactTaskRead(mirror, input.tasks, input.knownInstructionLayerKeys);
+  }
+  if (nativeTool === "list_dossiers") return listDossiersFromMirror(mirror, input);
+  if (nativeTool === "get_dossier") {
+    const dossier = (mirror.dossiers ?? []).find((candidate) => candidate.id === input.dossierId);
+    if (!dossier) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Dossier is stale.");
+    }
+    return fetchMirrorResult(mirror, `dossier:${dossier.id}`);
+  }
+  if (nativeTool === "list_knowledge_base_pages") {
+    return listDomainDocumentsFromMirror(mirror, "knowledge_page", input);
+  }
+  if (nativeTool === "get_knowledge_base_page") {
+    return getDomainDocumentFromMirror(mirror, "knowledge_page", (document) => (
+      document.payload?.page?.slug === input.pageSlug
+      || document.payload?.page?.slugAliases?.includes?.(input.pageSlug)
+    ));
+  }
+  if (nativeTool === "list_contacts") return listDomainDocumentsFromMirror(mirror, "contact", input);
+  if (nativeTool === "get_contact") {
+    return getDomainDocumentFromMirror(mirror, "contact", (document) => document.id === input.contactId);
+  }
+  if (nativeTool === "list_registries") return listDomainDocumentsFromMirror(mirror, "registry", input);
+  if (nativeTool === "get_registry") {
+    const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, input.projectSlug || null);
+    return getDomainDocumentFromMirror(mirror, "registry", (document) => (
+      matchesProjectScope(document) && document.payload?.registry?.slug === input.registrySlug
+    ));
+  }
+  if (nativeTool === "search_meetings") return listDomainDocumentsFromMirror(mirror, "meeting", input);
+  if (nativeTool === "get_meeting") {
+    return getDomainDocumentFromMirror(mirror, "meeting", (document) => document.id === input.meetingId);
+  }
+  if (nativeTool === "get_agent_workspace_file") {
+    return getWorkspaceFileFromMirror(mirror, input);
+  }
+  throw new TrelioLocalContextError(
+    "LOCAL_CONTEXT_INVALID_INPUT",
+    `The local provider does not implement native read "${nativeTool}".`,
+  );
 };
 
 export const fetchMirrorResult = (mirror, rawResultId) => {
@@ -2362,6 +4366,26 @@ export const handleTrelioLocalContextOperation = async (
   });
   if (ready.nativeProvider) return ready.result;
 
+  if (operation === "native_read") {
+    const nativeTool = String(rawInput?.nativeTool || "").trim();
+    if (!LOCAL_ACTION_TOOL_NAME_PATTERN.test(nativeTool)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "nativeTool must contain the exact Trelio MCP read tool selected by the server.",
+      );
+    }
+    if (nativeTool === "get_task_sections") {
+      return getTaskSectionsFromProvider({
+        origin,
+        token: ready.token,
+        companyEncryption: ready.companyEncryption,
+        mirror: ready.mirror,
+        rawInput: rawInput?.arguments,
+        signal,
+      });
+    }
+    return handleNativeLocalContextRead(ready.mirror, nativeTool, rawInput?.arguments);
+  }
   if (operation === "search") {
     return searchCompanyContextMirror(ready.mirror, rawInput?.queries, rawInput?.limit);
   }
@@ -2397,7 +4421,7 @@ export const handleTrelioLocalContextOperation = async (
   }
   throw new TrelioLocalContextError(
     "LOCAL_CONTEXT_INVALID_INPUT",
-    "operation must be search, search_workspace_files, list, get_task, fetch or get_workspace_file.",
+    "operation must be native_read, search, search_workspace_files, list, get_task, fetch or get_workspace_file.",
   );
 };
 
@@ -2523,6 +4547,113 @@ export const handleTrelioLocalProposalOperation = async (
     signal,
   });
   return buildProposalLocalResult(origin, hydrated);
+};
+
+const canonicalizeLocalActionProjectSlugs = (value, mirror) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalizeLocalActionProjectSlugs(item, mirror));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([field, child]) => {
+    if (field === "projectSlug" && typeof child === "string") {
+      const project = resolveMirrorProjectBySlug(mirror, child.trim());
+      return [field, project?.slug ?? child];
+    }
+    return [field, canonicalizeLocalActionProjectSlugs(child, mirror)];
+  }));
+};
+
+export const handleTrelioLocalActionOperation = async (
+  origin,
+  rawInput,
+  { signal } = {},
+) => {
+  const companySlug = normalizeCompanySlug(rawInput?.companySlug);
+  const nativeTool = String(rawInput?.nativeTool || "").trim();
+  if (!LOCAL_ACTION_TOOL_NAME_PATTERN.test(nativeTool)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "nativeTool must contain one exact Trelio MCP tool name.",
+    );
+  }
+  if (
+    !rawInput?.arguments
+    || typeof rawInput.arguments !== "object"
+    || Array.isArray(rawInput.arguments)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "arguments must contain the exact native MCP input object.",
+    );
+  }
+  const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
+  if (provider.nativeProvider) return {
+    content: [{ type: "text", text: JSON.stringify(provider.result) }],
+  };
+
+  // Historical/pre-encryption project links remain valid. Canonicalization is
+  // local because the clear alias itself must not be sent back to Trelio.
+  const ready = await getReadyMirror({ origin, companySlug, signal });
+  if (ready.nativeProvider) return {
+    content: [{ type: "text", text: JSON.stringify(ready.result) }],
+  };
+  const canonicalArguments = canonicalizeLocalActionProjectSlugs(
+    rawInput.arguments,
+    ready.mirror,
+  );
+  const protectedRequest = nativeTool === "upload_attachment" || nativeTool === "upload_inline_image"
+    ? await protectLocalActionUpload({
+        nativeTool,
+        rawArguments: canonicalArguments,
+        companyEncryption: provider.companyEncryption,
+      })
+    : await protectLocalActionArguments({
+        nativeTool,
+        arguments: canonicalArguments,
+        companyEncryption: provider.companyEncryption,
+        mirror: ready.mirror,
+      });
+  await uploadLocalActionPayloads({
+    origin,
+    token: provider.token,
+    companyEncryption: provider.companyEncryption,
+    payloads: protectedRequest.payloads,
+    expectedPayloadValues: protectedRequest.expectedPayloadValues,
+    signal,
+  });
+
+  const response = await request(
+    origin,
+    provider.token,
+    `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/actions/execute`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        nativeTool,
+        arguments: protectedRequest.value,
+        ...(rawInput.runtimeSessionProof
+          ? { runtimeSessionProof: rawInput.runtimeSessionProof }
+          : {}),
+      }),
+      signal,
+    },
+  );
+  const rawResult = await readJson(response);
+  const hydrated = await hydrateLocalActionResult({
+    rawResult,
+    origin,
+    token: provider.token,
+    companyEncryption: provider.companyEncryption,
+    signal,
+  });
+  return nativeTool === "download_attachment"
+    ? openLocalActionAttachmentResult({
+        result: hydrated,
+        companyEncryption: provider.companyEncryption,
+        signal,
+      })
+    : hydrated;
 };
 
 const normalizeGitHead = (value, fieldName) => {
@@ -3229,8 +5360,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
 
 export const TRELIO_LOCAL_CONTEXT_TOOL = {
   name: "continue_trelio_local_context",
-  title: "Continue a Trelio local context route",
-  description: "Continue the exact local context route selected by Trelio; use only after its native provider response.",
+  description: "Continue the server-selected local read route.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -3239,6 +5369,7 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
       operation: {
         type: "string",
         enum: [
+          "native_read",
           "search",
           "search_workspace_files",
           "list",
@@ -3248,6 +5379,13 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
         ],
       },
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
+      nativeTool: {
+        type: "string",
+        pattern: "^[a-z][a-z0-9_]{0,127}$",
+      },
+      arguments: {
+        type: "object",
+      },
       projectSlug: { type: "string", minLength: 1, maxLength: 120 },
       taskNumber: { type: "integer", minimum: 1 },
       queries: {
@@ -3285,8 +5423,8 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
 
 export const TRELIO_LOCAL_PROPOSAL_TOOL = {
   name: "continue_trelio_local_proposal",
-  title: "Continue a Trelio local proposal route",
-  description: "Continue the exact local proposal route selected by Trelio; final actions require explicit user confirmation.",
+  title: "Continue a Trelio proposal",
+  description: "Continue the exact local proposal route selected by Trelio.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -3308,6 +5446,13 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
     readOnlyHint: false,
     destructiveHint: false,
     openWorldHint: false,
+  },
+  _meta: {
+    ui: {
+      resourceUri: TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+    },
+    "openai/outputTemplate": TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+    "openai/widgetAccessible": true,
   },
 };
 
@@ -3331,6 +5476,35 @@ export const TRELIO_LOCAL_WORKSPACE_TOOL = {
       targetHead: { type: "string", pattern: "^[0-9a-f]{40,64}$" },
       reason: { type: "string", minLength: 1, maxLength: 2000 },
       runtimeSessionId: { type: "string", format: "uuid" },
+    },
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    openWorldHint: false,
+  },
+};
+
+export const TRELIO_LOCAL_ACTION_TOOL = {
+  name: "continue_trelio_local_action",
+  title: "Continue a Trelio local action route",
+  description: "Continue the exact action route selected by Trelio for one company. Provider selection is automatic; use only the nativeTool and arguments from that response.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["companySlug", "nativeTool", "arguments"],
+    properties: {
+      companySlug: { type: "string", minLength: 1, maxLength: 120 },
+      nativeTool: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        pattern: "^[a-z][a-z0-9_]{0,127}$",
+      },
+      arguments: {
+        type: "object",
+        description: "Exact original native MCP arguments. The local host protects content before forwarding it.",
+      },
     },
   },
   annotations: {

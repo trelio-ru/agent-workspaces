@@ -255,14 +255,19 @@ provider-tag workflow или внутренние release playbooks в этот 
   native, а детали exact local context/proposal route загружаются только из lazy
   worker reference после такого ответа. Always-visible schemas provider-neutral.
 - Encrypted routing принимает только explicit capabilities: current content read,
-  proposal, local Workspace list/restore/cancel либо logical bridge checkpoint.
-  Unsupported/new native method fail-closed и не маскируется generic local search.
+  exact local action, proposal, local Workspace list/restore/cancel либо logical
+  bridge checkpoint. Local action повторно запускает исходный native handler с
+  прежними schema/scope/ACL/idempotency/CAS только после проверки bridge session,
+  runtime proof и field-bound payload markers; неизвестный method fail-closed и
+  не маскируется generic local search.
   Workspace-only query имеет exact company scope; current-head file и revision
   metadata читаются локально, audited restore проходит local Run, а прямые
   server-side historical Git diff/read не получают plaintext fallback.
 - Combined encrypted proposal bundle выбирает provider до per-card preparation,
   canonicalize-ит historical project aliases локально и отклоняет mixed-company
   payload до первого save; confirmed card error не блокирует независимых siblings.
+  Local MCP возвращает полный MCP App result и exact v3 resource metadata,
+  включая `data:` frame CSP; app-only context/action aliases скрыты от модели.
 - Чистое чтение уже принятого task/dossier Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит

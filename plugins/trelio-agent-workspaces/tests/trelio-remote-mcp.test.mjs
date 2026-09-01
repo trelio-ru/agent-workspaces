@@ -11,6 +11,8 @@ import {
   AGENT_SKILL_ROUTING_INSTRUCTIONS,
   RemoteMcpHostError,
   assertExactReadOnlyToolList,
+  buildLocalProposalAppResourceMeta,
+  buildLocalProposalRootResult,
   buildRemoteMcpRequestHeaders,
   collectCredentialThroughLoopback,
   doctorWithCredential,
@@ -41,7 +43,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "1.16.6");
+  }), "1.17.0");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -1632,8 +1634,21 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
 
   assert.deepEqual(response.result.tools.map(({ name }) => name), [
     "continue_trelio_local_context",
+    "continue_trelio_local_action",
     "continue_trelio_local_proposal",
     "continue_trelio_local_workspace",
+    "get_task_comment_proposal_context",
+    "publish_task_comment_proposal",
+    "dismiss_task_comment_proposal",
+    "get_task_status_proposal_context",
+    "apply_task_status_proposal",
+    "dismiss_task_status_proposal",
+    "get_task_control_clear_proposal_context",
+    "apply_task_control_clear_proposal",
+    "dismiss_task_control_clear_proposal",
+    "get_task_checklist_proposal_context",
+    "apply_task_checklist_proposal",
+    "dismiss_task_checklist_proposal",
     "plan_company_private_agent_skill_create",
     "create_company_private_agent_skill",
     "plan_company_private_agent_skill_release",
@@ -1652,10 +1667,98 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.match(tool.description, /exact Trelio settings URL/u);
   }
-  const providerTools = response.result.tools.slice(0, 2);
-  assert.equal(Buffer.byteLength(JSON.stringify(providerTools), "utf8") <= 3_000, true);
+  const providerTools = response.result.tools.slice(0, 4);
+  const appOnlyProposalTools = response.result.tools.slice(4, 16);
+  const actionTool = providerTools.find(({ name }) => name === "continue_trelio_local_action");
+  const establishedProviderTools = providerTools.filter(({ name }) => (
+    name !== "continue_trelio_local_action"
+  ));
+  assert.equal(Buffer.byteLength(JSON.stringify(establishedProviderTools), "utf8") <= 3_000, true);
+  assert.equal(Buffer.byteLength(JSON.stringify(actionTool), "utf8") <= 900, true);
   assert.doesNotMatch(JSON.stringify(providerTools), /encrypt|e2ee|cipher|private key/iu);
+  assert.equal(appOnlyProposalTools.length, 12);
+  for (const tool of appOnlyProposalTools) {
+    assert.deepEqual(tool._meta?.ui?.visibility, ["app"]);
+    assert.equal(tool._meta?.["openai/visibility"], "private");
+  }
   assert.doesNotMatch(JSON.stringify(response), /personal-test-token/u);
+});
+
+test("local MCP exposes the proposal App resource without adding its HTML to tool context", async () => {
+  const listed = await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "resources/list",
+    params: {},
+  });
+  const uri = "ui://trelio/task-proposals/v3.html";
+  assert.deepEqual(listed.result.resources.map((resource) => resource.uri), [uri]);
+  assert.deepEqual(
+    listed.result.resources[0]._meta.ui.csp.frameDomains,
+    ["data:"],
+  );
+  assert.deepEqual(
+    listed.result.resources[0]._meta["openai/widgetCSP"].frame_domains,
+    ["data:"],
+  );
+  // resources/read uses this exact builder too. Assert both metadata dialects
+  // here so a future refactor cannot restore the host-specific loading shell.
+  const readMeta = buildLocalProposalAppResourceMeta();
+  assert.deepEqual(readMeta.ui.csp.frameDomains, ["data:"]);
+  assert.deepEqual(readMeta["openai/widgetCSP"].frame_domains, ["data:"]);
+  assert.doesNotMatch(JSON.stringify((await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/list",
+    params: {},
+  })).result), /<!doctype html>/iu);
+
+  const read = await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 3,
+    method: "resources/read",
+    params: { uri },
+  }, {
+    readResource: async (_origin, exactUri) => ({
+      uri: exactUri,
+      mimeType: "text/html;profile=mcp-app",
+      text: "<!doctype html><title>proposal</title>",
+    }),
+  });
+  assert.equal(read.result.contents[0].uri, uri);
+  assert.match(read.result.contents[0].text, /proposal/u);
+});
+
+test("local proposal continuation returns a real MCP App result instead of JSON text only", () => {
+  const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const result = buildLocalProposalRootResult({
+    companySlug: "protected-company",
+    kind: "comment",
+    operation: "save",
+    result: {
+      provider: "local_company_context",
+      proposal: {
+        schemaVersion: 3,
+        currentDraft: {
+          proposalId,
+          revision: 1,
+          bodyText: "Готовый комментарий",
+          contextRequest: { runId },
+        },
+      },
+    },
+  });
+
+  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v3.html");
+  assert.equal(result.structuredContent.kind, "taskProposalBlocks");
+  assert.equal(result.structuredContent.blocks[0].type, "commentProposal");
+  assert.equal(
+    result.structuredContent.blocks[0].proposal.currentDraft.localCompanySlug,
+    "protected-company",
+  );
+  assert.equal(result.content[0].type, "text");
+  assert.match(result.content[0].text, /Готовый комментарий/u);
 });
 
 test("local MCP initialize publishes the universal skill-first routing gate", async () => {
@@ -2008,10 +2111,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.16.6");
+  assert.equal(frames[0].result.serverInfo.version, "1.17.0");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 11);
+  assert.equal(frames[1].result.tools.length, 24);
 });
