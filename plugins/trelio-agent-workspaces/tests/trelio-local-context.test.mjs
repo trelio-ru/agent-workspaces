@@ -6,6 +6,7 @@ import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
   fetchMirrorResult,
+  hydrateChangedCompanyMirrorRecords,
   listCompanyContextMirror,
   searchCompanyContextMirror,
 } from "../scripts/trelio-local-context.mjs";
@@ -124,4 +125,25 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {
   assert.equal(TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS, 600);
+});
+
+test("changed mirror records are hydrated in bounded mirror-wide batches", async () => {
+  const hydrationCalls = [];
+  const records = [{ cached: { id: "cached" } }].concat(
+    Array.from({ length: 501 }, (_, index) => ({ source: { id: `changed-${index}` } })),
+  );
+
+  const hydrated = await hydrateChangedCompanyMirrorRecords({
+    records,
+    load: async (value) => value,
+    hydrate: async (values) => {
+      hydrationCalls.push(values);
+      return values.map((value) => ({ ...value, hydrated: true }));
+    },
+  });
+
+  assert.deepEqual(hydrationCalls.map((batch) => batch.length), [250, 250, 1]);
+  assert.deepEqual(hydrated[0], { id: "cached" });
+  assert.deepEqual(hydrated[1], { id: "changed-0", hydrated: true });
+  assert.deepEqual(hydrated.at(-1), { id: "changed-500", hydrated: true });
 });

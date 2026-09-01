@@ -48,6 +48,7 @@ const LOCAL_MIRROR_MEMORY_TTL_MS = TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS * 1000
 const MAX_CONTEXT_TASKS = 10_000;
 const MAX_CONTEXT_WORKSPACES = 2_000;
 const MAX_CONTEXT_DOCUMENTS = 20_000;
+const MIRROR_HYDRATION_RECORD_BATCH_SIZE = 250;
 const MAX_SEARCH_QUERIES = 5;
 const MAX_SEARCH_RESULTS = 50;
 const MIRROR_GENERATION_PATTERN = /^[0-9a-f]{64}$/u;
@@ -524,15 +525,57 @@ const mapWithConcurrency = async (items, concurrency, mapper) => {
   return results;
 };
 
-const fetchHydratedTask = async ({
+export const hydrateChangedCompanyMirrorRecords = async ({
+  records,
+  load,
+  hydrate,
+  concurrency = 6,
+}) => {
+  const results = new Array(records.length);
+  const changedRecords = [];
+  records.forEach((record, index) => {
+    if (Object.hasOwn(record, "source")) {
+      changedRecords.push({ index, source: record.source });
+    } else {
+      results[index] = record.cached;
+    }
+  });
+  for (
+    let offset = 0;
+    offset < changedRecords.length;
+    offset += MIRROR_HYDRATION_RECORD_BATCH_SIZE
+  ) {
+    const batch = changedRecords.slice(offset, offset + MIRROR_HYDRATION_RECORD_BATCH_SIZE);
+    const rawValues = await mapWithConcurrency(
+      batch,
+      concurrency,
+      (record) => load(record.source),
+    );
+    // A bounded record batch lets the shared E2EE resolver collect markers
+    // across many changed tasks/documents, while avoiding a second full raw
+    // company copy in RAM. The hydrator additionally splits at its 250-entity
+    // server boundary, so request count no longer follows task count.
+    const hydratedValues = await hydrate(rawValues);
+    if (!Array.isArray(hydratedValues) || hydratedValues.length !== batch.length) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_HYDRATION",
+        "Trelio returned an invalid hydrated company-context batch.",
+      );
+    }
+    batch.forEach((record, batchIndex) => {
+      results[record.index] = hydratedValues[batchIndex];
+    });
+  }
+  return results;
+};
+
+const fetchTaskProjection = async ({
   origin,
   token,
-  companyEncryption,
   companySlug,
   task,
   signal,
-}) => {
-  const response = await readJson(await request(
+}) => readJson(await request(
     origin,
     token,
     `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}`
@@ -540,22 +583,6 @@ const fetchHydratedTask = async ({
       + `?${new URLSearchParams({ expectedRevision: task.revisionToken }).toString()}`,
     { signal },
   ));
-  const hydrated = await hydrateAgentCompanyEncryptedJson({
-    value: response,
-    origin,
-    token,
-    companyEncryption,
-    signal,
-  });
-  return {
-    id: task.id,
-    projectId: task.projectId,
-    projectSlug: task.projectSlug,
-    number: task.number,
-    revisionToken: task.revisionToken,
-    payload: hydrated.task,
-  };
-};
 
 const buildWorkspaceRecord = async ({
   origin,
@@ -625,18 +652,39 @@ const buildMirror = async ({
     signal,
   });
   const previousTasks = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
-  const tasks = await mapWithConcurrency(manifest.tasks ?? [], 6, async (task) => {
+  const taskRecords = (manifest.tasks ?? []).map((task) => {
     const cached = previousTasks.get(task.id);
     return cached?.revisionToken === task.revisionToken
-      ? cached
-      : fetchHydratedTask({
-          origin,
-          token,
-          companyEncryption,
-          companySlug: manifest.company.slug,
-          task,
-          signal,
-        });
+      ? { task, cached }
+      : { task, source: task };
+  });
+  const hydratedTaskRecords = await hydrateChangedCompanyMirrorRecords({
+    records: taskRecords,
+    load: (task) => fetchTaskProjection({
+      origin,
+      token,
+      companySlug: manifest.company.slug,
+      task,
+      signal,
+    }),
+    hydrate: (value) => hydrateAgentCompanyEncryptedJson({
+      value,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    }),
+  });
+  const tasks = taskRecords.map((record, index) => {
+    if (record.cached) return record.cached;
+    return {
+      id: record.task.id,
+      projectId: record.task.projectId,
+      projectSlug: record.task.projectSlug,
+      number: record.task.number,
+      revisionToken: record.task.revisionToken,
+      payload: hydratedTaskRecords[index].task,
+    };
   });
   const previousWorkspaces = new Map(
     (previous?.workspaces ?? []).map((workspace) => [workspace.id, workspace]),
@@ -654,22 +702,23 @@ const buildMirror = async ({
   const previousContextDocuments = new Map(
     (previous?.contextDocuments ?? []).map((document) => [document.id, document]),
   );
-  const contextDocuments = await mapWithConcurrency(
-    rawManifest.contextDocuments ?? [],
-    6,
-    async (document) => {
-      const cached = previousContextDocuments.get(document.id);
-      return cached?.revisionToken === document.revisionToken
-        ? cached
-        : hydrateAgentCompanyEncryptedJson({
-            value: document,
-            origin,
-            token,
-            companyEncryption,
-            signal,
-          });
-    },
-  );
+  const contextDocumentRecords = (rawManifest.contextDocuments ?? []).map((document) => {
+    const cached = previousContextDocuments.get(document.id);
+    return cached?.revisionToken === document.revisionToken
+      ? { cached }
+      : { source: document };
+  });
+  const contextDocuments = await hydrateChangedCompanyMirrorRecords({
+    records: contextDocumentRecords,
+    load: async (document) => document,
+    hydrate: (value) => hydrateAgentCompanyEncryptedJson({
+      value,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    }),
+  });
 
   return {
     schemaVersion: MIRROR_SCHEMA_VERSION,

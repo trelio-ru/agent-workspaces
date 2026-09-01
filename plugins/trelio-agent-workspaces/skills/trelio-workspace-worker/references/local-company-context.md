@@ -22,11 +22,13 @@ and publishes one encrypted local mirror generation. It never sends decrypted
 content, search queries, snippets, paths, or private keys to Trelio.
 
 Sync is incremental. Unchanged task revisions and accepted Workspace heads are
-reused. One short per-company writer lock protects publication, while readers
-keep using an immutable prior generation. A second process may wait for that
-writer; it must not delete the mirror, create a plaintext fallback, or broaden
-the scope. A live writer refreshes its lock. Stale-lock takeover is bounded and
-owner-checked.
+reused. The host resolves E2EE markers from all changed task/domain projections
+in bounded mirror-wide batches; transport request count does not grow one-for-one
+with the number of tasks. One short per-company writer lock protects publication,
+while readers keep using an immutable prior generation. A second process may wait
+for that writer; it must not delete the mirror, create a plaintext fallback, or
+broaden the scope. A live writer refreshes its lock. Stale-lock takeover is bounded
+and owner-checked.
 
 After the automatic sync, `search`, `list`, `get_task`, and `fetch` read the
 encrypted mirror locally. In the same MCP host process those queries remain
