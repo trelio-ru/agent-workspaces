@@ -3465,7 +3465,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.16.3");
+  assert.equal(BRIDGE_VERSION, "1.16.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -3563,7 +3563,7 @@ test("release CI pins Node 22 and avoids the parent test-runner IPC", async () =
   );
   assert.equal([
     ...genericJobSource.matchAll(/node plugins\/trelio-agent-workspaces\/tests\/[^\s]+\.test\.mjs/gu),
-  ].length, 7);
+  ].length, 8);
   assert.doesNotMatch(genericJobSource, /node --test/u);
 });
 

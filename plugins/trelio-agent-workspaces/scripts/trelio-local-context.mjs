@@ -1343,6 +1343,45 @@ const normalizeProposalTarget = (rawTarget) => {
   };
 };
 
+/**
+ * Turn a task URL created before company encryption into the exact current
+ * backend route. Historical project slugs are protected company content, so
+ * the server deliberately cannot resolve them after migration. The local
+ * mirror can: it binds every alias to one immutable project id and then checks
+ * that the requested task is present in the same ACL-filtered generation.
+ */
+export const canonicalizeProposalTargetFromMirror = (mirror, rawTarget) => {
+  const target = normalizeProposalTarget(rawTarget);
+  if (target.runId) return target;
+
+  const project = resolveMirrorProjectBySlug(mirror, target.projectSlug);
+  const task = project
+    ? (mirror.tasks ?? []).find((candidate) => (
+        candidate.projectId === project.id
+        && candidate.number === target.taskNumber
+      ))
+    : null;
+  if (!project || !task) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_TASK_NOT_FOUND",
+      "Task was not found in the current ACL-filtered local company snapshot.",
+    );
+  }
+  if (task.projectSlug !== project.slug) {
+    // A mismatch would make the same alias point at one project in the local
+    // index and another route on the server. Never guess across that boundary.
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_MIRROR_INVALID",
+      "The local company context contains inconsistent project routing.",
+    );
+  }
+
+  return {
+    projectSlug: project.slug,
+    taskNumber: target.taskNumber,
+  };
+};
+
 const normalizeBoundedStringArray = (value, fieldName, maximumItems, maximumLength) => {
   if (!Array.isArray(value) || value.length > maximumItems) {
     throw new TrelioLocalContextError(
@@ -2044,6 +2083,22 @@ export const handleTrelioLocalProposalOperation = async (
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   if (provider.nativeProvider) return provider.result;
 
+  let proposalTarget = null;
+  if (operation === "context" || operation === "save") {
+    proposalTarget = normalizeProposalTarget(rawPayload.target);
+    if (!proposalTarget.runId) {
+      // Project aliases are available only in the decrypted local mirror. The
+      // provider is already cached by the live check above, so getReadyMirror
+      // performs at most the normal first-start sync and never repeats device
+      // authorization just to canonicalize a legacy task URL.
+      const ready = await getReadyMirror({ origin, companySlug, signal });
+      proposalTarget = canonicalizeProposalTargetFromMirror(
+        ready.mirror,
+        proposalTarget,
+      );
+    }
+  }
+
   let rawResult;
   if (operation === "context") {
     rawResult = await postProposalRequest({
@@ -2053,7 +2108,7 @@ export const handleTrelioLocalProposalOperation = async (
       endpoint: "context",
       body: {
         kind,
-        target: normalizeProposalTarget(rawPayload.target),
+        target: proposalTarget,
       },
       signal,
     });
@@ -2064,7 +2119,7 @@ export const handleTrelioLocalProposalOperation = async (
       companyEncryption: provider.companyEncryption,
       companySlug,
       kind,
-      rawPayload,
+      rawPayload: { ...rawPayload, target: proposalTarget },
       signal,
     });
   } else if (operation === "action") {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  canonicalizeProposalTargetFromMirror,
   TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS,
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
@@ -122,6 +123,29 @@ test("legacy project slugs resolve to canonical mirror records", () => {
   assert.equal(listedDossiers.total, 1);
   assert.equal(listedRegistries.total, 1);
   assert.equal(fetched.task.title, "Исправить офлайн синхронизацию");
+});
+
+test("legacy task URLs use the canonical project route for every proposal write", () => {
+  assert.deepEqual(
+    canonicalizeProposalTargetFromMirror(mirror, {
+      projectSlug: "mobile-legacy",
+      taskNumber: 17,
+    }),
+    { projectSlug: "mobile", taskNumber: 17 },
+  );
+  assert.deepEqual(
+    canonicalizeProposalTargetFromMirror(mirror, {
+      runId: "77777777-7777-4777-8777-777777777777",
+    }),
+    { runId: "77777777-7777-4777-8777-777777777777" },
+  );
+  assert.throws(
+    () => canonicalizeProposalTargetFromMirror(mirror, {
+      projectSlug: "mobile-legacy",
+      taskNumber: 999,
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_TASK_NOT_FOUND",
+  );
 });
 
 test("ambiguous project routing aliases fail closed", () => {

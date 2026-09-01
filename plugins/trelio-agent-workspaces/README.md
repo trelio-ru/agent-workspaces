@@ -73,6 +73,11 @@ snippets, расшифрованные пути и содержимое. В mode
 зашифрована; одна расшифрованная generation и ленивый индекс живут только в
 памяти MCP-процесса и автоматически освобождаются через 600 секунд.
 
+Ссылки на задачи, созданные до включения шифрования или переименования проекта,
+остаются рабочими: старый project slug разрешается по локальному зашифрованному
+mirror и заменяется текущим непрозрачным маршрутом как для чтения, так и для
+comment/status/control/checklist proposal flow.
+
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Плагин шифрует текст и причины
 до HTTP, backend применяет прежние ACL/revisions/locks, а final action требует
