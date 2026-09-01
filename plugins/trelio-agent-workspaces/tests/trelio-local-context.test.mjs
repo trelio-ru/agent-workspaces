@@ -8,7 +8,9 @@ import {
   fetchMirrorResult,
   hydrateChangedCompanyMirrorRecords,
   listCompanyContextMirror,
+  resolveMirrorPaths,
   searchCompanyContextMirror,
+  selectEncryptedProposalFilesFromManifest,
 } from "../scripts/trelio-local-context.mjs";
 
 const mirror = {
@@ -158,6 +160,63 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {
   assert.equal(TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS, 600);
+});
+
+test("encrypted mirror pointers and locks are isolated by schema version", () => {
+  const paths = resolveMirrorPaths({
+    origin: "https://trelio.example",
+    companyId: "11111111-1111-4111-8111-111111111111",
+  });
+
+  assert.equal(paths.root.endsWith("schema-2"), true);
+  assert.equal(paths.pointer.startsWith(paths.root), true);
+  assert.equal(paths.lock.startsWith(paths.root), true);
+  assert.equal(paths.generations.startsWith(paths.root), true);
+});
+
+test("encrypted proposal paths resolve only through the exact local browser manifest", () => {
+  const projectionId = "77777777-7777-4777-8777-777777777777";
+  const workspaceId = "88888888-8888-4888-8888-888888888888";
+  const acceptedHead = "c".repeat(40);
+  const manifest = {
+    schemaVersion: 1,
+    kind: "agent-workspace-browser-manifest",
+    projectionId,
+    workspaceId,
+    workspaceHead: acceptedHead,
+    files: [{
+      id: "99999999-9999-4999-8999-999999999999",
+      path: "work/SMOKE_TEST.md",
+      sizeBytes: 42,
+      contentType: "text/plain; charset=utf-8",
+    }],
+  };
+  const selected = selectEncryptedProposalFilesFromManifest({
+    manifest,
+    projectionId,
+    projectionFileCount: 1,
+    workspaceId,
+    acceptedHead,
+    filePaths: ["work/SMOKE_TEST.md"],
+  });
+
+  assert.deepEqual(selected, [{
+    sourceFileId: "99999999-9999-4999-8999-999999999999",
+    filePath: "work/SMOKE_TEST.md",
+    fileName: "SMOKE_TEST.md",
+    contentType: "text/plain; charset=utf-8",
+  }]);
+  assert.throws(
+    () => selectEncryptedProposalFilesFromManifest({
+      manifest,
+      projectionId,
+      projectionFileCount: 1,
+      workspaceId,
+      acceptedHead: "d".repeat(40),
+      filePaths: ["work/SMOKE_TEST.md"],
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+  );
 });
 
 test("changed mirror records are hydrated in bounded mirror-wide batches", async () => {

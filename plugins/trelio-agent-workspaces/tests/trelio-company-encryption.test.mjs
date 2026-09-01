@@ -15,6 +15,7 @@ import {
   canonicalJson,
   createAgentEncryptionDevice,
   decryptFileFromCompanyContainer,
+  decryptFileFromCompanyContainerBytes,
   encryptFileToCompanyContainer,
   hpkeOpen,
   hpkeSeal,
@@ -224,9 +225,19 @@ test("bridge streams a browser-compatible multi-chunk TRELIOE1 file", async () =
       scopePrivateJwk: privateJwk,
       expectedCiphertextSha256: encrypted.ciphertextSha256,
     });
+    const decryptedInMemory = await decryptFileFromCompanyContainerBytes({
+      bytes: await readFile(encryptedPath),
+      scopePrivateKey: scope.privateKey,
+      scopePrivateJwk: privateJwk,
+      expectedCiphertextSha256: encrypted.ciphertextSha256,
+      maximumPlaintextBytes: bytes.byteLength,
+    });
 
     assert.equal(decrypted.originalName, "workspace.bundle");
     assert.deepEqual(await readFile(decryptedPath), bytes);
+    assert.equal(decryptedInMemory.originalName, "workspace.bundle");
+    assert.deepEqual(decryptedInMemory.bytes, bytes);
+    decryptedInMemory.bytes.fill(0);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

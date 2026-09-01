@@ -1151,3 +1151,152 @@ export const decryptFileFromCompanyContainer = async ({
     await Promise.allSettled([source.close(), destination.close()]);
   }
 };
+
+/**
+ * Open a bounded TRELIOE1 object without ever publishing plaintext to disk.
+ * This is intentionally reserved for small encrypted control manifests (for
+ * example the opaque Workspace file map); large Workspace files continue to
+ * use the constant-memory path-to-path routine above.
+ */
+export const decryptFileFromCompanyContainerBytes = async ({
+  bytes,
+  scopePrivateKey,
+  scopePrivateJwk,
+  expectedCiphertextSha256 = null,
+  maximumPlaintextBytes = 16 * 1024 * 1024,
+}) => {
+  const source = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  let dataKeyBytes;
+  const plaintextChunks = [];
+
+  try {
+    if (
+      source.byteLength < COMPANY_ENCRYPTED_FILE_MAGIC.byteLength + 4
+      || !source.subarray(0, COMPANY_ENCRYPTED_FILE_MAGIC.byteLength)
+        .equals(COMPANY_ENCRYPTED_FILE_MAGIC)
+    ) {
+      throw new Error("File is not a TRELIOE1 encrypted container.");
+    }
+    const headerLengthOffset = COMPANY_ENCRYPTED_FILE_MAGIC.byteLength;
+    const headerLength = source.readUInt32BE(headerLengthOffset);
+    const payloadOffset = headerLengthOffset + 4 + headerLength;
+
+    if (headerLength < 2 || headerLength > 1024 * 1024 || payloadOffset > source.byteLength) {
+      throw new Error("Encrypted file header is invalid.");
+    }
+    const header = JSON.parse(source.subarray(headerLengthOffset + 4, payloadOffset).toString("utf8"));
+
+    if (
+      header?.suite !== COMPANY_ENCRYPTION_SUITE
+      || header?.version !== 1
+      || header?.kind !== "chunked-file"
+      || header.chunkSizeBytes !== COMPANY_ENCRYPTION_FILE_CHUNK_BYTES
+      || !Number.isSafeInteger(header.chunkCount)
+      || header.chunkCount <= 0
+      || !Number.isSafeInteger(header.plaintextSizeBytes)
+      || header.plaintextSizeBytes < 0
+      || header.plaintextSizeBytes > maximumPlaintextBytes
+      // A forged count must not turn one bounded manifest into an unbounded
+      // sequence of authenticated empty chunks. The writer always derives the
+      // count from the plaintext length, including one chunk for an empty file.
+      || header.chunkCount !== Math.max(
+        1,
+        Math.ceil(header.plaintextSizeBytes / COMPANY_ENCRYPTION_FILE_CHUNK_BYTES),
+      )
+    ) {
+      throw new Error("Encrypted file format or plaintext bound is unsupported.");
+    }
+    const expectedContainerSize = payloadOffset
+      + header.plaintextSizeBytes
+      + header.chunkCount * 16;
+    if (expectedContainerSize !== source.byteLength) {
+      throw new Error("Encrypted file has trailing or missing bytes.");
+    }
+    if (
+      expectedCiphertextSha256
+      && createHash("sha256").update(source).digest("hex") !== expectedCiphertextSha256
+    ) {
+      throw new Error("Encrypted file digest does not match the signed revision metadata.");
+    }
+
+    const aad = buildCompanyEncryptionAad(header.aad);
+    dataKeyBytes = await hpkeOpen({
+      recipientPrivateKey: scopePrivateKey,
+      recipientPrivateJwk: scopePrivateJwk,
+      envelope: header.wrappedDataKey,
+      aad: { ...aad, purpose: "file-data-key" },
+    });
+    if (dataKeyBytes.byteLength !== 32) {
+      throw new Error("Encrypted file data key is invalid.");
+    }
+    const dataKey = await webcrypto.subtle.importKey(
+      "raw",
+      ownedArrayBuffer(dataKeyBytes),
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["decrypt"],
+    );
+    const metadataPlaintext = Buffer.from(await webcrypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: ownedArrayBuffer(decodeBase64Url(header.metadataNonce, "metadata nonce")),
+        additionalData: ownedArrayBuffer(canonicalBytes({ ...aad, purpose: "file-metadata" })),
+        tagLength: 128,
+      },
+      dataKey,
+      ownedArrayBuffer(decodeBase64Url(header.metadataCiphertext, "metadata ciphertext")),
+    ));
+    let metadata;
+    try {
+      metadata = JSON.parse(textDecoder.decode(metadataPlaintext));
+    } finally {
+      metadataPlaintext.fill(0);
+    }
+
+    let encryptedOffset = payloadOffset;
+    let openedBytes = 0;
+    const noncePrefix = decodeBase64Url(header.noncePrefix, "file nonce prefix");
+
+    for (let chunkIndex = 0; chunkIndex < header.chunkCount; chunkIndex += 1) {
+      const plaintextLength = Math.max(0, Math.min(
+        header.chunkSizeBytes,
+        header.plaintextSizeBytes - chunkIndex * header.chunkSizeBytes,
+      ));
+      const ciphertextLength = plaintextLength + 16;
+      const ciphertext = source.subarray(encryptedOffset, encryptedOffset + ciphertextLength);
+      const plaintext = Buffer.from(await webcrypto.subtle.decrypt(
+        {
+          name: "AES-GCM",
+          iv: ownedArrayBuffer(fileChunkNonce(noncePrefix, chunkIndex)),
+          additionalData: ownedArrayBuffer(canonicalBytes({ ...aad, chunkIndex })),
+          tagLength: 128,
+        },
+        dataKey,
+        ownedArrayBuffer(ciphertext),
+      ));
+      plaintextChunks.push(plaintext);
+      openedBytes += plaintext.byteLength;
+      encryptedOffset += ciphertextLength;
+    }
+
+    if (encryptedOffset !== source.byteLength || openedBytes !== header.plaintextSizeBytes) {
+      throw new Error("Encrypted file has trailing or missing bytes.");
+    }
+
+    const opened = Buffer.concat(plaintextChunks, openedBytes);
+    plaintextChunks.forEach((chunk) => chunk.fill(0));
+    plaintextChunks.length = 0;
+    return {
+      bytes: opened,
+      header,
+      originalName: String(metadata.originalName || "file"),
+      mimeType: String(metadata.mimeType || "application/octet-stream"),
+      plaintextSizeBytes: openedBytes,
+    };
+  } catch (error) {
+    plaintextChunks.forEach((chunk) => chunk.fill(0));
+    throw error;
+  } finally {
+    dataKeyBytes?.fill(0);
+  }
+};

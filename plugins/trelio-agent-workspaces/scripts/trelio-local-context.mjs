@@ -27,6 +27,7 @@ import {
   COMPANY_ENCRYPTION_SUITE,
   buildCompanyEncryptedTextMarker,
   decryptCompanyPayload,
+  decryptFileFromCompanyContainerBytes,
   encryptCompanyPayload,
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
@@ -54,6 +55,7 @@ const MAX_CONTEXT_DOCUMENTS = 20_000;
 const MIRROR_HYDRATION_RECORD_BATCH_SIZE = 250;
 const MAX_SEARCH_QUERIES = 5;
 const MAX_SEARCH_RESULTS = 50;
+const MAX_PROPOSAL_BROWSER_MANIFEST_BYTES = 32 * 1024 * 1024;
 const MIRROR_GENERATION_PATTERN = /^[0-9a-f]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
@@ -149,9 +151,17 @@ const normalizeInteger = (value, fieldName, minimum = 0) => {
   return normalized;
 };
 
-const resolveMirrorPaths = ({ origin, companyId }) => {
+export const resolveMirrorPaths = ({ origin, companyId }) => {
   const originHash = sha256(origin).slice(0, 32);
-  const root = path.join(resolveCompanyContextMirrorDirectory(), originHash, companyId);
+  // Schema-specific roots make rolling plugin upgrades safe. A still-running
+  // old MCP host can update only its own pointer/lock and therefore cannot make
+  // a newer reader reject or overwrite a generation with another schema.
+  const root = path.join(
+    resolveCompanyContextMirrorDirectory(),
+    originHash,
+    companyId,
+    `schema-${MIRROR_SCHEMA_VERSION}`,
+  );
   return {
     root,
     generations: path.join(root, "generations"),
@@ -1364,6 +1374,209 @@ const postProposalRequest = async ({
   },
 ));
 
+export const selectEncryptedProposalFilesFromManifest = ({
+  manifest,
+  projectionId,
+  projectionFileCount,
+  workspaceId,
+  acceptedHead,
+  filePaths,
+}) => {
+  if (
+    manifest?.schemaVersion !== 1
+    || manifest?.kind !== "agent-workspace-browser-manifest"
+    || manifest?.projectionId !== projectionId
+    || manifest?.workspaceId !== workspaceId
+    || manifest?.workspaceHead !== acceptedHead
+    || !Array.isArray(manifest.files)
+    || manifest.files.length !== Number(projectionFileCount)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+      "Decrypted Workspace browser manifest does not match the accepted projection.",
+    );
+  }
+
+  const byPath = new Map();
+  for (const file of manifest.files) {
+    const fileId = String(file?.id || "").toLowerCase();
+    const filePath = String(file?.path || "");
+    const contentType = String(file?.contentType || "");
+
+    if (
+      !UUID_PATTERN.test(fileId)
+      || !filePath
+      || filePath.length > 2_048
+      || byPath.has(filePath)
+      || !contentType
+      || contentType.length > 2_048
+      || !Number.isSafeInteger(file?.sizeBytes)
+      || file.sizeBytes < 0
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+        "Decrypted Workspace browser manifest contains an invalid file descriptor.",
+      );
+    }
+    byPath.set(filePath, {
+      sourceFileId: fileId,
+      filePath,
+      fileName: filePath.split("/").at(-1) || filePath,
+      contentType,
+    });
+  }
+
+  return filePaths.map((filePath) => {
+    const file = byPath.get(filePath);
+    if (!file) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_WORKSPACE_FILE_NOT_FOUND",
+        `Workspace file "${filePath}" is absent from the exact accepted encrypted Run.`,
+      );
+    }
+    return file;
+  });
+};
+
+const resolveEncryptedProposalFiles = async ({
+  origin,
+  token,
+  companyEncryption,
+  companySlug,
+  target,
+  filePaths,
+  signal,
+}) => {
+  if (filePaths.length === 0) return [];
+  if (new Set(filePaths).size !== filePaths.length) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "payload.filePaths must contain unique exact Workspace paths.",
+    );
+  }
+  if (!target.runId) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "Encrypted comment proposal files require an accepted task-scoped Agent Run.",
+    );
+  }
+
+  // Resolve the exact Run first instead of trusting caller-supplied Workspace
+  // metadata. These fields are intentionally open structural routing data and
+  // contain no company plaintext.
+  const proposalContext = await postProposalRequest({
+    origin,
+    token,
+    companySlug,
+    endpoint: "context",
+    body: { kind: "comment", target },
+    signal,
+  });
+  const workspaceId = String(proposalContext?.run?.workspaceId || "").toLowerCase();
+  const acceptedHead = String(proposalContext?.run?.acceptedHead || "");
+
+  if (
+    proposalContext?.run?.status !== "accepted"
+    || !UUID_PATTERN.test(workspaceId)
+    || !/^[0-9a-f]{40,64}$/u.test(acceptedHead)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RUN_RESULT_NOT_ACCEPTED",
+      "Encrypted comment proposal files require the exact accepted Agent Run result.",
+    );
+  }
+
+  const overview = await readJson(await request(
+    origin,
+    token,
+    `/api/agent-workspaces/workspaces/${encodeURIComponent(workspaceId)}`,
+    { signal },
+  ));
+  const projection = overview?.encryption?.browserProjection;
+  const manifestFileId = String(projection?.manifestFileId || "").toLowerCase();
+
+  if (
+    overview?.company?.id !== companyEncryption.runtime.company.id
+    || projection?.workspaceHead !== acceptedHead
+    || !UUID_PATTERN.test(String(projection?.id || "").toLowerCase())
+    || !UUID_PATTERN.test(manifestFileId)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_BROWSER_PROJECTION_MISSING",
+      "The accepted encrypted Agent Run has no matching browser file projection.",
+    );
+  }
+
+  const manifestResponse = await request(
+    origin,
+    token,
+    `/api/agent-workspaces/files/${encodeURIComponent(manifestFileId)}/encrypted-content`,
+    { signal },
+  );
+  const expectedCiphertextSha256 = String(
+    manifestResponse.headers.get("x-trelio-ciphertext-sha256") || "",
+  ).toLowerCase();
+  const encryptedManifest = Buffer.from(await manifestResponse.arrayBuffer());
+  let openedManifest = null;
+
+  try {
+    if (
+      !SHA256_PATTERN.test(expectedCiphertextSha256)
+      || encryptedManifest.byteLength > MAX_PROPOSAL_BROWSER_MANIFEST_BYTES + 2 * 1024 * 1024
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+        "Encrypted Workspace browser manifest exceeds its bounded transport contract.",
+      );
+    }
+    openedManifest = await decryptFileFromCompanyContainerBytes({
+      bytes: encryptedManifest,
+      scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+      scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+      expectedCiphertextSha256,
+      maximumPlaintextBytes: MAX_PROPOSAL_BROWSER_MANIFEST_BYTES,
+    });
+    const aad = openedManifest.header?.aad;
+
+    if (
+      aad?.companyId !== companyEncryption.runtime.company.id
+      || aad?.scopeId !== companyEncryption.runtime.scope.id
+      || aad?.scopeEpoch !== companyEncryption.runtime.scope.epoch
+      || aad?.entityType !== "agent_workspace_browser_manifest"
+      || aad?.entityId !== manifestFileId
+      || aad?.entityRevision !== 1
+      || aad?.purpose !== "file"
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+        "Encrypted Workspace browser manifest is bound to another company projection.",
+      );
+    }
+
+    let manifest;
+    try {
+      manifest = JSON.parse(openedManifest.bytes.toString("utf8"));
+    } catch (error) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_BROWSER_PROJECTION_INVALID",
+        "Decrypted Workspace browser manifest is not valid JSON.",
+        { cause: error },
+      );
+    }
+    return selectEncryptedProposalFilesFromManifest({
+      manifest,
+      projectionId: projection.id,
+      projectionFileCount: projection.fileCount,
+      workspaceId,
+      acceptedHead,
+      filePaths,
+    });
+  } finally {
+    encryptedManifest.fill(0);
+    openedManifest?.bytes.fill(0);
+  }
+};
+
 const buildProposalLocalResult = (origin, hydrated) => {
   const taskUrl = typeof hydrated?.task?.url === "string"
     ? hydrated.task.url
@@ -1412,11 +1625,38 @@ const saveLocalProposal = async ({
         "payload.expectedPublicCommentsSnapshotHash must be an exact SHA-256.",
       );
     }
+    const filePaths = rawPayload?.filePaths === undefined
+      ? null
+      : normalizeBoundedStringArray(
+          rawPayload.filePaths,
+          "payload.filePaths",
+          10,
+          2_048,
+        );
+    const encryptedFiles = filePaths
+      ? await resolveEncryptedProposalFiles({
+          origin,
+          token,
+          companyEncryption,
+          companySlug,
+          target,
+          filePaths,
+          signal,
+        })
+      : [];
+    const protectedValues = {
+      proposal_text: proposalText,
+      ...Object.fromEntries(encryptedFiles.flatMap((file, index) => [
+        [`file_path_${index}`, file.filePath],
+        [`original_name_${index}`, file.fileName],
+        [`mime_type_${index}`, file.contentType],
+      ])),
+    };
     const markers = await uploadProposalPayload({
       origin,
       token,
       companyEncryption,
-      values: { proposal_text: proposalText },
+      values: protectedValues,
       source: { kind: "agent_task_proposal", proposalKind: kind, action: "save" },
       signal,
     });
@@ -1435,15 +1675,15 @@ const saveLocalProposal = async ({
       proposalText: markers.proposal_text,
       expectedStateRevision,
       expectedPublicCommentsSnapshotHash,
-      ...(rawPayload?.filePaths === undefined
+      ...(filePaths === null
         ? {}
         : {
-            filePaths: normalizeBoundedStringArray(
-              rawPayload.filePaths,
-              "payload.filePaths",
-              10,
-              2_048,
-            ),
+            encryptedFiles: encryptedFiles.map((file, index) => ({
+              sourceFileId: file.sourceFileId,
+              filePath: markers[`file_path_${index}`],
+              fileName: markers[`original_name_${index}`],
+              contentType: markers[`mime_type_${index}`],
+            })),
           }),
       ...(draftWriteMode ? { draftWriteMode } : {}),
     };
