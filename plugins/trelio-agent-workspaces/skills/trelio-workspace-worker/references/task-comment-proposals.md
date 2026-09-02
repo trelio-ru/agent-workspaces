@@ -44,9 +44,8 @@ unpublished proposal or the automatic system handoff:
   proposal is the ordinary comment for people.
   Do not attach all workspace files.
 
-The server reads the fresh public-comment snapshot and optimistic proposal
-state internally, so do not make separate context/hash calls on this sole-card
-normal path. This normal path is create-only. Skip the compact tool and use
+The server fences authoring basis and state, so do not make separate context/hash
+calls on this sole-card normal path. Skip the compact tool and use
 `get_task_comment_proposal_context` followed by
 `render_task_comment_proposal` when the current conversation already contains
 an earlier proposal for the exact task, or for a sole-card nuanced correction,
@@ -54,19 +53,20 @@ comparison with earlier public discussion, or an intentional member mention
 whose exact `@username` is not already known. Use only a returned exact
 username; never guess one or replace it with a plain display name.
 
-If hidden state from another device, restored context, or compaction means a
-private draft exists anyway, `propose_task_comment` returns exact
-`UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`. Do not retry the compact tool. Read the
-context once, treat `currentDraft` as private and unpublished, and synthesize a
-complete replacement from the current accepted task/workspace result and
-`publicCommentsSnapshot`; do not concatenate, patch, retract, or narrate the
-old draft. Then call `render_task_comment_proposal` with the exact returned
-revision and snapshot hash. The resulting card replaces the private draft but
-must make sense if it is the only human comment eventually published.
+If `propose_task_comment` returns `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, do not
+retry it. Read context once and use schema v4 `authoringBasis` exclusively:
+`publicCommentsSnapshot.comments` contains only actual published human comments;
+`pendingHumanUpdateBasis.acceptedRuns` contains uncommunicated Run evidence in
+oldest-to-newest order; and `currentDraft.bodyText` is intentionally absent.
+Ignore every draft still visible in the conversation. Synthesize one standalone
+replacement, letting a later Run supersede conflicting earlier work. Never
+concatenate, correct, retract, or narrate private text. If the net result adds
+nothing public, dismiss the draft. Otherwise render with the exact revision and
+`authoringBasis.snapshotSha256`.
 
 For a multi-card response, always read
 `get_task_comment_proposal_context` for this exact target and pass its exact
-snapshot/revision fields plus the proposed text into this card's
+authoring-basis hash/revision fields plus the proposed text into this card's
 `commentProposal` block in the one `render_task_proposals` call. This applies
 even to the otherwise-normal accepted-Run comment route. The older
 `render_task_comment_proposals` tool remains compatibility for comment-only

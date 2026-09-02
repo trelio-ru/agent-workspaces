@@ -202,10 +202,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   известного private draft exact задачи. Если в текущей переписке уже был
   proposal или backend возвращает `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT`, агент
   обязан один раз прочитать `get_task_comment_proposal_context` и заменить
-  draft через `render_task_comment_proposal`. Новый текст заново синтезируется
-  как самостоятельный cumulative human update из актуального результата и
-  `publicCommentsSnapshot`; `currentDraft` нельзя склеивать, исправлять или
-  считать предыдущей публичной репликой.
+  draft через `render_task_comment_proposal`. Schema v4 намеренно не возвращает
+  `currentDraft.bodyText`: новый текст заново синтезируется только из
+  `authoringBasis`, где `publicCommentsSnapshot.comments` содержит реальные
+  manual comments, а `pendingHumanUpdateBasis.acceptedRuns` – ещё не прошедшие
+  reviewed boundary результаты Run в хронологическом порядке. Поздний Run
+  заменяет конфликтующий ранний; любой draft, в том числе запомненный из истории
+  переписки, нельзя склеивать, исправлять или считать предыдущей публичной
+  репликой.
 - Runtime admission proof создаёт только approved hook. Агент не формирует, не
   копирует и не обходит proof другим MCP, HTTP, browser или script.
 - `hooks/hooks.json` является стабильной client-trust границей: lifecycle

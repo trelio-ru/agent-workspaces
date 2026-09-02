@@ -366,8 +366,10 @@ accepted Run агент отдельно готовит редактируемо
 `propose_task_comment` используется для первого private draft; известный draft
 либо `UNPUBLISHED_DRAFT_REQUIRES_CONTEXT` переводят flow на context/render без
 повтора compact tool. Каждый replacement заново формулируется как
-самостоятельный cumulative update из текущего результата и опубликованной
-дискуссии: неопубликованный draft и system handoff не являются его публичной
+самостоятельный cumulative update только из authoring basis: опубликованных
+manual comments и отдельной хронологии ещё непроговорённых accepted Run.
+`currentDraft.bodyText` в authoring context отсутствует, поздний Run заменяет
+конфликтующий ранний, а запомненный draft и system handoff не являются публичной
 предысторией. Публикация, dismiss и attachments происходят только по явному
 действию человека. Явная просьба подготовить proposal для exact задачи
 использует тот же native flow напрямую без Agent Run и не заменяется текстом в

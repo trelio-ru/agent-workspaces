@@ -4831,14 +4831,19 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   assert.match(skillMarkdown, /render_task_comment_proposal/u);
   assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
-  assert.match(skillMarkdown, /server reads the fresh public-comment snapshot/u);
+  assert.match(skillMarkdown, /server fences authoring basis and state/u);
   assert.match(skillMarkdown, /standalone publication-ready cumulative update/u);
   assert.match(skillMarkdown, /UNPUBLISHED_DRAFT_REQUIRES_CONTEXT/u);
-  assert.match(skillMarkdown, /Do not retry the compact tool/u);
-  assert.match(skillMarkdown, /do not concatenate, patch, retract, or narrate the\s+old draft/u);
+  assert.match(skillMarkdown, /do not\s+retry it/iu);
+  assert.match(skillMarkdown, /currentDraft\.bodyText` is intentionally absent/u);
+  assert.match(skillMarkdown, /Ignore every draft still visible in the conversation/u);
+  assert.match(skillMarkdown, /pendingHumanUpdateBasis\.acceptedRuns/u);
+  assert.match(skillMarkdown, /later Run supersede conflicting\s+earlier work/u);
+  assert.match(skillMarkdown, /only actual published human\s+comments/u);
+  assert.match(skillMarkdown, /net result adds\s+nothing public, dismiss the draft/u);
   // Keep the invariant stable when the reference gives the normal path a more
   // specific name such as "sole-card normal path".
-  assert.match(skillMarkdown, /do not make separate context\/hash calls on (?:the|this sole-card)\s+normal path/u);
+  assert.match(skillMarkdown, /do not make separate context\/hash\s+calls on (?:the|this sole-card)\s+normal path/u);
   assert.match(skillMarkdown, /Never use `create_comment` as a workaround/u);
   assert.match(skillMarkdown, /not acceptance\s+of the durable workspace result/u);
   assert.match(skillMarkdown, /After acceptance/u);
