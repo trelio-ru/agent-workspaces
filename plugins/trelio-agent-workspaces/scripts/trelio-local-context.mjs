@@ -54,6 +54,12 @@ const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // writer instead of failing after a short arbitrary timeout. The extra margin
 // also lets one waiter take over a genuinely stale lock and finish normally.
 const MIRROR_FIRST_SYNC_WAIT_MS = MIRROR_LOCK_STALE_MS + 30 * 1000;
+// A supplemental task-section read has already proved that its in-memory
+// revision fence is stale. In that narrow recovery path it is safer to wait
+// briefly for the current mirror writer than to reuse the known-stale readable
+// generation. Keep the wait bounded well below an ordinary tool timeout; a
+// genuinely long or wedged writer still fails closed with LOCAL_CONTEXT_SYNC_BUSY.
+const MIRROR_STALE_READ_REFRESH_WAIT_MS = 30 * 1000;
 const MIRROR_LOCK_HEARTBEAT_MS = 20 * 1000;
 const MIRROR_GENERATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS = 600;
@@ -290,12 +296,18 @@ const inspectLockOwner = async (lockDirectory) => {
   return { owner, metadata };
 };
 
-const acquireMirrorWriter = async (paths, { allowReadableFallback = false } = {}) => {
+const acquireMirrorWriter = async (
+  paths,
+  {
+    allowReadableFallback = false,
+    maximumWaitMs = MIRROR_FIRST_SYNC_WAIT_MS,
+  } = {},
+) => {
   await ensurePrivateDirectory(paths.root);
   const lockId = crypto.randomUUID();
   const startedAt = Date.now();
 
-  while (Date.now() - startedAt < MIRROR_FIRST_SYNC_WAIT_MS) {
+  while (Date.now() - startedAt < maximumWaitMs) {
     try {
       await fs.mkdir(paths.lock, { mode: 0o700 });
       await writePrivateJsonFile(path.join(paths.lock, "owner.json"), {
@@ -1984,6 +1996,7 @@ export const syncCompanyContextMirror = async ({
   origin,
   token,
   companyEncryption,
+  requireFresh = false,
   signal,
 }) => {
   const companySlug = companyEncryption.runtime.company.slug;
@@ -1993,7 +2006,14 @@ export const syncCompanyContextMirror = async ({
   });
   let previous = await readMirrorGeneration({ paths, companyEncryption });
   const writer = await acquireMirrorWriter(paths, {
-    allowReadableFallback: Boolean(previous),
+    // Normal local reads may use a complete immutable generation while a
+    // sibling publishes the next one. Once a task-section revision conflict
+    // proves that generation stale, however, returning it again would make the
+    // same deterministic 409 loop forever in this MCP process.
+    allowReadableFallback: Boolean(previous) && !requireFresh,
+    maximumWaitMs: requireFresh
+      ? MIRROR_STALE_READ_REFRESH_WAIT_MS
+      : MIRROR_FIRST_SYNC_WAIT_MS,
   });
   if (!writer) {
     return {
@@ -2569,7 +2589,12 @@ const localTaskSectionItemCount = (task, section) => {
   if (section === "rich_description") return String(task.descriptionPlainText || "").trim() ? 1 : 0;
   if (section === "comments") {
     const total = task.commentsPagination?.total;
-    return Number.isSafeInteger(total) && total >= 0 ? total : arrayLength(task.comments);
+    // The mirror retains every manual comment for local lexical search but
+    // deliberately excludes technical/system history and pagination metadata.
+    // That search subset is not the deferred section's total. Match native
+    // schema v3 by reporting an unknown count until an exact supplemental read
+    // supplies an authoritative pagination total.
+    return Number.isSafeInteger(total) && total >= 0 ? total : null;
   }
   if (section === "checklists") return arrayLength(task.checklists);
   if (section === "attachments") return arrayLength(task.attachments) + arrayLength(task.deletedAttachments);
@@ -4607,7 +4632,33 @@ const applyLocalProposalAction = async ({
   }
 };
 
-const getReadyMirror = async ({ origin, companySlug, signal }) => {
+export const isLocalTaskSectionRevisionConflict = (error) => (
+  error instanceof TrelioApiError
+  && error.statusCode === 409
+  && error.code === "LOCAL_CONTEXT_GENERATION_CHANGED"
+);
+
+export const readTaskSectionsWithRevisionRefresh = async ({
+  initialReady,
+  readSections,
+  refreshReady,
+}) => {
+  try {
+    return await readSections(initialReady);
+  } catch (error) {
+    if (!isLocalTaskSectionRevisionConflict(error)) throw error;
+  }
+
+  // Supplemental sections must describe the same task revision as the compact
+  // core. A server read fence is authoritative evidence that this process kept
+  // an older immutable mirror; refresh once and repeat only the read-only
+  // request. A second conflict is returned unchanged instead of hiding a task
+  // that is genuinely changing continuously.
+  const refreshedReady = await refreshReady();
+  return readSections(refreshedReady);
+};
+
+const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }) => {
   const provider = await resolveLocalCompanyProvider({
     origin,
     companySlug,
@@ -4635,14 +4686,23 @@ const getReadyMirror = async ({ origin, companySlug, signal }) => {
     localCompanyMirrorStartupSynced.delete(sessionKey);
   }
 
+  if (forceSync) {
+    // A revision-fence conflict is stronger evidence than the process-local
+    // startup marker. Drop only plaintext/session freshness and rebuild from
+    // the encrypted generation; the disk mirror itself remains protected and
+    // available to the cross-process writer.
+    localCompanyMirrorSessionCache.delete(sessionKey);
+    localCompanyMirrorStartupSynced.delete(sessionKey);
+  }
+
   const cachedEntry = localCompanyMirrorSessionCache.get(sessionKey);
-  if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+  if (!forceSync && cachedEntry && cachedEntry.expiresAt > Date.now()) {
     localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
     return { mirror: cachedEntry.mirror, token, companyEncryption };
   }
   if (cachedEntry) localCompanyMirrorSessionCache.delete(sessionKey);
 
-  if (localCompanyMirrorStartupSynced.has(sessionKey)) {
+  if (!forceSync && localCompanyMirrorStartupSynced.has(sessionKey)) {
     const current = await readMirrorGeneration({ paths, companyEncryption });
     if (current) {
       localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
@@ -4657,8 +4717,17 @@ const getReadyMirror = async ({ origin, companySlug, signal }) => {
     origin,
     token,
     companyEncryption,
+    requireFresh: forceSync,
     signal,
   });
+  if (synced.syncInProgress) {
+    // A readable fallback keeps this single request available while another
+    // process owns the writer, but it is not proof of startup freshness. Do
+    // not pin that fallback in RAM for the full ten-minute TTL: the next read
+    // must rejoin sync and observe the atomically published generation.
+    localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
+    return { ...synced, token, companyEncryption };
+  }
   // This process has now completed (or joined) its one startup refresh. Later
   // reads reuse the same decrypted immutable object and its lazy in-memory
   // search index: no network call, disk read, decryption or JSON parse repeats.
@@ -4701,13 +4770,35 @@ export const handleTrelioLocalContextOperation = async (
       );
     }
     if (nativeTool === "get_task_sections") {
-      return getTaskSectionsFromProvider({
-        origin,
-        token: ready.token,
-        companyEncryption: ready.companyEncryption,
-        mirror: ready.mirror,
-        rawInput: rawInput?.arguments,
-        signal,
+      return readTaskSectionsWithRevisionRefresh({
+        initialReady: ready,
+        readSections: (currentReady) => {
+          if (currentReady.nativeProvider) return currentReady.result;
+          return getTaskSectionsFromProvider({
+            origin,
+            token: currentReady.token,
+            companyEncryption: currentReady.companyEncryption,
+            mirror: currentReady.mirror,
+            rawInput: rawInput?.arguments,
+            signal,
+          });
+        },
+        refreshReady: async () => {
+          // Propagate a content-free freshness marker so sibling MCP hosts do
+          // not retain the same server-proven stale generation. The refresh
+          // retries only this read and never repeats a mutation.
+          await invalidateLocalCompanyMirrorSession({
+            origin,
+            companySlug,
+            companyEncryption: ready.companyEncryption,
+          });
+          return getReadyMirror({
+            origin,
+            companySlug,
+            forceSync: true,
+            signal,
+          });
+        },
       });
     }
     return handleNativeLocalContextRead(ready.mirror, nativeTool, rawInput?.arguments);

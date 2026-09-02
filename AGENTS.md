@@ -139,6 +139,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   нельзя переносить на непривязанную задачу. Schema v1/v2 больше не являются
   поддерживаемым task-read ABI: их получение означает version mismatch и
   требует обновления плагина/backend, а не client-side fallback.
+  Manual comments в encrypted mirror являются полным search subset, но не
+  полным discussion history: без authoritative `commentsPagination.total`
+  compact `deferredSections.comments.itemCount` обязан быть `null`, а не длиной
+  этого subset.
 - Новый task control по умолчанию `shared`, когда он фиксирует объективную
   контрольную точку задачи; `personal` допустим только для явно частной проверки.
   Update сохраняет текущую visibility без прямой команды изменить аудиторию, а
@@ -260,6 +264,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   прежними schema/scope/ACL/idempotency/CAS только после проверки bridge session,
   runtime proof и field-bound payload markers; неизвестный method fail-closed и
   не маскируется generic local search.
+  Server read-fence `get_task_sections` автоматически выбрасывает только
+  доказанно устаревшую RAM generation, bounded дожидается свежего mirror и ровно
+  один раз повторяет read-only запрос; повторный конфликт остаётся fail-closed.
   Workspace-only query имеет exact company scope; current-head file и revision
   metadata читаются локально, audited restore проходит local Run, а прямые
   server-side historical Git diff/read не получают plaintext fallback.

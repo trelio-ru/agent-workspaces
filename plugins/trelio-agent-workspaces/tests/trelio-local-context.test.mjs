@@ -21,12 +21,14 @@ import {
   getWorkspaceFileFromMirror,
   handleNativeLocalContextRead,
   hydrateChangedCompanyMirrorRecords,
+  isLocalTaskSectionRevisionConflict,
   listCompanyContextMirror,
   localActionMayMutateCompanyContext,
   materializeHistoricalWorkspaceTreeForRestore,
   prepareLocalProposalBundle,
   protectLocalActionArguments,
   readLocalCompanyMirrorMutationToken,
+  readTaskSectionsWithRevisionRefresh,
   resolveMirrorPaths,
   searchCompanyContextMirror,
   searchWorkspaceFilesFromMirror,
@@ -38,6 +40,7 @@ import {
   decryptCompanyPayload,
 } from "../scripts/trelio-company-encryption.mjs";
 import {
+  TrelioApiError,
   resolveCompanyContextMutationMarkerPath,
 } from "../scripts/trelio-workspace.mjs";
 
@@ -193,6 +196,39 @@ test("native exact-task reads preserve schema-v3 instruction and deferred-sectio
   assert.equal(result.tasks[0].task.deferredSections.tool, "get_task_sections");
   assert.equal(result.tasks[0].task.deferredSections.available.length, 10);
   assert.equal(Object.hasOwn(result.tasks[0].task, "comments"), false);
+  assert.equal(
+    result.tasks[0].task.deferredSections.available.find(({ name }) => name === "comments")?.itemCount,
+    null,
+  );
+});
+
+test("local task cores never present the manual-search subset as the full comment count", () => {
+  const taskWithSearchComments = structuredClone(mirror);
+  taskWithSearchComments.tasks[0].payload.task.commentsIncluded = true;
+  taskWithSearchComments.tasks[0].payload.task.comments = [{ id: "manual-comment" }];
+
+  const unknownCount = handleNativeLocalContextRead(taskWithSearchComments, "get_task", {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    taskNumber: 17,
+  });
+  assert.equal(
+    unknownCount.tasks[0].task.deferredSections.available
+      .find(({ name }) => name === "comments")?.itemCount,
+    null,
+  );
+
+  taskWithSearchComments.tasks[0].payload.task.commentsPagination = { total: 3 };
+  const exactCount = handleNativeLocalContextRead(taskWithSearchComments, "get_task", {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    taskNumber: 17,
+  });
+  assert.equal(
+    exactCount.tasks[0].task.deferredSections.available
+      .find(({ name }) => name === "comments")?.itemCount,
+    3,
+  );
 });
 
 test("native task search keeps ordinary lexical result ids and never needs a remote query", () => {
@@ -955,6 +991,80 @@ test("encrypted proposal publication verifies the hydrated persisted plaintext",
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {
   assert.equal(TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS, 600);
+});
+
+test("stale supplemental task sections refresh the mirror and repeat only the read", async () => {
+  const staleReady = { mirror: "stale" };
+  const freshReady = { mirror: "fresh" };
+  const reads = [];
+  let refreshCount = 0;
+
+  const result = await readTaskSectionsWithRevisionRefresh({
+    initialReady: staleReady,
+    readSections: async (ready) => {
+      reads.push(ready.mirror);
+      if (ready === staleReady) {
+        throw new TrelioApiError(
+          409,
+          "Task context changed while deferred local sections were being read.",
+          null,
+          "LOCAL_CONTEXT_GENERATION_CHANGED",
+        );
+      }
+      return { sections: { comments: { comments: [] } } };
+    },
+    refreshReady: async () => {
+      refreshCount += 1;
+      return freshReady;
+    },
+  });
+
+  assert.deepEqual(reads, ["stale", "fresh"]);
+  assert.equal(refreshCount, 1);
+  assert.deepEqual(result, { sections: { comments: { comments: [] } } });
+});
+
+test("task-section refresh remains fail-closed for unrelated and repeated conflicts", async () => {
+  const unrelated = new TrelioApiError(
+    409,
+    "Another conflict",
+    null,
+    "ANOTHER_CONFLICT",
+  );
+  assert.equal(isLocalTaskSectionRevisionConflict(unrelated), false);
+  await assert.rejects(
+    readTaskSectionsWithRevisionRefresh({
+      initialReady: { mirror: "stale" },
+      readSections: async () => { throw unrelated; },
+      refreshReady: async () => assert.fail("Unrelated conflicts must not refresh."),
+    }),
+    (error) => error === unrelated,
+  );
+
+  const revisionConflict = new TrelioApiError(
+    409,
+    "Task context changed while deferred local sections were being read.",
+    null,
+    "LOCAL_CONTEXT_GENERATION_CHANGED",
+  );
+  let readCount = 0;
+  let refreshCount = 0;
+  await assert.rejects(
+    readTaskSectionsWithRevisionRefresh({
+      initialReady: { mirror: "stale" },
+      readSections: async () => {
+        readCount += 1;
+        throw revisionConflict;
+      },
+      refreshReady: async () => {
+        refreshCount += 1;
+        return { mirror: "still-changing" };
+      },
+    }),
+    (error) => error === revisionConflict,
+  );
+  assert.equal(readCount, 2);
+  assert.equal(refreshCount, 1);
 });
 
 test("encrypted mirror generations are schema-isolated while mutation coherence spans versions", () => {

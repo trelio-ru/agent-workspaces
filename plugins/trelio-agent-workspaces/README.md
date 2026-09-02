@@ -67,6 +67,10 @@ batch-запросами, поэтому число transport-вызовов н�
 per-company writer lock атомарно переключает pointer, пока параллельный поиск
 продолжает читать предыдущую полную generation. Run соседних задач не
 блокируются и сохраняют обычные lease/fencing/CAS.
+Если выборочный `get_task_sections` получает server read-fence о сменившейся
+revision, host не закрепляет известную устаревшую generation в RAM: bounded
+дожидается свежего pointer и ровно один раз повторяет только read-only запрос.
+Повторный конфликт остаётся fail-closed и не скрывает реально меняющуюся задачу.
 
 После автоматического sync поиск, bounded list, exact task read и fetch
 выбранного результата выполняются локально. В Trelio не отправляются запрос,
