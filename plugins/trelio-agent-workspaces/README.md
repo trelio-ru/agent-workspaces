@@ -308,6 +308,12 @@ proposal или иной Trelio mutation, поэтому пользовател�
    draft checkpoint, создаёт handoff и отправляет candidate без фиктивной правки.
 6. Candidate принимается атомарно, только пока base head актуален.
 
+В encrypted-компании exact draft того же head/scope/device принимается новой
+подписью без повторной отправки полного ciphertext snapshot. Если TLS/transport
+оборвался до полного ответа, bridge сохраняет Run и immutable запрос, 10–12
+минут не открывает новых соединений и затем повторяет его ровно один раз.
+Явные HTTP-ошибки и пользовательская отмена в этот retry-контур не входят.
+
 Явно брошенный Run отменяется после native route через
 `continue_trelio_local_workspace` / `cancel_run`. В encrypted-компании reason
 шифруется локально; backend получает только подписанную ссылку и всё равно

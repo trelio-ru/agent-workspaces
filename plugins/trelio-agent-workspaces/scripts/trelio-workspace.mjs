@@ -1182,6 +1182,73 @@ const wait = (milliseconds) => new Promise((resolve) => {
   setTimeout(resolve, milliseconds);
 });
 
+const ENCRYPTED_WORKSPACE_TRANSPORT_COOLDOWN_MIN_MS = 10 * 60 * 1000;
+const ENCRYPTED_WORKSPACE_TRANSPORT_COOLDOWN_JITTER_MS = 2 * 60 * 1000;
+const ENCRYPTED_WORKSPACE_RETRYABLE_TRANSPORT_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+export const isEncryptedWorkspaceRetryableTransportError = (error) => {
+  if (error instanceof TrelioApiError || error?.name === "AbortError") return false;
+
+  let current = error;
+  const seen = new Set();
+  for (let depth = 0; current && depth < 6 && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const code = typeof current.code === "string" ? current.code : "";
+    if (ENCRYPTED_WORKSPACE_RETRYABLE_TRANSPORT_CODES.has(code)) return true;
+    current = current.cause;
+  }
+
+  // Native fetch uses a bare TypeError("fetch failed") when the lower-level
+  // cause is unavailable. Keep this narrow so HTTP responses, validation
+  // failures and user cancellation never enter the long cooldown path.
+  return error instanceof TypeError && /^fetch failed$/iu.test(error.message.trim());
+};
+
+export const withEncryptedWorkspaceTransportCooldownRetry = async (
+  operation,
+  {
+    waitForCooldown = wait,
+    random = Math.random,
+    report = (message) => process.stderr.write(message),
+  } = {},
+) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isEncryptedWorkspaceRetryableTransportError(error)) throw error;
+
+    const boundedRandom = Math.min(1, Math.max(0, Number(random()) || 0));
+    const cooldownMilliseconds = ENCRYPTED_WORKSPACE_TRANSPORT_COOLDOWN_MIN_MS
+      + Math.floor(boundedRandom * ENCRYPTED_WORKSPACE_TRANSPORT_COOLDOWN_JITTER_MS);
+    const cooldownMinutes = Math.ceil(cooldownMilliseconds / 60_000);
+
+    // A burst of handshakes during a stateful network block extends the
+    // failure window for every user sharing the destination IP. Keep the Run
+    // and exact immutable upload in place, make no requests during cooldown,
+    // then perform one and only one byte-identical retry.
+    report(
+      "Encrypted Workspace transport оборвался. "
+      + `Run и локальные изменения сохранены; новых соединений не будет ${cooldownMinutes} мин. `
+      + "После паузы bridge один раз повторит exact запрос.\n",
+    );
+    await waitForCooldown(cooldownMilliseconds);
+    return operation();
+  }
+};
+
 const requestWithRateLimitRetry = async ({
   origin,
   token,
@@ -4744,6 +4811,39 @@ export const writeAndDecryptCompanyWorkspaceBundle = async ({
   }
 };
 
+const requestAndDecryptCompanyWorkspaceBundle = async ({
+  origin,
+  token,
+  pathname,
+  destination,
+  companyEncryption,
+  expectedWorkspaceId,
+  expectedWorkspaceHead,
+  signal,
+  inspectResponse = () => null,
+}) => withEncryptedWorkspaceTransportCooldownRetry(async () => {
+  // The first response may fail after writing only part of the encrypted
+  // stream. Both paths are private temporary files owned by this operation;
+  // clear them before rebuilding the exact GET on the one permitted retry.
+  await fs.rm(destination, { force: true }).catch(() => undefined);
+  await fs.rm(`${destination}.trelioe1`, { force: true }).catch(() => undefined);
+  const response = await request(
+    origin,
+    token,
+    pathname,
+    signal ? { signal } : {},
+  );
+  const inspected = inspectResponse(response);
+  const decrypted = await writeAndDecryptCompanyWorkspaceBundle({
+    response,
+    destination,
+    companyEncryption,
+    expectedWorkspaceId,
+    expectedWorkspaceHead,
+  });
+  return { decrypted, inspected };
+});
+
 export const parseWorkspaceObjectPointer = (value) => {
   const rawText = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
   let text = rawText;
@@ -7536,16 +7636,18 @@ const replaceMaterializedContext = async ({
     const endpoint = companyEncryption
       ? specification.endpoint.replace(/\/bundle$/u, "/encrypted-bundle")
       : specification.endpoint;
-    const contextResponse = await request(origin, token, endpoint);
     if (companyEncryption) {
-      await writeAndDecryptCompanyWorkspaceBundle({
-        response: contextResponse,
+      await requestAndDecryptCompanyWorkspaceBundle({
+        origin,
+        token,
+        pathname: endpoint,
         destination: bundlePath,
         companyEncryption,
         expectedWorkspaceId: specification.workspaceId,
         expectedWorkspaceHead: specification.head,
       });
     } else {
+      const contextResponse = await request(origin, token, endpoint);
       await writeResponseToFile(contextResponse, bundlePath);
     }
     await materializeBundle({
@@ -8381,24 +8483,27 @@ const synchronizePersistentWorkspaceToAcceptedHead = async ({
     const endpoint = companyEncryption
       ? `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-bundle`
       : `/api/agent-workspaces/workspaces/${workspaceId}/bundle`;
-    const response = await request(
-      origin,
-      token,
-      `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`,
-    );
-
-    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
-      throw new Error("Trelio вернул bundle другой принятой ревизии Workspace.");
-    }
+    const pathname = `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`;
     if (companyEncryption) {
-      await writeAndDecryptCompanyWorkspaceBundle({
-        response,
+      await requestAndDecryptCompanyWorkspaceBundle({
+        origin,
+        token,
+        pathname,
         destination: bundlePath,
         companyEncryption,
         expectedWorkspaceId: workspaceId,
         expectedWorkspaceHead: acceptedHead,
+        inspectResponse: (response) => {
+          if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+            throw new Error("Trelio вернул bundle другой принятой ревизии Workspace.");
+          }
+        },
       });
     } else {
+      const response = await request(origin, token, pathname);
+      if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+        throw new Error("Trelio вернул bundle другой принятой ревизии Workspace.");
+      }
       await writeResponseToFile(response, bundlePath);
     }
 
@@ -8642,26 +8747,37 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     const localHead = (await runGit(["rev-parse", "HEAD"], {
       cwd: workspaceDirectory,
     })).stdout.trim();
+    let downloadedEncryptedDraft = null;
 
     if (localHead !== materializedHead) {
       const syncDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-draft-sync-"));
       const syncBundlePath = path.join(syncDirectory, "run.bundle");
 
       try {
-        const bundleResponse = await request(
-          origin,
-          token,
-          `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
-        );
+        const pathname = `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`;
         if (companyEncryption) {
-          await writeAndDecryptCompanyWorkspaceBundle({
-            response: bundleResponse,
+          const download = await requestAndDecryptCompanyWorkspaceBundle({
+            origin,
+            token,
+            pathname,
             destination: syncBundlePath,
             companyEncryption,
             expectedWorkspaceId: workspaceId,
             expectedWorkspaceHead: materializedHead,
+            inspectResponse: (response) => parseEncryptedDraftRevisionResponseDescriptor(
+              response,
+              {
+                workspaceHead: materializedHead,
+                baseHead: agentRun.baseHead,
+                scopeId: companyEncryption.runtime.scope.id,
+                scopeEpoch: companyEncryption.runtime.scope.epoch,
+                writerDeviceId: companyEncryption.runtime.device.id,
+              },
+            ),
           });
+          downloadedEncryptedDraft = download.inspected;
         } else {
+          const bundleResponse = await request(origin, token, pathname);
           await writeResponseToFile(bundleResponse, syncBundlePath);
         }
         await fastForwardMaterializedBundle({
@@ -8703,6 +8819,15 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       baseHead: agentRun.baseHead,
       draftHead: agentRun.draftHead || null,
       materializedHead,
+      encryptedDraft: downloadedEncryptedDraft
+        || (continuingSameRun && agentRun.draftHead
+          ? resolveReusableEncryptedDraftRevision({
+              metadata: existingMetadata,
+              companyEncryption,
+              workspaceHead: materializedHead,
+            })
+          : null)
+        || undefined,
       workspaceDirectory,
       contextHeads: agentRun.contextHeadsJson || {},
       agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
@@ -8764,20 +8889,31 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
 
   try {
     const baseBundlePath = path.join(temporaryDirectory, "base.bundle");
-    const baseResponse = await request(
-      origin,
-      token,
-      `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`,
-    );
+    const pathname = `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`;
+    let downloadedEncryptedDraft = null;
     if (companyEncryption) {
-      await writeAndDecryptCompanyWorkspaceBundle({
-        response: baseResponse,
+      const download = await requestAndDecryptCompanyWorkspaceBundle({
+        origin,
+        token,
+        pathname,
         destination: baseBundlePath,
         companyEncryption,
         expectedWorkspaceId: workspaceId,
         expectedWorkspaceHead: materializedHead,
+        inspectResponse: (response) => parseEncryptedDraftRevisionResponseDescriptor(
+          response,
+          {
+            workspaceHead: materializedHead,
+            baseHead: agentRun.baseHead,
+            scopeId: companyEncryption.runtime.scope.id,
+            scopeEpoch: companyEncryption.runtime.scope.epoch,
+            writerDeviceId: companyEncryption.runtime.device.id,
+          },
+        ),
       });
+      downloadedEncryptedDraft = download.inspected;
     } else {
+      const baseResponse = await request(origin, token, pathname);
       await writeResponseToFile(baseResponse, baseBundlePath);
     }
     await materializeBundle({
@@ -8831,6 +8967,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       baseHead: agentRun.baseHead,
       draftHead: agentRun.draftHead || null,
       materializedHead,
+      encryptedDraft: downloadedEncryptedDraft || undefined,
       workspaceDirectory,
       contextHeads,
       agentInstructionsSnapshot: agentRun.agentInstructionsSnapshotJson,
@@ -9025,29 +9162,33 @@ const materializeWorkspaceInspection = async ({
     const endpoint = companyEncryption
       ? `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-bundle`
       : `/api/agent-workspaces/workspaces/${workspaceId}/bundle`;
-    const response = await request(
-      origin,
-      token,
-      `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`,
-    );
-    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
-      throw new Error("Trelio вернул read-only bundle другой принятой ревизии.");
-    }
-    const encryptedRevisionId = companyEncryption
-      ? requireUuid(
-          response.headers.get("x-trelio-encrypted-revision-id"),
-          "encrypted revision",
-        )
-      : null;
+    const pathname = `${endpoint}?${new URLSearchParams({ head: acceptedHead }).toString()}`;
+    let encryptedRevisionId = null;
     if (companyEncryption) {
-      await writeAndDecryptCompanyWorkspaceBundle({
-        response,
+      const download = await requestAndDecryptCompanyWorkspaceBundle({
+        origin,
+        token,
+        pathname,
         destination: bundlePath,
         companyEncryption,
         expectedWorkspaceId: workspaceId,
         expectedWorkspaceHead: acceptedHead,
+        inspectResponse: (response) => {
+          if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+            throw new Error("Trelio вернул read-only bundle другой принятой ревизии.");
+          }
+          return requireUuid(
+            response.headers.get("x-trelio-encrypted-revision-id"),
+            "encrypted revision",
+          );
+        },
       });
+      encryptedRevisionId = download.inspected;
     } else {
+      const response = await request(origin, token, pathname);
+      if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+        throw new Error("Trelio вернул read-only bundle другой принятой ревизии.");
+      }
       await writeResponseToFile(response, bundlePath);
     }
     await materializeBundle({
@@ -9141,23 +9282,23 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
   const workspaceDirectory = path.join(temporaryDirectory, "workspace");
 
   try {
-    const response = await request(
+    const pathname = `/api/agent-workspaces/workspaces/${normalizedWorkspaceId}/encrypted-bundle?${new URLSearchParams({
+        head: acceptedHead,
+      }).toString()}`;
+    await requestAndDecryptCompanyWorkspaceBundle({
       origin,
       token,
-      `/api/agent-workspaces/workspaces/${normalizedWorkspaceId}/encrypted-bundle?${new URLSearchParams({
-        head: acceptedHead,
-      }).toString()}`,
-      { signal },
-    );
-    if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
-      throw new Error("Trelio returned another accepted head during company-context sync.");
-    }
-    await writeAndDecryptCompanyWorkspaceBundle({
-      response,
+      pathname,
       destination: bundlePath,
       companyEncryption,
       expectedWorkspaceId: normalizedWorkspaceId,
       expectedWorkspaceHead: acceptedHead,
+      signal,
+      inspectResponse: (response) => {
+        if (response.headers.get("x-trelio-accepted-head") !== acceptedHead) {
+          throw new Error("Trelio returned another accepted head during company-context sync.");
+        }
+      },
     });
     await materializeBundle({
       bundlePath,
@@ -10781,33 +10922,37 @@ const uploadEncryptedAgentWorkspaceBrowserProjection = async ({
     companyEncryption.device.privateKeys.signingPrivateKey,
     record,
   );
-  const response = await request(
-    origin,
-    token,
-    `/api/agent-workspaces/runs/${metadata.runId}/encrypted-browser-projection`,
-    {
-      method: "POST",
-      duplex: "half",
-      headers: {
-        "content-type": ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE,
-        "content-length": String(projection.ciphertextSizeBytes),
-        "x-trelio-lease-id": metadata.leaseId,
-        "x-trelio-fencing-token": String(metadata.fencingToken),
-        "x-trelio-base-head": metadata.baseHead,
-        "x-trelio-workspace-head": workspaceHead,
-        "x-trelio-browser-projection-id": projection.projectionId,
-        "x-trelio-scope-id": companyEncryption.runtime.scope.id,
-        "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
-        "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
-        "x-trelio-ciphertext-sha256": projection.ciphertextSha256,
-        "x-trelio-index-sha256": projection.indexSha256,
-        "x-trelio-file-count": String(projection.fileCount),
-        "x-trelio-signature": signature,
+  const result = await withEncryptedWorkspaceTransportCooldownRetry(async () => {
+    const response = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${metadata.runId}/encrypted-browser-projection`,
+      {
+        method: "POST",
+        duplex: "half",
+        headers: {
+          "content-type": ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE,
+          "content-length": String(projection.ciphertextSizeBytes),
+          "x-trelio-lease-id": metadata.leaseId,
+          "x-trelio-fencing-token": String(metadata.fencingToken),
+          "x-trelio-base-head": metadata.baseHead,
+          "x-trelio-workspace-head": workspaceHead,
+          "x-trelio-browser-projection-id": projection.projectionId,
+          "x-trelio-scope-id": companyEncryption.runtime.scope.id,
+          "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
+          "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
+          "x-trelio-ciphertext-sha256": projection.ciphertextSha256,
+          "x-trelio-index-sha256": projection.indexSha256,
+          "x-trelio-file-count": String(projection.fileCount),
+          "x-trelio-signature": signature,
+        },
+        // A retry must construct a fresh stream over the same immutable file;
+        // a fetch failure can leave the previous stream partially consumed.
+        body: createReadStream(projection.projectionPath),
       },
-      body: createReadStream(projection.projectionPath),
-    },
-  );
-  const result = await response.json();
+    );
+    return response.json();
+  });
 
   const returnedProjectionId = requireUuid(result?.projectionId, "browser projection");
 
@@ -10877,36 +11022,164 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
       companyEncryption.device.privateKeys.signingPrivateKey,
       manifest,
     );
-    const response = await request(
-      origin,
-      token,
-      `/api/agent-workspaces/runs/${metadata.runId}/encrypted-${revisionKind === "draft" ? "draft" : "candidate"}`,
-      {
-        method: "POST",
-        duplex: "half",
-        headers: {
-          "content-type": "application/vnd.trelio.encrypted-workspace",
-          "content-length": String(encrypted.ciphertextSizeBytes),
-          "x-trelio-lease-id": metadata.leaseId,
-          "x-trelio-fencing-token": String(metadata.fencingToken),
-          "x-trelio-base-head": metadata.baseHead,
-          "x-trelio-workspace-head": workspaceHead,
-          "x-trelio-scope-id": companyEncryption.runtime.scope.id,
-          "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
-          "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
-          "x-trelio-ciphertext-sha256": encrypted.ciphertextSha256,
-          "x-trelio-signature": signature,
-          ...(browserProjectionId
-            ? { "x-trelio-browser-projection-id": browserProjectionId }
-            : {}),
+    return withEncryptedWorkspaceTransportCooldownRetry(async () => {
+      const response = await request(
+        origin,
+        token,
+        `/api/agent-workspaces/runs/${metadata.runId}/encrypted-${revisionKind === "draft" ? "draft" : "candidate"}`,
+        {
+          method: "POST",
+          duplex: "half",
+          headers: {
+            "content-type": "application/vnd.trelio.encrypted-workspace",
+            "content-length": String(encrypted.ciphertextSizeBytes),
+            "x-trelio-lease-id": metadata.leaseId,
+            "x-trelio-fencing-token": String(metadata.fencingToken),
+            "x-trelio-base-head": metadata.baseHead,
+            "x-trelio-workspace-head": workspaceHead,
+            "x-trelio-scope-id": companyEncryption.runtime.scope.id,
+            "x-trelio-scope-epoch": String(companyEncryption.runtime.scope.epoch),
+            "x-trelio-writer-device-id": companyEncryption.runtime.device.id,
+            "x-trelio-ciphertext-sha256": encrypted.ciphertextSha256,
+            "x-trelio-signature": signature,
+            ...(browserProjectionId
+              ? { "x-trelio-browser-projection-id": browserProjectionId }
+              : {}),
+          },
+          body: createReadStream(encryptedPath),
         },
-        body: createReadStream(encryptedPath),
-      },
-    );
-    return response.json();
+      );
+      return response.json();
+    });
   } finally {
     await fs.rm(encryptedPath, { force: true }).catch(() => undefined);
   }
+};
+
+const parseEncryptedDraftRevisionDescriptor = (draft, expected) => {
+  const descriptor = {
+    revisionId: requireUuid(draft?.revisionId, "encrypted draft revision"),
+    workspaceHead: String(draft?.head || ""),
+    baseHead: String(draft?.baseHead || ""),
+    scopeId: requireUuid(draft?.scopeId, "encrypted draft scope"),
+    scopeEpoch: Number(draft?.scopeEpoch),
+    writerDeviceId: requireUuid(draft?.writerDeviceId, "encrypted draft writer device"),
+    ciphertextSha256: String(draft?.ciphertextSha256 || ""),
+    ciphertextSizeBytes: Number(draft?.ciphertextSizeBytes),
+  };
+
+  if (
+    descriptor.workspaceHead !== expected.workspaceHead
+    || descriptor.baseHead !== expected.baseHead
+    || descriptor.scopeId !== expected.scopeId
+    || descriptor.scopeEpoch !== expected.scopeEpoch
+    || descriptor.writerDeviceId !== expected.writerDeviceId
+    || !/^[0-9a-f]{64}$/u.test(descriptor.ciphertextSha256)
+    || !Number.isSafeInteger(descriptor.ciphertextSizeBytes)
+    || descriptor.ciphertextSizeBytes <= 0
+  ) {
+    throw new Error("Trelio вернул metadata другого encrypted draft.");
+  }
+  return descriptor;
+};
+
+const parseEncryptedDraftRevisionResponseDescriptor = (response, expected) => {
+  if (response.headers.get("x-trelio-materialized-source") !== "draft") return null;
+
+  return parseEncryptedDraftRevisionDescriptor({
+    revisionId: response.headers.get("x-trelio-encrypted-revision-id"),
+    head: response.headers.get("x-trelio-materialized-head"),
+    baseHead: response.headers.get("x-trelio-accepted-head"),
+    scopeId: response.headers.get("x-trelio-scope-id"),
+    scopeEpoch: response.headers.get("x-trelio-scope-epoch"),
+    writerDeviceId: response.headers.get("x-trelio-writer-device-id"),
+    ciphertextSha256: response.headers.get("x-trelio-ciphertext-sha256"),
+    ciphertextSizeBytes: response.headers.get("content-length"),
+  }, expected);
+};
+
+export const resolveReusableEncryptedDraftRevision = ({
+  metadata,
+  companyEncryption,
+  workspaceHead,
+}) => {
+  const draft = metadata?.encryptedDraft;
+
+  if (
+    !draft
+    || !UUID_PATTERN.test(String(draft.revisionId || ""))
+    || draft.workspaceHead !== workspaceHead
+    || draft.baseHead !== metadata.baseHead
+    || draft.scopeId !== companyEncryption?.runtime?.scope?.id
+    || Number(draft.scopeEpoch) !== companyEncryption?.runtime?.scope?.epoch
+    || draft.writerDeviceId !== companyEncryption?.runtime?.device?.id
+    || !/^[0-9a-f]{64}$/u.test(String(draft.ciphertextSha256 || ""))
+    || !Number.isSafeInteger(Number(draft.ciphertextSizeBytes))
+    || Number(draft.ciphertextSizeBytes) <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    ...draft,
+    ciphertextSizeBytes: Number(draft.ciphertextSizeBytes),
+  };
+};
+
+const promoteEncryptedAgentWorkspaceDraft = async ({
+  metadata,
+  origin,
+  token,
+  companyEncryption,
+  draft,
+  browserProjectionId,
+}) => {
+  const manifest = buildEncryptedAgentWorkspaceRevisionRecord({
+    companyId: companyEncryption.runtime.company.id,
+    workspaceId: requireUuid(metadata.workspaceId, "workspace"),
+    runId: requireUuid(metadata.runId, "run"),
+    revisionKind: "accepted",
+    baseHead: metadata.baseHead,
+    workspaceHead: draft.workspaceHead,
+    scopeId: draft.scopeId,
+    scopeEpoch: draft.scopeEpoch,
+    writerDeviceId: draft.writerDeviceId,
+    ciphertextSha256: draft.ciphertextSha256,
+    ciphertextSizeBytes: draft.ciphertextSizeBytes,
+    fencingToken: Number(metadata.fencingToken),
+    browserProjectionId,
+  });
+  const signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    manifest,
+  );
+
+  return withEncryptedWorkspaceTransportCooldownRetry(async () => {
+    const response = await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${metadata.runId}/encrypted-candidate-from-draft`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          leaseId: metadata.leaseId,
+          fencingToken: Number(metadata.fencingToken),
+          sourceDraftRevisionId: draft.revisionId,
+          baseHead: metadata.baseHead,
+          workspaceHead: draft.workspaceHead,
+          scopeId: draft.scopeId,
+          scopeEpoch: draft.scopeEpoch,
+          writerDeviceId: draft.writerDeviceId,
+          ciphertextSha256: draft.ciphertextSha256,
+          ciphertextSizeBytes: draft.ciphertextSizeBytes,
+          signature,
+          browserProjectionId,
+        }),
+      },
+    );
+    return response.json();
+  });
 };
 
 const saveRunDraftSnapshot = async ({
@@ -10946,6 +11219,7 @@ const saveRunDraftSnapshot = async ({
     const draftMetadata = {
       ...prepared.candidateMetadata,
       draftHead: metadata.baseHead,
+      encryptedDraft: undefined,
       draftSavedAt: new Date().toISOString(),
     };
     await writeRunMetadata(metadataPath, draftMetadata);
@@ -10999,9 +11273,20 @@ const saveRunDraftSnapshot = async ({
     throw new Error("Trelio вернул draft head, который не совпадает с локальным snapshot.");
   }
 
+  const encryptedDraft = companyEncryption
+    ? parseEncryptedDraftRevisionDescriptor(result.draft, {
+        workspaceHead: prepared.head,
+        baseHead: metadata.baseHead,
+        scopeId: companyEncryption.runtime.scope.id,
+        scopeEpoch: companyEncryption.runtime.scope.epoch,
+        writerDeviceId: companyEncryption.runtime.device.id,
+      })
+    : undefined;
+
   const draftMetadata = {
     ...prepared.candidateMetadata,
     draftHead: prepared.head,
+    encryptedDraft,
     draftSavedAt: result.run.draftUpdatedAt || new Date().toISOString(),
   };
   await writeRunMetadata(metadataPath, draftMetadata);
@@ -11063,51 +11348,100 @@ const submit = async (options) => withRun(async ({
   }
 
   await heartbeat();
-  await withLocalCandidateBundle(
-    {
+  if (companyEncryption) {
+    const reusableDraft = resolveReusableEncryptedDraftRevision({
       metadata: submissionMetadata,
-      temporaryPrefix: "trelio-candidate",
-      fullSnapshot: Boolean(companyEncryption),
-    },
-    async (bundlePath) => {
-      if (companyEncryption) {
-        let result;
+      companyEncryption,
+      workspaceHead: head,
+    });
+    const uploadFullEncryptedCandidate = () => withLocalCandidateBundle(
+      {
+        metadata: submissionMetadata,
+        temporaryPrefix: "trelio-candidate",
+        fullSnapshot: true,
+      },
+      (bundlePath) => uploadEncryptedAgentWorkspaceRevision({
+        metadata: submissionMetadata,
+        origin,
+        token,
+        companyEncryption,
+        bundlePath,
+        workspaceHead: head,
+        revisionKind: "accepted",
+        browserProjectionId,
+      }),
+    );
+    let result;
+    let promotedDraft = false;
+
+    try {
+      if (reusableDraft) {
+        // The full encrypted Git snapshot is already immutable server state.
+        // Only a fresh accepted manifest is needed to bind the current fence
+        // and browser projection; no second ciphertext upload is performed.
         try {
-          result = await uploadEncryptedAgentWorkspaceRevision({
+          result = await promoteEncryptedAgentWorkspaceDraft({
             metadata: submissionMetadata,
             origin,
             token,
             companyEncryption,
-            bundlePath,
-            workspaceHead: head,
-            revisionKind: "accepted",
+            draft: reusableDraft,
             browserProjectionId,
           });
-        } finally {
-          // An accepted head becomes part of the locally searchable company
-          // projection. Signal every MCP host even when the upload response is
-          // lost: the server's idempotency protects retry while the content-
-          // free marker prevents neighboring chats from serving the old head.
-          await signalCompanyContextMirrorMutation({
-            origin,
-            companyId: companyEncryption.runtime.company.id,
-          });
+          promotedDraft = true;
+        } catch (error) {
+          if (
+            !(error instanceof TrelioApiError)
+            || error.code !== "ENCRYPTED_DRAFT_CHANGED"
+          ) {
+            throw error;
+          }
+          // Server state is authoritative. A stale local opaque descriptor is
+          // safe to discard because no bytes were accepted by this endpoint;
+          // rebuild the ordinary full candidate under the same Run/fence.
+          result = await uploadFullEncryptedCandidate();
         }
-        if (result.run.status !== "accepted") {
-          throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
-        }
-        await writeRunMetadata(metadataPath, {
-          ...submissionMetadata,
-          schemaVersion: 3,
-          candidateHead: head,
-          terminalStatus: "accepted",
-          terminalAt: result.run.acceptedAt || new Date().toISOString(),
-          lastUsedAt: new Date().toISOString(),
-          cleanupEligibleAfterDays: (await readLocalSettings()).workspaceRetentionDays,
-        });
-        process.stdout.write("Зашифрованный результат записан в рабочее пространство Trelio.\n");
-        return;
+      } else {
+        result = await uploadFullEncryptedCandidate();
       }
+    } finally {
+      // An accepted head becomes part of the locally searchable company
+      // projection. Signal every MCP host even when the response is lost: the
+      // server accepts only an exact retry while this content-free marker
+      // prevents neighboring chats from serving the old head.
+      await signalCompanyContextMirrorMutation({
+        origin,
+        companyId: companyEncryption.runtime.company.id,
+      });
+    }
+
+    if (result.run.status !== "accepted") {
+      throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
+    }
+    await writeRunMetadata(metadataPath, {
+      ...submissionMetadata,
+      schemaVersion: 3,
+      candidateHead: head,
+      terminalStatus: "accepted",
+      terminalAt: result.run.acceptedAt || new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+      cleanupEligibleAfterDays: (await readLocalSettings()).workspaceRetentionDays,
+    });
+    process.stdout.write(
+      promotedDraft
+        ? "Зашифрованный draft принят без повторной отправки полного snapshot.\n"
+        : "Зашифрованный результат записан в рабочее пространство Trelio.\n",
+    );
+    return;
+  }
+
+  await withLocalCandidateBundle(
+    {
+      metadata: submissionMetadata,
+      temporaryPrefix: "trelio-candidate",
+      fullSnapshot: false,
+    },
+    async (bundlePath) => {
       const bundleStat = await fs.stat(bundlePath);
       const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/candidate`, {
         method: "POST",

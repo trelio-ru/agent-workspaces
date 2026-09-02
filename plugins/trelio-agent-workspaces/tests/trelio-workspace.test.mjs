@@ -59,6 +59,7 @@ import {
   hydrateAgentCompanyEncryptedJson,
   inspectWorkspaceFile,
   isCodexPluginAutoUpdateEnvironment,
+  isEncryptedWorkspaceRetryableTransportError,
   isProtectedWorkspaceControlPath,
   isStableVersionAtLeast,
   isTransientCodexMarketplaceUpdateError,
@@ -81,10 +82,12 @@ import {
   renderCompanyEncryptionKeyPage,
   runCompanyEncryptionSelfTest,
   resolveAgentSkillRuntimeWithDeviceConsent,
+  resolveReusableEncryptedDraftRevision,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
   withEncryptedWorkspaceBrowserProjection,
+  withEncryptedWorkspaceTransportCooldownRetry,
 } from "../scripts/trelio-workspace.mjs";
 import {
   COMPANY_ENCRYPTION_SUITE,
@@ -445,6 +448,107 @@ test("every bridge transport request preserves upgrade compatibility for recover
       error ? reject(error) : resolve()
     )));
   }
+});
+
+test("encrypted Workspace transport waits 10-12 minutes and retries exactly once", async () => {
+  const delays = [];
+  const reports = [];
+  let attempts = 0;
+  const result = await withEncryptedWorkspaceTransportCooldownRetry(
+    async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new TypeError("fetch failed");
+        error.cause = Object.assign(new Error("socket reset"), { code: "ECONNRESET" });
+        throw error;
+      }
+      return "recovered";
+    },
+    {
+      random: () => 0.5,
+      waitForCooldown: async (milliseconds) => delays.push(milliseconds),
+      report: (message) => reports.push(message),
+    },
+  );
+
+  assert.equal(result, "recovered");
+  assert.equal(attempts, 2);
+  assert.deepEqual(delays, [11 * 60 * 1000]);
+  assert.equal(reports.length, 1);
+  assert.match(reports[0], /новых соединений не будет 11 мин/u);
+});
+
+test("encrypted Workspace cooldown never retries HTTP errors or a failed second attempt", async () => {
+  assert.equal(
+    isEncryptedWorkspaceRetryableTransportError(new TrelioApiError(503, "upstream")),
+    false,
+  );
+  let httpAttempts = 0;
+  await assert.rejects(
+    withEncryptedWorkspaceTransportCooldownRetry(async () => {
+      httpAttempts += 1;
+      throw new TrelioApiError(503, "upstream");
+    }, { waitForCooldown: async () => assert.fail("HTTP response must not start cooldown") }),
+    TrelioApiError,
+  );
+  assert.equal(httpAttempts, 1);
+
+  let transportAttempts = 0;
+  await assert.rejects(
+    withEncryptedWorkspaceTransportCooldownRetry(async () => {
+      transportAttempts += 1;
+      throw Object.assign(new Error("timeout"), { code: "ETIMEDOUT" });
+    }, {
+      random: () => 0,
+      waitForCooldown: async () => undefined,
+      report: () => undefined,
+    }),
+    /timeout/u,
+  );
+  assert.equal(transportAttempts, 2, "the second transport failure must not start another cycle");
+});
+
+test("encrypted draft reuse requires an exact head, scope and writer device", () => {
+  const metadata = {
+    baseHead: "a".repeat(40),
+    encryptedDraft: {
+      revisionId: "11111111-1111-4111-8111-111111111111",
+      workspaceHead: "b".repeat(40),
+      baseHead: "a".repeat(40),
+      scopeId: "22222222-2222-4222-8222-222222222222",
+      scopeEpoch: 3,
+      writerDeviceId: "33333333-3333-4333-8333-333333333333",
+      ciphertextSha256: "c".repeat(64),
+      ciphertextSizeBytes: 8192,
+    },
+  };
+  const companyEncryption = {
+    runtime: {
+      scope: { id: metadata.encryptedDraft.scopeId, epoch: 3 },
+      device: { id: metadata.encryptedDraft.writerDeviceId },
+    },
+  };
+
+  assert.deepEqual(resolveReusableEncryptedDraftRevision({
+    metadata,
+    companyEncryption,
+    workspaceHead: metadata.encryptedDraft.workspaceHead,
+  }), metadata.encryptedDraft);
+  assert.equal(resolveReusableEncryptedDraftRevision({
+    metadata,
+    companyEncryption: {
+      runtime: {
+        scope: companyEncryption.runtime.scope,
+        device: { id: "44444444-4444-4444-8444-444444444444" },
+      },
+    },
+    workspaceHead: metadata.encryptedDraft.workspaceHead,
+  }), null);
+  assert.equal(resolveReusableEncryptedDraftRevision({
+    metadata,
+    companyEncryption,
+    workspaceHead: "d".repeat(40),
+  }), null);
 });
 
 test("runtime-host upgrade uses the same quiet plugin recovery contract", async () => {

@@ -126,8 +126,9 @@ task communication, handoff, submit, or final reporting.
    task scope pass one `--task-outcome` from the options returned by
    `prepare_agent_workspace_run`.
 6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
-   compare-and-swap. A failed final step leaves the handoff/delta recoverable;
-   never force-update accepted history or blindly repeat an ambiguous submit.
+   compare-and-swap. Failures keep handoff/delta recoverable. Let the bridge's
+   one delayed encrypted retry finish; never parallelize/repeat submit or
+   force-update history.
 7. For a task Run, follow the status procedure in `task-run.md` and the
    separately routed comment and checklist procedures in
    `task-comment-proposals.md` and `task-checklist-proposals.md` after
