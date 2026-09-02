@@ -83,6 +83,7 @@ import {
   runCompanyEncryptionSelfTest,
   resolveAgentSkillRuntimeWithDeviceConsent,
   resolveReusableEncryptedDraftRevision,
+  shouldFallbackFromEncryptedDraftPromotion,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
@@ -549,6 +550,29 @@ test("encrypted draft reuse requires an exact head, scope and writer device", ()
     companyEncryption,
     workspaceHead: "d".repeat(40),
   }), null);
+});
+
+test("encrypted draft promotion falls back only for stale draft or an older backend", () => {
+  assert.equal(
+    shouldFallbackFromEncryptedDraftPromotion(
+      new TrelioApiError(409, "draft changed", null, "ENCRYPTED_DRAFT_CHANGED"),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldFallbackFromEncryptedDraftPromotion(new TrelioApiError(404, "route not found")),
+    true,
+  );
+  assert.equal(
+    shouldFallbackFromEncryptedDraftPromotion(
+      new TrelioApiError(409, "workspace changed", null, "WORKSPACE_OUTDATED"),
+    ),
+    false,
+  );
+  assert.equal(
+    shouldFallbackFromEncryptedDraftPromotion(new TypeError("fetch failed")),
+    false,
+  );
 });
 
 test("runtime-host upgrade uses the same quiet plugin recovery contract", async () => {
@@ -3570,7 +3594,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.17.5");
+  assert.equal(BRIDGE_VERSION, "1.17.6");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

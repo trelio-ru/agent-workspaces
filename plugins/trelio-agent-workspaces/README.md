@@ -313,6 +313,8 @@ proposal или иной Trelio mutation, поэтому пользовател�
 оборвался до полного ответа, bridge сохраняет Run и immutable запрос, 10–12
 минут не открывает новых соединений и затем повторяет его ровно один раз.
 Явные HTTP-ошибки и пользовательская отмена в этот retry-контур не входят.
+До rollout нового backend неизвестный ему draft-promotion route безопасно
+возвращается к обычной полной encrypted-загрузке.
 
 Явно брошенный Run отменяется после native route через
 `continue_trelio_local_workspace` / `cancel_run`. В encrypted-компании reason

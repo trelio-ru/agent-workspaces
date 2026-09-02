@@ -52,7 +52,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.17.5";
+export const BRIDGE_VERSION = "1.17.6";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -11126,6 +11126,18 @@ export const resolveReusableEncryptedDraftRevision = ({
   };
 };
 
+export const shouldFallbackFromEncryptedDraftPromotion = (error) => (
+  error instanceof TrelioApiError
+  && (
+    error.code === "ENCRYPTED_DRAFT_CHANGED"
+    // During the required plugin-first rollout the previous backend does not
+    // know the body-free promotion route yet. Falling back here is safe: that
+    // endpoint accepted no bundle bytes, and the ordinary candidate upload
+    // remains the backwards-compatible data plane until backend deployment.
+    || error.statusCode === 404
+  )
+);
+
 const promoteEncryptedAgentWorkspaceDraft = async ({
   metadata,
   origin,
@@ -11390,10 +11402,7 @@ const submit = async (options) => withRun(async ({
           });
           promotedDraft = true;
         } catch (error) {
-          if (
-            !(error instanceof TrelioApiError)
-            || error.code !== "ENCRYPTED_DRAFT_CHANGED"
-          ) {
+          if (!shouldFallbackFromEncryptedDraftPromotion(error)) {
             throw error;
           }
           // Server state is authoritative. A stale local opaque descriptor is
