@@ -6503,46 +6503,70 @@ const readEncryptedRuntimeManifestCapabilities = (manifest) => {
   )))].sort();
 };
 
-const hydrateEncryptedAgentSkillRuntimeResolution = async ({
+export const hydrateEncryptedAgentSkillRuntimeResolution = async ({
   rawResolution,
   origin,
   token,
   companyId,
-}) => {
-  if (rawResolution?.artifact?.contentProtection !== "company_e2ee_v1") {
+}, {
+  ensureCompanyEncryptionContextFn = ensureCompanyEncryptionContext,
+  hydrateCompanyJsonFn = hydrateAgentCompanyEncryptedJson,
+} = {}) => {
+  const encryptedRuntime = rawResolution?.artifact?.contentProtection === "company_e2ee_v1";
+  const connectionConfigReference = parseAgentEncryptedContentReference(
+    rawResolution?.companyConnection?.config,
+  );
+  const plainPlatformRuntime = !encryptedRuntime
+    && rawResolution?.artifact?.contentProtection === "plain"
+    && rawResolution?.trust?.level === "platform_verified"
+    && rawResolution?.trust?.artifactLevel === "platform_verified"
+    && rawResolution?.trust?.requiresDeviceConsent === false
+    && rawResolution?.trust?.consentId === null;
+
+  // A platform package remains globally signed/plain even when the company
+  // config it consumes belongs to an encrypted tenant. In that case the
+  // config marker, not the artifact format, is the signal that the trusted
+  // bridge must open the company envelope before validating the resolution.
+  if (!encryptedRuntime && !connectionConfigReference) {
     return { rawResolution, companyEncryption: null };
   }
   const manifestReference = parseAgentEncryptedContentReference(
-    rawResolution.artifact.manifest,
+    rawResolution?.artifact?.manifest,
   );
   if (
-    manifestReference?.field !== "manifest_json"
+    (encryptedRuntime && manifestReference?.field !== "manifest_json")
+    || (!encryptedRuntime && connectionConfigReference && !plainPlatformRuntime)
+    || (connectionConfigReference && connectionConfigReference.field !== "config_json")
     || rawResolution.company?.id !== companyId
     || typeof rawResolution.company?.slug !== "string"
     || typeof rawResolution.company?.name !== "string"
   ) {
-    throw new Error("Trelio вернул некорректную E2EE binding runtime package.");
+    throw new Error("Trelio вернул некорректную E2EE binding runtime resolution.");
   }
-  const companyEncryption = await ensureCompanyEncryptionContext({
+  const companyEncryption = await ensureCompanyEncryptionContextFn({
     origin,
     token,
     company: rawResolution.company,
   });
   if (!companyEncryption) {
     throw new Error(
-      "Runtime package защищён company E2EE, но компания уже находится в обычном режиме.",
+      "Runtime resolution содержит company E2EE data, но компания уже находится в обычном режиме.",
     );
   }
 
+  const hydratedResolution = await hydrateCompanyJsonFn({
+    value: rawResolution,
+    origin,
+    token,
+    companyEncryption,
+  });
+
   return {
     rawResolution: {
-      ...(await hydrateAgentCompanyEncryptedJson({
-        value: rawResolution,
-        origin,
-        token,
-        companyEncryption,
-      })),
-      encryptedManifestEntityId: manifestReference.entityId,
+      ...hydratedResolution,
+      ...(encryptedRuntime
+        ? { encryptedManifestEntityId: manifestReference.entityId }
+        : {}),
     },
     companyEncryption,
   };

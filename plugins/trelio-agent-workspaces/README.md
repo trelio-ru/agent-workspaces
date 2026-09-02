@@ -166,6 +166,11 @@ Remote MCP declaration, manifest и `.skillpkg` bytes и передаёт backen
 только подписанные markers/ciphertext. Расшифровка Remote MCP и runtime package
 происходит локально перед проверкой и использованием.
 
+Глобальный `platform_verified` runtime package остаётся обычным подписанным
+артефактом, но его company connection config в encrypted-компании всё равно
+приходит exact E2EE-marker. Bridge открывает этот config локально до проверки
+runtime resolution; plaintext не возвращается backend-у, MCP или модели.
+
 ## Установка в Codex
 
 Сначала создайте или откройте локальный проект в Codex и добавьте основную

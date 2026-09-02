@@ -58,6 +58,7 @@ import {
   hardenWindowsPrivatePath,
   getGitStatus,
   hydrateAgentCompanyEncryptedJson,
+  hydrateEncryptedAgentSkillRuntimeResolution,
   inspectWorkspaceFile,
   isCodexPluginAutoUpdateEnvironment,
   isEncryptedWorkspaceRetryableTransportError,
@@ -1958,6 +1959,111 @@ test("encrypted runtime is locally inspected before consent and then resolved ag
     "decrypt-inspect-consent",
     "resolve-after-consent",
   ]);
+});
+
+test("plain platform runtime hydrates an encrypted company connection locally", async () => {
+  const companyId = "11111111-1111-4111-8111-111111111111";
+  const encryptedConfig = {
+    $trelioE2ee: {
+      v: 1,
+      id: "22222222-2222-4222-8222-222222222222",
+      field: "config_json",
+    },
+  };
+  const rawResolution = {
+    company: { id: companyId, slug: "encrypted-company", name: "Encrypted Company" },
+    artifact: { contentProtection: "plain", manifest: {} },
+    trust: {
+      level: "platform_verified",
+      artifactLevel: "platform_verified",
+      requiresDeviceConsent: false,
+      consentId: null,
+    },
+    companyConnection: {
+      id: "33333333-3333-4333-8333-333333333333",
+      status: "configured",
+      configured: true,
+      config: encryptedConfig,
+      secretBindings: [],
+    },
+  };
+  const companyEncryption = { ready: true };
+  let hydrationCount = 0;
+
+  const hydrated = await hydrateEncryptedAgentSkillRuntimeResolution({
+    rawResolution,
+    origin: "https://trelio.example",
+    token: "paired-device-token",
+    companyId,
+  }, {
+    ensureCompanyEncryptionContextFn: async (input) => {
+      assert.deepEqual(input.company, rawResolution.company);
+      return companyEncryption;
+    },
+    hydrateCompanyJsonFn: async (input) => {
+      hydrationCount += 1;
+      assert.equal(input.companyEncryption, companyEncryption);
+      return {
+        ...input.value,
+        companyConnection: {
+          ...input.value.companyConnection,
+          config: { allowAutonomous: true },
+        },
+      };
+    },
+  });
+
+  assert.equal(hydrationCount, 1);
+  assert.equal(hydrated.companyEncryption, companyEncryption);
+  assert.deepEqual(hydrated.rawResolution.companyConnection.config, {
+    allowAutonomous: true,
+  });
+  assert.equal(hydrated.rawResolution.encryptedManifestEntityId, undefined);
+
+  await assert.rejects(
+    hydrateEncryptedAgentSkillRuntimeResolution({
+      rawResolution: {
+        ...rawResolution,
+        companyConnection: {
+          ...rawResolution.companyConnection,
+          config: {
+            $trelioE2ee: {
+              ...encryptedConfig.$trelioE2ee,
+              field: "description_json",
+            },
+          },
+        },
+      },
+      origin: "https://trelio.example",
+      token: "paired-device-token",
+      companyId,
+    }, {
+      ensureCompanyEncryptionContextFn: async () => companyEncryption,
+      hydrateCompanyJsonFn: async ({ value }) => value,
+    }),
+    /некорректную E2EE binding runtime resolution/u,
+  );
+
+  await assert.rejects(
+    hydrateEncryptedAgentSkillRuntimeResolution({
+      rawResolution: {
+        ...rawResolution,
+        trust: {
+          level: "company_unverified",
+          artifactLevel: "company_unverified",
+          requiresDeviceConsent: true,
+          consentId: "44444444-4444-4444-8444-444444444444",
+        },
+      },
+      origin: "https://trelio.example",
+      token: "paired-device-token",
+      companyId,
+    }, {
+      ensureCompanyEncryptionContextFn: async () => companyEncryption,
+      hydrateCompanyJsonFn: async ({ value }) => value,
+    }),
+    /некорректную E2EE binding runtime resolution/u,
+  );
 });
 
 test("bridge maps parent and related contexts to stable read-only paths", () => {

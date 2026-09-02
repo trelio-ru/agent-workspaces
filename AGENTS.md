@@ -295,6 +295,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   ради чтения и не превращает inspection-каталог в writable workspace.
 - Signed runtime запускается только после authenticated exact-release resolve,
   проверки signature/package/files/paths и с host-authored allowlist окружения.
+  Если обычный глобальный package получает company connection config как E2EE
+  marker, bridge гидратирует его только для exact `platform_verified`
+  publication/artifact без device consent; marker обязан быть привязан к
+  `config_json` и той же company, иначе resolution fail-closed.
 - `company_unverified` runtime, загруженный owner/admin компании, не становится
   проверенным из-за backend Ed25519-подписи: подпись гарантирует только
   целостность доставки. До package URL/bytes bridge обязан объявить capability
