@@ -96,9 +96,10 @@ MCP-процесс проверяет его перед использовани
 по-прежнему решают server CAS, revisions, idempotency, lease и fencing token.
 
 Ссылки на задачи, созданные до включения шифрования или переименования проекта,
-остаются рабочими: старый project slug разрешается по локальному зашифрованному
-mirror и заменяется текущим непрозрачным маршрутом как для чтения, так и для
-comment/status/control/checklist proposal flow.
+остаются рабочими: обычный `fetch` и точный `get_task` разрешают старый project
+slug по локальному зашифрованному mirror и возвращают текущий непрозрачный
+маршрут; та же канонизация действует для comment/status/control/checklist
+proposal flow.
 
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Плагин шифрует текст и причины

@@ -652,6 +652,102 @@ test("legacy project slugs resolve to canonical mirror records", () => {
   assert.equal(fetched.task.title, "Исправить офлайн синхронизацию");
 });
 
+test("native fetch ids and pre-encryption URLs resolve through the canonical local mirror", () => {
+  const urlMirror = structuredClone(mirror);
+  urlMirror.origin = "https://trelio.ru";
+  urlMirror.contextDocuments[0].payload.registry.slug = "suppliers";
+  urlMirror.contextDocuments[0].payload.registry.slugAliases = ["suppliers-legacy"];
+  urlMirror.contextDocuments.push(
+    {
+      id: "88888888-8888-4888-8888-888888888888",
+      type: "knowledge_page",
+      title: "Инструкция",
+      revisionToken: "e".repeat(64),
+      projectId: null,
+      projectSlug: null,
+      payload: { page: { slug: "handbook", title: "Инструкция" } },
+    },
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      type: "contact",
+      title: "Контакт",
+      revisionToken: "f".repeat(64),
+      projectId: null,
+      projectSlug: null,
+      payload: {
+        contact: {
+          id: "99999999-9999-4999-8999-999999999999",
+          displayName: "Контакт",
+        },
+      },
+    },
+  );
+
+  // A pasted URL is the common entry path for `fetch`. The historical slug
+  // must select the immutable project id and return the current canonical
+  // route, just like exact get_task and proposal targets already do.
+  const legacyUrl = "https://trelio.ru/acme/mobile-legacy/tasks/17/";
+  const fetchedTask = handleNativeLocalContextRead(urlMirror, "fetch", { id: legacyUrl });
+  assert.equal(fetchedTask.task.title, "Исправить офлайн синхронизацию");
+  assert.equal(fetchedTask.project.slug, "mobile");
+
+  // Stable ids can survive in an older chat across the moment when a company
+  // enables encryption, so accept both native colon ids and local slash ids.
+  assert.equal(
+    fetchMirrorResult(urlMirror, "task:acme:mobile-legacy:17").task.title,
+    "Исправить офлайн синхронизацию",
+  );
+  assert.equal(fetchMirrorResult(urlMirror, "project:acme:mobile-legacy").project.slug, "mobile");
+  assert.equal(
+    fetchMirrorResult(urlMirror, "registry:acme:project:mobile-legacy:suppliers-legacy")
+      .document.payload.registry.slug,
+    "suppliers",
+  );
+  assert.equal(
+    fetchMirrorResult(urlMirror, "knowledge-page:acme:handbook").document.payload.page.slug,
+    "handbook",
+  );
+  assert.equal(
+    fetchMirrorResult(
+      urlMirror,
+      "contact:acme:99999999-9999-4999-8999-999999999999",
+    ).document.payload.contact.displayName,
+    "Контакт",
+  );
+  assert.equal(
+    fetchMirrorResult(
+      urlMirror,
+      `workspace-file:55555555-5555-4555-8555-555555555555:${"c".repeat(40)}:notes%2Fdecision.md`,
+    ).file.path,
+    "notes/decision.md",
+  );
+
+  assert.equal(
+    fetchMirrorResult(urlMirror, "https://trelio.ru/acme/mobile-legacy/registries/suppliers-legacy/")
+      .document.payload.registry.slug,
+    "suppliers",
+  );
+  assert.equal(
+    fetchMirrorResult(urlMirror, "https://trelio.ru/acme/pages/handbook/").document.payload.page.slug,
+    "handbook",
+  );
+  assert.equal(
+    fetchMirrorResult(
+      urlMirror,
+      "https://trelio.ru/acme/contacts/99999999-9999-4999-8999-999999999999/",
+    ).document.payload.contact.displayName,
+    "Контакт",
+  );
+  assert.equal(
+    fetchMirrorResult(urlMirror, "https://trelio.ru/acme/mobile-legacy/").project.slug,
+    "mobile",
+  );
+  assert.throws(
+    () => fetchMirrorResult(urlMirror, "https://trelio.ru/other/mobile/tasks/17/"),
+    (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
+  );
+});
+
 test("legacy task URLs use the canonical project route for every proposal write", () => {
   assert.deepEqual(
     canonicalizeProposalTargetFromMirror(mirror, {

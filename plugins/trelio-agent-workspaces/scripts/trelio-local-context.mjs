@@ -3668,6 +3668,137 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
   );
 };
 
+const decodeMirrorDocumentIdPart = (value) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // Match native MCP document-id compatibility: malformed percent escapes
+    // remain literal and will subsequently fail the exact mirror lookup.
+    return value;
+  }
+};
+
+const assertMirrorDocumentCompany = (mirror, companySlug) => {
+  if (companySlug !== mirror.company.slug) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "Document result company changed.",
+    );
+  }
+};
+
+const parseMirrorDocumentUrl = (mirror, resultId) => {
+  let parsedUrl;
+  try {
+    // Native `fetch` treats an absolute URL as a structural Trelio locator; it
+    // never contacts that URL. Preserve that behavior locally so a historical
+    // link copied before encryption follows the same ACL-filtered mirror path.
+    parsedUrl = new URL(resultId, mirror.origin || "https://trelio.invalid");
+  } catch {
+    return null;
+  }
+  const pathParts = parsedUrl.pathname
+    .split("/")
+    .filter(Boolean)
+    .map(decodeMirrorDocumentIdPart);
+
+  if (pathParts.length >= 3 && pathParts[1] === "registries") {
+    return {
+      type: "registry",
+      companySlug: pathParts[0],
+      projectSlug: null,
+      registrySlug: pathParts[2],
+    };
+  }
+  if (pathParts.length >= 4 && pathParts[2] === "registries") {
+    return {
+      type: "registry",
+      companySlug: pathParts[0],
+      projectSlug: pathParts[1],
+      registrySlug: pathParts[3],
+    };
+  }
+  if (pathParts.length >= 3 && pathParts[1] === "pages") {
+    return {
+      type: "knowledge_page",
+      companySlug: pathParts[0],
+      pageSlug: pathParts[2],
+    };
+  }
+  if (pathParts.length >= 3 && pathParts[1] === "contacts") {
+    return {
+      type: "contact",
+      companySlug: pathParts[0],
+      contactId: pathParts[2],
+    };
+  }
+  if (pathParts.length >= 4 && pathParts[2] === "tasks") {
+    return {
+      type: "task",
+      companySlug: pathParts[0],
+      projectSlug: pathParts[1],
+      taskNumber: Number(pathParts[3]),
+    };
+  }
+  if (pathParts.length >= 2) {
+    return {
+      type: "project",
+      companySlug: pathParts[0],
+      projectSlug: pathParts[1],
+    };
+  }
+  return null;
+};
+
+const fetchMirrorProject = (mirror, companySlug, projectSlug) => {
+  assertMirrorDocumentCompany(mirror, companySlug);
+  const project = resolveMirrorProjectBySlug(mirror, projectSlug);
+  if (!project) {
+    throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Project result is stale.");
+  }
+  return { schemaVersion: 1, provider: "local_company_context", project };
+};
+
+const fetchMirrorRegistry = (mirror, { companySlug, projectSlug, registrySlug }) => {
+  assertMirrorDocumentCompany(mirror, companySlug);
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
+  return getDomainDocumentFromMirror(mirror, "registry", (document) => (
+    matchesProjectScope(document)
+    && (
+      document.payload?.registry?.slug === registrySlug
+      || document.payload?.registry?.slugAliases?.includes?.(registrySlug)
+    )
+  ));
+};
+
+const fetchMirrorUrl = (mirror, locator) => {
+  assertMirrorDocumentCompany(mirror, locator.companySlug);
+  if (locator.type === "task") {
+    return getTaskFromMirror(mirror, {
+      projectSlug: locator.projectSlug,
+      taskNumber: locator.taskNumber,
+    });
+  }
+  if (locator.type === "project") {
+    return fetchMirrorProject(mirror, locator.companySlug, locator.projectSlug);
+  }
+  if (locator.type === "registry") return fetchMirrorRegistry(mirror, locator);
+  if (locator.type === "knowledge_page") {
+    return getDomainDocumentFromMirror(mirror, "knowledge_page", (document) => (
+      document.payload?.page?.slug === locator.pageSlug
+      || document.payload?.page?.slugAliases?.includes?.(locator.pageSlug)
+    ));
+  }
+  if (locator.type === "contact") {
+    return getDomainDocumentFromMirror(
+      mirror,
+      "contact",
+      (document) => document.id === locator.contactId,
+    );
+  }
+  throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context URL.");
+};
+
 export const fetchMirrorResult = (mirror, rawResultId) => {
   const resultId = normalizeBoundedString(rawResultId, "resultId", 4_096);
   if (resultId.startsWith("context:")) {
@@ -3696,18 +3827,20 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     };
   }
   if (resultId.startsWith("task:")) {
-    const parts = resultId.slice("task:".length).split("/");
-    const [companySlug, projectSlug, taskNumberText] = parts;
-    if (parts.length !== 3 || companySlug !== mirror.company.slug) {
-      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Task result company changed.");
+    const suffix = resultId.slice("task:".length);
+    const encodedParts = suffix.includes("/") ? suffix.split("/") : suffix.split(":");
+    const [companySlug, projectSlug, taskNumberText] = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (encodedParts.length !== 3) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid task result id.");
     }
+    assertMirrorDocumentCompany(mirror, companySlug);
     return getTaskFromMirror(mirror, {
       projectSlug,
       taskNumber: Number(taskNumberText),
     });
   }
   if (resultId.startsWith("dossier:")) {
-    const dossierId = resultId.slice("dossier:".length);
+    const dossierId = decodeMirrorDocumentIdPart(resultId.slice("dossier:".length));
     const dossier = (mirror.dossiers ?? []).find((candidate) => candidate.id === dossierId);
     if (!dossier) {
       throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Dossier result is stale.");
@@ -3724,6 +3857,57 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
         userProfileSnapshot: mirror.instructions?.userProfile ?? null,
       },
     };
+  }
+  if (resultId.startsWith("knowledge-page:")) {
+    const encodedParts = resultId.slice("knowledge-page:".length).split(":");
+    const [companySlug, pageSlug] = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (encodedParts.length !== 2) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid page result id.");
+    }
+    return fetchMirrorUrl(mirror, { type: "knowledge_page", companySlug, pageSlug });
+  }
+  if (resultId.startsWith("contact:")) {
+    const encodedParts = resultId.slice("contact:".length).split(":");
+    const [companySlug, contactId] = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (encodedParts.length !== 2) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid contact result id.");
+    }
+    return fetchMirrorUrl(mirror, { type: "contact", companySlug, contactId });
+  }
+  if (resultId.startsWith("registry:")) {
+    const encodedParts = resultId.slice("registry:".length).split(":");
+    const parts = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (parts.length === 3 && parts[1] === "company") {
+      return fetchMirrorRegistry(mirror, {
+        companySlug: parts[0],
+        projectSlug: null,
+        registrySlug: parts[2],
+      });
+    }
+    if (parts.length === 4 && parts[1] === "project") {
+      return fetchMirrorRegistry(mirror, {
+        companySlug: parts[0],
+        projectSlug: parts[2],
+        registrySlug: parts[3],
+      });
+    }
+    throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid registry result id.");
+  }
+  if (resultId.startsWith("meeting:")) {
+    const meetingId = decodeMirrorDocumentIdPart(resultId.slice("meeting:".length));
+    return getDomainDocumentFromMirror(
+      mirror,
+      "meeting",
+      (document) => document.id === meetingId,
+    );
+  }
+  if (resultId.startsWith("workspace-file:")) {
+    const encodedParts = resultId.slice("workspace-file:".length).split(":");
+    const [workspaceId, workspaceHead, filePath] = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (encodedParts.length !== 3) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid Workspace file result id.");
+    }
+    return getWorkspaceFileFromMirror(mirror, { workspaceId, workspaceHead, filePath });
   }
   if (resultId.startsWith("workspace:")) {
     const separator = resultId.indexOf(":", "workspace:".length);
@@ -3753,13 +3937,16 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     };
   }
   if (resultId.startsWith("project:")) {
-    const projectSlug = resultId.split("/").at(-1);
-    const project = (mirror.projects ?? []).find((candidate) => candidate.slug === projectSlug);
-    if (!project) {
-      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Project result is stale.");
+    const suffix = resultId.slice("project:".length);
+    const encodedParts = suffix.includes("/") ? suffix.split("/") : suffix.split(":");
+    const [companySlug, projectSlug] = encodedParts.map(decodeMirrorDocumentIdPart);
+    if (encodedParts.length !== 2) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid project result id.");
     }
-    return { schemaVersion: 1, provider: "local_company_context", project };
+    return fetchMirrorProject(mirror, companySlug, projectSlug);
   }
+  const urlLocator = parseMirrorDocumentUrl(mirror, resultId);
+  if (urlLocator) return fetchMirrorUrl(mirror, urlLocator);
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context result id.");
 };
 
