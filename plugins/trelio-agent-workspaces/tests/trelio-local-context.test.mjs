@@ -25,7 +25,9 @@ import {
   listCompanyContextMirror,
   localActionMayMutateCompanyContext,
   materializeHistoricalWorkspaceTreeForRestore,
+  inspectLocalWorkspaceRevisionDiff,
   prepareLocalProposalBundle,
+  readLocalWorkspaceRevisionFile,
   protectLocalActionArguments,
   readLocalCompanyMirrorMutationToken,
   readTaskSectionsWithRevisionRefresh,
@@ -721,6 +723,8 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
   ]);
   assert.deepEqual(TRELIO_LOCAL_WORKSPACE_TOOL.inputSchema.properties.operation.enum, [
     "list_revisions",
+    "get_revision_diff",
+    "read_revision_file",
     "restore_revision",
     "cancel_run",
   ]);
@@ -784,6 +788,115 @@ test("encrypted restore handoff lets the bridge report the exact changed paths",
     ["--task-outcome", "no_status_change"],
   );
 });
+
+test("local encrypted history reproduces bounded native diff and file reads", async () => {
+  const repository = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-local-history-test-"));
+  const git = (argumentsList) => execFileAsync("git", argumentsList, {
+    cwd: repository,
+    encoding: "utf8",
+  });
+  const objectPointer = [
+    "version https://trelio.ru/spec/workspace-object/v1",
+    `oid sha256:${"a".repeat(64)}`,
+    "size 12345",
+    "content-type application/pdf",
+    "",
+  ].join("\n");
+
+  try {
+    await git(["init", "--initial-branch=main"]);
+    await git(["config", "user.name", "Trelio tests"]);
+    await git(["config", "user.email", "tests@trelio.local"]);
+    await Promise.all([
+      fs.mkdir(path.join(repository, ".trelio"), { recursive: true }),
+      fs.mkdir(path.join(repository, "artifacts"), { recursive: true }),
+      fs.mkdir(path.join(repository, "sources"), { recursive: true }),
+    ]);
+    await Promise.all([
+      fs.writeFile(path.join(repository, "AGENTS.md"), "base control\n"),
+      fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "base metadata\n"),
+      fs.writeFile(path.join(repository, "artifacts", "report.md"), "base line\nsecond line\n"),
+      fs.writeFile(path.join(repository, "artifacts", "old-name.md"), "rename me\n"),
+      fs.writeFile(path.join(repository, "sources", "manual.pdf"), objectPointer),
+    ]);
+    await git(["add", "--all"]);
+    await git(["commit", "-m", "base"]);
+    const baseHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+
+    await Promise.all([
+      fs.writeFile(path.join(repository, "AGENTS.md"), "after control\n"),
+      fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "after metadata\n"),
+      fs.writeFile(path.join(repository, "artifacts", "report.md"), "after line\nsecond line\nthird line\n"),
+    ]);
+    await git(["mv", "artifacts/old-name.md", "artifacts/new-name.md"]);
+    await git(["add", "--all"]);
+    await git(["commit", "-m", "after"]);
+    const acceptedHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+
+    const manifest = await inspectLocalWorkspaceRevisionDiff({
+      repositoryDirectory: repository,
+      baseHead,
+      acceptedHead,
+    });
+    assert.equal(manifest.files.some((file) => file.newPath === "artifacts/report.md"), true);
+    assert.equal(manifest.files.some((file) => file.status === "renamed"), true);
+    assert.equal(manifest.files.some((file) => file.newPath === "AGENTS.md"), false);
+    assert.equal(manifest.files.some((file) => file.newPath?.startsWith(".trelio/")), false);
+
+    const boundedPatch = await inspectLocalWorkspaceRevisionDiff({
+      repositoryDirectory: repository,
+      baseHead,
+      acceptedHead,
+      filePath: "artifacts/report.md",
+      patchLimit: 12,
+    });
+    assert.equal(boundedPatch.patch.length, 12);
+    assert.equal(boundedPatch.patchTruncated, true);
+    assert.equal(boundedPatch.nextPatchOffset, 12);
+
+    const before = await readLocalWorkspaceRevisionFile({
+      repositoryDirectory: repository,
+      revisionHead: baseHead,
+      filePath: "artifacts/report.md",
+      offset: 5,
+      limit: 4,
+    });
+    assert.equal(before.text, "line");
+    assert.equal(before.nextOffset, 9);
+    const pointer = await readLocalWorkspaceRevisionFile({
+      repositoryDirectory: repository,
+      revisionHead: acceptedHead,
+      filePath: "sources/manual.pdf",
+    });
+    assert.equal(pointer.text, null);
+    assert.deepEqual(pointer.externalObject, {
+      sha256: "a".repeat(64),
+      sizeBytes: 12345,
+      contentType: "application/pdf",
+    });
+    await assert.rejects(
+      inspectLocalWorkspaceRevisionDiff({
+        repositoryDirectory: repository,
+        baseHead,
+        acceptedHead,
+        filePath: "AGENTS.md",
+      }),
+      (error) => error?.code === "LOCAL_WORKSPACE_PROTECTED_PATH",
+    );
+    await assert.rejects(
+      readLocalWorkspaceRevisionFile({
+        repositoryDirectory: repository,
+        revisionHead: acceptedHead,
+        filePath: "artifacts/report.md",
+        limit: 0,
+      }),
+      (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
+    );
+  } finally {
+    await fs.rm(repository, { recursive: true, force: true });
+  }
+});
+
 test("local restore keeps current control paths and normalizes legacy context", async () => {
   const repository = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-local-restore-test-"));
   const git = (argumentsList) => execFileAsync("git", argumentsList, {

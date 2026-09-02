@@ -334,6 +334,13 @@ tool перечисляет revisions и восстанавливает выбр
 дельты, включая удаления, а при изменениях только в сохраняемых control paths
 остаётся пустым. Старое дерево не раскрывается backend-у.
 
+Тот же server-selected route локально обслуживает
+`get_workspace_revision_diff` и `read_workspace_revision_file`: bridge получает
+только structural Run coordinates и два opaque encrypted bundle, расшифровывает
+их во временном private Git-каталоге, возвращает bounded manifest/patch либо
+UTF-8 chunk и сразу удаляет plaintext. Protected control paths остаются
+недоступны, а backend не получает путь, patch, содержимое файла или ключ.
+
 При первом `open` bridge создаёт короткую pairing-заявку. Агент передаёт её
 уже авторизованному Trelio MCP и повторяет исходную команду. MCP token bridge
 не получает: на устройстве сохраняется отдельная узкая device-session с

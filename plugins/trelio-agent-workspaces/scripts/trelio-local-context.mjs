@@ -8,6 +8,7 @@
  * without sending the query or snippets back to Trelio.
  */
 import crypto from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -24,6 +25,7 @@ import {
   ensurePrivateDirectory,
   hydrateAgentCompanyEncryptedJson,
   materializeRuntimeControlFiles,
+  parseWorkspaceObjectPointer,
   readEncryptedWorkspaceSearchDocuments,
   readPrivateJsonFile,
   request,
@@ -95,6 +97,8 @@ const MAX_PROPOSAL_BUNDLE_CARDS = 20;
 const LOCAL_ACTION_ENTITY_TYPE = "api.browser_mutation";
 const LOCAL_ACTION_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
 const LOCAL_ACTION_MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
+const MAX_LOCAL_WORKSPACE_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
+const MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS = 100_000;
 // The local action route intentionally accepts the ordinary native tool name,
 // so future backend methods do not require another crypto-aware schema.  Treat
 // an unknown verb as mutating: an unnecessary refresh is cheaper and safer
@@ -5224,6 +5228,463 @@ const runWorkspaceBridge = async (origin, argumentsList, options = {}) => (
   )
 );
 
+const isHumanFacingLocalWorkspacePath = (filePath) => {
+  const normalizedPath = String(filePath || "").replaceAll("\\", "/");
+  const basename = normalizedPath.split("/").at(-1) || "";
+
+  return Boolean(normalizedPath)
+    && normalizedPath !== "AGENTS.md"
+    && normalizedPath !== "CLAUDE.md"
+    && normalizedPath !== "README.md"
+    && !normalizedPath.startsWith(".trelio/")
+    && basename !== ".gitkeep";
+};
+
+const normalizeLocalWorkspaceHistoryPath = (value, fieldName = "filePath") => {
+  const filePath = normalizeBoundedString(value, fieldName, 2_048);
+
+  // Match the native Git-path contract before passing a model-visible value
+  // after `--`. The containment check prevents traversal; the human-facing
+  // allowlist additionally keeps runtime control files out of analytics.
+  if (
+    filePath.includes("\0")
+    || filePath.startsWith("/")
+    || filePath.includes("\\")
+    || filePath.split("/").includes("..")
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `${fieldName} must contain one relative Workspace file path.`,
+    );
+  }
+  if (!isHumanFacingLocalWorkspacePath(filePath)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_PROTECTED_PATH",
+      "Protected Agent Workspace control files are not available in company analytics.",
+    );
+  }
+  return filePath;
+};
+
+const normalizeLocalWorkspaceHistoryInteger = (
+  value,
+  fieldName,
+  { defaultValue, minimum = 0, maximum },
+) => {
+  const normalized = value === undefined
+    ? defaultValue
+    : normalizeInteger(value, fieldName, minimum);
+
+  if (normalized > maximum) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `${fieldName} must not exceed ${maximum}.`,
+    );
+  }
+  return normalized;
+};
+
+const normalizeLocalWorkspaceDiffStatus = (statusCode) => {
+  const status = statusCode.slice(0, 1);
+  if (status === "A") return "added";
+  if (status === "M") return "modified";
+  if (status === "D") return "deleted";
+  if (status === "R") return "renamed";
+  if (status === "C") return "copied";
+  if (status === "T") return "type_changed";
+  if (status === "U") return "unmerged";
+  return "unknown";
+};
+
+const parseLocalWorkspaceNameStatusDiff = (rawOutput) => {
+  const fields = String(rawOutput || "").split("\0").filter(Boolean);
+  const files = [];
+
+  for (let index = 0; index < fields.length;) {
+    const statusCode = fields[index++] || "";
+    const status = normalizeLocalWorkspaceDiffStatus(statusCode);
+    const firstPath = fields[index++] || "";
+    const hasTwoPaths = status === "renamed" || status === "copied";
+    const secondPath = hasTwoPaths ? fields[index++] || "" : "";
+    const similarityValue = hasTwoPaths ? Number(statusCode.slice(1)) : Number.NaN;
+
+    if (!statusCode || !firstPath || (hasTwoPaths && !secondPath)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_DIFF_INVALID",
+        "The local Workspace Git diff returned an invalid name-status record.",
+      );
+    }
+    files.push({
+      status,
+      statusCode,
+      oldPath: status === "added" ? null : firstPath,
+      newPath: status === "deleted" ? null : (hasTwoPaths ? secondPath : firstPath),
+      similarity: Number.isInteger(similarityValue) ? similarityValue : null,
+    });
+  }
+  return files;
+};
+
+/**
+ * Build the same bounded base-to-accepted evidence as the native plaintext
+ * service, but only inside a temporary repository populated from decrypted
+ * historical bundles. Both paths of a rename/copy must remain human-facing,
+ * otherwise the complete record and its patch are omitted fail-closed.
+ */
+export const inspectLocalWorkspaceRevisionDiff = async ({
+  repositoryDirectory,
+  baseHead,
+  acceptedHead,
+  filePath,
+  patchOffset = 0,
+  patchLimit = 40_000,
+  signal,
+}) => {
+  const normalizedBaseHead = normalizeGitHead(baseHead, "baseHead");
+  const normalizedAcceptedHead = normalizeGitHead(acceptedHead, "acceptedHead");
+  const normalizedFilePath = filePath === undefined
+    ? null
+    : normalizeLocalWorkspaceHistoryPath(filePath);
+  const normalizedPatchOffset = normalizeLocalWorkspaceHistoryInteger(
+    patchOffset,
+    "patchOffset",
+    { defaultValue: 0, maximum: Number.MAX_SAFE_INTEGER },
+  );
+  const normalizedPatchLimit = normalizeLocalWorkspaceHistoryInteger(
+    patchLimit,
+    "patchLimit",
+    { defaultValue: 40_000, minimum: 1, maximum: MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS },
+  );
+
+  await Promise.all([
+    runGit(["cat-file", "-e", `${normalizedBaseHead}^{commit}`], {
+      cwd: repositoryDirectory,
+      signal,
+    }),
+    runGit(["cat-file", "-e", `${normalizedAcceptedHead}^{commit}`], {
+      cwd: repositoryDirectory,
+      signal,
+    }),
+  ]);
+  const nameStatus = await runGit([
+    "diff",
+    "--name-status",
+    "-z",
+    "--find-renames",
+    normalizedBaseHead,
+    normalizedAcceptedHead,
+  ], { cwd: repositoryDirectory, signal });
+  const files = parseLocalWorkspaceNameStatusDiff(nameStatus.stdout).filter((file) => (
+    [file.oldPath, file.newPath]
+      .filter(Boolean)
+      .every(isHumanFacingLocalWorkspacePath)
+  ));
+
+  if (
+    normalizedFilePath
+    && !files.some((file) => (
+      file.oldPath === normalizedFilePath || file.newPath === normalizedFilePath
+    ))
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_FILE_NOT_CHANGED",
+      "The requested file was not changed by this accepted Agent Run.",
+    );
+  }
+  if (!normalizedFilePath) {
+    return {
+      baseHead: normalizedBaseHead,
+      acceptedHead: normalizedAcceptedHead,
+      files,
+      patch: null,
+      patchOffset: normalizedPatchOffset,
+      patchLimit: normalizedPatchLimit,
+      patchTotalChars: 0,
+      patchTruncated: false,
+      nextPatchOffset: null,
+    };
+  }
+
+  const patchResult = await runGit([
+    "diff",
+    "--no-ext-diff",
+    "--no-color",
+    "--unified=3",
+    "--find-renames",
+    normalizedBaseHead,
+    normalizedAcceptedHead,
+    "--",
+    normalizedFilePath,
+  ], { cwd: repositoryDirectory, signal });
+  const patchTotalChars = patchResult.stdout.length;
+  const patch = patchResult.stdout.slice(
+    normalizedPatchOffset,
+    normalizedPatchOffset + normalizedPatchLimit,
+  );
+  const nextPatchOffset = normalizedPatchOffset + patch.length < patchTotalChars
+    ? normalizedPatchOffset + patch.length
+    : null;
+
+  return {
+    baseHead: normalizedBaseHead,
+    acceptedHead: normalizedAcceptedHead,
+    files,
+    patch,
+    patchOffset: normalizedPatchOffset,
+    patchLimit: normalizedPatchLimit,
+    patchTotalChars,
+    patchTruncated: nextPatchOffset !== null,
+    nextPatchOffset,
+  };
+};
+
+/**
+ * Read one historical text blob after materializing the selected tree only in
+ * the operation's private temporary repository. Symlinks and oversized or
+ * non-UTF-8 blobs are rejected before their bytes can enter model output.
+ */
+export const readLocalWorkspaceRevisionFile = async ({
+  repositoryDirectory,
+  revisionHead,
+  filePath,
+  offset = 0,
+  limit = 40_000,
+  signal,
+}) => {
+  const normalizedHead = normalizeGitHead(revisionHead, "revisionHead");
+  const normalizedFilePath = normalizeLocalWorkspaceHistoryPath(filePath);
+  const normalizedOffset = normalizeLocalWorkspaceHistoryInteger(
+    offset,
+    "offset",
+    { defaultValue: 0, maximum: Number.MAX_SAFE_INTEGER },
+  );
+  const normalizedLimit = normalizeLocalWorkspaceHistoryInteger(
+    limit,
+    "limit",
+    { defaultValue: 40_000, minimum: 1, maximum: MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS },
+  );
+
+  await runGit(["cat-file", "-e", `${normalizedHead}^{commit}`], {
+    cwd: repositoryDirectory,
+    signal,
+  });
+  await runGit(["read-tree", "--reset", "-u", normalizedHead], {
+    cwd: repositoryDirectory,
+    signal,
+  });
+  const repositoryRoot = path.resolve(repositoryDirectory);
+  const absolutePath = path.resolve(repositoryRoot, normalizedFilePath);
+  if (!absolutePath.startsWith(`${repositoryRoot}${path.sep}`)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "filePath escaped the temporary Workspace repository.",
+    );
+  }
+  let metadata;
+  try {
+    metadata = await fs.lstat(absolutePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new TrelioLocalContextError(
+        "LOCAL_WORKSPACE_FILE_NOT_FOUND",
+        "The requested file does not exist in the selected Workspace revision.",
+      );
+    }
+    throw error;
+  }
+  if (
+    !metadata.isFile()
+    || metadata.isSymbolicLink()
+    || metadata.size > MAX_LOCAL_WORKSPACE_INLINE_TEXT_BYTES
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_FILE_NOT_TEXT",
+      "The requested revision file is not bounded UTF-8 text. Use derived/OCR materials for binary content.",
+    );
+  }
+  const bytes = await fs.readFile(absolutePath);
+  const externalObject = parseWorkspaceObjectPointer(bytes);
+  if (externalObject) {
+    return {
+      text: null,
+      offset: 0,
+      limit: normalizedLimit,
+      totalChars: 0,
+      truncated: false,
+      nextOffset: null,
+      externalObject,
+      note: "This path is an external-object pointer. Use accepted derived/OCR materials when semantic text is required.",
+    };
+  }
+  if (!isUtf8(bytes) || bytes.includes(0)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_FILE_NOT_TEXT",
+      "The requested revision file is not bounded UTF-8 text. Use derived/OCR materials for binary content.",
+    );
+  }
+  const fullText = bytes.toString("utf8");
+  const text = fullText.slice(normalizedOffset, normalizedOffset + normalizedLimit);
+  const nextOffset = normalizedOffset + text.length < fullText.length
+    ? normalizedOffset + text.length
+    : null;
+
+  return {
+    text,
+    offset: normalizedOffset,
+    limit: normalizedLimit,
+    totalChars: fullText.length,
+    truncated: nextOffset !== null,
+    nextOffset,
+    externalObject: null,
+  };
+};
+
+const readLocalWorkspaceRunHistoryDescriptor = async ({
+  provider,
+  companySlug,
+  runId,
+  signal,
+}) => {
+  const raw = await readJson(await request(
+    provider.requestOrigin,
+    provider.token,
+    `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/runs/${runId}/encrypted-history`,
+    { signal },
+  ));
+  const descriptor = await hydrateAgentCompanyEncryptedJson({
+    value: raw,
+    origin: provider.requestOrigin,
+    token: provider.token,
+    companyEncryption: provider.companyEncryption,
+    signal,
+  });
+  const workspaceId = normalizeUuid(descriptor?.workspace?.id, "history workspace id");
+  const expectedHead = normalizeGitHead(
+    descriptor?.acceptance?.expectedHead,
+    "history expected head",
+  );
+  const candidateHead = normalizeGitHead(
+    descriptor?.acceptance?.candidateHead,
+    "history candidate head",
+  );
+
+  if (
+    descriptor?.schemaVersion !== 1
+    || descriptor?.company?.id !== provider.companyEncryption.runtime.company.id
+    || descriptor?.company?.slug !== provider.companyEncryption.runtime.company.slug
+    || descriptor?.company?.slug !== companySlug
+    || descriptor?.run?.id !== runId
+    || descriptor?.workspace?.scope?.company?.id !== descriptor.company.id
+    || descriptor?.workspace?.scope?.company?.slug !== descriptor.company.slug
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_COMPANY_MISMATCH",
+      "Trelio returned accepted Run history for another company, Run or Workspace.",
+    );
+  }
+  return {
+    ...descriptor,
+    workspace: { ...descriptor.workspace, id: workspaceId },
+    acceptance: {
+      ...descriptor.acceptance,
+      expectedHead,
+      candidateHead,
+    },
+  };
+};
+
+const importLocalWorkspaceHistoryBundle = async ({
+  provider,
+  workspaceId,
+  workspaceHead,
+  repositoryDirectory,
+  bundlePath,
+  namespace,
+  signal,
+}) => {
+  const response = await request(
+    provider.requestOrigin,
+    provider.token,
+    `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-revision-bundle?${new URLSearchParams({
+      head: workspaceHead,
+    }).toString()}`,
+    { signal },
+  );
+  if (
+    response.headers.get("x-trelio-workspace-id") !== workspaceId
+    || response.headers.get("x-trelio-workspace-head") !== workspaceHead
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_REVISION_MISMATCH",
+      "Trelio returned another encrypted revision during local history inspection.",
+    );
+  }
+  await writeAndDecryptCompanyWorkspaceBundle({
+    response,
+    destination: bundlePath,
+    companyEncryption: provider.companyEncryption,
+    expectedWorkspaceId: workspaceId,
+    expectedWorkspaceHead: workspaceHead,
+  });
+  await runGit([
+    "fetch",
+    bundlePath,
+    `+refs/heads/*:refs/remotes/trelio-history-${namespace}/*`,
+    `+refs/trelio/exports/*:refs/remotes/trelio-history-${namespace}-export/*`,
+  ], { cwd: repositoryDirectory, signal });
+  await runGit(["cat-file", "-e", `${workspaceHead}^{commit}`], {
+    cwd: repositoryDirectory,
+    signal,
+  });
+};
+
+const withLocalWorkspaceRunHistory = async ({
+  provider,
+  companySlug,
+  runId,
+  signal,
+}, handler) => {
+  const descriptor = await readLocalWorkspaceRunHistoryDescriptor({
+    provider,
+    companySlug,
+    runId,
+    signal,
+  });
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-history-"));
+  const repositoryDirectory = path.join(temporaryDirectory, "repository");
+
+  try {
+    await fs.mkdir(repositoryDirectory, { mode: 0o700 });
+    await runGit(["init", "--initial-branch=main"], {
+      cwd: repositoryDirectory,
+      signal,
+    });
+    await importLocalWorkspaceHistoryBundle({
+      provider,
+      workspaceId: descriptor.workspace.id,
+      workspaceHead: descriptor.acceptance.expectedHead,
+      repositoryDirectory,
+      bundlePath: path.join(temporaryDirectory, "before.bundle"),
+      namespace: "before",
+      signal,
+    });
+    await importLocalWorkspaceHistoryBundle({
+      provider,
+      workspaceId: descriptor.workspace.id,
+      workspaceHead: descriptor.acceptance.candidateHead,
+      repositoryDirectory,
+      bundlePath: path.join(temporaryDirectory, "after.bundle"),
+      namespace: "after",
+      signal,
+    });
+    return await handler({ descriptor, repositoryDirectory });
+  } finally {
+    // Historical plaintext exists only for this bounded operation and never
+    // enters the persistent mirror, workspace cache, argv, logs or backend.
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+};
+
 const buildInitialWorkspaceContext = () => [
   "# WORKSPACE_CONTEXT",
   "",
@@ -5782,9 +6243,9 @@ export const handleTrelioLocalWorkspaceOperation = async (
   const operation = String(rawInput?.operation || "").trim();
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   if (provider.nativeProvider) return provider.result;
-  const workspaceId = operation === "cancel_run"
-    ? null
-    : normalizeUuid(rawInput?.workspaceId, "workspaceId");
+  const workspaceId = ["list_revisions", "restore_revision"].includes(operation)
+    ? normalizeUuid(rawInput?.workspaceId, "workspaceId")
+    : null;
 
   if (operation === "list_revisions") {
     const raw = await readJson(await request(
@@ -5812,6 +6273,100 @@ export const handleTrelioLocalWorkspaceOperation = async (
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       signal,
+    });
+  }
+  if (operation === "get_revision_diff") {
+    const argumentsValue = rawInput?.arguments && typeof rawInput.arguments === "object"
+      && !Array.isArray(rawInput.arguments)
+      ? rawInput.arguments
+      : {};
+    const runId = normalizeUuid(argumentsValue.runId, "arguments.runId");
+    const filePath = argumentsValue.filePath === undefined
+      ? undefined
+      : normalizeLocalWorkspaceHistoryPath(argumentsValue.filePath, "arguments.filePath");
+    const patchOffset = normalizeLocalWorkspaceHistoryInteger(
+      argumentsValue.patchOffset,
+      "arguments.patchOffset",
+      { defaultValue: 0, maximum: Number.MAX_SAFE_INTEGER },
+    );
+    const patchLimit = normalizeLocalWorkspaceHistoryInteger(
+      argumentsValue.patchLimit,
+      "arguments.patchLimit",
+      { defaultValue: 40_000, minimum: 1, maximum: MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS },
+    );
+    return withLocalWorkspaceRunHistory({
+      provider,
+      companySlug,
+      runId,
+      signal,
+    }, async ({ descriptor, repositoryDirectory }) => ({
+      run: descriptor.run,
+      workspace: descriptor.workspace,
+      acceptance: descriptor.acceptance,
+      diff: await inspectLocalWorkspaceRevisionDiff({
+        repositoryDirectory,
+        baseHead: descriptor.acceptance.expectedHead,
+        acceptedHead: descriptor.acceptance.candidateHead,
+        ...(filePath ? { filePath } : {}),
+        patchOffset,
+        patchLimit,
+        signal,
+      }),
+    }));
+  }
+  if (operation === "read_revision_file") {
+    const argumentsValue = rawInput?.arguments && typeof rawInput.arguments === "object"
+      && !Array.isArray(rawInput.arguments)
+      ? rawInput.arguments
+      : {};
+    const runId = normalizeUuid(argumentsValue.runId, "arguments.runId");
+    const filePath = normalizeLocalWorkspaceHistoryPath(
+      argumentsValue.filePath,
+      "arguments.filePath",
+    );
+    const revision = String(argumentsValue.revision || "").trim();
+    if (!new Set(["before", "after"]).has(revision)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "revision must be before or after.",
+      );
+    }
+    const offset = normalizeLocalWorkspaceHistoryInteger(
+      argumentsValue.offset,
+      "arguments.offset",
+      { defaultValue: 0, maximum: Number.MAX_SAFE_INTEGER },
+    );
+    const limit = normalizeLocalWorkspaceHistoryInteger(
+      argumentsValue.limit,
+      "arguments.limit",
+      { defaultValue: 40_000, minimum: 1, maximum: MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS },
+    );
+    return withLocalWorkspaceRunHistory({
+      provider,
+      companySlug,
+      runId,
+      signal,
+    }, async ({ descriptor, repositoryDirectory }) => {
+      const revisionHead = revision === "before"
+        ? descriptor.acceptance.expectedHead
+        : descriptor.acceptance.candidateHead;
+      const file = await readLocalWorkspaceRevisionFile({
+        repositoryDirectory,
+        revisionHead,
+        filePath,
+        offset,
+        limit,
+        signal,
+      });
+      return {
+        runId,
+        workspaceId: descriptor.workspace.id,
+        scope: descriptor.workspace.scope,
+        revision,
+        revisionHead,
+        filePath,
+        ...file,
+      };
     });
   }
   if (operation === "cancel_run") {
@@ -5916,13 +6471,13 @@ export const handleTrelioLocalWorkspaceOperation = async (
   }
   throw new TrelioLocalContextError(
     "LOCAL_CONTEXT_INVALID_INPUT",
-    "operation must be list_revisions, restore_revision or cancel_run.",
+    "operation must be list_revisions, get_revision_diff, read_revision_file, restore_revision or cancel_run.",
   );
 };
 
 export const TRELIO_LOCAL_CONTEXT_TOOL = {
   name: "continue_trelio_local_context",
-  description: "Continue the server-selected local read route.",
+  description: "Continue a selected local read.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -5985,8 +6540,8 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
 
 export const TRELIO_LOCAL_PROPOSAL_TOOL = {
   name: "continue_trelio_local_proposal",
-  title: "Continue a Trelio proposal",
-  description: "Continue the exact local proposal route selected by Trelio.",
+  title: "Continue Trelio proposal",
+  description: "Continue the selected local proposal route.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -6020,8 +6575,7 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
 
 export const TRELIO_LOCAL_WORKSPACE_TOOL = {
   name: "continue_trelio_local_workspace",
-  title: "Continue a Trelio local Workspace route",
-  description: "Continue the exact local Workspace route selected by Trelio.",
+  description: "Continue the selected local Workspace route.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -6029,11 +6583,20 @@ export const TRELIO_LOCAL_WORKSPACE_TOOL = {
     properties: {
       operation: {
         type: "string",
-        enum: ["list_revisions", "restore_revision", "cancel_run"],
+        enum: [
+          "list_revisions",
+          "get_revision_diff",
+          "read_revision_file",
+          "restore_revision",
+          "cancel_run",
+        ],
       },
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
       workspaceId: { type: "string", format: "uuid" },
       runId: { type: "string", format: "uuid" },
+      arguments: {
+        type: "object",
+      },
       expectedHead: { type: "string", pattern: "^[0-9a-f]{40,64}$" },
       targetHead: { type: "string", pattern: "^[0-9a-f]{40,64}$" },
       reason: { type: "string", minLength: 1, maxLength: 2000 },

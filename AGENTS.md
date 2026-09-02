@@ -266,7 +266,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   native, а детали exact local context/proposal route загружаются только из lazy
   worker reference после такого ответа. Always-visible schemas provider-neutral.
 - Encrypted routing принимает только explicit capabilities: current content read,
-  exact local action, proposal, local Workspace list/restore/cancel либо logical
+  exact local action, proposal, local Workspace revision list, accepted-Run
+  diff/file read, restore/cancel либо logical
   bridge checkpoint. Local action повторно запускает исходный native handler с
   прежними schema/scope/ACL/idempotency/CAS только после проверки bridge session,
   runtime proof и field-bound payload markers; неизвестный method fail-closed и
@@ -274,9 +275,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   Server read-fence `get_task_sections` автоматически выбрасывает только
   доказанно устаревшую RAM generation, bounded дожидается свежего mirror и ровно
   один раз повторяет read-only запрос; повторный конфликт остаётся fail-closed.
-  Workspace-only query имеет exact company scope; current-head file и revision
-  metadata читаются локально, audited restore проходит local Run, а прямые
-  server-side historical Git diff/read не получают plaintext fallback.
+  Workspace-only query имеет exact company scope; current-head file, revision
+  metadata и accepted-Run history читаются локально, audited restore проходит
+  local Run, а server-side historical Git diff/read не получают plaintext
+  fallback.
 - Combined encrypted proposal bundle выбирает provider до per-card preparation,
   canonicalize-ит historical project aliases локально и отклоняет mixed-company
   payload до первого save; confirmed card error не блокирует независимых siblings.

@@ -79,30 +79,28 @@ Workspace text before applying the bounded top-N, so ordinary task or dossier
 matches cannot displace a relevant file. `operation=get_workspace_file` accepts
 the exact `workspaceId`, `workspaceHead`, and `filePath` from that result and
 preserves the native accepted-head fence. These routes do not start a Run or
-expose historical Git bytes.
+expose historical Git bytes to the backend.
 
-## Continue Workspace history and cancellation locally
+## Continue Workspace history locally
 
-When native list/restore/cancel selects
-`providerSelection.tool=continue_trelio_local_workspace`, use that exact company
-and matching operation:
+On returned `continue_trelio_local_workspace`, keep its exact company/operation:
 
 - `list_revisions`: pass `workspaceId`; select only a head returned by this live
   result.
+- `get_revision_diff`: pass the original native arguments under `arguments`.
+  Omit `filePath` first; a later patch path must come from that manifest.
+- `read_revision_file`: pass original native arguments, using a manifest path.
+  Binary pointers return metadata; use accepted derived/OCR text instead.
 - `restore_revision`: pass workspace, current/target heads, meaningful plaintext
-  audit reason, and returned runtime session when present. The host protects the
-  reason, restores the old user tree in a separate Run, preserves current
-  controls, normalizes legacy context, and submits a current-head descendant.
-  The handoff derives `filesChanged` from the exact base-to-restored Git delta,
-  including deletions; a protected-control-only restore records an empty list
-  instead of inventing a changed durable file. An ambiguous prepare is resolved
-  by one exact marker read-back, never a speculative second Run.
+  reason and returned runtime session. The host encrypts the reason, preserves
+  current controls, normalizes legacy context and submits a new descendant.
+  `filesChanged` comes from its actual delta; an ambiguous prepare gets one exact
+  marker read-back, never a speculative second Run.
 - `cancel_run`: pass `runId` and concrete reason. The host protects it; only
   transport/5xx or malformed success can retry, bounded and with the same marker.
 
-Never infer this route or reproduce its bundle/decrypt/Git/retry steps. Leave an
-incomplete restore Run intact and continue that exact Run. An unconfirmed
-prepare or lost post-acceptance response never authorizes a second restore.
+History plaintext stays in a temporary Git root deleted before return; controls
+stay hidden. Never reproduce bridge steps or repeat an unconfirmed restore.
 
 ## Use the same proposal lifecycle
 

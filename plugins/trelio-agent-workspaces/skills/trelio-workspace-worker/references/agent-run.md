@@ -166,8 +166,9 @@ task communication, handoff, submit, or final reporting.
 - To undo accepted changes, list revisions, select an exact head, then restore
   with current `expectedHead` and a meaningful reason. If either native call
   selects `continue_trelio_local_workspace`, use its matching list/restore
-  operation. Restore adds a descendant and rejects concurrency; never improvise
-  encrypted Git/HTTP history access.
+  operation. Accepted-Run diff/file reads use its matching history operations.
+  Restore adds a descendant and rejects concurrency; never improvise encrypted
+  Git/HTTP access.
 - Never delete Workspace roots manually. `trelio-workspace clean --dry-run`
   lists only roots unused for 30 days, backend-terminal, locally clean and not
   opening, plus cache bytes. `clean` deletes that exact local plan, never the

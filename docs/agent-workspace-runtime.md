@@ -147,6 +147,13 @@ persistent root одновременно открывается только о�
 и не просит пользователя вручную запускать Run ради доступа к материалам.
 Writable intent позже начинает отдельный обычный `prepare_agent_workspace_run`.
 
+Company owner/admin history analytics сохраняет тот же plaintext boundary.
+Native `get_workspace_revision_diff` и `read_workspace_revision_file` выбирают
+`continue_trelio_local_workspace`; bridge загружает structural accepted-Run
+descriptor и два opaque encrypted bundle, строит manifest/bounded patch либо
+bounded UTF-8 chunk во временном private Git-каталоге и удаляет его до возврата.
+Control paths не раскрываются, а backend не получает file path или bytes.
+
 Рекомендуемая структура:
 
 - `sources/` – исходники;
