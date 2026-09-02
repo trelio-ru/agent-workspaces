@@ -167,10 +167,20 @@ metadata остаются у основного MCP OAuth.
 ```
 
 Claude обновляет marketplace своим plugin manager. После установки или
-обновления выполните `/reload-plugins`, затем начните новую задачу или сессию с
-доступом к той же папке и попросите: `Настрой Trelio Agent Workspaces для
-текущей рабочей папки`. OAuth выполняется через exact Trelio server в `/mcp`
-либо `claude mcp login trelio`; полный restart – последний fallback.
+обновления выполните `/reload-plugins`. Claude Code показывает remote MCP
+плагина под полным именем `plugin:trelio-agent-workspaces:trelio`; короткое имя
+`trelio` для CLI здесь не существует. OAuth выполняется через этот exact server
+в `/mcp` либо командой:
+
+```bash
+claude mcp login plugin:trelio-agent-workspaces:trelio
+```
+
+После OAuth проверьте `claude mcp list`. Если server уже `Connected`, но в
+открытой до авторизации сессии ещё нет `list_companies`, не повторяйте login:
+завершите эту сессию, снова запустите `claude` из той же папки и попросите
+`Настрой Trelio Agent Workspaces для текущей рабочей папки`. Полный restart –
+последний fallback.
 
 Codex и Claude используют отдельные MCP registrations одного plugin bundle.
 Codex сохраняет свой inline manifest с plugin-root-relative `command`/`cwd` и

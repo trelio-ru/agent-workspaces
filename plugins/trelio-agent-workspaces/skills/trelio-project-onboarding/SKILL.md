@@ -111,13 +111,18 @@ current task.
      `codex mcp list --json` to distinguish an unavailable or unauthenticated
      `trelio` HTTP server from the local `trelio-remote-skills` server. In
      Claude Code, inspect `claude mcp list`; never run `codex` diagnostics or
-     login commands there. Current Claude registration shows `trelio` as HTTP
-     and resolves bundled launcher paths from `${CLAUDE_PLUGIN_ROOT}`. A skipped
-     URL without `type` or literal `./scripts/launch-trelio-node` `ENOENT` is a
-     stale incompatible plugin definition: update it through Claude's plugin
-     manager and run `/reload-plugins` before retrying. Do not reset OAuth or
-     pairing for this signal. The plugin version alone does not prove that either
-     server is ready. In particular, Codex `auth_status: "o_auth"` identifies
+     login commands there. Claude Code namespaces MCP servers loaded from a
+     plugin: the current remote registration is shown as
+     `plugin:trelio-agent-workspaces:trelio`, while the local server is
+     `plugin:trelio-agent-workspaces:trelio-remote-skills`. Preserve the exact
+     name returned by `claude mcp list`; never shorten the remote name to
+     `trelio`. Its entry must use HTTP and the bundled launcher paths must
+     resolve from `${CLAUDE_PLUGIN_ROOT}`. A skipped URL without `type` or
+     literal `./scripts/launch-trelio-node` `ENOENT` is a stale incompatible
+     plugin definition: update it through Claude's plugin manager and run
+     `/reload-plugins` before retrying. Do not reset OAuth or pairing for this
+     signal. The plugin version alone does not prove that either server is
+     ready. In particular, Codex `auth_status: "o_auth"` identifies
      the configured authentication scheme; it does not prove that the current
      process attached a bearer. A failed live Trelio read that explicitly
      reports HTTP 401 or a required/missing bearer is an OAuth failure even
@@ -145,9 +150,9 @@ current task.
      already open, let the user finish that one window. If it is not open,
      immediately run the exact client command and wait for it: in Codex use
      `codex mcp login trelio`; in Claude Code use
-     `claude mcp login trelio`, or direct the user to `/mcp` and the exact
-     `trelio` server when the installed Claude Code version does not expose the
-     CLI login command.
+     `claude mcp login plugin:trelio-agent-workspaces:trelio`, or direct the
+     user to `/mcp` and that same exact namespaced server when the installed
+     Claude Code version does not expose the CLI login command.
      The authorization URL itself redirects an unauthenticated user through
      Trelio login and back to consent. Never open the Trelio site as a
      preparatory login, use Computer Use to enter credentials, or ask the user
@@ -155,13 +160,17 @@ current task.
      completes login and consent in the single browser flow.
    - After OAuth, refresh the same client's MCP status and retry one low-risk
      Trelio read in this same task. Continue onboarding here as soon as the
-     tools are callable. Ask for a new task or Claude session in the same
-     working folder only when that live retry proves the current process still
-     has no refreshed tools; do not assume a static tool list. If that retry
-     still explicitly lacks a bearer after the user completed this one OAuth
-     flow, do not start another login loop: the already-open client process may
-     not have adopted the refreshed credential. Preserve the successful
-     authorization.
+     tools are callable. In Claude Code, `claude mcp list` may already show the
+     namespaced server as `Connected` while a session opened before OAuth still
+     lacks `list_companies` and the other remote tools. That is a stale session,
+     not failed OAuth: do not run login again. End it, launch a new `claude`
+     session from the same exact working folder, and repeat the setup request.
+     Use the equivalent new-task recovery in Codex only when a live retry proves
+     the current task still has no refreshed tools; do not assume a static tool
+     list. If a retry still explicitly lacks a bearer after the user completed
+     this one OAuth flow, do not start another login loop: the already-open
+     client process may not have adopted the refreshed credential. Preserve the
+     successful authorization.
    Require a full app restart only when a live current-process retry and then a
    new task/session in the same folder still lack the tools or report the old
    plugin version. In Claude Code, run `/reload-plugins` before creating the new

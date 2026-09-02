@@ -158,10 +158,18 @@ Git worktree. В Cowork создайте задачу с доступом к в�
 /plugin install trelio-agent-workspaces@trelio-plugins
 ```
 
-Выполните `/reload-plugins`, затем начните новую задачу или сессию с доступом к
-той же папке и попросите: `Настрой Trelio Agent Workspaces для текущей рабочей
-папки`. Если Trelio запросит авторизацию, откройте `/mcp`, выберите сервер
-`trelio` и подтвердите OAuth в браузере.
+Выполните `/reload-plugins`. Для OAuth выберите в `/mcp` сервер
+`plugin:trelio-agent-workspaces:trelio` либо выполните в терминале:
+
+```bash
+claude mcp login plugin:trelio-agent-workspaces:trelio
+```
+
+После авторизации начните новую сессию `claude` из той же папки и попросите:
+`Настрой Trelio Agent Workspaces для текущей рабочей папки`. Если
+`claude mcp list` уже показывает Trelio как `Connected`, а старая сессия не
+видит `list_companies`, login повторять не нужно – этой сессии недоступен
+обновлённый набор инструментов.
 
 Plugin bundle хранит MCP-регистрацию Codex и Claude раздельно. Поэтому Claude
 разрешает bundled launcher через `${CLAUDE_PLUGIN_ROOT}` независимо от текущей

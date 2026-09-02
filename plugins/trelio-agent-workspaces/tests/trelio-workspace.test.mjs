@@ -4234,6 +4234,36 @@ test("bundled instructions narrow structured MCP search timeouts without a blind
   assert.match(diagnosticsSkill, /A bare HTTP 504 remains in this transport/u);
 });
 
+test("Claude OAuth recovery keeps the plugin-qualified MCP server name", async () => {
+  const diagnosticsSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
+    "utf8",
+  );
+  const onboardingSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    "utf8",
+  );
+  const repositoryRoot = path.resolve(pluginDirectory, "..", "..");
+  const publicInstructions = await Promise.all([
+    readFile(path.join(repositoryRoot, "README.md"), "utf8"),
+    readFile(path.join(repositoryRoot, "docs", "plugin-setup-and-policies.md"), "utf8"),
+    readFile(path.join(pluginDirectory, "README.md"), "utf8"),
+  ]);
+  const exactLogin = /claude mcp login plugin:trelio-agent-workspaces:trelio/u;
+  const unqualifiedLogin = /claude mcp login trelio(?:\s|`)/u;
+
+  for (const instructions of [diagnosticsSkill, onboardingSkill, ...publicInstructions]) {
+    assert.match(instructions, exactLogin);
+    assert.doesNotMatch(instructions, unqualifiedLogin);
+  }
+
+  for (const instructions of [diagnosticsSkill, onboardingSkill]) {
+    assert.match(instructions, /`Connected`/u);
+    assert.match(instructions, /`list_companies`/u);
+    assert.match(instructions, /new `claude`\s+session/u);
+  }
+});
+
 test("plugin exposes folder-first onboarding before ordinary task work", async () => {
   const codexManifest = JSON.parse(await readFile(
     path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
@@ -4310,10 +4340,24 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
   assert.match(onboardingSkill, /`CLAUDE_PROJECT_DIR`/u);
   assert.match(onboardingSkill, /`claude mcp list`/u);
-  assert.match(onboardingSkill, /Current Claude registration shows `trelio` as HTTP/u);
+  assert.match(
+    onboardingSkill,
+    /current remote registration is shown as\s+`plugin:trelio-agent-workspaces:trelio`/u,
+  );
   assert.match(onboardingSkill, /literal `\.\/scripts\/launch-trelio-node` `ENOENT`/u);
-  assert.match(onboardingSkill, /Do not reset OAuth or\s+pairing for this signal/u);
-  assert.match(onboardingSkill, /`claude mcp login trelio`/u);
+  assert.match(onboardingSkill, /Do not reset OAuth or\s+pairing for this\s+signal/u);
+  assert.match(
+    onboardingSkill,
+    /`claude mcp login plugin:trelio-agent-workspaces:trelio`/u,
+  );
+  assert.doesNotMatch(onboardingSkill, /`claude mcp login trelio`/u);
+  assert.match(onboardingSkill, /namespaced server as `Connected`/u);
+  assert.match(onboardingSkill, /still\s+lacks `list_companies`/u);
+  assert.match(onboardingSkill, /not failed OAuth: do not run login again/u);
+  assert.match(
+    onboardingSkill,
+    /launch a new `claude`\s+session from the same exact working folder/u,
+  );
   assert.match(onboardingSkill, /`\/reload-plugins`/u);
   assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
   assert.match(onboardingAgentMetadata, /\$trelio-project-onboarding/u);
@@ -4400,7 +4444,10 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /Never open the Trelio site as a\s+preparatory login/u);
   assert.match(onboardingSkill, /ask the user\s+to report that login finished/u);
   assert.match(onboardingSkill, /retry one low-risk\s+Trelio read in this same task/u);
-  assert.match(onboardingSkill, /Ask for a new task or Claude session in the same\s+working folder only when that live retry proves/u);
+  assert.match(
+    onboardingSkill,
+    /Use the equivalent new-task recovery in Codex only when a live retry proves\s+the current task still has no refreshed tools/u,
+  );
   assert.match(onboardingSkill, /processPathReady=false/u);
   assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
   assert.match(onboardingSkill, /do not repeat the same advice/u);
@@ -4466,7 +4513,10 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(diagnosticsSkill, /launch-trelio-node/u);
   assert.match(diagnosticsSkill, /failed Codex PATH-alias\s+creation is not a missing-Node diagnosis/u);
   assert.match(diagnosticsSkill, /Do not infer Claude Code only\s+from `CLAUDE_PLUGIN_ROOT`/u);
-  assert.match(diagnosticsSkill, /manifest must show remote `trelio` as HTTP/u);
+  assert.match(
+    diagnosticsSkill,
+    /current remote entry is\s+`plugin:trelio-agent-workspaces:trelio`[\s\S]{0,260}remote entry must use HTTP/u,
+  );
   assert.match(diagnosticsSkill, /URL has no `type`/u);
   assert.match(
     diagnosticsSkill,

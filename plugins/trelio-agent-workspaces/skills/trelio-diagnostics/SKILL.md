@@ -83,12 +83,15 @@ In Codex:
    bearer.
 
 In Claude Code, use `claude mcp list` and its plugin manager. Never use Codex
-commands to diagnose another host's credential store. The current Claude
-manifest must show remote `trelio` as HTTP and resolve bundled local paths from
-`${CLAUDE_PLUGIN_ROOT}`. A skipped `trelio` entry whose URL has no `type`, or an
-`ENOENT` for literal `./scripts/launch-trelio-node`, proves that Claude loaded an
-older incompatible MCP definition; it is not an OAuth, Node.js, Git or pairing
-failure.
+commands to diagnose another host's credential store. Plugin-provided server
+names are namespaced: the current remote entry is
+`plugin:trelio-agent-workspaces:trelio` and the local entry is
+`plugin:trelio-agent-workspaces:trelio-remote-skills`. Preserve the exact name
+from the list instead of shortening either one. The remote entry must use HTTP
+and bundled local paths must resolve from `${CLAUDE_PLUGIN_ROOT}`. A skipped
+remote entry whose URL has no `type`, or an `ENOENT` for literal
+`./scripts/launch-trelio-node`, proves that Claude loaded an older incompatible
+MCP definition; it is not an OAuth, Node.js, Git or pairing failure.
 
 If the user asks to verify hooks end to end, use a read-only protected Trelio
 call. Reuse an exact task already supplied; otherwise use Trelio discovery to
@@ -137,9 +140,17 @@ runtime script do not require another `hooks.json` change or trust review.
   `trelio-agent-workspaces@trelio-plugins`; a listed marketplace alone is not
   proof of installation.
 - Remote Trelio reports explicit HTTP 401 or missing bearer: run the exact
-  host's Trelio MCP login once, let the user complete browser login and consent,
-  then retry one low-risk read. Do not loop login if the current process did
-  not adopt a successfully refreshed credential; use a fresh task first.
+  host's Trelio MCP login once. In Codex it is `codex mcp login trelio`; in
+  Claude Code it is
+  `claude mcp login plugin:trelio-agent-workspaces:trelio`, using the exact
+  namespaced name confirmed by `claude mcp list`. Let the user complete browser
+  login and consent, then retry one low-risk read. Do not loop login if the
+  current process did not adopt a successfully refreshed credential; use a
+  fresh task or Claude session first.
+- Claude Code's namespaced remote server is `Connected`, but a session opened
+  before OAuth still has no `list_companies` or other remote tools: do not
+  reauthorize. End that stale session, launch a new `claude` session from the
+  same exact working folder, and retry the original request there.
 - Only `trelio-remote-skills` fails: inspect its exact client-owned command. In
   Codex, `codex mcp list --json` must show `./scripts/launch-trelio-node` with a
   plugin-root `cwd`; a still-loaded bare `node` command needs the normal plugin
