@@ -483,6 +483,95 @@ test("local mirror includes first-class company documents in search, list and fe
   assert.equal(fetched.effectiveInstructions.agentInstructionsSnapshot, null);
 });
 
+test("archived contacts and registry rows require the same explicit native flags locally", () => {
+  const archiveMirror = structuredClone(mirror);
+  const registry = archiveMirror.contextDocuments[0];
+  registry.payload.registry = {
+    id: registry.id,
+    slug: "supplier-registry",
+    title: "Реестр поставщиков",
+    columns: [
+      { key: "state", label: "Статус", type: "select", options: ["Проверен", "Архив"] },
+      { key: "document", label: "Документ", type: "document" },
+    ],
+  };
+  registry.payload.rows = [
+    { id: "70000000-0000-4000-8000-000000000001", rowKey: "Север", values: { state: "Проверен" }, revision: 1, isTechnical: false, isArchived: false },
+    { id: "70000000-0000-4000-8000-000000000002", rowKey: "Скрытый", values: { state: "Архив" }, revision: 2, isTechnical: false, isArchived: true },
+  ];
+  registry.payload.history = [{ id: "h1" }, { id: "h2" }];
+  archiveMirror.contextDocuments.push({
+    id: "80000000-0000-4000-8000-000000000001",
+    type: "contact",
+    title: "Архивный контакт",
+    revisionToken: "e".repeat(64),
+    projectId: null,
+    projectSlug: null,
+    payload: {
+      contact: {
+        id: "80000000-0000-4000-8000-000000000001",
+        displayName: "Архивный контакт",
+        isArchived: true,
+      },
+    },
+  });
+
+  const activeRegistry = handleNativeLocalContextRead(archiveMirror, "get_registry", {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    registrySlug: "supplier-registry",
+  });
+  assert.deepEqual(activeRegistry.document.payload.rows.map((row) => row.rowKey), ["Север"]);
+  assert.equal(activeRegistry.document.payload.page.total, 1);
+
+  const completeRegistry = handleNativeLocalContextRead(archiveMirror, "get_registry", {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    registrySlug: "supplier-registry",
+    includeArchivedRows: true,
+    sortDirection: "desc",
+    historyLimit: 1,
+  });
+  assert.deepEqual(completeRegistry.document.payload.rows.map((row) => row.rowKey), ["Скрытый", "Север"]);
+  assert.equal(completeRegistry.document.payload.page.total, 2);
+  assert.equal(completeRegistry.document.payload.history.length, 1);
+  assert.throws(
+    () => handleNativeLocalContextRead(archiveMirror, "get_registry", {
+      companySlug: "acme",
+      projectSlug: "mobile",
+      registrySlug: "supplier-registry",
+      filters: { document: "opaque-file" },
+    }),
+    /does not support exact filtering/u,
+  );
+
+  const ordinaryContacts = handleNativeLocalContextRead(archiveMirror, "list_contacts", {
+    companySlug: "acme",
+  });
+  const allContacts = handleNativeLocalContextRead(archiveMirror, "list_contacts", {
+    companySlug: "acme",
+    includeArchived: true,
+  });
+  assert.equal(ordinaryContacts.total, 0);
+  assert.equal(allContacts.total, 1);
+  assert.equal(
+    handleNativeLocalContextRead(archiveMirror, "get_contact", {
+      companySlug: "acme",
+      contactId: "80000000-0000-4000-8000-000000000001",
+    }).document.payload.contact.isArchived,
+    true,
+  );
+
+  const ordinarySearch = searchCompanyContextMirror(
+    archiveMirror,
+    ["скрытый", "архивный контакт"],
+    10,
+  );
+  assert.equal(ordinarySearch.results.some((result) => (
+    result.type === "contact" || result.preview?.includes("Скрытый")
+  )), false);
+});
+
 test("local inventory is bounded and task result ids round-trip exactly", () => {
   const listed = listCompanyContextMirror(mirror, "tasks", 0, 50, "mobile");
 

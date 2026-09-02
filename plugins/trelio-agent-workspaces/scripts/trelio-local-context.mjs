@@ -2095,6 +2095,21 @@ const buildSearchDocuments = (mirror) => {
     });
   }
   for (const contextDocument of mirror.contextDocuments ?? []) {
+    // Archived contacts and registry rows are retained only so an explicit
+    // management read can reproduce the native includeArchived contract. They
+    // must not silently re-enter ordinary relevance search.
+    if (
+      contextDocument.type === "contact"
+      && contextDocument.payload?.contact?.isArchived
+    ) {
+      continue;
+    }
+    const searchablePayload = contextDocument.type === "registry"
+      ? {
+          ...contextDocument.payload,
+          rows: (contextDocument.payload?.rows ?? []).filter((row) => !row?.isArchived),
+        }
+      : contextDocument.payload;
     const resultType = contextDocument.type === "knowledge_page"
       ? "knowledge-page"
       : contextDocument.type;
@@ -2102,7 +2117,7 @@ const buildSearchDocuments = (mirror) => {
       id: `context:${contextDocument.type}:${contextDocument.id}`,
       type: resultType,
       title: String(contextDocument.title || resultType),
-      text: collectText(contextDocument.payload).join("\n"),
+      text: collectText(searchablePayload).join("\n"),
       metadata: {
         contextDocumentId: contextDocument.id,
         sourceType: contextDocument.type,
@@ -3295,6 +3310,105 @@ const getDomainDocumentFromMirror = (mirror, type, predicate) => {
   return fetchMirrorResult(mirror, `context:${document.type}:${document.id}`);
 };
 
+const getRegistryFromMirror = (mirror, rawInput) => {
+  const input = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+    ? rawInput
+    : {};
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, input.projectSlug || null);
+  const result = getDomainDocumentFromMirror(mirror, "registry", (document) => (
+    matchesProjectScope(document)
+    && (
+      document.payload?.registry?.slug === input.registrySlug
+      || document.payload?.registry?.slugAliases?.includes?.(input.registrySlug)
+    )
+  ));
+  const payload = result.document.payload ?? {};
+  const columns = Array.isArray(payload.registry?.columns) ? payload.registry.columns : [];
+  const columnsByKey = new Map(columns.map((column) => [String(column?.key || ""), column]));
+  const filterableColumnKeys = new Set(
+    columns.filter((column) => column?.type !== "document").map((column) => String(column?.key || "")),
+  );
+  const filters = input.filters && typeof input.filters === "object" && !Array.isArray(input.filters)
+    ? input.filters
+    : {};
+  const unknownFilterKey = Object.keys(filters).find((key) => !filterableColumnKeys.has(key));
+  if (unknownFilterKey) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      columnsByKey.get(unknownFilterKey)?.type === "document"
+        ? `Registry document column "${unknownFilterKey}" does not support exact filtering.`
+        : `Unknown registry filter column "${unknownFilterKey}".`,
+    );
+  }
+  if (input.sortKey && !columnsByKey.has(input.sortKey)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `Unknown registry sort column "${input.sortKey}".`,
+    );
+  }
+  if (input.sortKey && columnsByKey.get(input.sortKey)?.type === "document") {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      `Registry document column "${input.sortKey}" does not support sorting.`,
+    );
+  }
+
+  const query = normalizeSearchText(input.query || "");
+  const rows = (payload.rows ?? []).filter((row) => {
+    if (input.includeArchivedRows !== true && row?.isArchived) return false;
+    if (query && !normalizeSearchText(collectText({
+      rowKey: row?.rowKey,
+      note: row?.note,
+      values: row?.values,
+    }).join("\n")).includes(query)) return false;
+    return Object.entries(filters).every(([key, expected]) => {
+      const actual = row?.values?.[key];
+      return expected === null ? actual === null || actual === undefined : String(actual) === String(expected);
+    });
+  });
+
+  const sortKey = input.sortKey ? String(input.sortKey) : null;
+  const sortType = sortKey ? columnsByKey.get(sortKey)?.type : null;
+  const direction = input.sortDirection === "desc" ? -1 : 1;
+  rows.sort((left, right) => {
+    const leftValue = sortKey ? left?.values?.[sortKey] : left?.rowKey;
+    const rightValue = sortKey ? right?.values?.[sortKey] : right?.rowKey;
+    let comparison;
+    if (sortType === "number") {
+      comparison = Number(leftValue ?? 0) - Number(rightValue ?? 0);
+    } else if (sortType === "boolean") {
+      comparison = Number(Boolean(leftValue)) - Number(Boolean(rightValue));
+    } else {
+      comparison = String(leftValue ?? "").localeCompare(String(rightValue ?? ""), "ru");
+    }
+    return comparison * direction
+      || String(left?.rowKey ?? "").localeCompare(String(right?.rowKey ?? ""), "ru");
+  });
+
+  const offset = Math.max(0, Math.trunc(Number(input.offset) || 0));
+  const limit = Math.max(1, Math.min(500, Math.trunc(Number(input.limit) || 100)));
+  const historyLimit = Math.max(1, Math.min(200, Math.trunc(Number(input.historyLimit) || 50)));
+  const pageRows = rows.slice(offset, offset + limit);
+  return {
+    ...result,
+    document: {
+      ...result.document,
+      payload: {
+        ...payload,
+        registry: {
+          ...payload.registry,
+          rowCount: rows.length,
+          technicalRowCount: rows.filter((row) => row?.isTechnical).length,
+        },
+        rows: pageRows,
+        page: { offset, limit, total: rows.length },
+        technicalRowCount: rows.filter((row) => row?.isTechnical).length,
+        history: Array.isArray(payload.history) ? payload.history.slice(0, historyLimit) : [],
+      },
+    },
+  };
+};
+
 const listDossiersFromMirror = (mirror, rawInput) => {
   const projectSlug = rawInput?.projectSlug ? String(rawInput.projectSlug).trim() : null;
   const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
@@ -3374,12 +3488,7 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
     return getDomainDocumentFromMirror(mirror, "contact", (document) => document.id === input.contactId);
   }
   if (nativeTool === "list_registries") return listDomainDocumentsFromMirror(mirror, "registry", input);
-  if (nativeTool === "get_registry") {
-    const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, input.projectSlug || null);
-    return getDomainDocumentFromMirror(mirror, "registry", (document) => (
-      matchesProjectScope(document) && document.payload?.registry?.slug === input.registrySlug
-    ));
-  }
+  if (nativeTool === "get_registry") return getRegistryFromMirror(mirror, input);
   if (nativeTool === "search_meetings") return listDomainDocumentsFromMirror(mirror, "meeting", input);
   if (nativeTool === "get_meeting") {
     return getDomainDocumentFromMirror(mirror, "meeting", (document) => document.id === input.meetingId);

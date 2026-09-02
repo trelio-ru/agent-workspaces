@@ -103,6 +103,12 @@ action route. Человеческий текст, rich text, имена фай�
 листья шифруются до HTTP; даты, UUID, workflow codes и другие необходимые
 серверной проверке структурные значения остаются структурными. Ответ native
 tool расшифровывается локально и сохраняет исходный MCP result envelope.
+Archived contacts и registry rows сохраняются в зашифрованной generation для
+exact include-read, но обычный поиск их не индексирует. Task/contact rich text
+передаётся как opaque JSON marker только через verified local-action runtime.
+Task attachment и inline image локально превращаются в signed `TRELIOE1`, а
+filename/MIME — в связанный encrypted payload; backend проверяет exact активное
+bridge-устройство и никогда не запускает plaintext/image pipeline над ciphertext.
 Параллельные чаты используют те же server locks и `clientRequestId`; новые
 registry row получают стабильный секретный HMAC-locator, поэтому одинаковый
 row key конфликтует/повторяется как одна строка, не раскрывая значение серверу.

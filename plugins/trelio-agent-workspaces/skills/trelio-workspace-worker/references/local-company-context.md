@@ -146,6 +146,13 @@ App, present the hydrated editable proposal and ask for the same explicit
 publish/apply/dismiss decision; do not silently convert a proposal into a direct
 mutation.
 
+## Continue ordinary actions
+
+Pass selected native tool and arguments once. The host encrypts protected
+leaves and invokes the native handler. Uploads become signed `TRELIOE1` plus
+metadata; after ambiguity read attachments before reusing the idempotency key.
+Archived rows need exact include flags and stay out of search.
+
 ## Fail closed
 
 Let the bridge own local unlock and materialization. Never request an encryption
