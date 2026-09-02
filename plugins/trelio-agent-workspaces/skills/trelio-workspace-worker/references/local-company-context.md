@@ -29,6 +29,13 @@ After sync, mirror-backed reads stay local for that process; a later host proces
 syncs again. The host retries a generation change during build. Do not invent a
 refresh before each query.
 
+Every dispatched local write, proposal save/action, restore/cancel, and accepted
+encrypted `finish` publishes an owner-private random marker with no content.
+Each MCP host checks it before trusting RAM; a change makes the next read run
+the normal bounded sync. No manual sync or polling is needed. The marker only
+prevents stale reads; server idempotency, revisions, heads, leases and fencing
+tokens still resolve simultaneous-chat conflicts.
+
 Disk generations remain encrypted. At most one current generation per company
 and its lazy lexical index are plaintext in process memory, with a hard
 600-second TTL even while idle. Later access reopens the encrypted generation

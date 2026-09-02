@@ -52,7 +52,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.17.0";
+export const BRIDGE_VERSION = "1.17.1";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -235,6 +235,38 @@ const COMPANY_CONTEXT_MIRROR_DIRECTORY = path.join(
 export const resolveCompanyContextMirrorDirectory = () => (
   COMPANY_CONTEXT_MIRROR_DIRECTORY
 );
+export const resolveCompanyContextMutationMarkerPath = ({ origin, companyId }) => {
+  if (!UUID_PATTERN.test(String(companyId || ""))) {
+    throw new Error("Company context mutation marker requires one exact company id.");
+  }
+  const originKey = crypto
+    .createHash("sha256")
+    .update(String(origin || ""))
+    .digest("hex")
+    .slice(0, 32);
+  return path.join(
+    COMPANY_CONTEXT_MIRROR_DIRECTORY,
+    originKey,
+    companyId,
+    "mutation.json",
+  );
+};
+
+export const signalCompanyContextMirrorMutation = async ({ origin, companyId }) => {
+  const token = crypto.randomUUID();
+  // This file is a cache-coherence signal, not a journal. It deliberately
+  // carries no entity id, query, content, key or action name and is written by
+  // the same owner-only atomic helper as the encrypted mirror pointers.
+  await writePrivateJsonFile(
+    resolveCompanyContextMutationMarkerPath({ origin, companyId }),
+    {
+      schemaVersion: 1,
+      token,
+      createdAt: new Date().toISOString(),
+    },
+  );
+  return token;
+};
 const SECRET_BROWSER_PROFILE_DIRECTORY = path.join(
   SECRET_BROWSER_DIRECTORY,
   "profile",
@@ -11039,16 +11071,28 @@ const submit = async (options) => withRun(async ({
     },
     async (bundlePath) => {
       if (companyEncryption) {
-        const result = await uploadEncryptedAgentWorkspaceRevision({
-          metadata: submissionMetadata,
-          origin,
-          token,
-          companyEncryption,
-          bundlePath,
-          workspaceHead: head,
-          revisionKind: "accepted",
-          browserProjectionId,
-        });
+        let result;
+        try {
+          result = await uploadEncryptedAgentWorkspaceRevision({
+            metadata: submissionMetadata,
+            origin,
+            token,
+            companyEncryption,
+            bundlePath,
+            workspaceHead: head,
+            revisionKind: "accepted",
+            browserProjectionId,
+          });
+        } finally {
+          // An accepted head becomes part of the locally searchable company
+          // projection. Signal every MCP host even when the upload response is
+          // lost: the server's idempotency protects retry while the content-
+          // free marker prevents neighboring chats from serving the old head.
+          await signalCompanyContextMirrorMutation({
+            origin,
+            companyId: companyEncryption.runtime.company.id,
+          });
+        }
         if (result.run.status !== "accepted") {
           throw new Error(`Trelio вернул неожиданный статус Agent Run: ${result.run.status}.`);
         }

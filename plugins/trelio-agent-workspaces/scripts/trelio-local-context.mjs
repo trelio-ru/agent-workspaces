@@ -87,6 +87,22 @@ const MAX_PROPOSAL_BUNDLE_CARDS = 20;
 const LOCAL_ACTION_ENTITY_TYPE = "api.browser_mutation";
 const LOCAL_ACTION_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
 const LOCAL_ACTION_MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
+// The local action route intentionally accepts the ordinary native tool name,
+// so future backend methods do not require another crypto-aware schema.  Treat
+// an unknown verb as mutating: an unnecessary refresh is cheaper and safer
+// than serving a stale encrypted projection after a newly introduced write.
+// Trelio's read-only naming contract keeps the allowlist narrow and auditable.
+const LOCAL_ACTION_READ_ONLY_TOOL_PREFIXES = [
+  "read_",
+  "get_",
+  "list_",
+  "search_",
+  "resolve_",
+  "plan_",
+  "download_",
+  "render_",
+];
+const LOCAL_ACTION_READ_ONLY_TOOL_NAMES = new Set(["fetch"]);
 const localCompanyProviderCache = new Map();
 // Decrypted company content must never become a persistent cache.  Keeping one
 // immutable generation in the MCP process avoids decrypting and parsing the
@@ -98,6 +114,11 @@ const localCompanyMirrorSessionCache = new Map();
 // mirror that ages out of RAM can be decrypted again from the already fresh
 // encrypted generation without another network sync in the same MCP process.
 const localCompanyMirrorStartupSynced = new Set();
+// Every local mutation publishes a content-free random token beside the
+// encrypted mirror.  MCP hosts compare it before using their RAM generation,
+// which gives parallel chats read-after-write coherence without polling Trelio
+// or placing task content, queries or keys in a cross-process channel.
+const localCompanyMirrorObservedMutation = new Map();
 // Normalizing every document body is materially more expensive than AES-GCM
 // decryption for repeated searches.  The weak cache is tied to the immutable
 // in-memory mirror, cannot outlive it, and is never serialized to disk.
@@ -181,21 +202,77 @@ const normalizeInteger = (value, fieldName, minimum = 0) => {
 
 export const resolveMirrorPaths = ({ origin, companyId }) => {
   const originHash = sha256(origin).slice(0, 32);
-  // Schema-specific roots make rolling plugin upgrades safe. A still-running
-  // old MCP host can update only its own pointer/lock and therefore cannot make
-  // a newer reader reject or overwrite a generation with another schema.
-  const root = path.join(
+  const companyRoot = path.join(
     resolveCompanyContextMirrorDirectory(),
     originHash,
     companyId,
-    `schema-${MIRROR_SCHEMA_VERSION}`,
   );
+  // Schema-specific roots make rolling plugin upgrades safe. A still-running
+  // old MCP host can update only its own pointer/lock and therefore cannot make
+  // a newer reader reject or overwrite a generation with another schema.
+  const root = path.join(companyRoot, `schema-${MIRROR_SCHEMA_VERSION}`);
   return {
     root,
     generations: path.join(root, "generations"),
     pointer: path.join(root, "current.json"),
     lock: path.join(root, "sync.lock"),
+    // Coherence spans plugin schema directories: a newly installed host and
+    // a still-running previous host must observe the same mutation boundary.
+    mutation: path.join(companyRoot, "mutation.json"),
   };
+};
+
+export const localActionMayMutateCompanyContext = (nativeTool) => {
+  const normalized = String(nativeTool || "").trim();
+  return !LOCAL_ACTION_READ_ONLY_TOOL_NAMES.has(normalized)
+    && !LOCAL_ACTION_READ_ONLY_TOOL_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
+
+export const readLocalCompanyMirrorMutationToken = async (paths) => {
+  const record = await readPrivateJsonFile(paths.mutation);
+  if (Object.keys(record).length === 0) return null;
+  if (
+    record.schemaVersion !== 1
+    || !UUID_PATTERN.test(String(record.token || ""))
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_MIRROR_INVALID",
+      "The local company context mutation marker is invalid.",
+    );
+  }
+  return record.token;
+};
+
+export const signalLocalCompanyMirrorMutation = async (paths) => {
+  await ensurePrivateDirectory(paths.root);
+  const token = crypto.randomUUID();
+  await writePrivateJsonFile(paths.mutation, {
+    schemaVersion: 1,
+    token,
+    createdAt: new Date().toISOString(),
+  });
+  return token;
+};
+
+const invalidateLocalCompanyMirrorSession = async ({
+  origin,
+  companySlug,
+  companyEncryption,
+}) => {
+  const sessionKey = `${origin}\n${companySlug}`;
+  const paths = resolveMirrorPaths({
+    origin,
+    companyId: companyEncryption.runtime.company.id,
+  });
+  try {
+    // Publish first so already-running sibling MCP hosts can observe the write.
+    // The current host deliberately keeps its old observed token: its next
+    // read must also perform the same bounded sync instead of trusting RAM.
+    await signalLocalCompanyMirrorMutation(paths);
+  } finally {
+    localCompanyMirrorSessionCache.delete(sessionKey);
+    localCompanyMirrorStartupSynced.delete(sessionKey);
+  }
 };
 
 const inspectLockOwner = async (lockDirectory) => {
@@ -4157,14 +4234,25 @@ const saveLocalProposal = async ({
     };
   }
 
-  return postProposalRequest({
-    origin,
-    token,
-    companySlug,
-    endpoint: "save",
-    body,
-    signal,
-  });
+  try {
+    return await postProposalRequest({
+      origin,
+      token,
+      companySlug,
+      endpoint: "save",
+      body,
+      signal,
+    });
+  } finally {
+    // A lost response can still mean that the proposal was persisted. Mark
+    // the mirror after every dispatched save so task activity and proposal
+    // state cannot remain stale in this or a neighboring chat.
+    await invalidateLocalCompanyMirrorSession({
+      origin,
+      companySlug,
+      companyEncryption,
+    });
+  }
 };
 
 const applyLocalProposalAction = async ({
@@ -4290,14 +4378,22 @@ const applyLocalProposalAction = async ({
     };
   }
 
-  return postProposalRequest({
-    origin,
-    token,
-    companySlug,
-    endpoint: "action",
-    body,
-    signal,
-  });
+  try {
+    return await postProposalRequest({
+      origin,
+      token,
+      companySlug,
+      endpoint: "action",
+      body,
+      signal,
+    });
+  } finally {
+    await invalidateLocalCompanyMirrorSession({
+      origin,
+      companySlug,
+      companyEncryption,
+    });
+  }
 };
 
 const getReadyMirror = async ({ origin, companySlug, signal }) => {
@@ -4310,20 +4406,35 @@ const getReadyMirror = async ({ origin, companySlug, signal }) => {
   if (provider.nativeProvider) return provider;
   const { token, companyEncryption } = provider;
   const sessionKey = `${origin}\n${companySlug}`;
-
-  const cachedEntry = localCompanyMirrorSessionCache.get(sessionKey);
-  if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
-    return { mirror: cachedEntry.mirror, token, companyEncryption };
-  }
-  if (cachedEntry) localCompanyMirrorSessionCache.delete(sessionKey);
-
   const paths = resolveMirrorPaths({
     origin,
     companyId: companyEncryption.runtime.company.id,
   });
+  // A sibling chat can mutate the same company while this process is idle.
+  // The marker contains no company content, so checking it neither decrypts
+  // the snapshot nor performs a network request. A changed token drops both
+  // RAM and startup freshness; the normal bounded sync below then joins the
+  // cross-process mirror lock and obtains one current immutable generation.
+  const mutationToken = await readLocalCompanyMirrorMutationToken(paths);
+  if (
+    localCompanyMirrorObservedMutation.has(sessionKey)
+    && localCompanyMirrorObservedMutation.get(sessionKey) !== mutationToken
+  ) {
+    localCompanyMirrorSessionCache.delete(sessionKey);
+    localCompanyMirrorStartupSynced.delete(sessionKey);
+  }
+
+  const cachedEntry = localCompanyMirrorSessionCache.get(sessionKey);
+  if (cachedEntry && cachedEntry.expiresAt > Date.now()) {
+    localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
+    return { mirror: cachedEntry.mirror, token, companyEncryption };
+  }
+  if (cachedEntry) localCompanyMirrorSessionCache.delete(sessionKey);
+
   if (localCompanyMirrorStartupSynced.has(sessionKey)) {
     const current = await readMirrorGeneration({ paths, companyEncryption });
     if (current) {
+      localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
       return {
         mirror: cacheDecryptedMirror(sessionKey, current),
         token,
@@ -4345,6 +4456,10 @@ const getReadyMirror = async ({ origin, companySlug, signal }) => {
   // local bytes without an unnecessary remote sync. A new MCP host starts with
   // both caches empty and refreshes again.
   localCompanyMirrorStartupSynced.add(sessionKey);
+  // Record the token captured *before* sync. If another mutation races the
+  // snapshot request, its newer marker remains visible and forces one more
+  // refresh on the next read instead of being accidentally acknowledged.
+  localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
   cacheDecryptedMirror(sessionKey, synced.mirror);
   return { ...synced, token, companyEncryption };
 };
@@ -4622,38 +4737,52 @@ export const handleTrelioLocalActionOperation = async (
     signal,
   });
 
-  const response = await request(
-    origin,
-    provider.token,
-    `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/actions/execute`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        nativeTool,
-        arguments: protectedRequest.value,
-        ...(rawInput.runtimeSessionProof
-          ? { runtimeSessionProof: rawInput.runtimeSessionProof }
-          : {}),
-      }),
-      signal,
-    },
-  );
-  const rawResult = await readJson(response);
-  const hydrated = await hydrateLocalActionResult({
-    rawResult,
-    origin,
-    token: provider.token,
-    companyEncryption: provider.companyEncryption,
-    signal,
-  });
-  return nativeTool === "download_attachment"
-    ? openLocalActionAttachmentResult({
-        result: hydrated,
-        companyEncryption: provider.companyEncryption,
+  const mayMutateCompanyContext = localActionMayMutateCompanyContext(nativeTool);
+  try {
+    const response = await request(
+      origin,
+      provider.token,
+      `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/actions/execute`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          nativeTool,
+          arguments: protectedRequest.value,
+          ...(rawInput.runtimeSessionProof
+            ? { runtimeSessionProof: rawInput.runtimeSessionProof }
+            : {}),
+        }),
         signal,
-      })
-    : hydrated;
+      },
+    );
+    const rawResult = await readJson(response);
+    const hydrated = await hydrateLocalActionResult({
+      rawResult,
+      origin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      signal,
+    });
+    return nativeTool === "download_attachment"
+      ? openLocalActionAttachmentResult({
+          result: hydrated,
+          companyEncryption: provider.companyEncryption,
+          signal,
+        })
+      : hydrated;
+  } finally {
+    if (mayMutateCompanyContext) {
+      // The POST may have committed even when its response was interrupted.
+      // Unknown future native methods intentionally take this conservative
+      // branch; ordinary reads keep using their existing in-memory mirror.
+      await invalidateLocalCompanyMirrorSession({
+        origin,
+        companySlug,
+        companyEncryption: provider.companyEncryption,
+      });
+    }
+  }
 };
 
 const normalizeGitHead = (value, fieldName) => {
@@ -5289,30 +5418,38 @@ export const handleTrelioLocalWorkspaceOperation = async (
     // Backend cancellation is idempotent for the exact encrypted marker. A
     // bounded retry therefore confirms a lost response without changing the
     // audit reason or issuing another semantic mutation.
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        raw = await readJson(await request(
-          origin,
-          provider.token,
-          pathname,
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body,
-            signal,
-          },
-        ));
-        break;
-      } catch (error) {
-        lastError = error;
-        if (
-          !isAmbiguousLocalWorkspaceMutationError(error)
-          || attempt === 3
-        ) {
-          throw error;
+    try {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          raw = await readJson(await request(
+            origin,
+            provider.token,
+            pathname,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body,
+              signal,
+            },
+          ));
+          break;
+        } catch (error) {
+          lastError = error;
+          if (
+            !isAmbiguousLocalWorkspaceMutationError(error)
+            || attempt === 3
+          ) {
+            throw error;
+          }
+          await delay(150 * attempt);
         }
-        await delay(150 * attempt);
       }
+    } finally {
+      await invalidateLocalCompanyMirrorSession({
+        origin,
+        companySlug,
+        companyEncryption: provider.companyEncryption,
+      });
     }
     if (!raw) throw lastError;
     return hydrateAgentCompanyEncryptedJson({
@@ -5339,18 +5476,26 @@ export const handleTrelioLocalWorkspaceOperation = async (
       value: reason,
       signal,
     });
-    return restoreEncryptedWorkspaceLocally({
-      origin,
-      token: provider.token,
-      companyEncryption: provider.companyEncryption,
-      workspaceId,
-      expectedHead,
-      targetHead,
-      reason,
-      reasonMarker,
-      runtimeSessionId,
-      signal,
-    });
+    try {
+      return await restoreEncryptedWorkspaceLocally({
+        origin,
+        token: provider.token,
+        companyEncryption: provider.companyEncryption,
+        workspaceId,
+        expectedHead,
+        targetHead,
+        reason,
+        reasonMarker,
+        runtimeSessionId,
+        signal,
+      });
+    } finally {
+      await invalidateLocalCompanyMirrorSession({
+        origin,
+        companySlug,
+        companyEncryption: provider.companyEncryption,
+      });
+    }
   }
   throw new TrelioLocalContextError(
     "LOCAL_CONTEXT_INVALID_INPUT",

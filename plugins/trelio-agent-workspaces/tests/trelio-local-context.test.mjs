@@ -21,18 +21,24 @@ import {
   handleNativeLocalContextRead,
   hydrateChangedCompanyMirrorRecords,
   listCompanyContextMirror,
+  localActionMayMutateCompanyContext,
   materializeHistoricalWorkspaceTreeForRestore,
   prepareLocalProposalBundle,
   protectLocalActionArguments,
+  readLocalCompanyMirrorMutationToken,
   resolveMirrorPaths,
   searchCompanyContextMirror,
   searchWorkspaceFilesFromMirror,
   selectEncryptedProposalFilesFromManifest,
+  signalLocalCompanyMirrorMutation,
 } from "../scripts/trelio-local-context.mjs";
 import {
   createAgentEncryptionDevice,
   decryptCompanyPayload,
 } from "../scripts/trelio-company-encryption.mjs";
+import {
+  resolveCompanyContextMutationMarkerPath,
+} from "../scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -788,7 +794,7 @@ test("decrypted mirror residency has the exact ten-minute hard TTL", () => {
   assert.equal(TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS, 600);
 });
 
-test("encrypted mirror pointers and locks are isolated by schema version", () => {
+test("encrypted mirror generations are schema-isolated while mutation coherence spans versions", () => {
   const paths = resolveMirrorPaths({
     origin: "https://trelio.example",
     companyId: "11111111-1111-4111-8111-111111111111",
@@ -798,6 +804,57 @@ test("encrypted mirror pointers and locks are isolated by schema version", () =>
   assert.equal(paths.pointer.startsWith(paths.root), true);
   assert.equal(paths.lock.startsWith(paths.root), true);
   assert.equal(paths.generations.startsWith(paths.root), true);
+  assert.equal(paths.mutation.startsWith(paths.root), false);
+  assert.equal(paths.mutation, resolveCompanyContextMutationMarkerPath({
+    origin: "https://trelio.example",
+    companyId: "11111111-1111-4111-8111-111111111111",
+  }));
+});
+
+test("local action mutation classification is read-only by contract and fail-closed for new verbs", () => {
+  for (const nativeTool of [
+    "fetch",
+    "read_workspace_revision_file",
+    "get_task_create_meta",
+    "list_projects",
+    "search_trelio_tools",
+    "resolve_status",
+    "plan_task_update",
+    "download_attachment",
+    "render_task_comment_proposal",
+  ]) {
+    assert.equal(localActionMayMutateCompanyContext(nativeTool), false, nativeTool);
+  }
+  for (const nativeTool of ["create_task", "update_task_title", "future_company_write"]) {
+    assert.equal(localActionMayMutateCompanyContext(nativeTool), true, nativeTool);
+  }
+});
+
+test("cross-process mutation marker is owner-private and contains no company content", async () => {
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-mirror-marker-"));
+  const paths = {
+    root: path.join(temporaryDirectory, "schema-3"),
+    mutation: path.join(temporaryDirectory, "mutation.json"),
+  };
+  try {
+    assert.equal(await readLocalCompanyMirrorMutationToken(paths), null);
+    const firstToken = await signalLocalCompanyMirrorMutation(paths);
+    assert.equal(await readLocalCompanyMirrorMutationToken(paths), firstToken);
+    const secondToken = await signalLocalCompanyMirrorMutation(paths);
+    assert.notEqual(secondToken, firstToken);
+    assert.equal(await readLocalCompanyMirrorMutationToken(paths), secondToken);
+
+    const record = JSON.parse(await fs.readFile(paths.mutation, "utf8"));
+    assert.deepEqual(Object.keys(record).sort(), ["createdAt", "schemaVersion", "token"]);
+    assert.equal(JSON.stringify(record).includes("task"), false);
+    assert.equal(JSON.stringify(record).includes("query"), false);
+    assert.equal(JSON.stringify(record).includes("content"), false);
+    if (process.platform !== "win32") {
+      assert.equal((await fs.stat(paths.mutation)).mode & 0o777, 0o600);
+    }
+  } finally {
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
 });
 
 test("encrypted proposal paths resolve only through the exact local browser manifest", () => {
