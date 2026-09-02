@@ -733,6 +733,270 @@ const extractLocalRichTextPlainText = (value) => {
   return fragments.join("").replace(/\n{3,}/gu, "\n\n").trim();
 };
 
+const extractLocalActionDocumentRichText = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const fragments = [];
+  const visit = (node) => {
+    if (!node || typeof node !== "object" || Array.isArray(node)) return;
+    if (typeof node.text === "string") fragments.push(node.text);
+    if (node.type === "hardBreak") fragments.push("\n");
+    if (Array.isArray(node.content)) {
+      node.content.forEach(visit);
+      if (["paragraph", "heading", "listItem"].includes(node.type)) fragments.push("\n");
+    }
+  };
+  visit(value);
+  // Match the native MCP projection exactly. This formatter intentionally
+  // differs from the write-side rich-text helper above: it reproduces the
+  // already public task-document contract rather than canonicalizing input.
+  return fragments
+    .join(" ")
+    .replace(/[ \t]+\n/gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+};
+
+const readLocalActionDocumentDisplayName = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const displayName = typeof value.displayName === "string"
+    ? value.displayName
+    : typeof value.name === "string"
+      ? value.name
+      : typeof value.author === "string"
+        ? value.author
+        : "";
+  return displayName.trim() || null;
+};
+
+const formatLocalActionDocumentDate = (value) => {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "string" && value.trim() ? value : "нет";
+};
+
+const encodeLocalActionDocumentIdPart = (value) => encodeURIComponent(String(value));
+
+const buildHydratedLocalActionTaskDocument = ({ task, document, mirror, origin }) => {
+  const metadata = document?.metadata && typeof document.metadata === "object"
+    ? document.metadata
+    : {};
+  const projectSlug = String(
+    metadata.project
+      ?? task.project?.slug
+      ?? task.projectSlug
+      ?? "",
+  ).trim();
+  const project = (mirror.projects ?? []).find((candidate) => candidate?.slug === projectSlug)
+    ?? task.project
+    ?? { slug: projectSlug, name: projectSlug };
+  const companySlug = String(metadata.company ?? mirror.company?.slug ?? "").trim();
+  const companyName = String(mirror.company?.name ?? companySlug);
+  const taskNumber = Number(task.number ?? metadata.taskNumber);
+  const publicPath = typeof task.publicPath === "string" && task.publicPath
+    ? task.publicPath
+    : `/${companySlug}/${projectSlug}/tasks/${taskNumber}/`;
+  const taskUrl = typeof document?.url === "string" && document.url
+    ? document.url
+    : new URL(publicPath, `${origin}/`).toString();
+  const participants = Array.isArray(task.participants) ? task.participants : [];
+  const controls = Array.isArray(task.controls) ? task.controls : [];
+  const subtasks = Array.isArray(task.subtasks) ? task.subtasks : [];
+  const checklists = Array.isArray(task.checklists) ? task.checklists : [];
+  const availableMembers = Array.isArray(task.availableMembers) ? task.availableMembers : [];
+  const availableMemberGroups = Array.isArray(task.availableMemberGroups)
+    ? task.availableMemberGroups
+    : [];
+  const lines = [
+    `Задача: ${String(task.title ?? "")}`,
+    `URL: ${taskUrl}`,
+    `Компания: ${companyName} (${companySlug})`,
+    `Проект: ${String(project?.name ?? projectSlug)} (${projectSlug})`,
+    `Номер: ${taskNumber}`,
+    `Архивная задача: ${task.isArchived ? "да" : "нет"}`,
+    `Архивирована: ${formatLocalActionDocumentDate(task.archivedAt)}`,
+    `Статус: ${task.status?.name ?? "не указан"}`,
+    `Срочность: ${task.urgency}`,
+    `Дедлайн: ${formatLocalActionDocumentDate(task.dueAt)}`,
+    `Создана: ${formatLocalActionDocumentDate(task.createdAt)}`,
+    `Обновлена: ${formatLocalActionDocumentDate(task.updatedAt)}`,
+    `Автор: ${readLocalActionDocumentDisplayName(task.createdBy) ?? "не указан"}`,
+    `Исполнитель: ${readLocalActionDocumentDisplayName(task.assignee) ?? "не указан"}`,
+  ];
+
+  if (participants.length > 0) {
+    lines.push(`Участники: ${participants.map(readLocalActionDocumentDisplayName).filter(Boolean).join(", ")}`);
+  }
+  if (controls.length > 0) {
+    lines.push("", "Активные контроли:");
+    controls.forEach((control) => {
+      const scopeLabel = control.visibility === "shared" ? "общий" : "только мне";
+      const note = typeof control.note === "string" ? control.note.trim() : "";
+      lines.push(`- ${control.controlDate} · ${scopeLabel}${note ? ` · ${note}` : ""} · controlId ${control.id}`);
+    });
+  }
+  if (task.parentTask) {
+    lines.push(
+      `Надзадача: #${task.parentTask.number} ${task.parentTask.title}`
+      + `${task.parentTask.status?.name ? ` (${task.parentTask.status.name})` : ""}`,
+    );
+  }
+  if (subtasks.length > 0) {
+    lines.push("", "Подзадачи:");
+    subtasks.forEach((subtask) => {
+      lines.push(`- #${subtask.number} ${subtask.title}${subtask.status?.name ? ` · ${subtask.status.name}` : ""}`);
+    });
+  }
+  if (typeof task.descriptionPlainText === "string" && task.descriptionPlainText.trim()) {
+    lines.push("", "Описание:", task.descriptionPlainText.trim());
+  }
+  if (checklists.length > 0) {
+    lines.push("", "Чек-листы:");
+    checklists.forEach((checklist) => {
+      lines.push(`- ${checklist.title}`);
+      (Array.isArray(checklist.items) ? checklist.items : []).forEach((item) => {
+        const linkedTaskNote = item.linkedTask
+          ? ` -> подзадача #${item.linkedTask.number} (${item.linkedTask.status?.name ?? "статус не указан"})`
+          : "";
+        lines.push(`  - [${item.isCompleted ? "x" : " "}] ${item.content}${linkedTaskNote}`);
+      });
+    });
+  }
+
+  const customFields = Array.isArray(task.customFields?.fields) ? task.customFields.fields : [];
+  if (customFields.length > 0) {
+    const memberNameById = new Map(
+      availableMembers.map((member) => [member.memberId, member.displayName]),
+    );
+    const groupNameById = new Map(
+      availableMemberGroups.map((group) => [group.groupId, group.name]),
+    );
+    const formatCustomFieldValue = (field) => {
+      const rawValue = field.value;
+      if (rawValue === null || typeof rawValue === "undefined" || (Array.isArray(rawValue) && rawValue.length === 0)) {
+        return "не заполнено";
+      }
+      if (field.fieldType === "checkbox") return rawValue === true ? "отмечено" : "не отмечено";
+      if (field.fieldType === "select") {
+        const optionLabelById = new Map(
+          (field.settings?.fieldType === "select" && Array.isArray(field.settings.options)
+            ? field.settings.options
+            : []).map((option) => [option.id, option.label]),
+        );
+        return (Array.isArray(rawValue) ? rawValue : [rawValue])
+          .map((optionId) => optionLabelById.get(String(optionId)) ?? String(optionId))
+          .join(", ");
+      }
+      if (field.fieldType === "user" || field.fieldType === "group") {
+        const namesById = field.fieldType === "user" ? memberNameById : groupNameById;
+        return (Array.isArray(rawValue) ? rawValue : [rawValue])
+          .map((entityId) => namesById.get(String(entityId)) ?? String(entityId))
+          .join(", ");
+      }
+      if (field.fieldType === "user_or_group") {
+        return (Array.isArray(rawValue) ? rawValue : [rawValue]).map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return String(entry ?? "");
+          const entityId = String(entry.id ?? "");
+          return entry.entityType === "group"
+            ? groupNameById.get(entityId) ?? entityId
+            : memberNameById.get(entityId) ?? entityId;
+        }).filter(Boolean).join(", ");
+      }
+      return Array.isArray(rawValue)
+        ? rawValue.map((value) => String(value)).join(", ")
+        : String(rawValue);
+    };
+    lines.push("", "Настраиваемые поля:");
+    customFields.forEach((field) => lines.push(`- ${field.name}: ${formatCustomFieldValue(field)}`));
+  }
+
+  const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+  if (attachments.length > 0) {
+    lines.push("", "Вложения:");
+    attachments.forEach((attachment) => {
+      lines.push(`- ${attachment.originalName} (${attachment.mimeType || "application/octet-stream"}, ${attachment.sizeBytes} bytes, id: ${attachment.id})`);
+    });
+  }
+
+  const comments = Array.isArray(task.comments) ? task.comments : [];
+  if (comments.length > 0) {
+    lines.push("", "Комментарии:");
+    comments.slice(0, 50).forEach((comment) => {
+      if (comment.type === "manual" || comment.kind === "manual") {
+        const bodyText = typeof comment.bodyPlainText === "string"
+          ? comment.bodyPlainText.trim()
+          : extractLocalActionDocumentRichText(comment.content ?? comment.bodyJson);
+        lines.push(
+          `- ${comment.author ?? readLocalActionDocumentDisplayName(comment.createdBy) ?? "не указан"}, `
+          + `${formatLocalActionDocumentDate(comment.datetime ?? comment.createdAt)}: `
+          + `${bodyText || "(пустой комментарий)"}`,
+        );
+        return;
+      }
+      (Array.isArray(comment.entries) ? comment.entries : []).forEach((entry) => {
+        lines.push(`- ${comment.author}, ${formatLocalActionDocumentDate(entry.datetime)}: ${entry.summary}`);
+      });
+    });
+  }
+
+  return {
+    ...document,
+    id: document?.id || ["task", companySlug, projectSlug, taskNumber]
+      .map(encodeLocalActionDocumentIdPart)
+      .join(":"),
+    title: `${task.isArchived ? "[Архив] " : ""}${task.title} · ${project?.name ?? projectSlug}`,
+    text: lines.join("\n"),
+    url: taskUrl,
+    metadata: {
+      ...metadata,
+      type: "task",
+      company: companySlug,
+      project: projectSlug,
+      taskNumber,
+      status: task.status?.name ?? null,
+      isArchived: Boolean(task.isArchived),
+      archivedAt: task.archivedAt ?? null,
+      parentTaskNumber: task.parentTask?.number ?? null,
+      subtaskCount: subtasks.length,
+    },
+  };
+};
+
+/**
+ * Native task mutations build their human-readable document on the server.
+ * For an E2EE company that projection necessarily sees ciphertext markers,
+ * which are no longer distinguishable after they have been interpolated into
+ * a plain string. Rebuild every task document from the already hydrated task
+ * object at the trusted local boundary; this preserves the native envelope
+ * while keeping all protected prose off the backend.
+ */
+export const rebuildHydratedLocalActionTaskDocuments = ({ value, mirror, origin }) => {
+  const visit = (current) => {
+    if (Array.isArray(current)) return current.map(visit);
+    if (!current || typeof current !== "object") return current;
+    const rebuilt = Object.fromEntries(
+      Object.entries(current).map(([field, child]) => [field, visit(child)]),
+    );
+    if (
+      rebuilt.task
+      && typeof rebuilt.task === "object"
+      && !Array.isArray(rebuilt.task)
+      && rebuilt.document
+      && typeof rebuilt.document === "object"
+      && !Array.isArray(rebuilt.document)
+      && rebuilt.document.metadata?.type === "task"
+    ) {
+      rebuilt.document = buildHydratedLocalActionTaskDocument({
+        task: rebuilt.task,
+        document: rebuilt.document,
+        mirror,
+        origin,
+      });
+    }
+    return rebuilt;
+  };
+  return visit(value);
+};
+
 const removePublishedTaskAttachmentLinks = (value) => {
   if (Array.isArray(value)) {
     return value
@@ -1537,6 +1801,8 @@ const hydrateLocalActionTextContent = async ({
   origin,
   token,
   companyEncryption,
+  mirror,
+  documentOrigin,
   signal,
 }) => {
   if (item?.type !== "text" || typeof item.text !== "string") {
@@ -1557,7 +1823,14 @@ const hydrateLocalActionTextContent = async ({
       companyEncryption,
       signal,
     });
-    return { ...item, text: JSON.stringify(hydrated) };
+    return {
+      ...item,
+      text: JSON.stringify(rebuildHydratedLocalActionTaskDocuments({
+        value: hydrated,
+        mirror,
+        origin: documentOrigin,
+      })),
+    };
   } catch {
     const text = await hydrateAgentCompanyEncryptedJson({
       value: item.text,
@@ -1575,14 +1848,20 @@ const hydrateLocalActionResult = async ({
   origin,
   token,
   companyEncryption,
+  mirror,
+  documentOrigin,
   signal,
 }) => {
-  const hydrated = await hydrateAgentCompanyEncryptedJson({
-    value: rawResult,
-    origin,
-    token,
-    companyEncryption,
-    signal,
+  const hydrated = rebuildHydratedLocalActionTaskDocuments({
+    value: await hydrateAgentCompanyEncryptedJson({
+      value: rawResult,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    }),
+    mirror,
+    origin: documentOrigin,
   });
   if (!Array.isArray(rawResult?.content)) return hydrated;
   return {
@@ -1592,6 +1871,8 @@ const hydrateLocalActionResult = async ({
       origin,
       token,
       companyEncryption,
+      mirror,
+      documentOrigin,
       signal,
     }))),
   };
@@ -5381,6 +5662,8 @@ export const handleTrelioLocalActionOperation = async (
       origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
+      mirror: ready.mirror,
+      documentOrigin: origin,
       signal,
     });
     return nativeTool === "download_attachment"

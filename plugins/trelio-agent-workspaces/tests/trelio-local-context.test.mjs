@@ -32,6 +32,7 @@ import {
   protectLocalActionArguments,
   readLocalCompanyMirrorMutationToken,
   readTaskSectionsWithRevisionRefresh,
+  rebuildHydratedLocalActionTaskDocuments,
   resolveMirrorPaths,
   searchCompanyContextMirror,
   searchWorkspaceFilesFromMirror,
@@ -623,6 +624,104 @@ test("encrypted local action retry uploads the missing part of a mixed payload b
   assert.equal(resolveCount, 2);
   assert.equal(storedByEntity.size, corrected.payloads.length);
   assert.deepEqual(postedBatchSizes, [corrected.payloads.length, 1, conflicting.payloads.length]);
+});
+
+test("encrypted task mutation rebuilds every derived document field from hydrated task data", () => {
+  const hydratedTask = {
+    number: 17,
+    title: "Расшифрованный заголовок",
+    publicPath: "/acme/mobile/tasks/17/",
+    isArchived: false,
+    archivedAt: null,
+    status: { name: "В работе" },
+    urgency: 2,
+    dueAt: "2026-09-10T00:00:00.000Z",
+    createdAt: "2026-09-01T00:00:00.000Z",
+    updatedAt: "2026-09-03T00:00:00.000Z",
+    createdBy: { displayName: "Автор" },
+    assignee: { displayName: "Исполнитель" },
+    participants: [{ displayName: "Участник" }],
+    controls: [{
+      id: "control-1",
+      controlDate: "2026-09-04",
+      visibility: "shared",
+      note: "Расшифрованный контроль",
+    }],
+    parentTask: null,
+    subtasks: [],
+    descriptionPlainText: "Расшифрованное описание",
+    checklists: [{
+      title: "Расшифрованный чек-лист",
+      items: [{ content: "Расшифрованный пункт", isCompleted: true, linkedTask: null }],
+    }],
+    availableMembers: [],
+    availableMemberGroups: [],
+    customFields: {
+      fields: [{
+        name: "Расшифрованное поле",
+        fieldType: "text",
+        settings: { fieldType: "text" },
+        value: "Расшифрованное значение",
+      }],
+    },
+    attachments: [{
+      id: "attachment-1",
+      originalName: "расшифрованный-файл.txt",
+      mimeType: "text/plain",
+      sizeBytes: 42,
+    }],
+    comments: [{
+      type: "manual",
+      author: "Комментатор",
+      datetime: "2026-09-03T01:02:03.000Z",
+      content: {
+        type: "doc",
+        content: [{
+          type: "paragraph",
+          content: [{ type: "text", text: "Расшифрованный комментарий" }],
+        }],
+      },
+    }],
+  };
+  const staleDocument = {
+    id: "task:acme:mobile:17",
+    title: "~e1:11111111-1111-4111-8111-111111111111:title~ · Мобильное приложение",
+    text: "Задача: ~e1:11111111-1111-4111-8111-111111111111:title~\n"
+      + "Описание: ~e1:11111111-1111-4111-8111-111111111111:description_plain_text~\n"
+      + "Комментарии:\n- Комментатор: (пустой комментарий)",
+    url: "https://trelio.ru/acme/mobile/tasks/17/",
+    metadata: {
+      type: "task",
+      company: "acme",
+      project: "mobile",
+      taskNumber: 17,
+    },
+  };
+  const input = {
+    structuredContent: {
+      ok: true,
+      task: hydratedTask,
+      document: staleDocument,
+    },
+  };
+
+  const rebuilt = rebuildHydratedLocalActionTaskDocuments({
+    value: input,
+    mirror,
+    origin: "https://trelio.ru",
+  });
+  const document = rebuilt.structuredContent.document;
+
+  assert.equal(document.title, "Расшифрованный заголовок · Мобильное приложение");
+  assert.match(document.text, /Задача: Расшифрованный заголовок/u);
+  assert.match(document.text, /Описание:\nРасшифрованное описание/u);
+  assert.match(document.text, /Расшифрованный контроль/u);
+  assert.match(document.text, /\[x\] Расшифрованный пункт/u);
+  assert.match(document.text, /Расшифрованное поле: Расшифрованное значение/u);
+  assert.match(document.text, /расшифрованный-файл\.txt/u);
+  assert.match(document.text, /Расшифрованный комментарий/u);
+  assert.doesNotMatch(document.text, /~e1:|\(пустой комментарий\)/u);
+  assert.equal(input.structuredContent.document, staleDocument);
 });
 
 test("local Markdown conversion preserves malformed fences as visible text", () => {
