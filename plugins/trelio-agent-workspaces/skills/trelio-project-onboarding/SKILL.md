@@ -111,7 +111,12 @@ current task.
      `codex mcp list --json` to distinguish an unavailable or unauthenticated
      `trelio` HTTP server from the local `trelio-remote-skills` server. In
      Claude Code, inspect `claude mcp list`; never run `codex` diagnostics or
-     login commands there. The plugin version alone does not prove that either
+     login commands there. Current Claude registration shows `trelio` as HTTP
+     and resolves bundled launcher paths from `${CLAUDE_PLUGIN_ROOT}`. A skipped
+     URL without `type` or literal `./scripts/launch-trelio-node` `ENOENT` is a
+     stale incompatible plugin definition: update it through Claude's plugin
+     manager and run `/reload-plugins` before retrying. Do not reset OAuth or
+     pairing for this signal. The plugin version alone does not prove that either
      server is ready. In particular, Codex `auth_status: "o_auth"` identifies
      the configured authentication scheme; it does not prove that the current
      process attached a bearer. A failed live Trelio read that explicitly

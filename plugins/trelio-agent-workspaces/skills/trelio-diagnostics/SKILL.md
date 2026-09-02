@@ -83,7 +83,12 @@ In Codex:
    bearer.
 
 In Claude Code, use `claude mcp list` and its plugin manager. Never use Codex
-commands to diagnose another host's credential store.
+commands to diagnose another host's credential store. The current Claude
+manifest must show remote `trelio` as HTTP and resolve bundled local paths from
+`${CLAUDE_PLUGIN_ROOT}`. A skipped `trelio` entry whose URL has no `type`, or an
+`ENOENT` for literal `./scripts/launch-trelio-node`, proves that Claude loaded an
+older incompatible MCP definition; it is not an OAuth, Node.js, Git or pairing
+failure.
 
 If the user asks to verify hooks end to end, use a read-only protected Trelio
 call. Reuse an exact task already supplied; otherwise use Trelio discovery to
@@ -135,11 +140,14 @@ runtime script do not require another `hooks.json` change or trust review.
   host's Trelio MCP login once, let the user complete browser login and consent,
   then retry one low-risk read. Do not loop login if the current process did
   not adopt a successfully refreshed credential; use a fresh task first.
-- Only `trelio-remote-skills` fails: inspect its exact command in
-  `codex mcp list --json`. A still-loaded bare `node` command needs the normal
-  plugin update/new-task path; the current manifest must use
-  `./scripts/launch-trelio-node`. Run the launcher diagnostic above before
-  classifying a Node.js/runtime prerequisite. Do not reset remote Trelio OAuth.
+- Only `trelio-remote-skills` fails: inspect its exact client-owned command. In
+  Codex, `codex mcp list --json` must show `./scripts/launch-trelio-node` with a
+  plugin-root `cwd`; a still-loaded bare `node` command needs the normal plugin
+  update/new-task path. In Claude Code, `claude mcp list` must resolve the
+  launcher from `${CLAUDE_PLUGIN_ROOT}`; a literal relative-path `ENOENT` needs
+  the Claude plugin update plus `/reload-plugins`, not a cwd-dependent manual
+  launch. Run the bundled launcher diagnostic above before classifying a
+  Node.js/runtime prerequisite. Do not reset remote Trelio OAuth.
 - Doctor reports Node below 22: offer the platform's normal Node.js LTS install
   path and obtain explicit confirmation before running a package-manager
   command.

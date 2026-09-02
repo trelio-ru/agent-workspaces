@@ -172,6 +172,16 @@ Claude обновляет marketplace своим plugin manager. После ус
 текущей рабочей папки`. OAuth выполняется через exact Trelio server в `/mcp`
 либо `claude mcp login trelio`; полный restart – последний fallback.
 
+Codex и Claude используют отдельные MCP registrations одного plugin bundle.
+Codex сохраняет свой inline manifest с plugin-root-relative `command`/`cwd` и
+timeout/env allowlist, а Claude получает companion `.mcp.json` с explicit HTTP
+transport для `trelio` и разрешает bundled launcher через
+`${CLAUDE_PLUGIN_ROOT}` независимо от папки, из которой запущен `claude`. Если
+`claude mcp list` пропускает `trelio` из-за URL без `type` либо показывает
+`ENOENT` для literal `./scripts/launch-trelio-node`, загружена старая
+несовместимая MCP definition: обновите plugin и выполните `/reload-plugins`.
+OAuth и pairing для этого сбрасывать не нужно.
+
 ## Политика моделей
 
 Компания может закрепить допустимые client/model/reasoning effort для всей

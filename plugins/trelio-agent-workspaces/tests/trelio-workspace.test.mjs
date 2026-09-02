@@ -3853,7 +3853,7 @@ test("bridge release version stays synchronized across executable and manifests"
     path.join(pluginDirectory, ".claude-plugin", "plugin.json"),
     "utf8",
   ));
-  const mcpManifest = JSON.parse(await readFile(
+  const claudeMcpManifest = JSON.parse(await readFile(
     path.join(pluginDirectory, ".mcp.json"),
     "utf8",
   ));
@@ -3884,7 +3884,7 @@ test("bridge release version stays synchronized across executable and manifests"
     codexManifest.interface.longDescription,
     /backend-managed навыками.*декларативный Remote MCP.*signed runtimes/u,
   );
-  assert.equal(codexManifest.mcpServers, "./.mcp.json");
+  assert.equal(typeof codexManifest.mcpServers, "object");
   assert.deepEqual(
     {
       brandColor: codexManifest.interface.brandColor,
@@ -3906,13 +3906,16 @@ test("bridge release version stays synchronized across executable and manifests"
   ]) {
     assert.equal((await stat(path.join(pluginDirectory, assetPath))).isFile(), true);
   }
-  assert.deepEqual(mcpManifest.mcpServers.trelio, {
+  // Codex resolves relative MCP paths against the plugin root and owns the
+  // env allowlist/timeouts. Keep this byte-for-byte host contract independent
+  // from Claude, which resolves plain relative paths against the project cwd.
+  assert.deepEqual(codexManifest.mcpServers.trelio, {
     url: "https://trelio.ru/mcp",
     oauth: {
       clientId: "trelio_agent_workspaces_v1",
     },
   });
-  assert.deepEqual(mcpManifest.mcpServers["trelio-remote-skills"], {
+  assert.deepEqual(codexManifest.mcpServers["trelio-remote-skills"], {
     command: "./scripts/launch-trelio-node",
     args: ["./scripts/trelio-remote-mcp.mjs"],
     cwd: ".",
@@ -3928,6 +3931,22 @@ test("bridge release version stays synchronized across executable and manifests"
       "PATH",
     ],
     tool_timeout_sec: 660,
+  });
+  // Claude requires an explicit remote transport and its plugin-root variable
+  // for bundled executables. Otherwise `claude mcp list` silently skips the
+  // HTTP server and spawns the local launcher from the user's project folder.
+  assert.deepEqual(claudeMcpManifest.mcpServers.trelio, {
+    type: "http",
+    url: "https://trelio.ru/mcp",
+    oauth: {
+      clientId: "trelio_agent_workspaces_v1",
+    },
+  });
+  assert.deepEqual(claudeMcpManifest.mcpServers["trelio-remote-skills"], {
+    type: "stdio",
+    command: "${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node",
+    args: ["${CLAUDE_PLUGIN_ROOT}/scripts/trelio-remote-mcp.mjs"],
+    cwd: "${CLAUDE_PLUGIN_ROOT}",
   });
 
   const posixLauncher = await stat(path.join(
@@ -4291,6 +4310,9 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
   assert.match(onboardingSkill, /`CLAUDE_PROJECT_DIR`/u);
   assert.match(onboardingSkill, /`claude mcp list`/u);
+  assert.match(onboardingSkill, /Current Claude registration shows `trelio` as HTTP/u);
+  assert.match(onboardingSkill, /literal `\.\/scripts\/launch-trelio-node` `ENOENT`/u);
+  assert.match(onboardingSkill, /Do not reset OAuth or\s+pairing for this signal/u);
   assert.match(onboardingSkill, /`claude mcp login trelio`/u);
   assert.match(onboardingSkill, /`\/reload-plugins`/u);
   assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
@@ -4444,6 +4466,12 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(diagnosticsSkill, /launch-trelio-node/u);
   assert.match(diagnosticsSkill, /failed Codex PATH-alias\s+creation is not a missing-Node diagnosis/u);
   assert.match(diagnosticsSkill, /Do not infer Claude Code only\s+from `CLAUDE_PLUGIN_ROOT`/u);
+  assert.match(diagnosticsSkill, /manifest must show remote `trelio` as HTTP/u);
+  assert.match(diagnosticsSkill, /URL has no `type`/u);
+  assert.match(
+    diagnosticsSkill,
+    /literal relative-path `ENOENT` needs\s+the Claude plugin update plus `\/reload-plugins`/u,
+  );
   assert.match(diagnosticsSkill, /Do not create or mutate an\s+object just to test a hook/u);
   assert.match(diagnosticsSkill, /installed version already satisfies the requirement/u);
   assert.match(diagnosticsSkill, /do not update again/u);

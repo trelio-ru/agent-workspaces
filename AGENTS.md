@@ -225,8 +225,13 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,
-  затем системный Node. Возвращать в `.mcp.json` bare `node`, машинный absolute
-  path или менять `hooks.json` ради PATH-совместимости нельзя.
+  затем системный Node. MCP registration разделена по host-контракту: Codex
+  manifest содержит inline `mcpServers`, где plugin-root задаётся относительными
+  путями и `cwd`, а Claude автоматически читает корневой `.mcp.json`, где remote
+  server имеет explicit `type: http`, а bundled paths используют
+  `${CLAUDE_PLUGIN_ROOT}`. Сводить эти определения в один companion-файл,
+  возвращать bare `node`, машинный absolute path или менять `hooks.json` ради
+  PATH-совместимости нельзя.
 - Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
   только exact executable через scoped one-use delivery. Стабильный
   installation-managed API key/client secret может повторно использоваться

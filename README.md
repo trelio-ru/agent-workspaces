@@ -163,6 +163,13 @@ Git worktree. В Cowork создайте задачу с доступом к в�
 папки`. Если Trelio запросит авторизацию, откройте `/mcp`, выберите сервер
 `trelio` и подтвердите OAuth в браузере.
 
+Plugin bundle хранит MCP-регистрацию Codex и Claude раздельно. Поэтому Claude
+разрешает bundled launcher через `${CLAUDE_PLUGIN_ROOT}` независимо от текущей
+рабочей папки, а Codex продолжает использовать собственные относительные пути
+и timeout/env allowlist. Если `claude mcp list` показывает URL `trelio` без
+`type` либо `ENOENT` для literal `./scripts/launch-trelio-node`, обновите plugin
+и выполните `/reload-plugins`; OAuth и pairing сбрасывать не нужно.
+
 OAuth-доступ каждый пользователь подтверждает лично. Администратор управляемой
 рабочей области может заранее импортировать marketplace и назначить плагин
 нужным ролям, но это не обходит политику рабочей области или личный consent.
