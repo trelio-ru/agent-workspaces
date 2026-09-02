@@ -1444,7 +1444,7 @@ const protectLocalActionUpload = async ({
   }
 };
 
-const uploadLocalActionPayloads = async ({
+export const uploadLocalActionPayloads = async ({
   origin,
   token,
   companyEncryption,
@@ -1453,70 +1453,81 @@ const uploadLocalActionPayloads = async ({
   signal,
 }) => {
   for (let offset = 0; offset < payloads.length; offset += 100) {
-    const batch = payloads.slice(offset, offset + 100);
-    try {
-      await request(
-        resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
-        token,
-        "/api/agent-workspaces/encryption/payloads",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            companySlug: companyEncryption.runtime.company.slug,
-            writerDeviceId: companyEncryption.runtime.device.id,
-            payloads: batch,
-          }),
-          signal,
-        },
-      );
-    } catch (error) {
-      if (!(error instanceof TrelioApiError) || error.statusCode !== 409) throw error;
-      // A keyed registry row locator is intentionally stable across concurrent
-      // chats. If another chat won the immutable payload insert, decrypt the
-      // exact existing payload and accept it only when its protected values are
-      // byte-for-byte equivalent to this call's local plaintext intent.
-      const resolved = await readJson(await request(
-        resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
-        token,
-        "/api/agent-workspaces/encryption/payloads/resolve",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            companySlug: companyEncryption.runtime.company.slug,
-            recipientDeviceId: companyEncryption.runtime.device.id,
-            entityIds: batch.map((payload) => payload.entityId),
-          }),
-          signal,
-        },
-      ));
-      const existingByEntity = new Map((resolved.payloads ?? []).map((payload) => [
-        payload.entityId,
-        payload,
-      ]));
-      let exactExisting = true;
-      for (const payload of batch) {
-        const existing = existingByEntity.get(payload.entityId);
-        const expected = expectedPayloadValues[payload.entityId];
-        if (!existing || existing.entityType !== LOCAL_ACTION_ENTITY_TYPE || !expected) {
-          exactExisting = false;
-          break;
+    let pending = payloads.slice(offset, offset + 100);
+
+    while (pending.length > 0) {
+      try {
+        await request(
+          resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+          token,
+          "/api/agent-workspaces/encryption/payloads",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              companySlug: companyEncryption.runtime.company.slug,
+              writerDeviceId: companyEncryption.runtime.device.id,
+              payloads: pending,
+            }),
+            signal,
+          },
+        );
+        break;
+      } catch (error) {
+        if (!(error instanceof TrelioApiError) || error.statusCode !== 409) throw error;
+        // Stable registry row locators and deterministic idempotency payloads
+        // can already exist after an earlier business validation error or an
+        // interrupted response. The corrected request may also contain new
+        // payloads, so a single atomic batch can be a mixture of exact existing
+        // values and genuinely missing values. Resolve every collision locally,
+        // accept it only after plaintext equivalence, then retry just the missing
+        // subset. Each loop removes at least one verified existing payload; a
+        // 409 without such progress remains fail-closed instead of spinning.
+        const resolved = await readJson(await request(
+          resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+          token,
+          "/api/agent-workspaces/encryption/payloads/resolve",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              companySlug: companyEncryption.runtime.company.slug,
+              recipientDeviceId: companyEncryption.runtime.device.id,
+              entityIds: pending.map((payload) => payload.entityId),
+            }),
+            signal,
+          },
+        ));
+        const existingByEntity = new Map((resolved.payloads ?? []).map((payload) => [
+          payload.entityId,
+          payload,
+        ]));
+        const missing = [];
+        let verifiedExistingCount = 0;
+
+        for (const payload of pending) {
+          const existing = existingByEntity.get(payload.entityId);
+          if (!existing) {
+            missing.push(payload);
+            continue;
+          }
+          const expected = expectedPayloadValues[payload.entityId];
+          if (existing.entityType !== LOCAL_ACTION_ENTITY_TYPE || !expected) throw error;
+          const opened = await decryptCompanyPayload({
+            encryptedPayload: existing,
+            scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
+            scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
+          });
+          const actual = opened?.values && typeof opened.values === "object"
+            ? opened.values
+            : opened;
+          if (!isDeepStrictEqual(actual, expected)) throw error;
+          verifiedExistingCount += 1;
         }
-        const opened = await decryptCompanyPayload({
-          encryptedPayload: existing,
-          scopePrivateKey: companyEncryption.scopePrivateEncryptionKey.privateKey,
-          scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
-        });
-        const actual = opened?.values && typeof opened.values === "object"
-          ? opened.values
-          : opened;
-        if (!isDeepStrictEqual(actual, expected)) {
-          exactExisting = false;
-          break;
-        }
+
+        if (verifiedExistingCount === 0) throw error;
+        pending = missing;
       }
-      if (!exactExisting) throw error;
     }
   }
 };

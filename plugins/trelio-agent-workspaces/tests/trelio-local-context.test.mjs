@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -36,6 +37,7 @@ import {
   searchWorkspaceFilesFromMirror,
   selectEncryptedProposalFilesFromManifest,
   signalLocalCompanyMirrorMutation,
+  uploadLocalActionPayloads,
 } from "../scripts/trelio-local-context.mjs";
 import {
   createAgentEncryptionDevice,
@@ -478,6 +480,149 @@ test("encrypted registry actions preserve row identity and typed structure acros
   });
   assert.equal(archive.value.rows[0].rowKey, first.value.rows[0].rowKey);
   assert.match(archive.value.changeSummary, /^~e1:/u);
+});
+
+test("encrypted local action retry uploads the missing part of a mixed payload batch", async () => {
+  const device = await createAgentEncryptionDevice();
+  const companyEncryption = {
+    runtime: {
+      company: { id: "11111111-1111-4111-8111-111111111111", slug: "acme" },
+      scope: {
+        id: "22222222-2222-4222-8222-222222222222",
+        epoch: 1,
+        publicEncryptionJwk: device.publicEncryptionJwk,
+      },
+      device: { id: "33333333-3333-4333-8333-333333333333" },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: device.privateKeys.encryptionPrivateKey,
+      privateJwk: device.privateBundle.encryptionPrivateJwk,
+    },
+  };
+  const registryMirror = structuredClone(mirror);
+  const registry = registryMirror.contextDocuments[0];
+  registry.payload.registry = {
+    id: registry.id,
+    slug: "e-66666666-6666-4666-8666-666666666666",
+    columns: [{ key: "supplier", label: "Поставщик", type: "text", required: true }],
+  };
+  registry.payload.rows = [];
+  registryMirror.registryRowLocators = { [registry.id]: {} };
+  const baseArguments = {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    registrySlug: registry.payload.registry.slug,
+    rows: [{
+      rowKey: "supplier-1",
+      expectedRevision: 0,
+      values: { supplier: "Север" },
+      verificationStatus: "preliminary",
+    }],
+    changeSummary: "Создать поставщика",
+    clientRequestId: "registry-partial-retry",
+  };
+  const first = await protectLocalActionArguments({
+    nativeTool: "upsert_registry_rows",
+    arguments: baseArguments,
+    companyEncryption,
+    mirror: registryMirror,
+  });
+  const corrected = await protectLocalActionArguments({
+    nativeTool: "upsert_registry_rows",
+    arguments: {
+      ...baseArguments,
+      rows: [{
+        ...baseArguments.rows[0],
+        sourceRefs: [{ label: "Карточка", url: "https://source.test" }],
+      }],
+    },
+    companyEncryption,
+    mirror: registryMirror,
+  });
+  const conflicting = await protectLocalActionArguments({
+    nativeTool: "upsert_registry_rows",
+    arguments: {
+      ...baseArguments,
+      rows: [{
+        ...baseArguments.rows[0],
+        values: { supplier: "Юг" },
+        sourceRefs: [{ label: "Карточка", url: "https://source.test" }],
+      }],
+    },
+    companyEncryption,
+    mirror: registryMirror,
+  });
+  const storedByEntity = new Map(first.payloads.map((payload) => [payload.entityId, payload]));
+  const postedBatchSizes = [];
+  let resolveCount = 0;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+
+    if (request.url === "/api/agent-workspaces/encryption/payloads/resolve") {
+      resolveCount += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        payloads: body.entityIds
+          .map((entityId) => storedByEntity.get(entityId))
+          .filter(Boolean),
+      }));
+      return;
+    }
+
+    if (request.url === "/api/agent-workspaces/encryption/payloads") {
+      postedBatchSizes.push(body.payloads.length);
+      const hasConflictingExisting = body.payloads.some((payload) => {
+        const existing = storedByEntity.get(payload.entityId);
+        return existing && existing.ciphertextSha256 !== payload.ciphertextSha256;
+      });
+      if (hasConflictingExisting) {
+        response.writeHead(409, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          code: "COMPANY_ENCRYPTION_CONFLICT",
+          message: "Encrypted payload revision is stale; expected 2.",
+        }));
+        return;
+      }
+      for (const payload of body.payloads) storedByEntity.set(payload.entityId, payload);
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end(JSON.stringify({ stored: body.payloads.length }));
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ message: "Not found" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    await uploadLocalActionPayloads({
+      origin: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+      companyEncryption,
+      payloads: corrected.payloads,
+      expectedPayloadValues: corrected.expectedPayloadValues,
+    });
+    await assert.rejects(
+      uploadLocalActionPayloads({
+        origin: `http://127.0.0.1:${address.port}`,
+        token: "test-token",
+        companyEncryption,
+        payloads: conflicting.payloads,
+        expectedPayloadValues: conflicting.expectedPayloadValues,
+      }),
+      (error) => error instanceof TrelioApiError && error.statusCode === 409,
+    );
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  assert.equal(resolveCount, 2);
+  assert.equal(storedByEntity.size, corrected.payloads.length);
+  assert.deepEqual(postedBatchSizes, [corrected.payloads.length, 1, conflicting.payloads.length]);
 });
 
 test("local Markdown conversion preserves malformed fences as visible text", () => {
