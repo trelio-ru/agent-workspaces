@@ -174,6 +174,29 @@ export const buildEncryptedAgentWorkspaceRevisionRecord = (input) => ({
   ...(input.browserProjectionId
     ? { browserProjectionId: String(input.browserProjectionId) }
     : {}),
+  ...(input.derivedArtifactsSha256
+    ? { derivedArtifactsSha256: String(input.derivedArtifactsSha256) }
+    : {}),
+});
+
+/**
+ * Structural inventory signed after local manifest validation. Protected
+ * paths, digests and extraction metadata remain inside their E2EE payloads;
+ * the server receives only the exact ciphertext-bound set and Run fence.
+ */
+export const buildEncryptedAgentWorkspaceDerivedArtifactsRecord = (input) => ({
+  suite: COMPANY_ENCRYPTION_SUITE,
+  purpose: "agent-workspace-derived-artifacts",
+  companyId: String(input.companyId),
+  workspaceId: String(input.workspaceId),
+  runId: String(input.runId),
+  baseHead: String(input.baseHead),
+  workspaceHead: String(input.workspaceHead),
+  scopeId: String(input.scopeId),
+  scopeEpoch: Number(input.scopeEpoch),
+  writerDeviceId: String(input.writerDeviceId),
+  fencingToken: Number(input.fencingToken),
+  derivedArtifactsSha256: String(input.derivedArtifactsSha256),
 });
 
 /** Exact transport manifest for the browser-addressable encrypted file pack. */

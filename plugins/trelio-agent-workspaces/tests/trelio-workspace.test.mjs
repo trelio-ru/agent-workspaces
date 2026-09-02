@@ -42,6 +42,7 @@ import {
   assertMaterializedWorkspaceFileTypes,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
+  buildEncryptedDerivedArtifactsDigest,
   buildAgentSkillPackage,
   buildAgentSkillRuntimePath,
   buildAgentSkillRuntimeEnvironment,
@@ -87,9 +88,12 @@ import {
   resolveEncryptedDataPlaneOrigin,
   resolveReusableEncryptedDraftRevision,
   shouldFallbackFromEncryptedDraftPromotion,
+  shouldFallbackFromEncryptedDerivedArtifactStaging,
+  shouldUploadEncryptedDerivedArtifactPayloads,
   resolveWorkspaceBridgeConfigDirectory,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
+  validateEncryptedAgentWorkspaceDerivedArtifacts,
   withEncryptedWorkspaceBrowserProjection,
   withEncryptedWorkspaceTransportCooldownRetry,
 } from "../scripts/trelio-workspace.mjs";
@@ -631,6 +635,51 @@ test("encrypted draft promotion falls back only for stale draft or an older back
   );
   assert.equal(
     shouldFallbackFromEncryptedDraftPromotion(new TypeError("fetch failed")),
+    false,
+  );
+});
+
+test("encrypted derived-artifact staging falls back only during an older-backend rollout", () => {
+  assert.equal(
+    shouldFallbackFromEncryptedDerivedArtifactStaging(
+      new TrelioApiError(404, "route not found"),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldFallbackFromEncryptedDerivedArtifactStaging(
+      new TrelioApiError(409, "inventory changed", null, "ENCRYPTED_DERIVED_ARTIFACTS_CHANGED"),
+    ),
+    false,
+  );
+  assert.equal(
+    shouldFallbackFromEncryptedDerivedArtifactStaging(new TypeError("fetch failed")),
+    false,
+  );
+  assert.equal(
+    shouldUploadEncryptedDerivedArtifactPayloads(
+      new TrelioApiError(
+        409,
+        "payloads have not been uploaded",
+        null,
+        "ENCRYPTED_DERIVED_ARTIFACT_PAYLOADS_MISSING",
+      ),
+    ),
+    true,
+  );
+  assert.equal(
+    shouldUploadEncryptedDerivedArtifactPayloads(
+      new TrelioApiError(
+        409,
+        "inventory changed",
+        null,
+        "ENCRYPTED_DERIVED_ARTIFACTS_CHANGED",
+      ),
+    ),
+    false,
+  );
+  assert.equal(
+    shouldUploadEncryptedDerivedArtifactPayloads(new TrelioApiError(404, "route not found")),
     false,
   );
 });
@@ -3623,6 +3672,62 @@ test("encrypted browser projection exposes only opaque ranges before local decry
   }
 });
 
+test("encrypted derived artifacts validate exact committed source and canonical inventory", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-derived-encrypted-"));
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    const sourceBytes = Buffer.from([0, 1, 2, 3, 4, 255]);
+    const sourceDigest = `sha256:${createHash("sha256").update(sourceBytes).digest("hex")}`;
+    await mkdir(path.join(workspaceDirectory, "sources"), { recursive: true });
+    await mkdir(path.join(workspaceDirectory, "derived", "report"), { recursive: true });
+    await writeFile(path.join(workspaceDirectory, "sources", "input.bin"), sourceBytes);
+    await writeFile(path.join(workspaceDirectory, "derived", "report", "report.md"), "# Отчёт\n");
+    await writeFile(
+      path.join(workspaceDirectory, "derived", "report", "extraction-manifest.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        source: { path: "sources/input.bin", digest: sourceDigest },
+        artifact: { path: "derived/report/report.md", type: "markdown" },
+        extraction: { method: "test-parser", verificationStatus: "machine_extracted" },
+      }),
+    );
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Derived artifact"]);
+    const workspaceHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+
+    // An uncommitted replacement must not affect validation of the exact head
+    // that the encrypted bundle and signature will publish.
+    await writeFile(path.join(workspaceDirectory, "sources", "input.bin"), Buffer.from("changed"));
+    const manifests = await validateEncryptedAgentWorkspaceDerivedArtifacts({
+      workspaceDirectory,
+      workspaceHead,
+    });
+    assert.equal(manifests.length, 1);
+    assert.equal(manifests[0].sourceDigest, sourceDigest);
+    assert.equal(manifests[0].artifactPath, "derived/report/report.md");
+
+    const left = {
+      id: "11111111-1111-4111-8111-111111111111",
+      verificationStatus: "machine_extracted",
+      ciphertextSha256: "a".repeat(64),
+    };
+    const right = {
+      id: "22222222-2222-4222-8222-222222222222",
+      verificationStatus: "agent_visually_checked",
+      ciphertextSha256: "b".repeat(64),
+    };
+    assert.equal(
+      buildEncryptedDerivedArtifactsDigest([left, right]),
+      buildEncryptedDerivedArtifactsDigest([right, left]),
+      "inventory digest must not depend on local manifest traversal order",
+    );
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
 test("encrypted projection upload uses the backend's canonical id header", async () => {
   const bridgeSource = await readFile(bridgePath, "utf8");
 
@@ -3654,7 +3759,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.17.7");
+  assert.equal(BRIDGE_VERSION, "1.17.8");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

@@ -254,6 +254,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
+- Extraction manifests encrypted candidate bridge проверяет по exact committed
+  Git blobs до шифрования. Paths, source digest, type, method и manifest идут
+  только в field-bound company payload; server получает signed structural
+  inventory и повторно сверяет его digest с Run/head/fence при acceptance.
+  Exact overview и verify-result гидратируются local provider. Статус
+  `human_verified` разрешён лишь после явного post-creation подтверждения
+  человеком конкретной пары source/artifact.
 - `list_companies.contentProvider` и structured `providerSelection` – только
   backend-selected routes. Agent не выводит provider из metadata: plain остаётся
   native, а детали exact local context/proposal route загружаются только из lazy

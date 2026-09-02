@@ -29,3 +29,11 @@ Use only `machine_extracted` or `agent_visually_checked`. Never claim
 `human_verified`; Trelio records it only after an authorized person confirms
 the current accepted artifact. Cite original pages/images for material dates,
 sums, percentages, signatures, and identifiers.
+
+The same flow applies to plain and encrypted companies. For an encrypted
+Workspace, `finish` validates the manifest and exact committed source locally,
+then prints each accepted artifact UUID and its exact `source -> artifact` pair.
+Show that pair to the user. Call `verify_agent_workspace_derived_artifact` only
+after the user explicitly confirms that they checked this concrete accepted
+artifact against this concrete source; advance permission to run a test does
+not replace the post-creation comparison.

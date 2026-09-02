@@ -4799,6 +4799,56 @@ export const handleTrelioLocalContextOperation = async (
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   if (provider.nativeProvider) return provider.result;
 
+  if (operation === "native_read") {
+    const nativeTool = String(rawInput?.nativeTool || "").trim();
+    if (nativeTool === "get_agent_workspace" || nativeTool === "get_agent_workspace_by_scope") {
+      const argumentsObject = rawInput?.arguments;
+      if (!argumentsObject || typeof argumentsObject !== "object" || Array.isArray(argumentsObject)) {
+        throw new TrelioLocalContextError(
+          "LOCAL_CONTEXT_INVALID_INPUT",
+          "Workspace overview requires the exact native argument object.",
+        );
+      }
+      let pathname;
+      if (nativeTool === "get_agent_workspace") {
+        const workspaceId = normalizeUuid(argumentsObject.workspaceId, "workspaceId");
+        pathname = `/api/agent-workspaces/workspaces/${workspaceId}`;
+      } else {
+        const scopeType = String(argumentsObject.scopeType || "").trim();
+        const scopeId = normalizeUuid(argumentsObject.scopeId, "scopeId");
+        if (!["company", "project", "dossier", "task"].includes(scopeType)) {
+          throw new TrelioLocalContextError(
+            "LOCAL_CONTEXT_INVALID_INPUT",
+            "scopeType must identify one Agent Workspace scope.",
+          );
+        }
+        pathname = `/api/agent-workspaces/scopes/${encodeURIComponent(scopeType)}/${scopeId}`;
+      }
+      const rawOverview = await readJson(await request(
+        origin,
+        provider.token,
+        pathname,
+        { signal },
+      ));
+      if (
+        rawOverview?.company?.id !== provider.companyEncryption.runtime.company.id
+        || rawOverview?.company?.slug !== provider.companyEncryption.runtime.company.slug
+      ) {
+        throw new TrelioLocalContextError(
+          "LOCAL_WORKSPACE_COMPANY_MISMATCH",
+          "Trelio returned a Workspace overview for another encrypted company.",
+        );
+      }
+      return hydrateAgentCompanyEncryptedJson({
+        value: rawOverview,
+        origin,
+        token: provider.token,
+        companyEncryption: provider.companyEncryption,
+        signal,
+      });
+    }
+  }
+
   const ready = await getReadyMirror({
     origin,
     companySlug,

@@ -37,6 +37,7 @@ import {
   buildCompanyEncryptedTextMarker,
   buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord,
   buildEncryptedAgentWorkspaceBrowserProjectionRecord,
+  buildEncryptedAgentWorkspaceDerivedArtifactsRecord,
   buildEncryptedAgentWorkspaceRevisionRecord,
   canonicalJson,
   createAgentEncryptionDevice,
@@ -52,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.17.7";
+export const BRIDGE_VERSION = "1.17.8";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -384,6 +385,8 @@ const MAX_ENCRYPTED_WORKSPACE_FILE_COUNT = 20_000;
 const ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_MAGIC = Buffer.from("TRELIOP1", "ascii");
 const ENCRYPTED_WORKSPACE_BROWSER_PROJECTION_CONTENT_TYPE =
   "application/vnd.trelio.encrypted-workspace-projection";
+const ENCRYPTED_DERIVED_ARTIFACT_ENTITY_TYPE = "agent_workspace.derived_artifact";
+const ENCRYPTED_DERIVED_ARTIFACT_MAX_COUNT = 1000;
 const ENCRYPTED_WORKSPACE_TEXT_PREVIEW_EXTENSIONS = new Set([
   ".css", ".csv", ".html", ".ini", ".js", ".json", ".log", ".markdown", ".md",
   ".mjs", ".sql", ".svg", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml",
@@ -7172,6 +7175,419 @@ const assertEncryptedCandidateSafe = async ({ workspaceDirectory, baseHead }) =>
 
 };
 
+const readGitRevisionFileBytes = async ({ workspaceDirectory, workspaceHead, filePath }) => {
+  const resolvedGit = await requireGitRuntime();
+  try {
+    const { stdout } = await execFileAsync(
+      resolvedGit.gitPath,
+      [
+        "-c",
+        `core.hooksPath=${GIT_DISABLED_HOOKS_PATH}`,
+        "-c",
+        "init.templateDir=",
+        "-c",
+        "core.longpaths=true",
+        "show",
+        `${workspaceHead}:${filePath}`,
+      ],
+      {
+        cwd: workspaceDirectory,
+        encoding: "buffer",
+        maxBuffer: MAX_ENCRYPTED_WORKSPACE_TREE_BYTES + 1024 * 1024,
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: GIT_DISABLED_GLOBAL_CONFIG_PATH,
+          GIT_CONFIG_NOSYSTEM: "1",
+          GIT_TERMINAL_PROMPT: "0",
+          GIT_PAGER: "cat",
+        },
+      },
+    );
+    return Buffer.from(stdout);
+  } catch (error) {
+    const detail = String(error.stderr || error.stdout || error.message).trim();
+    throw new Error(`Не удалось прочитать exact Git blob ${filePath}: ${detail}`);
+  }
+};
+
+const hasExactJsonKeys = (value, expectedKeys) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const actualKeys = Object.keys(value).sort();
+  const sortedExpectedKeys = [...expectedKeys].sort();
+  return actualKeys.length === sortedExpectedKeys.length
+    && actualKeys.every((key, index) => key === sortedExpectedKeys[index]);
+};
+
+const normalizeDerivedManifestText = (value, fieldName, maximumLength) => {
+  if (typeof value !== "string") {
+    throw new Error(`Derived manifest ${fieldName} должен быть строкой.`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximumLength) {
+    throw new Error(`Derived manifest ${fieldName} имеет недопустимую длину.`);
+  }
+  return normalized;
+};
+
+const assertSafeDerivedManifestPath = (filePath, fieldName) => {
+  if (
+    filePath.startsWith("/")
+    || filePath.includes("\\")
+    || filePath.split("/").includes("..")
+    || /[\u0000-\u001f\u007f]/u.test(filePath)
+  ) {
+    throw new Error(`Derived manifest ${fieldName} содержит небезопасный путь.`);
+  }
+};
+
+/**
+ * Encrypted candidates cannot be inspected by the backend. The trusted bridge
+ * therefore applies the same schema, path, digest and UTF-8 checks to exact
+ * committed Git blobs before publishing any verification target.
+ */
+export const validateEncryptedAgentWorkspaceDerivedArtifacts = async ({
+  workspaceDirectory,
+  workspaceHead,
+}) => {
+  const tree = await runGit(
+    ["ls-tree", "-r", "--name-only", "-z", workspaceHead],
+    { cwd: workspaceDirectory },
+  );
+  const revisionPaths = tree.stdout.split("\0").filter(Boolean);
+  const revisionPathSet = new Set(revisionPaths);
+  const manifestPaths = revisionPaths.filter(
+    (filePath) => filePath.startsWith("derived/")
+      && filePath.endsWith("/extraction-manifest.json"),
+  );
+  if (manifestPaths.length > ENCRYPTED_DERIVED_ARTIFACT_MAX_COUNT) {
+    throw new Error("Зашифрованный Workspace содержит слишком много extraction manifests.");
+  }
+
+  const manifests = [];
+  const artifactPaths = new Set();
+  for (const manifestPath of manifestPaths) {
+    const manifestBytes = await readGitRevisionFileBytes({
+      workspaceDirectory,
+      workspaceHead,
+      filePath: manifestPath,
+    });
+    let rawManifest;
+    try {
+      rawManifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes));
+    } catch {
+      throw new Error(`Derived artifact manifest ${manifestPath} не является корректным UTF-8 JSON.`);
+    }
+    if (
+      !hasExactJsonKeys(
+        rawManifest,
+        rawManifest?.warnings === undefined
+          ? ["schemaVersion", "source", "artifact", "extraction"]
+          : ["schemaVersion", "source", "artifact", "extraction", "warnings"],
+      )
+      || rawManifest.schemaVersion !== 1
+      || !hasExactJsonKeys(rawManifest.source, ["path", "digest"])
+      || !hasExactJsonKeys(rawManifest.artifact, ["path", "type"])
+      || !hasExactJsonKeys(rawManifest.extraction, ["method", "verificationStatus"])
+    ) {
+      throw new Error(`Derived artifact manifest ${manifestPath} не соответствует schemaVersion=1.`);
+    }
+    const sourcePath = normalizeDerivedManifestText(rawManifest.source.path, "source.path", 2048);
+    const sourceDigest = normalizeDerivedManifestText(rawManifest.source.digest, "source.digest", 71);
+    const artifactPath = normalizeDerivedManifestText(rawManifest.artifact.path, "artifact.path", 2048);
+    const artifactType = normalizeDerivedManifestText(rawManifest.artifact.type, "artifact.type", 64);
+    const extractionMethod = normalizeDerivedManifestText(
+      rawManifest.extraction.method,
+      "extraction.method",
+      64,
+    );
+    const verificationStatus = rawManifest.extraction.verificationStatus;
+    if (
+      !/^sha256:[0-9a-f]{64}$/u.test(sourceDigest)
+      || !["machine_extracted", "agent_visually_checked"].includes(verificationStatus)
+    ) {
+      throw new Error(`Derived artifact manifest ${manifestPath} содержит недопустимый digest/status.`);
+    }
+    let warnings;
+    if (rawManifest.warnings !== undefined) {
+      if (!Array.isArray(rawManifest.warnings) || rawManifest.warnings.length > 100) {
+        throw new Error(`Derived artifact manifest ${manifestPath} содержит недопустимый warnings.`);
+      }
+      warnings = rawManifest.warnings.map((warning) => (
+        normalizeDerivedManifestText(warning, "warnings[]", 2000)
+      ));
+    }
+    assertSafeDerivedManifestPath(sourcePath, "source.path");
+    assertSafeDerivedManifestPath(artifactPath, "artifact.path");
+    if (
+      !artifactPath.startsWith("derived/")
+      || artifactPath === manifestPath
+      || !revisionPathSet.has(sourcePath)
+      || !revisionPathSet.has(artifactPath)
+      || artifactPaths.has(artifactPath)
+    ) {
+      throw new Error(
+        `Derived artifact manifest ${manifestPath} ссылается на отсутствующий или повторный artifact/source.`,
+      );
+    }
+    artifactPaths.add(artifactPath);
+    const sourceBytes = await readGitRevisionFileBytes({
+      workspaceDirectory,
+      workspaceHead,
+      filePath: sourcePath,
+    });
+    const actualSourceDigest = `sha256:${crypto.createHash("sha256").update(sourceBytes).digest("hex")}`;
+    if (actualSourceDigest !== sourceDigest) {
+      throw new Error(`Derived artifact manifest ${manifestPath} не совпадает с source digest.`);
+    }
+    if (/\.(?:md|txt|csv|json)$/iu.test(artifactPath)) {
+      const artifactBytes = await readGitRevisionFileBytes({
+        workspaceDirectory,
+        workspaceHead,
+        filePath: artifactPath,
+      });
+      if (artifactBytes.includes(0)) {
+        throw new Error(`Текстовый derived artifact ${artifactPath} содержит NUL bytes.`);
+      }
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(artifactBytes);
+      } catch {
+        throw new Error(`Текстовый derived artifact ${artifactPath} не является корректным UTF-8.`);
+      }
+    }
+    const manifest = {
+      schemaVersion: 1,
+      source: { path: sourcePath, digest: sourceDigest },
+      artifact: { path: artifactPath, type: artifactType },
+      extraction: { method: extractionMethod, verificationStatus },
+      ...(warnings ? { warnings } : {}),
+    };
+    manifests.push({
+      manifestPath,
+      sourcePath,
+      sourceDigest,
+      artifactPath,
+      artifactType,
+      extractionMethod,
+      verificationStatus,
+      manifestJson: manifest,
+    });
+  }
+  return manifests;
+};
+
+export const buildEncryptedDerivedArtifactsDigest = (artifacts) => (
+  crypto.createHash("sha256")
+    .update(canonicalJson([...artifacts].sort((left, right) => left.id.localeCompare(right.id))))
+    .digest("hex")
+);
+
+const buildEncryptedDerivedArtifactPayload = async ({ manifest, metadata, companyEncryption }) => {
+  const entityId = crypto.randomUUID();
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source: {
+        kind: "agent_workspace_derived_artifact",
+        runId: metadata.runId,
+        workspaceHead: metadata.candidateHead,
+      },
+      values: {
+        source_path: manifest.sourcePath,
+        source_digest: manifest.sourceDigest,
+        artifact_path: manifest.artifactPath,
+        artifact_type: manifest.artifactType,
+        extraction_method: manifest.extractionMethod,
+        manifest_json: manifest.manifestJson,
+      },
+    },
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType: ENCRYPTED_DERIVED_ARTIFACT_ENTITY_TYPE,
+      entityId,
+      entityRevision: 1,
+      purpose: "content",
+    },
+  });
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType: ENCRYPTED_DERIVED_ARTIFACT_ENTITY_TYPE,
+    entityId,
+    entityRevision: 1,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildAgentEncryptedPayloadSignatureRecord(payload),
+  );
+  return {
+    payload,
+    artifact: {
+      id: entityId,
+      verificationStatus: manifest.verificationStatus,
+      ciphertextSha256: payload.ciphertextSha256,
+    },
+  };
+};
+
+const isReusableEncryptedDerivedArtifactInventory = ({ cached, workspaceHead, manifests }) => {
+  if (
+    cached?.schemaVersion !== 1
+    || cached.workspaceHead !== workspaceHead
+    || !Array.isArray(cached.artifacts)
+    || !Array.isArray(cached.payloads)
+    || cached.artifacts.length !== manifests.length
+    || cached.payloads.length !== manifests.length
+  ) return false;
+  const valid = cached.artifacts.every((artifact, index) => (
+    UUID_PATTERN.test(String(artifact?.id || ""))
+    && artifact.verificationStatus === manifests[index]?.verificationStatus
+    && /^[0-9a-f]{64}$/u.test(String(artifact.ciphertextSha256 || ""))
+    && cached.payloads[index]?.entityId === artifact.id
+    && cached.payloads[index]?.entityType === ENCRYPTED_DERIVED_ARTIFACT_ENTITY_TYPE
+    && cached.payloads[index]?.ciphertextSha256 === artifact.ciphertextSha256
+  ));
+  return valid
+    && cached.derivedArtifactsSha256 === buildEncryptedDerivedArtifactsDigest(cached.artifacts);
+};
+
+const prepareEncryptedDerivedArtifactInventory = async ({
+  metadata,
+  companyEncryption,
+  workspaceHead,
+}) => {
+  const manifests = await validateEncryptedAgentWorkspaceDerivedArtifacts({
+    workspaceDirectory: metadata.workspaceDirectory,
+    workspaceHead,
+  });
+  const cached = metadata.encryptedDerivedArtifacts;
+  if (isReusableEncryptedDerivedArtifactInventory({ cached, workspaceHead, manifests })) {
+    return { inventory: cached, manifests };
+  }
+  const encryptedArtifacts = [];
+  for (const manifest of manifests) {
+    encryptedArtifacts.push(await buildEncryptedDerivedArtifactPayload({
+      manifest,
+      metadata: { ...metadata, candidateHead: workspaceHead },
+      companyEncryption,
+    }));
+  }
+  const artifacts = encryptedArtifacts.map((entry) => entry.artifact);
+  return {
+    manifests,
+    inventory: {
+      schemaVersion: 1,
+      workspaceHead,
+      artifacts,
+      payloads: encryptedArtifacts.map((entry) => entry.payload),
+      derivedArtifactsSha256: buildEncryptedDerivedArtifactsDigest(artifacts),
+    },
+  };
+};
+
+const stageEncryptedDerivedArtifactInventory = async ({
+  metadata,
+  origin,
+  token,
+  companyEncryption,
+  inventory,
+}) => {
+  const record = buildEncryptedAgentWorkspaceDerivedArtifactsRecord({
+    companyId: companyEncryption.runtime.company.id,
+    workspaceId: requireUuid(metadata.workspaceId, "workspace"),
+    runId: requireUuid(metadata.runId, "run"),
+    baseHead: metadata.baseHead,
+    workspaceHead: inventory.workspaceHead,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    writerDeviceId: companyEncryption.runtime.device.id,
+    fencingToken: Number(metadata.fencingToken),
+    derivedArtifactsSha256: inventory.derivedArtifactsSha256,
+  });
+  const signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    record,
+  );
+  const submitStage = async () => readJsonResponse(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/runs/${metadata.runId}/encrypted-derived-artifacts`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          leaseId: metadata.leaseId,
+          fencingToken: Number(metadata.fencingToken),
+          baseHead: metadata.baseHead,
+          workspaceHead: inventory.workspaceHead,
+          scopeId: companyEncryption.runtime.scope.id,
+          scopeEpoch: companyEncryption.runtime.scope.epoch,
+          writerDeviceId: companyEncryption.runtime.device.id,
+          artifacts: inventory.artifacts,
+          signature,
+        }),
+      },
+    ));
+
+  let result;
+  try {
+    // Probe the signed stage before any payload write. The old backend returns
+    // 404 here, so a plugin-first rollout never sends a new entity field to an
+    // adapter that does not know it yet. A replay whose payloads already exist
+    // completes in this first call without redundant upload.
+    result = await submitStage();
+  } catch (error) {
+    if (!shouldUploadEncryptedDerivedArtifactPayloads(error)) {
+      throw error;
+    }
+    // Payload writes are capped at 100 per request by the company encryption
+    // transport. Persisted ciphertext makes every batch an exact replay after
+    // a lost response; no plaintext manifest is written to local metadata.
+    for (let offset = 0; offset < inventory.payloads.length; offset += 100) {
+      await readJsonResponse(await request(
+        origin,
+        token,
+        "/api/agent-workspaces/encryption/payloads",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            companySlug: companyEncryption.runtime.company.slug,
+            writerDeviceId: companyEncryption.runtime.device.id,
+            payloads: inventory.payloads.slice(offset, offset + 100),
+          }),
+        },
+      ));
+    }
+    result = await submitStage();
+  }
+  if (
+    result?.workspaceHead !== inventory.workspaceHead
+    || result?.derivedArtifactsSha256 !== inventory.derivedArtifactsSha256
+    || canonicalJson(result?.artifacts) !== canonicalJson(
+      [...inventory.artifacts].sort((left, right) => left.id.localeCompare(right.id)),
+    )
+  ) {
+    throw new Error("Trelio вернул другой encrypted derived-artifact inventory.");
+  }
+  return result;
+};
+
+export const shouldFallbackFromEncryptedDerivedArtifactStaging = (error) => (
+  error instanceof TrelioApiError && error.statusCode === 404
+);
+
+export const shouldUploadEncryptedDerivedArtifactPayloads = (error) => (
+  error instanceof TrelioApiError
+  && error.statusCode === 409
+  && error.code === "ENCRYPTED_DERIVED_ARTIFACT_PAYLOADS_MISSING"
+);
+
 const downloadAndVerifyWorkspaceObject = async ({
   origin,
   token,
@@ -11207,6 +11623,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
   workspaceHead,
   revisionKind,
   browserProjectionId = null,
+  derivedArtifactsSha256 = null,
 }) => {
   if (!companyEncryption) {
     throw new Error("Encrypted Workspace upload requires an unlocked company context.");
@@ -11244,6 +11661,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
       ciphertextSizeBytes: encrypted.ciphertextSizeBytes,
       fencingToken: Number(metadata.fencingToken),
       ...(browserProjectionId ? { browserProjectionId } : {}),
+      ...(derivedArtifactsSha256 ? { derivedArtifactsSha256 } : {}),
     });
     const signature = await signCompanyEncryptionRecord(
       companyEncryption.device.privateKeys.signingPrivateKey,
@@ -11271,6 +11689,9 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
             "x-trelio-signature": signature,
             ...(browserProjectionId
               ? { "x-trelio-browser-projection-id": browserProjectionId }
+              : {}),
+            ...(derivedArtifactsSha256
+              ? { "x-trelio-derived-artifacts-sha256": derivedArtifactsSha256 }
               : {}),
           },
           body: createReadStream(encryptedPath),
@@ -11372,6 +11793,7 @@ const promoteEncryptedAgentWorkspaceDraft = async ({
   companyEncryption,
   draft,
   browserProjectionId,
+  derivedArtifactsSha256,
 }) => {
   const manifest = buildEncryptedAgentWorkspaceRevisionRecord({
     companyId: companyEncryption.runtime.company.id,
@@ -11387,6 +11809,7 @@ const promoteEncryptedAgentWorkspaceDraft = async ({
     ciphertextSizeBytes: draft.ciphertextSizeBytes,
     fencingToken: Number(metadata.fencingToken),
     browserProjectionId,
+    derivedArtifactsSha256,
   });
   const signature = await signCompanyEncryptionRecord(
     companyEncryption.device.privateKeys.signingPrivateKey,
@@ -11414,6 +11837,7 @@ const promoteEncryptedAgentWorkspaceDraft = async ({
           ciphertextSizeBytes: draft.ciphertextSizeBytes,
           signature,
           browserProjectionId,
+          derivedArtifactsSha256,
         }),
       },
     );
@@ -11557,8 +11981,45 @@ const submit = async (options) => withRun(async ({
 
   let submissionMetadata = prepared.candidateMetadata;
   let browserProjectionId = null;
+  let encryptedDerivedArtifactInventory = null;
+  let encryptedDerivedArtifactManifests = [];
+  let encryptedDerivedArtifactsServerSupported = false;
 
   if (companyEncryption) {
+    const preparedDerivedArtifacts = await prepareEncryptedDerivedArtifactInventory({
+      metadata: submissionMetadata,
+      companyEncryption,
+      workspaceHead: head,
+    });
+    encryptedDerivedArtifactInventory = preparedDerivedArtifacts.inventory;
+    encryptedDerivedArtifactManifests = preparedDerivedArtifacts.manifests;
+    submissionMetadata = {
+      ...submissionMetadata,
+      encryptedDerivedArtifacts: encryptedDerivedArtifactInventory,
+    };
+    // Persist the exact randomized ciphertext before the first network write.
+    // A restarted bridge can then replay the payload batch byte-for-byte
+    // instead of colliding with an already stored entity revision.
+    await writeRunMetadata(metadataPath, submissionMetadata);
+    await heartbeat();
+    try {
+      await stageEncryptedDerivedArtifactInventory({
+        metadata: submissionMetadata,
+        origin,
+        token,
+        companyEncryption,
+        inventory: encryptedDerivedArtifactInventory,
+      });
+      encryptedDerivedArtifactsServerSupported = true;
+    } catch (error) {
+      if (!shouldFallbackFromEncryptedDerivedArtifactStaging(error)) throw error;
+      // Plugin releases precede their compatible backend patch. During that
+      // bounded rollout window the old backend has no staging endpoint and
+      // verifies the legacy revision signature without the new digest. Once
+      // the endpoint exists, every accepted candidate is bound fail-closed.
+      encryptedDerivedArtifactsServerSupported = false;
+    }
+
     const reusableProjection = submissionMetadata.browserProjection?.workspaceHead === head
       && UUID_PATTERN.test(String(submissionMetadata.browserProjection?.projectionId || ""))
       ? submissionMetadata.browserProjection
@@ -11609,6 +12070,9 @@ const submit = async (options) => withRun(async ({
         workspaceHead: head,
         revisionKind: "accepted",
         browserProjectionId,
+        derivedArtifactsSha256: encryptedDerivedArtifactsServerSupported
+          ? encryptedDerivedArtifactInventory.derivedArtifactsSha256
+          : null,
       }),
     );
     let result;
@@ -11627,6 +12091,9 @@ const submit = async (options) => withRun(async ({
             companyEncryption,
             draft: reusableDraft,
             browserProjectionId,
+            derivedArtifactsSha256: encryptedDerivedArtifactsServerSupported
+              ? encryptedDerivedArtifactInventory.derivedArtifactsSha256
+              : null,
           });
           promotedDraft = true;
         } catch (error) {
@@ -11663,12 +12130,22 @@ const submit = async (options) => withRun(async ({
       terminalAt: result.run.acceptedAt || new Date().toISOString(),
       lastUsedAt: new Date().toISOString(),
       cleanupEligibleAfterDays: (await readLocalSettings()).workspaceRetentionDays,
+      encryptedDerivedArtifacts: undefined,
     });
     process.stdout.write(
       promotedDraft
         ? "Зашифрованный draft принят без повторной отправки полного snapshot.\n"
         : "Зашифрованный результат записан в рабочее пространство Trelio.\n",
     );
+    if (encryptedDerivedArtifactsServerSupported && encryptedDerivedArtifactManifests.length > 0) {
+      process.stdout.write("Производные артефакты для проверки человеком:\n");
+      for (const [index, manifest] of encryptedDerivedArtifactManifests.entries()) {
+        const artifact = encryptedDerivedArtifactInventory.artifacts[index];
+        process.stdout.write(
+          `- ${artifact.id}: ${manifest.sourcePath} -> ${manifest.artifactPath} (${artifact.verificationStatus})\n`,
+        );
+      }
+    }
     return;
   }
 

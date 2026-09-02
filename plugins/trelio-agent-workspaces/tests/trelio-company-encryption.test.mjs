@@ -10,6 +10,7 @@ import {
   buildAgentDeviceRegistrationRecord,
   buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord,
   buildEncryptedAgentWorkspaceBrowserProjectionRecord,
+  buildEncryptedAgentWorkspaceDerivedArtifactsRecord,
   buildEncryptedAgentWorkspaceRevisionRecord,
   calculateKeyFingerprint,
   canonicalJson,
@@ -82,6 +83,11 @@ test("encrypted workspace records bind accepted revision to its browser projecti
     ...common,
     revisionKind: "accepted",
     browserProjectionId: common.projectionId,
+    derivedArtifactsSha256: "e".repeat(64),
+  });
+  const derivedArtifacts = buildEncryptedAgentWorkspaceDerivedArtifactsRecord({
+    ...common,
+    derivedArtifactsSha256: "e".repeat(64),
   });
   const migration = buildEncryptedAgentWorkspaceBrowserProjectionMigrationRecord({
     ...common,
@@ -91,6 +97,9 @@ test("encrypted workspace records bind accepted revision to its browser projecti
   assert.equal(projection.purpose, "agent-workspace-browser-projection");
   assert.equal(projection.indexSha256, common.indexSha256);
   assert.equal(revision.browserProjectionId, common.projectionId);
+  assert.equal(revision.derivedArtifactsSha256, "e".repeat(64));
+  assert.equal(derivedArtifacts.purpose, "agent-workspace-derived-artifacts");
+  assert.equal(derivedArtifacts.derivedArtifactsSha256, "e".repeat(64));
   assert.equal(migration.purpose, "agent-workspace-browser-projection-migration");
   assert.equal(migration.encryptedRevisionId, "77777777-7777-4777-8777-777777777777");
 });
