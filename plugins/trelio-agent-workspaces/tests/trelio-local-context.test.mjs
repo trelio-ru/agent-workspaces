@@ -487,6 +487,7 @@ test("local mirror includes first-class company documents in search, list and fe
 test("archived contacts and registry rows require the same explicit native flags locally", () => {
   const archiveMirror = structuredClone(mirror);
   const registry = archiveMirror.contextDocuments[0];
+  const archivedValueOnly = "archived-value-only-71f4e6";
   registry.payload.registry = {
     id: registry.id,
     slug: "supplier-registry",
@@ -498,9 +499,15 @@ test("archived contacts and registry rows require the same explicit native flags
   };
   registry.payload.rows = [
     { id: "70000000-0000-4000-8000-000000000001", rowKey: "Север", values: { state: "Проверен" }, revision: 1, isTechnical: false, isArchived: false },
-    { id: "70000000-0000-4000-8000-000000000002", rowKey: "Скрытый", values: { state: "Архив" }, revision: 2, isTechnical: false, isArchived: true },
+    { id: "70000000-0000-4000-8000-000000000002", rowKey: "Скрытый", values: { state: archivedValueOnly }, revision: 2, isTechnical: false, isArchived: true },
   ];
-  registry.payload.history = [{ id: "h1" }, { id: "h2" }];
+  // Registry history intentionally retains the before/after snapshots used by
+  // explicit audit reads. The ordinary index must not rediscover an archived
+  // row through that historical copy after filtering payload.rows.
+  registry.payload.history = [
+    { id: "h1", before: { values: { state: archivedValueOnly } } },
+    { id: "h2", after: { values: { state: archivedValueOnly } } },
+  ];
   archiveMirror.contextDocuments.push({
     id: "80000000-0000-4000-8000-000000000001",
     type: "contact",
@@ -565,12 +572,23 @@ test("archived contacts and registry rows require the same explicit native flags
 
   const ordinarySearch = searchCompanyContextMirror(
     archiveMirror,
-    ["скрытый", "архивный контакт"],
+    ["проверен", "скрытый", archivedValueOnly, "архивный контакт"],
     10,
   );
   assert.equal(ordinarySearch.results.some((result) => (
-    result.type === "contact" || result.preview?.includes("Скрытый")
+    result.type === "registry" && result.matchedQueries.includes("проверен")
+  )), true);
+  assert.equal(ordinarySearch.results.some((result) => (
+    result.type === "contact"
+    || result.preview?.includes("Скрытый")
+    || result.preview?.includes(archivedValueOnly)
   )), false);
+  assert.equal(
+    ordinarySearch.results.some((result) => (
+      result.type === "registry" && result.matchedQueries.includes(archivedValueOnly)
+    )),
+    false,
+  );
 });
 
 test("local inventory is bounded and task result ids round-trip exactly", () => {

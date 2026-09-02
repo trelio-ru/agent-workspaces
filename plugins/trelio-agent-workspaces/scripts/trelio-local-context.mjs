@@ -2120,6 +2120,50 @@ const buildTaskSearchText = (taskPayload) => {
   }).join("\n");
 };
 
+const buildRegistrySearchPayload = (payload) => {
+  const registry = payload?.registry ?? {};
+  const ordinaryColumns = (registry.columns ?? []).filter((column) => (
+    column?.isTechnical !== true
+  ));
+  const searchableValueKeys = new Set(
+    ordinaryColumns
+      // Native registry discovery deliberately does not index opaque file
+      // coordinates or registry UUID references as human prose.
+      .filter((column) => column?.type !== "document" && column?.type !== "registry_ref")
+      .map((column) => column?.key)
+      .filter((key) => typeof key === "string" && key),
+  );
+
+  // get_registry keeps immutable events, comments, ACL helpers and archived
+  // rows in the encrypted mirror so explicit management reads remain complete.
+  // Ordinary relevance search must instead mirror the native discovery
+  // surface exactly: active non-technical rows plus public definition fields.
+  // Building an allowlisted projection is important here. Merely replacing
+  // payload.rows still leaves an archived value inside history.before/after.
+  return {
+    registry: {
+      slug: registry.slug,
+      slugAliases: registry.slugAliases,
+      title: registry.title,
+      description: registry.description,
+      searchTerms: registry.searchTerms,
+      columns: ordinaryColumns.map((column) => ({ label: column?.label })),
+    },
+    rows: (payload?.rows ?? [])
+      .filter((row) => !row?.isArchived && row?.isTechnical !== true)
+      .map((row) => ({
+        rowKey: row?.rowKey,
+        note: row?.note,
+        values: Object.fromEntries(
+          Object.entries(row?.values ?? {}).filter(([key, value]) => (
+            searchableValueKeys.has(key)
+            && ["string", "number", "boolean"].includes(typeof value)
+          )),
+        ),
+      })),
+  };
+};
+
 const buildSearchDocuments = (mirror) => {
   const documents = [];
   for (const project of mirror.projects ?? []) {
@@ -2166,10 +2210,7 @@ const buildSearchDocuments = (mirror) => {
       continue;
     }
     const searchablePayload = contextDocument.type === "registry"
-      ? {
-          ...contextDocument.payload,
-          rows: (contextDocument.payload?.rows ?? []).filter((row) => !row?.isArchived),
-        }
+      ? buildRegistrySearchPayload(contextDocument.payload)
       : contextDocument.payload;
     const resultType = contextDocument.type === "knowledge_page"
       ? "knowledge-page"

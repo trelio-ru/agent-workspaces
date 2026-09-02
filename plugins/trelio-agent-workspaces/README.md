@@ -104,7 +104,10 @@ action route. Человеческий текст, rich text, имена фай�
 серверной проверке структурные значения остаются структурными. Ответ native
 tool расшифровывается локально и сохраняет исходный MCP result envelope.
 Archived contacts и registry rows сохраняются в зашифрованной generation для
-exact include-read, но обычный поиск их не индексирует. Task/contact rich text
+exact include-read, но обычный поиск их не индексирует. Для registry он строится
+только по active non-technical rows и поисковым полям текущего definition;
+immutable history, comments и служебная read/ACL metadata в индекс не попадают.
+Task/contact rich text
 передаётся как opaque JSON marker только через verified local-action runtime.
 Task attachment и inline image локально превращаются в signed `TRELIOE1`, а
 filename/MIME — в связанный encrypted payload; backend проверяет exact активное
