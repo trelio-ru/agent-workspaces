@@ -710,6 +710,67 @@ const extractLocalRichTextPlainText = (value) => {
   return fragments.join("").replace(/\n{3,}/gu, "\n\n").trim();
 };
 
+const removePublishedTaskAttachmentLinks = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map(removePublishedTaskAttachmentLinks)
+      .filter((item) => item !== null);
+  }
+  if (!value || typeof value !== "object") return value;
+  if (
+    value.type === "text"
+    && Array.isArray(value.marks)
+    && value.marks.some((mark) => (
+      mark?.type === "link"
+      && mark.attrs?.taskAttachmentKind === "file"
+    ))
+  ) {
+    return null;
+  }
+  if (!Array.isArray(value.content)) return value;
+
+  const content = removePublishedTaskAttachmentLinks(value.content);
+  // Proposal publication appends one attachment-only paragraph per selected
+  // file. Drop the now-empty wrapper too, otherwise the plain-text extractor
+  // would add a newline that was never present in the reviewed textarea.
+  if (
+    value.type === "paragraph"
+    && value.content.length > 0
+    && content.length === 0
+  ) return null;
+  return { ...value, content };
+};
+
+/**
+ * The backend cannot compare randomized E2EE markers from two publish
+ * attempts. It therefore returns the already committed comment on a trusted
+ * encrypted replay, and this local boundary must prove that the decrypted
+ * persisted text is exactly what the user reviewed before model-visible
+ * success. Missing or differently shaped content fails closed as well.
+ */
+export const assertHydratedLocalProposalPublicationMatches = ({
+  publication,
+  expectedBodyText,
+}) => {
+  const expected = normalizeBoundedString(
+    expectedBodyText,
+    "expectedBodyText",
+    20_000,
+  );
+  const actual = extractLocalRichTextPlainText(
+    removePublishedTaskAttachmentLinks(publication?.comment?.content),
+  );
+
+  if (actual !== expected) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_PUBLICATION_MISMATCH",
+      "The persisted encrypted proposal comment does not match the exact reviewed text.",
+    );
+  }
+
+  return publication;
+};
+
 const buildLocalPlainTextDocument = (value) => {
   const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
   return {
@@ -4770,6 +4831,16 @@ export const handleTrelioLocalProposalOperation = async (
     companyEncryption: provider.companyEncryption,
     signal,
   });
+  if (
+    operation === "action"
+    && kind === "comment"
+    && String(rawPayload?.action ?? "").trim() === "publish"
+  ) {
+    assertHydratedLocalProposalPublicationMatches({
+      publication: hydrated,
+      expectedBodyText: rawPayload?.bodyText,
+    });
+  }
   return buildProposalLocalResult(origin, hydrated);
 };
 

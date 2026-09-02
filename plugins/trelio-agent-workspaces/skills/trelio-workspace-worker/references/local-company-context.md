@@ -117,9 +117,9 @@ proposal route, call `continue_trelio_local_proposal`. It has three operations:
   sends opaque markers into the existing proposal service.
 - `action`: after a separate explicit user decision, pass exact `proposalId`,
   `expectedRevision`, `action`, `confirmed=true`, and the selected open IDs.
-  Comment publication also passes the reviewed plaintext `bodyText`; the host
-  encrypts it before the request. Never set `confirmed=true` merely because a
-  Run finished or a proposal was rendered.
+  Comment publish passes reviewed `bodyText` and requires hydrated
+  persisted-comment equality on success/replay. Never infer confirmation from
+  Run completion or rendering.
 
 Kinds are `comment`, `status`, `control_clear`, and `checklist`. Preserve the
 normal proposal references' semantic rules: unpublished drafts are not public

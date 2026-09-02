@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  assertHydratedLocalProposalPublicationMatches,
   canonicalizeProposalTargetFromMirror,
   TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS,
   TRELIO_LOCAL_CONTEXT_TOOL,
@@ -877,6 +878,61 @@ test("local proposal bundle rejects a mixed company before saving any card", asy
     (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
   );
   assert.equal(saveCount, 0);
+});
+
+test("encrypted proposal publication verifies the hydrated persisted plaintext", () => {
+  const publication = {
+    comment: {
+      content: {
+        type: "doc",
+        content: [{
+          type: "paragraph",
+          content: [
+            { type: "mention", attrs: { username: "reviewer" } },
+            { type: "text", text: ", проверено" },
+            { type: "hardBreak" },
+            { type: "text", text: "Можно публиковать." },
+          ],
+        }, {
+          type: "paragraph",
+          content: [{
+            type: "text",
+            text: "result.txt",
+            marks: [{
+              type: "link",
+              attrs: {
+                href: "https://trelio.example/attachment",
+                taskAttachmentKind: "file",
+                taskAttachmentId: "11111111-1111-4111-8111-111111111111",
+              },
+            }],
+          }],
+        }],
+      },
+    },
+  };
+
+  assert.equal(
+    assertHydratedLocalProposalPublicationMatches({
+      publication,
+      expectedBodyText: "@reviewer, проверено\nМожно публиковать.",
+    }),
+    publication,
+  );
+  assert.throws(
+    () => assertHydratedLocalProposalPublicationMatches({
+      publication,
+      expectedBodyText: "Другой текст",
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_PUBLICATION_MISMATCH",
+  );
+  assert.throws(
+    () => assertHydratedLocalProposalPublicationMatches({
+      publication: { comment: {} },
+      expectedBodyText: "Можно публиковать.",
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_PUBLICATION_MISMATCH",
+  );
 });
 
 test("decrypted mirror residency has the exact ten-minute hard TTL", () => {

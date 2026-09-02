@@ -266,6 +266,9 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Combined encrypted proposal bundle выбирает provider до per-card preparation,
   canonicalize-ит historical project aliases локально и отклоняет mixed-company
   payload до первого save; confirmed card error не блокирует независимых siblings.
+  Encrypted comment publish replay принимает новый randomized marker только
+  через verified bridge и возвращает success лишь после local plaintext
+  comparison с фактически сохранённым hydrated comment.
   Local MCP возвращает полный MCP App result и exact v3 resource metadata,
   включая `data:` frame CSP; app-only context/action aliases скрыты от модели.
 - Чистое чтение уже принятого task/dossier Workspace использует
