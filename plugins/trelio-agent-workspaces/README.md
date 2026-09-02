@@ -58,6 +58,15 @@ route ведёт к четырём компактным model-visible local tool
 provider выбрать, а local host повторно проверяет live state. Служебные tools
 кнопок proposal видны только MCP App и не попадают в обычный контекст модели.
 
+В production bridge сначала получает через канонический `https://trelio.ru`
+content-free authenticated route для exact компании или Workspace. Только при
+live state `encrypted` все последующие Workspace, local-context, proposal и
+encrypted-payload запросы переходят на `https://e2ee.trelio.ru`; plain и
+переходные состояния остаются на каноническом origin. Alternate URL принимается
+только как exact HTTPS origin из встроенного allowlist, поэтому backend-ответ не
+может перенаправить bearer token на произвольный host. OAuth, pairing,
+compatibility и Agent Secrets всегда остаются на control plane.
+
 В начале работы bridge синхронизирует весь доступный текущему пользователю
 контекст компании: проекты, задачи, досье и safe text из принятых task/dossier
 Workspace. Неизменившиеся task revisions и Workspace heads переиспользуются.

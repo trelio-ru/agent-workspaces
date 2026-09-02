@@ -25,6 +25,16 @@ tracked/staged-файле, parent worktree или неоднозначном с�
 меняет репозиторий и требует отдельную папку без Git. Standalone Git нужен
 bridge для его временных и Run-репозиториев, а не самой папке онбординга.
 
+Production bridge использует `https://trelio.ru` как canonical control plane.
+После compatibility он делает один authenticated content-free routing lookup по
+exact company slug либо Workspace UUID. Ответ переводит data requests на
+`https://e2ee.trelio.ru` только для live state `encrypted`; plain, transition и
+failed state не меняют origin. Выбранный alternate сохраняется в private Run
+metadata и применяется ко всем последующим Workspace/company-context/payload
+операциям, тогда как OAuth, pairing, compatibility и Agent Secrets остаются на
+canonical origin. Любой другой hostname или URL с path/query/credentials
+отклоняется до отправки bearer token.
+
 - `task` – результат принадлежит одной задаче;
 - `dossier` – долговременный именованный предмет без одной owning task;
 

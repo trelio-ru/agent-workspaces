@@ -82,6 +82,9 @@ import {
   renderCompanyEncryptionKeyPage,
   runCompanyEncryptionSelfTest,
   resolveAgentSkillRuntimeWithDeviceConsent,
+  resolveBridgeDataPlaneRoutingResponse,
+  resolveCompanyEncryptionRequestOrigin,
+  resolveEncryptedDataPlaneOrigin,
   resolveReusableEncryptedDraftRevision,
   shouldFallbackFromEncryptedDraftPromotion,
   resolveWorkspaceBridgeConfigDirectory,
@@ -120,6 +123,63 @@ const testCompany = {
 };
 const companyHead = "a".repeat(40);
 const relatedHead = "b".repeat(40);
+
+test("encrypted data-plane routing is exact and never moves plain companies", () => {
+  const company = {
+    id: "99999999-9999-4999-8999-999999999999",
+    slug: "bridge-test-company",
+  };
+  const encrypted = resolveBridgeDataPlaneRoutingResponse({
+    origin: "https://trelio.ru",
+    companySlug: company.slug,
+    routing: {
+      schemaVersion: 1,
+      company,
+      encryptionState: "encrypted",
+      encryptedDataPlaneOrigin: "https://e2ee.trelio.ru",
+    },
+  });
+  assert.equal(encrypted.requestOrigin, "https://e2ee.trelio.ru");
+  assert.equal(resolveCompanyEncryptionRequestOrigin("https://trelio.ru", {
+    metadata: { dataPlaneOrigin: encrypted.requestOrigin },
+  }), "https://e2ee.trelio.ru");
+
+  const plain = resolveBridgeDataPlaneRoutingResponse({
+    origin: "https://trelio.ru/",
+    companySlug: company.slug,
+    routing: {
+      schemaVersion: 1,
+      company,
+      encryptionState: "plain",
+    },
+  });
+  assert.equal(plain.requestOrigin, "https://trelio.ru");
+
+  assert.throws(
+    () => resolveBridgeDataPlaneRoutingResponse({
+      origin: "https://trelio.ru",
+      companySlug: company.slug,
+      routing: {
+        schemaVersion: 1,
+        company,
+        encryptionState: "plain",
+        encryptedDataPlaneOrigin: "https://e2ee.trelio.ru",
+      },
+    }),
+    /некорректный маршрут/u,
+  );
+  assert.throws(
+    () => resolveEncryptedDataPlaneOrigin("https://trelio.ru", "https://example.com"),
+    /неподдерживаемый origin/u,
+  );
+  assert.throws(
+    () => resolveEncryptedDataPlaneOrigin(
+      "https://trelio.ru",
+      "https://e2ee.trelio.ru/api/agent-workspaces",
+    ),
+    /небезопасный origin/u,
+  );
+});
 
 /**
  * Execute the real bridge entrypoint while supplying protected stdin bytes.
@@ -3594,7 +3654,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.17.6");
+  assert.equal(BRIDGE_VERSION, "1.17.7");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);

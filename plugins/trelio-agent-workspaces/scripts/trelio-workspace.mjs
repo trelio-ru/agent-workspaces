@@ -52,7 +52,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.17.6";
+export const BRIDGE_VERSION = "1.17.7";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -163,6 +163,7 @@ export const AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN = [
 ].join("\n");
 const WORKLOG_FILE_NAME = "WORKLOG.md";
 const DEFAULT_ORIGIN = "https://trelio.ru";
+const PRODUCTION_ENCRYPTED_DATA_PLANE_ORIGIN = "https://e2ee.trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const AGENT_SKILL_DEVICE_CONSENT_HEADER = "x-trelio-agent-skill-device-consent";
 const AGENT_SKILL_COMPANY_E2EE_HEADER = "x-trelio-company-skill-e2ee";
@@ -1149,6 +1150,123 @@ export const request = async (origin, token, pathname, options = {}) => {
   }
 
   return response;
+};
+
+/**
+ * Keep a bearer credential pinned to a tiny, audited destination set. A
+ * compromised or misconfigured response must not turn the authenticated
+ * routing handshake into an arbitrary token-forwarding primitive.
+ */
+export const resolveEncryptedDataPlaneOrigin = (canonicalOrigin, rawDataPlaneOrigin) => {
+  const normalizedCanonicalOrigin = normalizeOrigin(canonicalOrigin);
+
+  if (!rawDataPlaneOrigin) return normalizedCanonicalOrigin;
+  const parsedDataPlaneOrigin = new URL(String(rawDataPlaneOrigin));
+  if (
+    parsedDataPlaneOrigin.pathname !== "/"
+    || parsedDataPlaneOrigin.search
+    || parsedDataPlaneOrigin.hash
+    || parsedDataPlaneOrigin.username
+    || parsedDataPlaneOrigin.password
+  ) {
+    throw new Error("Trelio вернул небезопасный origin encrypted data plane.");
+  }
+  const normalizedDataPlaneOrigin = normalizeOrigin(parsedDataPlaneOrigin.toString());
+
+  if (normalizedDataPlaneOrigin === normalizedCanonicalOrigin) {
+    return normalizedCanonicalOrigin;
+  }
+  if (
+    normalizedCanonicalOrigin === DEFAULT_ORIGIN
+    && normalizedDataPlaneOrigin === PRODUCTION_ENCRYPTED_DATA_PLANE_ORIGIN
+  ) {
+    return normalizedDataPlaneOrigin;
+  }
+
+  throw new Error("Trelio вернул неподдерживаемый origin encrypted data plane.");
+};
+
+export const resolveCompanyEncryptionRequestOrigin = (canonicalOrigin, companyEncryption) => (
+  resolveEncryptedDataPlaneOrigin(
+    canonicalOrigin,
+    companyEncryption?.requestOrigin ?? companyEncryption?.metadata?.dataPlaneOrigin,
+  )
+);
+
+const BRIDGE_ROUTING_ENCRYPTION_STATES = new Set([
+  "plain",
+  "encrypting",
+  "encrypted",
+  "decrypting",
+  "failed",
+]);
+
+export const resolveBridgeDataPlaneRoutingResponse = ({
+  origin,
+  companySlug = null,
+  routing,
+}) => {
+  if (
+    routing?.schemaVersion !== 1
+    || !UUID_PATTERN.test(String(routing.company?.id || ""))
+    || typeof routing.company?.slug !== "string"
+    || !BRIDGE_ROUTING_ENCRYPTION_STATES.has(routing.encryptionState)
+    || (companySlug && routing.company.slug !== companySlug)
+    || (routing.encryptionState !== "encrypted" && routing.encryptedDataPlaneOrigin)
+  ) {
+    throw new Error("Trelio вернул некорректный маршрут encrypted data plane.");
+  }
+
+  return {
+    company: routing.company,
+    encryptionState: routing.encryptionState,
+    // Merely advertising an alternate destination is insufficient. The exact
+    // live state must be `encrypted`; transition and failure states stay on
+    // the canonical IP so open-company traffic can never follow this route.
+    requestOrigin: routing.encryptionState === "encrypted"
+      ? resolveEncryptedDataPlaneOrigin(origin, routing.encryptedDataPlaneOrigin)
+      : normalizeOrigin(origin),
+    legacyBackend: false,
+  };
+};
+
+export const resolveBridgeDataPlaneRouting = async ({
+  origin,
+  token,
+  companySlug = null,
+  workspaceId = null,
+  signal,
+}) => {
+  if (Boolean(companySlug) === Boolean(workspaceId)) {
+    throw new Error("Bridge routing requires exactly one company or Workspace locator.");
+  }
+  const query = new URLSearchParams(companySlug
+    ? { companySlug: String(companySlug) }
+    : { workspaceId: requireUuid(workspaceId, "workspace") });
+  let routing;
+
+  try {
+    routing = await readJsonResponse(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/bridge-routing?${query.toString()}`,
+      signal ? { signal } : {},
+    ));
+  } catch (error) {
+    // Plugin-first rollout: the new bridge can run against the previous
+    // backend until the server advertises routing support and raises minimum.
+    if (error instanceof TrelioApiError && error.statusCode === 404) {
+      return {
+        company: null,
+        encryptionState: null,
+        requestOrigin: normalizeOrigin(origin),
+        legacyBackend: true,
+      };
+    }
+    throw error;
+  }
+
+  return resolveBridgeDataPlaneRoutingResponse({ origin, companySlug, routing });
 };
 
 export const readBoundedResponseBuffer = async (
@@ -4175,12 +4293,14 @@ const assertEncryptedCompanyRuntimeState = (runtime) => {
  */
 export const ensureCompanyEncryptionContext = async ({
   origin,
+  requestOrigin = origin,
   token,
   company,
   collectEncryptionKey = collectCompanyEncryptionKeyThroughLoopback,
 }) => {
+  const encryptedRequestOrigin = resolveEncryptedDataPlaneOrigin(origin, requestOrigin);
   const initialRuntime = await readCompanyEncryptionRuntime({
-    origin,
+    origin: encryptedRequestOrigin,
     token,
     companySlug: company.slug,
   });
@@ -4219,7 +4339,7 @@ export const ensureCompanyEncryptionContext = async ({
   }
 
   let runtime = await readCompanyEncryptionRuntime({
-    origin,
+    origin: encryptedRequestOrigin,
     token,
     companySlug: initialRuntime.company.slug,
     fingerprint: device.fingerprint,
@@ -4227,9 +4347,14 @@ export const ensureCompanyEncryptionContext = async ({
   assertEncryptedCompanyRuntimeState(runtime);
 
   if (runtime.accessState === "registration_required") {
-    await registerCompanyEncryptionDevice({ origin, token, runtime, device });
+    await registerCompanyEncryptionDevice({
+      origin: encryptedRequestOrigin,
+      token,
+      runtime,
+      device,
+    });
     runtime = await readCompanyEncryptionRuntime({
-      origin,
+      origin: encryptedRequestOrigin,
       token,
       companySlug: initialRuntime.company.slug,
       fingerprint: device.fingerprint,
@@ -4260,6 +4385,7 @@ export const ensureCompanyEncryptionContext = async ({
   return {
     runtime,
     device,
+    requestOrigin: encryptedRequestOrigin,
     scopePrivateEncryptionKey: await openScopePrivateKey({
       device,
       envelope: runtime.envelope,
@@ -4273,6 +4399,9 @@ export const ensureCompanyEncryptionContext = async ({
       scopeId: runtime.scope.id,
       scopeEpoch: runtime.scope.epoch,
       suite: runtime.suite,
+      ...(encryptedRequestOrigin !== normalizeOrigin(origin)
+        ? { dataPlaneOrigin: encryptedRequestOrigin }
+        : {}),
     },
   };
 };
@@ -4381,9 +4510,14 @@ const setupCompanyEncryption = async (origin, options) => {
   }
 
   const token = await requireToken(origin);
-  await ensureBridgeCompatibility(origin, token);
+  const compatibility = await ensureBridgeCompatibility(origin, token);
+  const routing = compatibility?.encryptedDataPlane?.enabled === true
+    && compatibility.encryptedDataPlane.routingVersion === 1
+    ? await resolveBridgeDataPlaneRouting({ origin, token, companySlug })
+    : { requestOrigin: origin };
   const companyEncryption = await ensureCompanyEncryptionContext({
     origin,
+    requestOrigin: routing.requestOrigin,
     token,
     company: { slug: companySlug },
   });
@@ -4515,7 +4649,7 @@ export const hydrateAgentCompanyEncryptedJson = async ({
   // batches exact ids without ever sending plaintext values or search terms.
   for (let offset = 0; offset < entityIds.length; offset += 250) {
     const response = await readJsonResponse(await request(
-      origin,
+      resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
       token,
       "/api/agent-workspaces/encryption/payloads/resolve",
       {
@@ -4828,7 +4962,7 @@ const requestAndDecryptCompanyWorkspaceBundle = async ({
   await fs.rm(destination, { force: true }).catch(() => undefined);
   await fs.rm(`${destination}.trelioe1`, { force: true }).catch(() => undefined);
   const response = await request(
-    origin,
+    resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
     token,
     pathname,
     signal ? { signal } : {},
@@ -8528,6 +8662,16 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   const token = await requireToken(origin);
   let compatibility = await ensureBridgeCompatibility(origin, token);
   let activeAgentRules = compatibility?.agentRules ?? null;
+  const workspaceRouting = compatibility?.encryptedDataPlane?.enabled === true
+    && compatibility.encryptedDataPlane.routingVersion === 1
+    ? await resolveBridgeDataPlaneRouting({ origin, token, workspaceId })
+    : {
+        company: null,
+        encryptionState: null,
+        requestOrigin: origin,
+        legacyBackend: true,
+      };
+  const workspaceOrigin = workspaceRouting.requestOrigin;
   // Exact open-команду строит уже допущенный MCP-вызов. Новая схема передаёт
   // только server-side runtime-session id; legacy self-attestation остаётся на
   // один rolling-upgrade цикл и не используется новым hook.
@@ -8561,7 +8705,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   // имеет права ни перезаписывать файлы, ни создавать новый writable Run.
   if (requestedRunId || rootDirectoryExists) {
     const rawOverview = await readJsonResponse(await request(
-      origin,
+      workspaceOrigin,
       token,
       `/api/agent-workspaces/workspaces/${workspaceId}`,
     ));
@@ -8572,17 +8716,27 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     ) {
       throw new Error("Trelio не вернул компанию Agent Workspace.");
     }
+    if (
+      workspaceRouting.company
+      && (
+        rawOverview.company.id !== workspaceRouting.company.id
+        || rawOverview.company.slug !== workspaceRouting.company.slug
+      )
+    ) {
+      throw new Error("Trelio вернул Workspace другой компании после выбора data plane.");
+    }
     // Продолжение существующего Run может содержать зашифрованные pinned
     // инструкции. Поэтому устройство и scope открываются до чтения snapshot и
     // до claim: в server request никогда не попадает ключ шифрования.
     companyEncryption = await ensureCompanyEncryptionContext({
       origin,
+      requestOrigin: workspaceOrigin,
       token,
       company: rawOverview.company,
     });
     const overview = await hydrateAgentCompanyEncryptedJson({
       value: rawOverview,
-      origin,
+      origin: workspaceOrigin,
       token,
       companyEncryption,
     });
@@ -8601,7 +8755,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   if (!requestedRunId && directoryPreflight.existingMetadata) {
     const acceptedHead = runOverview?.workspace?.acceptedHead;
     await synchronizePersistentWorkspaceToAcceptedHead({
-      origin,
+      origin: workspaceOrigin,
       token,
       workspaceId,
       acceptedHead,
@@ -8634,7 +8788,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       activeAgentRules = null;
     }
     const claimedRun = await readJsonResponse(await request(
-      origin,
+      workspaceOrigin,
       token,
       `/api/agent-workspaces/runs/${requestedRunId}/claim`,
       {
@@ -8664,7 +8818,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         runPayload = await readJsonResponse(await request(
-          origin,
+          workspaceOrigin,
           token,
           `/api/agent-workspaces/workspaces/${workspaceId}/runs`,
           {
@@ -8707,21 +8861,40 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   ) {
     throw new Error("Trelio не вернул компанию Agent Workspace.");
   }
+  if (
+    workspaceRouting.company
+    && (
+      runPayload.company.id !== workspaceRouting.company.id
+      || runPayload.company.slug !== workspaceRouting.company.slug
+    )
+  ) {
+    throw new Error("Trelio вернул Run другой компании после выбора data plane.");
+  }
   // Encryption access is resolved before any bundle or context bytes are
   // downloaded. For a protected company this is the fail-closed boundary:
   // the bridge either opens the exact local device envelope or materializes
   // nothing at all.
   companyEncryption ??= await ensureCompanyEncryptionContext({
     origin,
+    requestOrigin: workspaceOrigin,
     token,
     company: runPayload.company,
   });
+  if (
+    workspaceRouting.company
+    && (workspaceRouting.encryptionState === "encrypted") !== Boolean(companyEncryption)
+  ) {
+    // Encryption state changing between the content-free routing read and the
+    // first content response must be retried from a fresh command. Continuing
+    // could put one company's bytes onto the wrong destination IP.
+    throw new Error("Состояние шифрования компании изменилось после выбора data plane.");
+  }
   // Все marker-ы раскрываются в памяти bridge до первого обращения к полям
   // Run. На диск затем попадает только локальная рабочая копия пользователя;
   // backend продолжает видеть лишь opaque ciphertext.
   runPayload = await hydrateAgentCompanyEncryptedJson({
     value: runPayload,
-    origin,
+    origin: workspaceOrigin,
     token,
     companyEncryption,
   });
@@ -8757,7 +8930,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
         const pathname = `/api/agent-workspaces/runs/${runId}/${companyEncryption ? "encrypted-bundle" : "bundle"}`;
         if (companyEncryption) {
           const download = await requestAndDecryptCompanyWorkspaceBundle({
-            origin,
+            origin: workspaceOrigin,
             token,
             pathname,
             destination: syncBundlePath,
@@ -8777,7 +8950,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
           });
           downloadedEncryptedDraft = download.inspected;
         } else {
-          const bundleResponse = await request(origin, token, pathname);
+          const bundleResponse = await request(workspaceOrigin, token, pathname);
           await writeResponseToFile(bundleResponse, syncBundlePath);
         }
         await fastForwardMaterializedBundle({
@@ -8844,7 +9017,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     };
     await writeRunMetadata(metadataPath, refreshedMetadata);
     const contexts = await materializeRunContexts({
-      origin,
+      origin: workspaceOrigin,
       token,
       rootDirectory,
       runId,
@@ -8852,7 +9025,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       companyEncryption,
     });
     const objects = await materializeWorkspaceObjects({
-      origin,
+      origin: workspaceOrigin,
       token,
       runId,
       workspaceDirectory,
@@ -8893,7 +9066,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     let downloadedEncryptedDraft = null;
     if (companyEncryption) {
       const download = await requestAndDecryptCompanyWorkspaceBundle({
-        origin,
+        origin: workspaceOrigin,
         token,
         pathname,
         destination: baseBundlePath,
@@ -8913,7 +9086,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       });
       downloadedEncryptedDraft = download.inspected;
     } else {
-      const baseResponse = await request(origin, token, pathname);
+      const baseResponse = await request(workspaceOrigin, token, pathname);
       await writeResponseToFile(baseResponse, baseBundlePath);
     }
     await materializeBundle({
@@ -8924,7 +9097,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
     });
     await materializeRuntimeControlFiles(workspaceDirectory);
     const objects = await materializeWorkspaceObjects({
-      origin,
+      origin: workspaceOrigin,
       token,
       runId,
       workspaceDirectory,
@@ -8932,7 +9105,7 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
 
     const contextHeads = agentRun.contextHeadsJson || {};
     const contexts = await materializeRunContexts({
-      origin,
+      origin: workspaceOrigin,
       token,
       rootDirectory,
       runId,
@@ -9372,23 +9545,29 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
 const inspectWorkspace = async (origin, options) => {
   const workspaceId = requireUuid(options.workspace, "workspace");
   const token = await requireToken(origin);
-  await ensureBridgeCompatibility(origin, token);
+  const compatibility = await ensureBridgeCompatibility(origin, token);
+  const routing = compatibility?.encryptedDataPlane?.enabled === true
+    && compatibility.encryptedDataPlane.routingVersion === 1
+    ? await resolveBridgeDataPlaneRouting({ origin, token, workspaceId })
+    : { requestOrigin: origin };
+  const workspaceOrigin = routing.requestOrigin;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const rawSnapshot = await readJsonResponse(await request(
-        origin,
+        workspaceOrigin,
         token,
         `/api/agent-workspaces/workspaces/${workspaceId}/read-snapshot`,
       ));
       const { company } = validateWorkspaceReadSnapshot(rawSnapshot, workspaceId);
       const companyEncryption = await ensureCompanyEncryptionContext({
         origin,
+        requestOrigin: workspaceOrigin,
         token,
         company,
       });
       const inspection = await materializeWorkspaceInspection({
-        origin,
+        origin: workspaceOrigin,
         token,
         workspaceId,
         rawSnapshot,
@@ -9414,21 +9593,31 @@ const inspectWorkspace = async (origin, options) => {
 const migrateEncryptedWorkspaceBrowserFiles = async (origin, options) => {
   const workspaceId = requireUuid(options.workspace, "workspace");
   const token = await requireToken(origin);
-  await ensureBridgeCompatibility(origin, token);
+  const compatibility = await ensureBridgeCompatibility(origin, token);
+  const routing = compatibility?.encryptedDataPlane?.enabled === true
+    && compatibility.encryptedDataPlane.routingVersion === 1
+    ? await resolveBridgeDataPlaneRouting({ origin, token, workspaceId })
+    : { requestOrigin: origin };
+  const workspaceOrigin = routing.requestOrigin;
   const rawSnapshot = await readJsonResponse(await request(
-    origin,
+    workspaceOrigin,
     token,
     `/api/agent-workspaces/workspaces/${workspaceId}/read-snapshot`,
   ));
   const { acceptedHead, company } = validateWorkspaceReadSnapshot(rawSnapshot, workspaceId);
-  const companyEncryption = await ensureCompanyEncryptionContext({ origin, token, company });
+  const companyEncryption = await ensureCompanyEncryptionContext({
+    origin,
+    requestOrigin: workspaceOrigin,
+    token,
+    company,
+  });
 
   if (!companyEncryption) {
     throw new Error("Миграция файловой проекции нужна только зашифрованной компании.");
   }
 
   const inspection = await materializeWorkspaceInspection({
-    origin,
+    origin: workspaceOrigin,
     token,
     workspaceId,
     rawSnapshot,
@@ -9464,7 +9653,7 @@ const migrateEncryptedWorkspaceBrowserFiles = async (origin, options) => {
       record,
     );
     const response = await request(
-      origin,
+      workspaceOrigin,
       token,
       `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-browser-projection-migration`,
       {
@@ -9538,11 +9727,47 @@ const withRun = async (handler) => {
   const origin = normalizeOrigin(metadata.origin);
   const token = await requireToken(origin);
   const company = metadata.company;
+  let workspaceOrigin = resolveEncryptedDataPlaneOrigin(
+    origin,
+    metadata.encryption?.enabled ? metadata.encryption.dataPlaneOrigin : null,
+  );
+
+  if (metadata.encryption?.enabled && !metadata.encryption.dataPlaneOrigin) {
+    const compatibility = await ensureBridgeCompatibility(origin, token);
+    if (
+      compatibility?.encryptedDataPlane?.enabled === true
+      && compatibility.encryptedDataPlane.routingVersion === 1
+    ) {
+      const routing = await resolveBridgeDataPlaneRouting({
+        origin,
+        token,
+        workspaceId: metadata.workspaceId,
+      });
+      if (
+        routing.company
+        && company?.id
+        && (
+          routing.company.id !== company.id
+          || routing.company.slug !== company.slug
+          || routing.encryptionState !== "encrypted"
+        )
+      ) {
+        throw new Error("Trelio вернул другой company route для текущего Agent Run.");
+      }
+      workspaceOrigin = routing.requestOrigin;
+    }
+  }
   const companyEncryption = company?.slug
-    ? await ensureCompanyEncryptionContext({ origin, token, company })
+    ? await ensureCompanyEncryptionContext({
+        origin,
+        requestOrigin: workspaceOrigin,
+        token,
+        company,
+      })
     : null;
   const activeMetadata = {
     ...metadata,
+    encryption: companyEncryption?.metadata ?? metadata.encryption,
     lastUsedAt: new Date().toISOString(),
   };
   // Любая явная команда внутри папки считается локальной активностью. Это
@@ -9552,13 +9777,14 @@ const withRun = async (handler) => {
     metadata: activeMetadata,
     metadataPath,
     origin,
+    workspaceOrigin,
     token,
     companyEncryption,
   });
 };
 
-const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
-  const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/heartbeat`, {
+const heartbeat = async () => withRun(async ({ metadata, workspaceOrigin, token }) => {
+  const response = await request(workspaceOrigin, token, `/api/agent-workspaces/runs/${metadata.runId}/heartbeat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ leaseId: metadata.leaseId, fencingToken: metadata.fencingToken }),
@@ -9570,18 +9796,18 @@ const heartbeat = async () => withRun(async ({ metadata, origin, token }) => {
 const synchronizeRunContext = async ({
   metadata,
   metadataPath,
-  origin,
+  workspaceOrigin,
   token,
   companyEncryption,
 }) => {
   const rawOverview = await readJsonResponse(await request(
-    origin,
+    workspaceOrigin,
     token,
     `/api/agent-workspaces/workspaces/${requireUuid(metadata.workspaceId, "workspace")}`,
   ));
   const overview = await hydrateAgentCompanyEncryptedJson({
     value: rawOverview,
-    origin,
+    origin: workspaceOrigin,
     token,
     companyEncryption,
   });
@@ -9594,7 +9820,7 @@ const synchronizeRunContext = async ({
   const rootDirectory = path.dirname(metadataPath);
   const contextHeads = agentRun.contextHeadsJson || {};
   const contexts = await materializeRunContexts({
-    origin,
+    origin: workspaceOrigin,
     token,
     rootDirectory,
     runId: metadata.runId,
@@ -9625,7 +9851,7 @@ const synchronizeRunContext = async ({
 };
 
 const fetchRunContextObject = async (
-  { metadata, metadataPath, origin, token },
+  { metadata, metadataPath, workspaceOrigin, token },
   rawPath,
 ) => {
   const requestedPath = String(rawPath || "").trim();
@@ -9684,7 +9910,7 @@ const fetchRunContextObject = async (
     sizeBytes: String(pointer.sizeBytes),
   });
   const authorization = await readJsonResponse(await request(
-    origin,
+    workspaceOrigin,
     token,
     `/api/agent-workspaces/runs/${requireUuid(metadata.runId, "run")}/context-objects/${requireUuid(context.workspaceId, "workspace")}?${query.toString()}`,
   ));
@@ -9702,7 +9928,7 @@ const fetchRunContextObject = async (
   const cached = await ensureCachedWorkspaceObject({
     pointer,
     fetchResponse: async () => {
-      const response = await fetch(new URL(authorization.url, `${origin}/`));
+      const response = await fetch(new URL(authorization.url, `${workspaceOrigin}/`));
 
       if (!response.ok) {
         throw new TrelioApiError(response.status, await response.text());
@@ -9778,7 +10004,7 @@ const contextCommand = async (options, positional) => withRun(async (runContext)
   if (positional[0] === "attach") {
     const relatedWorkspaceId = requireUuid(options.workspace, "workspace");
     await readJsonResponse(await request(
-      runContext.origin,
+      runContext.workspaceOrigin,
       runContext.token,
       `/api/agent-workspaces/runs/${runContext.metadata.runId}/context/related`,
       {
@@ -10009,6 +10235,7 @@ const checkpoint = async (options) => withRun(async ({
   metadata,
   metadataPath,
   origin,
+  workspaceOrigin,
   token,
   companyEncryption,
 }) => {
@@ -10088,7 +10315,7 @@ const checkpoint = async (options) => withRun(async ({
     ? await saveRunDraftSnapshot({
         metadata,
         metadataPath,
-        origin,
+        origin: workspaceOrigin,
         token,
         companyEncryption,
         requireChangedHead: checkpointType === "draft",
@@ -10102,7 +10329,7 @@ const checkpoint = async (options) => withRun(async ({
   const protectedContent = companyEncryption
     ? await protectAgentWorkspaceCheckpoint({
         metadata,
-        origin,
+        origin: workspaceOrigin,
         token,
         companyEncryption,
         summary,
@@ -10119,7 +10346,7 @@ const checkpoint = async (options) => withRun(async ({
         ...(openQuestions.length > 0 ? { openQuestions } : {}),
         ...(nextActionInstruction ? { nextAction: { instruction: nextActionInstruction } } : {}),
       };
-  const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/checkpoints`, {
+  const response = await request(workspaceOrigin, token, `/api/agent-workspaces/runs/${metadata.runId}/checkpoints`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -10924,7 +11151,7 @@ const uploadEncryptedAgentWorkspaceBrowserProjection = async ({
   );
   const result = await withEncryptedWorkspaceTransportCooldownRetry(async () => {
     const response = await request(
-      origin,
+      resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
       token,
       `/api/agent-workspaces/runs/${metadata.runId}/encrypted-browser-projection`,
       {
@@ -11024,7 +11251,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
     );
     return withEncryptedWorkspaceTransportCooldownRetry(async () => {
       const response = await request(
-        origin,
+        resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
         token,
         `/api/agent-workspaces/runs/${metadata.runId}/encrypted-${revisionKind === "draft" ? "draft" : "candidate"}`,
         {
@@ -11168,7 +11395,7 @@ const promoteEncryptedAgentWorkspaceDraft = async ({
 
   return withEncryptedWorkspaceTransportCooldownRetry(async () => {
     const response = await request(
-      origin,
+      resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
       token,
       `/api/agent-workspaces/runs/${metadata.runId}/encrypted-candidate-from-draft`,
       {
@@ -11309,6 +11536,7 @@ const submit = async (options) => withRun(async ({
   metadata,
   metadataPath,
   origin,
+  workspaceOrigin,
   token,
   companyEncryption,
 }) => {
@@ -11316,7 +11544,7 @@ const submit = async (options) => withRun(async ({
   const prepared = await prepareLocalCandidateSnapshot({
     metadata,
     metadataPath,
-    origin,
+    origin: workspaceOrigin,
     token,
     companyEncryption,
     message: String(options.message || "Подготовить результат Agent Run"),
@@ -11337,7 +11565,7 @@ const submit = async (options) => withRun(async ({
       : null;
     const projection = reusableProjection || await uploadEncryptedAgentWorkspaceBrowserProjection({
       metadata: submissionMetadata,
-      origin,
+      origin: workspaceOrigin,
       token,
       companyEncryption,
       workspaceHead: head,
@@ -11374,7 +11602,7 @@ const submit = async (options) => withRun(async ({
       },
       (bundlePath) => uploadEncryptedAgentWorkspaceRevision({
         metadata: submissionMetadata,
-        origin,
+        origin: workspaceOrigin,
         token,
         companyEncryption,
         bundlePath,
@@ -11394,7 +11622,7 @@ const submit = async (options) => withRun(async ({
         try {
           result = await promoteEncryptedAgentWorkspaceDraft({
             metadata: submissionMetadata,
-            origin,
+            origin: workspaceOrigin,
             token,
             companyEncryption,
             draft: reusableDraft,
@@ -11452,7 +11680,7 @@ const submit = async (options) => withRun(async ({
     },
     async (bundlePath) => {
       const bundleStat = await fs.stat(bundlePath);
-      const response = await request(origin, token, `/api/agent-workspaces/runs/${metadata.runId}/candidate`, {
+      const response = await request(workspaceOrigin, token, `/api/agent-workspaces/runs/${metadata.runId}/candidate`, {
         method: "POST",
         duplex: "half",
         headers: {
@@ -12381,11 +12609,29 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
   )];
 
   for (const workspaceId of workspaceIds) {
-    const overview = await readJsonResponse(await request(
+    // Cleanup reads terminal state for every locally registered Workspace and
+    // can therefore span plain and encrypted companies. Resolve each exact
+    // Workspace independently so an automatic cleanup after one encrypted Run
+    // never drags unrelated plain traffic onto its alternate IP (or vice versa).
+    const routing = await resolveBridgeDataPlaneRouting({
       origin,
+      token,
+      workspaceId,
+    });
+    const overview = await readJsonResponse(await request(
+      routing.requestOrigin,
       token,
       `/api/agent-workspaces/workspaces/${requireUuid(workspaceId, "workspace")}`,
     ));
+    if (
+      routing.company
+      && (
+        overview.company?.id !== routing.company.id
+        || overview.company?.slug !== routing.company.slug
+      )
+    ) {
+      throw new Error("Trelio вернул другой Workspace при проверке локального retention.");
+    }
 
     for (const run of Array.isArray(overview.runs) ? overview.runs : []) {
       statusByRunId.set(run.id, run);

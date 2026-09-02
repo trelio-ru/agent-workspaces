@@ -28,6 +28,8 @@ import {
   readPrivateJsonFile,
   request,
   requireToken,
+  resolveBridgeDataPlaneRouting,
+  resolveCompanyEncryptionRequestOrigin,
   resolveCompanyContextMirrorDirectory,
   runGit,
   writeAndDecryptCompanyWorkspaceBundle,
@@ -589,16 +591,21 @@ const uploadProposalPayload = async ({
     values,
     source,
   });
-  await request(origin, token, "/api/agent-workspaces/encryption/payloads", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      companySlug: companyEncryption.runtime.company.slug,
-      writerDeviceId: companyEncryption.runtime.device.id,
-      payloads: [protectedValues.payload],
-    }),
-    signal,
-  });
+  await request(
+    resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+    token,
+    "/api/agent-workspaces/encryption/payloads",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companySlug: companyEncryption.runtime.company.slug,
+        writerDeviceId: companyEncryption.runtime.device.id,
+        payloads: [protectedValues.payload],
+      }),
+      signal,
+    },
+  );
   return protectedValues.markers;
 };
 
@@ -1444,16 +1451,21 @@ const uploadLocalActionPayloads = async ({
   for (let offset = 0; offset < payloads.length; offset += 100) {
     const batch = payloads.slice(offset, offset + 100);
     try {
-      await request(origin, token, "/api/agent-workspaces/encryption/payloads", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          companySlug: companyEncryption.runtime.company.slug,
-          writerDeviceId: companyEncryption.runtime.device.id,
-          payloads: batch,
-        }),
-        signal,
-      });
+      await request(
+        resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+        token,
+        "/api/agent-workspaces/encryption/payloads",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            companySlug: companyEncryption.runtime.company.slug,
+            writerDeviceId: companyEncryption.runtime.device.id,
+            payloads: batch,
+          }),
+          signal,
+        },
+      );
     } catch (error) {
       if (!(error instanceof TrelioApiError) || error.statusCode !== 409) throw error;
       // A keyed registry row locator is intentionally stable across concurrent
@@ -1461,7 +1473,7 @@ const uploadLocalActionPayloads = async ({
       // exact existing payload and accept it only when its protected values are
       // byte-for-byte equivalent to this call's local plaintext intent.
       const resolved = await readJson(await request(
-        origin,
+        resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
         token,
         "/api/agent-workspaces/encryption/payloads/resolve",
         {
@@ -1688,16 +1700,21 @@ const uploadWorkspaceAuditPayload = async ({
     companyEncryption.device.privateKeys.signingPrivateKey,
     buildEncryptedPayloadSignatureRecord(payload),
   );
-  await request(origin, token, "/api/agent-workspaces/encryption/payloads", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      companySlug: companyEncryption.runtime.company.slug,
-      writerDeviceId: companyEncryption.runtime.device.id,
-      payloads: [payload],
-    }),
-    signal,
-  });
+  await request(
+    resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+    token,
+    "/api/agent-workspaces/encryption/payloads",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        companySlug: companyEncryption.runtime.company.slug,
+        writerDeviceId: companyEncryption.runtime.device.id,
+        payloads: [payload],
+      }),
+      signal,
+    },
+  );
   return buildCompanyEncryptedTextMarker(entityId, field);
 };
 
@@ -1712,9 +1729,14 @@ const resolveLocalCompanyProvider = async ({
     return localCompanyProviderCache.get(cacheKey);
   }
   const token = await requireToken(origin, { onStatus: () => undefined, signal });
-  await ensureBridgeCompatibility(origin, token, { signal });
+  const compatibility = await ensureBridgeCompatibility(origin, token, { signal });
+  const routing = compatibility?.encryptedDataPlane?.enabled === true
+    && compatibility.encryptedDataPlane.routingVersion === 1
+    ? await resolveBridgeDataPlaneRouting({ origin, token, companySlug, signal })
+    : { requestOrigin: origin };
   const companyEncryption = await ensureCompanyEncryptionContext({
     origin,
+    requestOrigin: routing.requestOrigin,
     token,
     company: { slug: companySlug },
   });
@@ -1722,7 +1744,11 @@ const resolveLocalCompanyProvider = async ({
     // Cache only process-memory key material after a live provider check. It
     // enables every later query in this MCP process to read the encrypted
     // immutable mirror fully offline; nothing is serialized as plaintext.
-    const provider = { token, companyEncryption };
+    const provider = {
+      token,
+      companyEncryption,
+      requestOrigin: resolveCompanyEncryptionRequestOrigin(origin, companyEncryption),
+    };
     localCompanyProviderCache.set(cacheKey, provider);
     return provider;
   }
@@ -1839,6 +1865,7 @@ const buildWorkspaceRecord = async ({
 
 const buildMirror = async ({
   origin,
+  requestOrigin,
   token,
   companyEncryption,
   rawManifest,
@@ -1881,7 +1908,7 @@ const buildMirror = async ({
   // generation without another decrypt/resolve cycle.
   const manifest = await hydrateAgentCompanyEncryptedJson({
     value: { ...rawManifest, contextDocuments: [] },
-    origin,
+    origin: requestOrigin,
     token,
     companyEncryption,
     signal,
@@ -1896,7 +1923,7 @@ const buildMirror = async ({
   const hydratedTaskRecords = await hydrateChangedCompanyMirrorRecords({
     records: taskRecords,
     load: (task) => fetchTaskProjection({
-      origin,
+      origin: requestOrigin,
       token,
       companySlug: manifest.company.slug,
       task,
@@ -1904,7 +1931,7 @@ const buildMirror = async ({
     }),
     hydrate: (value) => hydrateAgentCompanyEncryptedJson({
       value,
-      origin,
+      origin: requestOrigin,
       token,
       companyEncryption,
       signal,
@@ -1936,7 +1963,13 @@ const buildMirror = async ({
     const cached = previousWorkspaces.get(workspace.id);
     workspaces.push(cached?.acceptedHead === workspace.acceptedHead
       ? cached
-      : await buildWorkspaceRecord({ origin, token, companyEncryption, workspace, signal }));
+      : await buildWorkspaceRecord({
+          origin: requestOrigin,
+          token,
+          companyEncryption,
+          workspace,
+          signal,
+        }));
   }
   const previousContextDocuments = new Map(
     (previous?.contextDocuments ?? []).map((document) => [document.id, document]),
@@ -1952,7 +1985,7 @@ const buildMirror = async ({
     load: async (document) => document,
     hydrate: (value) => hydrateAgentCompanyEncryptedJson({
       value,
-      origin,
+      origin: requestOrigin,
       token,
       companyEncryption,
       signal,
@@ -2000,6 +2033,7 @@ export const syncCompanyContextMirror = async ({
   signal,
 }) => {
   const companySlug = companyEncryption.runtime.company.slug;
+  const requestOrigin = resolveCompanyEncryptionRequestOrigin(origin, companyEncryption);
   const paths = resolveMirrorPaths({
     origin,
     companyId: companyEncryption.runtime.company.id,
@@ -2030,7 +2064,7 @@ export const syncCompanyContextMirror = async ({
     previous = await readMirrorGeneration({ paths, companyEncryption });
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const startingManifest = await fetchManifest({
-        origin,
+        origin: requestOrigin,
         token,
         companySlug,
         signal,
@@ -2042,6 +2076,7 @@ export const syncCompanyContextMirror = async ({
       try {
         candidate = await buildMirror({
           origin,
+          requestOrigin,
           token,
           companyEncryption,
           rawManifest: startingManifest,
@@ -2058,7 +2093,7 @@ export const syncCompanyContextMirror = async ({
         continue;
       }
       const finishingManifest = await fetchManifest({
-        origin,
+        origin: requestOrigin,
         token,
         companySlug,
         signal,
@@ -4272,6 +4307,7 @@ export const prepareLocalProposalBundle = async ({
 
 const saveLocalProposal = async ({
   origin,
+  requestOrigin = null,
   token,
   companyEncryption,
   companySlug,
@@ -4279,6 +4315,11 @@ const saveLocalProposal = async ({
   rawPayload,
   signal,
 }) => {
+  // `origin` remains the canonical account/cache identity. Only authenticated
+  // company traffic uses the server-approved data-plane origin; this keeps a
+  // proposal mutation from creating a second local mirror namespace.
+  const dataPlaneOrigin = requestOrigin
+    ?? resolveCompanyEncryptionRequestOrigin(origin, companyEncryption);
   const target = normalizeProposalTarget(rawPayload?.target);
   const expectedStateRevision = normalizeInteger(
     rawPayload?.expectedStateRevision,
@@ -4314,7 +4355,7 @@ const saveLocalProposal = async ({
         );
     const encryptedFiles = filePaths
       ? await resolveEncryptedProposalFiles({
-          origin,
+          origin: dataPlaneOrigin,
           token,
           companyEncryption,
           companySlug,
@@ -4332,7 +4373,7 @@ const saveLocalProposal = async ({
       ])),
     };
     const markers = await uploadProposalPayload({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companyEncryption,
       values: protectedValues,
@@ -4369,7 +4410,7 @@ const saveLocalProposal = async ({
   } else if (kind === "status") {
     const reason = normalizeBoundedString(rawPayload?.reason, "payload.reason", 4_000);
     const markers = await uploadProposalPayload({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companyEncryption,
       values: { reason },
@@ -4412,7 +4453,7 @@ const saveLocalProposal = async ({
       item.reason,
     ]));
     const markers = await uploadProposalPayload({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companyEncryption,
       values,
@@ -4451,7 +4492,7 @@ const saveLocalProposal = async ({
       item.reason,
     ]));
     const markers = await uploadProposalPayload({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companyEncryption,
       values,
@@ -4472,7 +4513,7 @@ const saveLocalProposal = async ({
 
   try {
     return await postProposalRequest({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companySlug,
       endpoint: "save",
@@ -4493,6 +4534,7 @@ const saveLocalProposal = async ({
 
 const applyLocalProposalAction = async ({
   origin,
+  requestOrigin = null,
   token,
   companyEncryption,
   companySlug,
@@ -4500,6 +4542,8 @@ const applyLocalProposalAction = async ({
   rawPayload,
   signal,
 }) => {
+  const dataPlaneOrigin = requestOrigin
+    ?? resolveCompanyEncryptionRequestOrigin(origin, companyEncryption);
   if (rawPayload?.confirmed !== true) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_CONFIRMATION_REQUIRED",
@@ -4526,7 +4570,7 @@ const applyLocalProposalAction = async ({
     if (action === "publish") {
       const bodyText = normalizeBoundedString(rawPayload?.bodyText, "payload.bodyText", 20_000);
       const markers = await uploadProposalPayload({
-        origin,
+        origin: dataPlaneOrigin,
         token,
         companyEncryption,
         values: { body_text: bodyText },
@@ -4616,7 +4660,7 @@ const applyLocalProposalAction = async ({
 
   try {
     return await postProposalRequest({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       companySlug,
       endpoint: "action",
@@ -4666,7 +4710,7 @@ const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }
     allowCached: true,
   });
   if (provider.nativeProvider) return provider;
-  const { token, companyEncryption } = provider;
+  const { token, companyEncryption, requestOrigin } = provider;
   const sessionKey = `${origin}\n${companySlug}`;
   const paths = resolveMirrorPaths({
     origin,
@@ -4698,7 +4742,7 @@ const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }
   const cachedEntry = localCompanyMirrorSessionCache.get(sessionKey);
   if (!forceSync && cachedEntry && cachedEntry.expiresAt > Date.now()) {
     localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
-    return { mirror: cachedEntry.mirror, token, companyEncryption };
+    return { mirror: cachedEntry.mirror, token, companyEncryption, requestOrigin };
   }
   if (cachedEntry) localCompanyMirrorSessionCache.delete(sessionKey);
 
@@ -4710,6 +4754,7 @@ const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }
         mirror: cacheDecryptedMirror(sessionKey, current),
         token,
         companyEncryption,
+        requestOrigin,
       };
     }
   }
@@ -4726,7 +4771,7 @@ const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }
     // not pin that fallback in RAM for the full ten-minute TTL: the next read
     // must rejoin sync and observe the atomically published generation.
     localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
-    return { ...synced, token, companyEncryption };
+    return { ...synced, token, companyEncryption, requestOrigin };
   }
   // This process has now completed (or joined) its one startup refresh. Later
   // reads reuse the same decrypted immutable object and its lazy in-memory
@@ -4741,7 +4786,7 @@ const getReadyMirror = async ({ origin, companySlug, forceSync = false, signal }
   // refresh on the next read instead of being accidentally acknowledged.
   localCompanyMirrorObservedMutation.set(sessionKey, mutationToken);
   cacheDecryptedMirror(sessionKey, synced.mirror);
-  return { ...synced, token, companyEncryption };
+  return { ...synced, token, companyEncryption, requestOrigin };
 };
 
 export const handleTrelioLocalContextOperation = async (
@@ -4775,7 +4820,7 @@ export const handleTrelioLocalContextOperation = async (
         readSections: (currentReady) => {
           if (currentReady.nativeProvider) return currentReady.result;
           return getTaskSectionsFromProvider({
-            origin,
+            origin: currentReady.requestOrigin,
             token: currentReady.token,
             companyEncryption: currentReady.companyEncryption,
             mirror: currentReady.mirror,
@@ -4882,6 +4927,7 @@ export const handleTrelioLocalProposalOperation = async (
       saveProposal: async ({ kind: blockKind, rawPayload: blockPayload }) => {
         const rawResult = await saveLocalProposal({
           origin,
+          requestOrigin: provider.requestOrigin,
           token: provider.token,
           companyEncryption: provider.companyEncryption,
           companySlug,
@@ -4891,7 +4937,7 @@ export const handleTrelioLocalProposalOperation = async (
         });
         return hydrateAgentCompanyEncryptedJson({
           value: rawResult,
-          origin,
+          origin: provider.requestOrigin,
           token: provider.token,
           companyEncryption: provider.companyEncryption,
           signal,
@@ -4919,7 +4965,7 @@ export const handleTrelioLocalProposalOperation = async (
   let rawResult;
   if (operation === "context") {
     rawResult = await postProposalRequest({
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companySlug,
       endpoint: "context",
@@ -4932,6 +4978,7 @@ export const handleTrelioLocalProposalOperation = async (
   } else if (operation === "save") {
     rawResult = await saveLocalProposal({
       origin,
+      requestOrigin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       companySlug,
@@ -4942,6 +4989,7 @@ export const handleTrelioLocalProposalOperation = async (
   } else if (operation === "action") {
     rawResult = await applyLocalProposalAction({
       origin,
+      requestOrigin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       companySlug,
@@ -4958,7 +5006,7 @@ export const handleTrelioLocalProposalOperation = async (
 
   const hydrated = await hydrateAgentCompanyEncryptedJson({
     value: rawResult,
-    origin,
+    origin: provider.requestOrigin,
     token: provider.token,
     companyEncryption: provider.companyEncryption,
     signal,
@@ -5041,7 +5089,7 @@ export const handleTrelioLocalActionOperation = async (
         mirror: ready.mirror,
       });
   await uploadLocalActionPayloads({
-    origin,
+    origin: provider.requestOrigin,
     token: provider.token,
     companyEncryption: provider.companyEncryption,
     payloads: protectedRequest.payloads,
@@ -5052,7 +5100,7 @@ export const handleTrelioLocalActionOperation = async (
   const mayMutateCompanyContext = localActionMayMutateCompanyContext(nativeTool);
   try {
     const response = await request(
-      origin,
+      provider.requestOrigin,
       provider.token,
       `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/actions/execute`,
       {
@@ -5071,7 +5119,7 @@ export const handleTrelioLocalActionOperation = async (
     const rawResult = await readJson(response);
     const hydrated = await hydrateLocalActionResult({
       rawResult,
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       signal,
@@ -5426,6 +5474,7 @@ export const buildEncryptedRestoreHandoffArguments = (scopeType) => {
 
 const restoreEncryptedWorkspaceLocally = async ({
   origin,
+  requestOrigin,
   token,
   companyEncryption,
   workspaceId,
@@ -5436,10 +5485,15 @@ const restoreEncryptedWorkspaceLocally = async ({
   runtimeSessionId,
   signal,
 }) => {
+  // The nested bridge process still starts from the canonical origin so it
+  // can reuse OAuth and its persisted Run identity. Direct authenticated
+  // Workspace requests use only the already-authorized encrypted data plane.
+  const dataPlaneOrigin = requestOrigin
+    ?? resolveCompanyEncryptionRequestOrigin(origin, companyEncryption);
   let prepared;
   try {
     prepared = await readJson(await request(
-      origin,
+      dataPlaneOrigin,
       token,
       `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-restore`,
       {
@@ -5463,7 +5517,7 @@ const restoreEncryptedWorkspaceLocally = async ({
     // The unique encrypted marker lets one read-back recover an already
     // committed Run after a lost 2xx response without creating a duplicate.
     prepared = await recoverPreparedEncryptedRestore({
-      origin,
+      origin: dataPlaneOrigin,
       token,
       workspaceId,
       expectedHead,
@@ -5531,7 +5585,7 @@ const restoreEncryptedWorkspaceLocally = async ({
     try {
       const bundlePath = path.join(temporaryDirectory, "target.bundle");
       const response = await request(
-        origin,
+        dataPlaneOrigin,
         token,
         `/api/agent-workspaces/workspaces/${workspaceId}/encrypted-revision-bundle?${new URLSearchParams({
           head: targetHead,
@@ -5616,7 +5670,7 @@ const restoreEncryptedWorkspaceLocally = async ({
     // live state once before reporting failure; never cancel or repeat a
     // mutation whose outcome is ambiguous.
     const rawOverview = await readJson(await request(
-      origin,
+      dataPlaneOrigin,
       token,
       `/api/agent-workspaces/workspaces/${workspaceId}`,
       { signal },
@@ -5632,14 +5686,14 @@ const restoreEncryptedWorkspaceLocally = async ({
   }
 
   const rawOverview = await readJson(await request(
-    origin,
+    dataPlaneOrigin,
     token,
     `/api/agent-workspaces/workspaces/${workspaceId}`,
     { signal },
   ));
   const overview = await hydrateAgentCompanyEncryptedJson({
     value: rawOverview,
-    origin,
+    origin: dataPlaneOrigin,
     token,
     companyEncryption,
     signal,
@@ -5684,7 +5738,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
 
   if (operation === "list_revisions") {
     const raw = await readJson(await request(
-      origin,
+      provider.requestOrigin,
       provider.token,
       `/api/agent-workspaces/workspaces/${workspaceId}/revisions`,
       { signal },
@@ -5704,7 +5758,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
     }
     return hydrateAgentCompanyEncryptedJson({
       value: raw,
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       signal,
@@ -5714,7 +5768,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
     const runId = normalizeUuid(rawInput?.runId, "runId");
     const reason = normalizeBoundedString(rawInput?.reason, "reason", 2000);
     const reasonMarker = await uploadWorkspaceAuditPayload({
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       entityType: "agent_workspace.cancellation",
@@ -5734,7 +5788,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
           raw = await readJson(await request(
-            origin,
+            provider.requestOrigin,
             provider.token,
             pathname,
             {
@@ -5766,7 +5820,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
     if (!raw) throw lastError;
     return hydrateAgentCompanyEncryptedJson({
       value: { run: raw },
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       signal,
@@ -5780,7 +5834,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
       ? normalizeUuid(rawInput.runtimeSessionId, "runtimeSessionId")
       : null;
     const reasonMarker = await uploadWorkspaceAuditPayload({
-      origin,
+      origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       entityType: "agent_workspace.restore",
@@ -5791,6 +5845,7 @@ export const handleTrelioLocalWorkspaceOperation = async (
     try {
       return await restoreEncryptedWorkspaceLocally({
         origin,
+        requestOrigin: provider.requestOrigin,
         token: provider.token,
         companyEncryption: provider.companyEncryption,
         workspaceId,
