@@ -99,7 +99,9 @@ MCP-процесс проверяет его перед использовани
 остаются рабочими: обычный `fetch` и точный `get_task` разрешают старый project
 slug по локальному зашифрованному mirror и возвращают текущий непрозрачный
 маршрут; та же канонизация действует для comment/status/control/checklist
-proposal flow.
+proposal flow. URL разбирается только как структурный locator и не зависит от
+сохранённого в immutable mirror origin; абсолютная и root-relative формы не
+выполняют сетевой переход по самой ссылке.
 
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Плагин шифрует текст и причины

@@ -654,7 +654,10 @@ test("legacy project slugs resolve to canonical mirror records", () => {
 
 test("native fetch ids and pre-encryption URLs resolve through the canonical local mirror", () => {
   const urlMirror = structuredClone(mirror);
-  urlMirror.origin = "https://trelio.ru";
+  // A persisted generation may have been written by a compatible older host
+  // with an origin shape that is no longer suitable as a WHATWG URL base.
+  // Fetch locators are structural and must not depend on that stored field.
+  urlMirror.origin = "legacy-origin-without-scheme";
   urlMirror.contextDocuments[0].payload.registry.slug = "suppliers";
   urlMirror.contextDocuments[0].payload.registry.slugAliases = ["suppliers-legacy"];
   urlMirror.contextDocuments.push(
@@ -726,6 +729,10 @@ test("native fetch ids and pre-encryption URLs resolve through the canonical loc
     fetchMirrorResult(urlMirror, "https://trelio.ru/acme/mobile-legacy/registries/suppliers-legacy/")
       .document.payload.registry.slug,
     "suppliers",
+  );
+  assert.equal(
+    fetchMirrorResult(urlMirror, "/acme/mobile-legacy/tasks/17/").task.title,
+    "Исправить офлайн синхронизацию",
   );
   assert.equal(
     fetchMirrorResult(urlMirror, "https://trelio.ru/acme/pages/handbook/").document.payload.page.slug,

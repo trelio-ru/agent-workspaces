@@ -3687,15 +3687,22 @@ const assertMirrorDocumentCompany = (mirror, companySlug) => {
   }
 };
 
-const parseMirrorDocumentUrl = (mirror, resultId) => {
+const parseMirrorDocumentUrl = (resultId) => {
   let parsedUrl;
   try {
     // Native `fetch` treats an absolute URL as a structural Trelio locator; it
-    // never contacts that URL. Preserve that behavior locally so a historical
-    // link copied before encryption follows the same ACL-filtered mirror path.
-    parsedUrl = new URL(resultId, mirror.origin || "https://trelio.invalid");
+    // never contacts that URL. Parse an absolute URL without a base first:
+    // immutable encrypted mirror generations can outlive a plugin upgrade,
+    // and their legacy `origin` field must not be able to invalidate an
+    // otherwise canonical link. Root-relative compatibility uses a fixed
+    // non-routable base because only pathname structure is consumed below.
+    parsedUrl = new URL(resultId);
   } catch {
-    return null;
+    try {
+      parsedUrl = new URL(resultId, "https://trelio.invalid");
+    } catch {
+      return null;
+    }
   }
   const pathParts = parsedUrl.pathname
     .split("/")
@@ -3945,7 +3952,7 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     }
     return fetchMirrorProject(mirror, companySlug, projectSlug);
   }
-  const urlLocator = parseMirrorDocumentUrl(mirror, resultId);
+  const urlLocator = parseMirrorDocumentUrl(resultId);
   if (urlLocator) return fetchMirrorUrl(mirror, urlLocator);
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context result id.");
 };
