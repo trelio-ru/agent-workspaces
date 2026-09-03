@@ -10,6 +10,7 @@
 import crypto from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -97,6 +98,9 @@ const MAX_PROPOSAL_BUNDLE_CARDS = 20;
 const LOCAL_ACTION_ENTITY_TYPE = "api.browser_mutation";
 const LOCAL_ACTION_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
 const LOCAL_ACTION_MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
+const LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES = 64 * 1024 * 1024;
+const LOCAL_ACTION_STREAM_UPLOAD_RETRY_DELAYS_MS = [250, 750, 1_500];
+const LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000];
 const MAX_LOCAL_WORKSPACE_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS = 100_000;
 // The local action route intentionally accepts the ordinary native tool name,
@@ -1596,6 +1600,164 @@ export const protectLocalActionArguments = async ({
   };
 };
 
+const LOCAL_ACTION_CONTENT_TYPE_BY_EXTENSION = new Map([
+  [".csv", "text/csv"],
+  [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".json", "application/json"],
+  [".pdf", "application/pdf"],
+  [".png", "image/png"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".txt", "text/plain"],
+  [".webp", "image/webp"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+  [".zip", "application/zip"],
+]);
+
+const inferLocalActionUploadContentType = (fileName) => (
+  LOCAL_ACTION_CONTENT_TYPE_BY_EXTENSION.get(path.extname(fileName).toLowerCase())
+  ?? "application/octet-stream"
+);
+
+const writeCompleteLocalFileChunk = async (handle, bytes, position) => {
+  let offset = 0;
+
+  while (offset < bytes.byteLength) {
+    const { bytesWritten } = await handle.write(
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      position + offset,
+    );
+    if (!Number.isSafeInteger(bytesWritten) || bytesWritten <= 0) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_UPLOAD_STAGING_FAILED",
+        "Local attachment staging write made no progress.",
+      );
+    }
+    offset += bytesWritten;
+  }
+};
+
+/**
+ * Snapshot one user-selected file into owner-private staging while calculating
+ * transport integrity metadata. Every retry and optional encryption step then
+ * reads immutable bridge-owned bytes instead of a path the caller can replace.
+ */
+export const stageLocalTaskAttachmentUpload = async (rawLocalFilePath) => {
+  const localFilePath = typeof rawLocalFilePath === "string" ? rawLocalFilePath : "";
+  if (!localFilePath || localFilePath.length > 8_192 || !path.isAbsolute(localFilePath)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD_PATH",
+      "localFilePath must contain one absolute local file path.",
+    );
+  }
+
+  const linkMetadata = await fs.lstat(localFilePath).catch((error) => {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD_PATH",
+      "The local attachment file is not available.",
+      { causeCode: error?.code ?? null },
+    );
+  });
+  if (linkMetadata.isSymbolicLink() || !linkMetadata.isFile()) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD_PATH",
+      "localFilePath must point directly to one regular non-symlink file.",
+    );
+  }
+  if (linkMetadata.size <= 0 || linkMetadata.size > LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_UPLOAD_TOO_LARGE",
+      `The local attachment must be between 1 and ${LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES} bytes.`,
+    );
+  }
+
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-task-attachment-"));
+  const stagedFilePath = path.join(temporaryDirectory, "source.bin");
+  let source;
+  let destination;
+  let completed = false;
+
+  try {
+    await fs.chmod(temporaryDirectory, 0o700).catch((error) => {
+      // Windows does not implement POSIX mode semantics. Other failures must
+      // not silently weaken an owner-private staging directory.
+      if (process.platform !== "win32") throw error;
+    });
+    source = await fs.open(localFilePath, "r");
+    const openedMetadata = await source.stat();
+    if (
+      !openedMetadata.isFile()
+      || openedMetadata.size !== linkMetadata.size
+      || (
+        process.platform !== "win32"
+        && (openedMetadata.dev !== linkMetadata.dev || openedMetadata.ino !== linkMetadata.ino)
+      )
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_UPLOAD_SOURCE_CHANGED",
+        "The local attachment changed while it was being opened.",
+      );
+    }
+
+    destination = await fs.open(stagedFilePath, "wx", 0o600);
+    const digest = crypto.createHash("sha256");
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let position = 0;
+
+    try {
+      while (position < openedMetadata.size) {
+        const maximumRead = Math.min(chunk.byteLength, openedMetadata.size - position);
+        const { bytesRead } = await source.read(chunk, 0, maximumRead, position);
+        if (!Number.isSafeInteger(bytesRead) || bytesRead <= 0 || bytesRead > maximumRead) {
+          throw new TrelioLocalContextError(
+            "LOCAL_ACTION_UPLOAD_SOURCE_CHANGED",
+            "The local attachment changed while it was being staged.",
+          );
+        }
+        const bytes = chunk.subarray(0, bytesRead);
+        digest.update(bytes);
+        await writeCompleteLocalFileChunk(destination, bytes, position);
+        position += bytesRead;
+      }
+    } finally {
+      chunk.fill(0);
+    }
+
+    const finalMetadata = await source.stat();
+    if (
+      finalMetadata.size !== openedMetadata.size
+      || finalMetadata.mtimeMs !== openedMetadata.mtimeMs
+      || finalMetadata.ctimeMs !== openedMetadata.ctimeMs
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_ACTION_UPLOAD_SOURCE_CHANGED",
+        "The local attachment changed while it was being staged.",
+      );
+    }
+    await destination.sync();
+    completed = true;
+    return {
+      temporaryDirectory,
+      stagedFilePath,
+      originalPath: localFilePath,
+      sizeBytes: openedMetadata.size,
+      sha256: digest.digest("hex"),
+    };
+  } finally {
+    await Promise.allSettled([source?.close(), destination?.close()]);
+    if (!completed) {
+      await fs.rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  }
+};
+
 const decodeVerifiedLocalActionUpload = (rawArguments) => {
   const canonicalBase64 = String(rawArguments?.dataBase64 || "");
   if (!canonicalBase64 || /\s/u.test(canonicalBase64)) {
@@ -1708,6 +1870,389 @@ const protectLocalActionUpload = async ({
   }
 };
 
+export const buildLocalTaskAttachmentStreamRequest = async ({
+  rawArguments,
+  staging,
+  companyEncryption = null,
+}) => {
+  if (rawArguments?.asInlineImage) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_STREAM_IMAGE_UNSUPPORTED",
+      "localFilePath currently creates an ordinary task attachment; use upload_inline_image for a rich-text image.",
+    );
+  }
+
+  const argumentCompanySlug = normalizeCompanySlug(rawArguments?.companySlug);
+  const stableRequestId = normalizeBoundedString(
+    rawArguments?.clientRequestId,
+    "clientRequestId",
+    255,
+  );
+  const originalName = typeof rawArguments?.fileName === "string" && rawArguments.fileName.trim()
+    ? normalizeBoundedString(rawArguments.fileName, "fileName", 255)
+    : normalizeBoundedString(path.basename(staging.originalPath), "fileName", 255);
+  const mimeType = String(
+    rawArguments?.contentType || inferLocalActionUploadContentType(originalName),
+  ).trim().toLowerCase().slice(0, 255) || "application/octet-stream";
+  // Forward only the exact native locator/idempotency fields. `arguments` is
+  // intentionally provider-neutral and therefore cannot enforce an upload-
+  // specific JSON schema at the local MCP boundary; an allowlist guarantees
+  // that a misplaced path, base64 body or future local-only field never leaks.
+  const baseArguments = {
+    companySlug: argumentCompanySlug,
+    projectSlug: rawArguments?.projectSlug,
+    taskNumber: rawArguments?.taskNumber,
+    clientRequestId: stableRequestId,
+  };
+
+  if (!companyEncryption) {
+    return {
+      value: {
+        ...baseArguments,
+        fileName: originalName,
+        contentType: mimeType,
+        sizeBytes: staging.sizeBytes,
+        sha256: staging.sha256,
+        delivery: "local-stream",
+      },
+      uploadFilePath: staging.stagedFilePath,
+      sizeBytes: staging.sizeBytes,
+      sha256: staging.sha256,
+      payloads: [],
+      expectedPayloadValues: {},
+    };
+  }
+
+  if (argumentCompanySlug !== companyEncryption.runtime.company.slug) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_COMPANY_MISMATCH",
+      "The local attachment arguments target another company.",
+    );
+  }
+
+  const entityId = deriveLocalActionEntityId(
+    companyEncryption,
+    `upload_attachment\0${stableRequestId}\0file`,
+  );
+  const values = {
+    original_name: originalName,
+    mime_type: mimeType,
+  };
+  const privateScalar = String(companyEncryption.scopePrivateEncryptionKey?.privateJwk?.d || "");
+  if (!privateScalar) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_ENCRYPTION_CONTEXT_INVALID",
+      "The local company scope key is unavailable.",
+    );
+  }
+  // The backend needs to reject reuse of one idempotency key for different
+  // plaintext, but must not receive a dictionary-testable plaintext digest.
+  // Binding this HMAC to clientRequestId makes it stable only for this retry
+  // family and unlinkable across otherwise identical uploads.
+  const encryptedSourceFingerprint = crypto
+    .createHmac("sha256", Buffer.from(privateScalar, "base64url"))
+    .update("trelio:encrypted-task-attachment-source:v1\0")
+    .update(stableRequestId)
+    .update("\0")
+    .update(originalName)
+    .update("\0")
+    .update(mimeType)
+    .update("\0")
+    .update(String(staging.sizeBytes))
+    .update("\0")
+    .update(staging.sha256)
+    .digest("hex");
+  const encryptedFilePath = path.join(staging.temporaryDirectory, "encrypted.trelioe1");
+  const encrypted = await encryptFileToCompanyContainer({
+    sourcePath: staging.stagedFilePath,
+    destinationPath: encryptedFilePath,
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: companyEncryption.runtime.company.id,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType: "file.task_attachments",
+      entityId,
+      entityRevision: 1,
+    },
+    originalName,
+    mimeType,
+    writerDeviceId: companyEncryption.runtime.device.id,
+    signingPrivateKey: companyEncryption.device.privateKeys.signingPrivateKey,
+  });
+  if (encrypted.ciphertextSizeBytes > LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES) {
+    await fs.rm(encryptedFilePath, { force: true });
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_UPLOAD_TOO_LARGE",
+      "The encrypted attachment exceeds the supported streaming upload limit.",
+    );
+  }
+
+  // Once an encrypted container is durable, remove its plaintext snapshot
+  // before any network request. The original user file remains untouched.
+  await fs.rm(staging.stagedFilePath, { force: true });
+  const payload = await buildLocalActionEncryptedPayload({
+    companyEncryption,
+    entityId,
+    values,
+    source: { kind: "mcp_local_action_upload", nativeTool: "upload_attachment" },
+  });
+  return {
+    value: {
+      ...baseArguments,
+      fileName: buildCompanyEncryptedTextMarker(entityId, "original_name"),
+      contentType: buildCompanyEncryptedTextMarker(entityId, "mime_type"),
+      sizeBytes: encrypted.ciphertextSizeBytes,
+      sha256: encrypted.ciphertextSha256,
+      encryptedSourceFingerprint,
+      delivery: "local-stream",
+    },
+    uploadFilePath: encryptedFilePath,
+    sizeBytes: encrypted.ciphertextSizeBytes,
+    sha256: encrypted.ciphertextSha256,
+    payloads: [payload],
+    expectedPayloadValues: { [entityId]: values },
+  };
+};
+
+const isRetryableLocalTaskAttachmentUploadError = (error) => {
+  if (error instanceof TrelioApiError) {
+    if (error.statusCode === 409) {
+      return [
+        "TASK_ATTACHMENT_UPLOAD_IN_PROGRESS",
+        "TASK_ATTACHMENT_UPLOAD_SESSION_IN_PROGRESS",
+        "TASK_ATTACHMENT_UPLOAD_SESSION_NOT_READY",
+      ].includes(error.code);
+    }
+    return error.statusCode === 408
+      || error.statusCode === 425
+      || error.statusCode === 429
+      || error.statusCode >= 500;
+  }
+  if (error?.name === "AbortError") return false;
+  return error instanceof TypeError || error instanceof SyntaxError || [
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "EPIPE",
+    "ETIMEDOUT",
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ].includes(error?.code ?? error?.cause?.code);
+};
+
+const parseLocalTaskAttachmentUploadSession = (rawResult, expected) => {
+  const uploadSession = rawResult?.structuredContent?.uploadSession;
+  if (!uploadSession) return null;
+
+  const uploadId = normalizeUuid(uploadSession.id, "uploadSession.id");
+  const expectedUploadPath = `/api/agent-workspaces/task-attachment-uploads/${uploadId}/content`;
+  if (
+    uploadSession.uploadPath !== expectedUploadPath
+    || uploadSession.sizeBytes !== expected.sizeBytes
+    || uploadSession.sha256 !== expected.sha256
+    || !SHA256_PATTERN.test(uploadSession.sha256)
+    || !Number.isSafeInteger(uploadSession.sizeBytes)
+    || uploadSession.sizeBytes <= 0
+    || uploadSession.sizeBytes > LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES
+    || !Number.isFinite(Date.parse(uploadSession.expiresAt))
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD_SESSION",
+      "Trelio returned an invalid or mismatched task attachment upload session.",
+    );
+  }
+
+  return { ...uploadSession, id: uploadId, uploadPath: expectedUploadPath };
+};
+
+export const prepareLocalTaskAttachmentUploadSession = async ({
+  origin,
+  token,
+  companySlug,
+  actionRequest,
+  signal,
+  retryDelaysMs = LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS,
+}) => {
+  const body = JSON.stringify(actionRequest);
+  const clientRequestId = normalizeBoundedString(
+    actionRequest?.arguments?.clientRequestId,
+    "clientRequestId",
+    255,
+  );
+
+  try {
+    const result = await readJson(await request(
+      origin,
+      token,
+      `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}/actions/execute`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        signal,
+      },
+    ));
+    const resultCode = typeof result?.structuredContent?.code === "string"
+      ? result.structuredContent.code
+      : null;
+    if (
+      !result?.isError
+      || result?.structuredContent?.retryable !== true
+      || ![
+        "TASK_ATTACHMENT_UPLOAD_IN_PROGRESS",
+        "TASK_ATTACHMENT_UPLOAD_SESSION_IN_PROGRESS",
+      ].includes(resultCode)
+    ) {
+      return result;
+    }
+  } catch (error) {
+    if (signal?.aborted || !isRetryableLocalTaskAttachmentUploadError(error)) {
+      throw error;
+    }
+  }
+
+  // Runtime hook proofs are one-use. An ambiguous POST must therefore never be
+  // replayed internally with the consumed proof. Poll the authenticated,
+  // content-free idempotency read instead; a fresh outer tool call is the only
+  // safe way to obtain another proof if the reservation was never committed.
+  return resolveLocalTaskAttachmentUploadSession({
+    origin,
+    token,
+    companySlug,
+    clientRequestId,
+    signal,
+    retryDelaysMs,
+  });
+};
+
+export const resolveLocalTaskAttachmentUploadSession = async ({
+  origin,
+  token,
+  companySlug,
+  clientRequestId,
+  signal,
+  retryDelaysMs = LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS,
+}) => {
+  const normalizedRequestId = normalizeBoundedString(
+    clientRequestId,
+    "clientRequestId",
+    255,
+  );
+  const query = new URLSearchParams({ clientRequestId: normalizedRequestId });
+  const pathname = `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}`
+    + `/task-attachment-uploads/resolve?${query.toString()}`;
+
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    try {
+      const structuredContent = await readJson(await request(origin, token, pathname, { signal }));
+      if (
+        !structuredContent
+        || typeof structuredContent !== "object"
+        || Array.isArray(structuredContent)
+      ) {
+        throw new TrelioLocalContextError(
+          "LOCAL_ACTION_INVALID_UPLOAD_RESULT",
+          "Trelio returned an invalid task attachment recovery result.",
+        );
+      }
+      return {
+        structuredContent,
+        content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      };
+    } catch (error) {
+      const retryDelay = retryDelaysMs[attempt];
+      if (
+        retryDelay === undefined
+        || signal?.aborted
+        || !isRetryableLocalTaskAttachmentUploadError(error)
+      ) {
+        throw error;
+      }
+      const serverDelay = error instanceof TrelioApiError
+        ? error.retryAfterMilliseconds
+        : null;
+      await delay(Math.min(5_000, Math.max(retryDelay, serverDelay ?? 0)));
+    }
+  }
+
+  throw new TrelioLocalContextError(
+    "LOCAL_ACTION_UPLOAD_FAILED",
+    "Task attachment upload-session recovery exhausted its retry budget.",
+  );
+};
+
+/**
+ * PUT immutable staged bytes through a session-bound endpoint. Ambiguous
+ * transport and transient server failures are safe to retry because every
+ * attempt reopens the same file and the backend reserves one attachment id.
+ */
+export const uploadLocalTaskAttachmentStream = async ({
+  origin,
+  token,
+  uploadSession,
+  uploadFilePath,
+  signal,
+  retryDelaysMs = LOCAL_ACTION_STREAM_UPLOAD_RETRY_DELAYS_MS,
+}) => {
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
+    const uploadBody = createReadStream(uploadFilePath);
+
+    try {
+      const response = await request(origin, token, uploadSession.uploadPath, {
+        method: "PUT",
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": String(uploadSession.sizeBytes),
+          "x-trelio-content-sha256": uploadSession.sha256,
+        },
+        body: uploadBody,
+        // Node's fetch requires this flag for a streaming request body. It
+        // still sends the exact Content-Length above rather than chunked JSON.
+        duplex: "half",
+        signal,
+      });
+      const structuredContent = await readJson(response);
+      if (!structuredContent || typeof structuredContent !== "object" || Array.isArray(structuredContent)) {
+        throw new TrelioLocalContextError(
+          "LOCAL_ACTION_INVALID_UPLOAD_RESULT",
+          "Trelio returned an invalid task attachment result.",
+        );
+      }
+      // The binary endpoint is an internal HTTP data plane, not an MCP tool.
+      // Rebuild the normal CallToolResult envelope before returning through the
+      // local MCP facade so callers see the same shape as legacy/native upload.
+      return {
+        structuredContent,
+        content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+      };
+    } catch (error) {
+      // A server may reject a concurrent retry from headers alone. Close that
+      // attempt's reader before the delay so it cannot keep reading the local
+      // snapshot while the next attempt opens a fresh descriptor.
+      uploadBody.destroy();
+      const retryDelay = retryDelaysMs[attempt];
+      if (
+        retryDelay === undefined
+        || signal?.aborted
+        || !isRetryableLocalTaskAttachmentUploadError(error)
+      ) {
+        throw error;
+      }
+      const serverDelay = error instanceof TrelioApiError
+        ? error.retryAfterMilliseconds
+        : null;
+      await delay(Math.min(5_000, Math.max(retryDelay, serverDelay ?? 0)));
+    } finally {
+      uploadBody.destroy();
+    }
+  }
+
+  throw new TrelioLocalContextError(
+    "LOCAL_ACTION_UPLOAD_FAILED",
+    "Task attachment upload exhausted its retry budget.",
+  );
+};
+
 export const uploadLocalActionPayloads = async ({
   origin,
   token,
@@ -1792,6 +2337,38 @@ export const uploadLocalActionPayloads = async ({
         if (verifiedExistingCount === 0) throw error;
         pending = missing;
       }
+    }
+  }
+};
+
+export const uploadLocalTaskAttachmentPayloads = async ({
+  retryDelaysMs = LOCAL_ACTION_STREAM_UPLOAD_RETRY_DELAYS_MS,
+  ...input
+}) => {
+  for (
+    let attempt = 0;
+    attempt <= retryDelaysMs.length;
+    attempt += 1
+  ) {
+    try {
+      await uploadLocalActionPayloads(input);
+      return;
+    } catch (error) {
+      const retryDelay = retryDelaysMs[attempt];
+      if (
+        retryDelay === undefined
+        || input.signal?.aborted
+        || !isRetryableLocalTaskAttachmentUploadError(error)
+      ) {
+        throw error;
+      }
+      const serverDelay = error instanceof TrelioApiError
+        ? error.retryAfterMilliseconds
+        : null;
+      // Payload entity ids are deterministic for this idempotency key. If the
+      // prior response was lost after commit, the next POST gets a 409 and the
+      // existing payload verifier above proves plaintext equivalence.
+      await delay(Math.min(5_000, Math.max(retryDelay, serverDelay ?? 0)));
     }
   }
 };
@@ -2050,6 +2627,8 @@ const resolveLocalCompanyProvider = async ({
   }
   return {
     nativeProvider: true,
+    token,
+    requestOrigin: origin,
     result: {
       schemaVersion: 1,
       provider: "native_trelio",
@@ -5578,6 +6157,120 @@ const canonicalizeLocalActionProjectSlugs = (value, mirror) => {
   }));
 };
 
+const handleLocalTaskAttachmentStreamOperation = async ({
+  origin,
+  companySlug,
+  rawInput,
+  arguments: rawArguments,
+  provider,
+  mirror = null,
+  signal,
+}) => {
+  const argumentCompanySlug = normalizeCompanySlug(rawArguments?.companySlug);
+  if (argumentCompanySlug !== companySlug) {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_COMPANY_MISMATCH",
+      "The local attachment arguments target another company.",
+    );
+  }
+
+  const staging = await stageLocalTaskAttachmentUpload(rawInput.localFilePath);
+
+  try {
+    const protectedRequest = await buildLocalTaskAttachmentStreamRequest({
+      rawArguments,
+      staging,
+      companyEncryption: provider.companyEncryption ?? null,
+    });
+    if (provider.companyEncryption) {
+      await uploadLocalTaskAttachmentPayloads({
+        origin: provider.requestOrigin,
+        token: provider.token,
+        companyEncryption: provider.companyEncryption,
+        payloads: protectedRequest.payloads,
+        expectedPayloadValues: protectedRequest.expectedPayloadValues,
+        signal,
+      });
+    }
+
+    const actionRequest = {
+      nativeTool: "upload_attachment",
+      arguments: protectedRequest.value,
+      ...(rawInput.runtimeSessionProof
+        ? { runtimeSessionProof: rawInput.runtimeSessionProof }
+        : {}),
+    };
+    const preparedResult = await prepareLocalTaskAttachmentUploadSession({
+      origin: provider.requestOrigin,
+      token: provider.token,
+      companySlug,
+      actionRequest,
+      signal,
+    });
+    const uploadSession = parseLocalTaskAttachmentUploadSession(preparedResult, {
+      sizeBytes: protectedRequest.sizeBytes,
+      sha256: protectedRequest.sha256,
+    });
+    let rawResult = preparedResult;
+    if (uploadSession) {
+      try {
+        rawResult = await uploadLocalTaskAttachmentStream({
+          origin: provider.requestOrigin,
+          token: provider.token,
+          uploadSession,
+          uploadFilePath: protectedRequest.uploadFilePath,
+          signal,
+        });
+      } catch (error) {
+        if (signal?.aborted || !isRetryableLocalTaskAttachmentUploadError(error)) {
+          throw error;
+        }
+
+        // A response can disappear after storage and DB commit. Replaying the
+        // small recovery read distinguishes that success from a genuinely
+        // unavailable data plane without sending the file again: a completed
+        // idempotency session returns the final attachment immediately.
+        const recoveryResult = await resolveLocalTaskAttachmentUploadSession({
+          origin: provider.requestOrigin,
+          token: provider.token,
+          companySlug,
+          clientRequestId: protectedRequest.value.clientRequestId,
+          signal,
+        });
+        if (parseLocalTaskAttachmentUploadSession(recoveryResult, {
+          sizeBytes: protectedRequest.sizeBytes,
+          sha256: protectedRequest.sha256,
+        })) {
+          throw error;
+        }
+        rawResult = recoveryResult;
+      }
+    }
+
+    if (!provider.companyEncryption) return rawResult;
+    return hydrateLocalActionResult({
+      rawResult,
+      origin: provider.requestOrigin,
+      token: provider.token,
+      companyEncryption: provider.companyEncryption,
+      mirror,
+      documentOrigin: origin,
+      signal,
+    });
+  } finally {
+    await fs.rm(staging.temporaryDirectory, { recursive: true, force: true });
+    if (provider.companyEncryption) {
+      // A lost response can still mean that the attachment committed. Match
+      // the existing mutation rule and force the next local read to resync.
+      await invalidateLocalCompanyMirrorSession({
+        origin,
+        companySlug,
+        companyEncryption: provider.companyEncryption,
+      });
+    }
+  }
+};
+
 export const handleTrelioLocalActionOperation = async (
   origin,
   rawInput,
@@ -5602,9 +6295,27 @@ export const handleTrelioLocalActionOperation = async (
     );
   }
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
-  if (provider.nativeProvider) return {
+  const hasLocalFilePath = rawInput.localFilePath !== undefined;
+  if (hasLocalFilePath && nativeTool !== "upload_attachment") {
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_INVALID_UPLOAD_PATH",
+      "localFilePath is supported only for upload_attachment.",
+    );
+  }
+  if (provider.nativeProvider && !hasLocalFilePath) return {
     content: [{ type: "text", text: JSON.stringify(provider.result) }],
   };
+
+  if (hasLocalFilePath && provider.nativeProvider) {
+    return handleLocalTaskAttachmentStreamOperation({
+      origin,
+      companySlug,
+      rawInput,
+      arguments: rawInput.arguments,
+      provider,
+      signal,
+    });
+  }
 
   // Historical/pre-encryption project links remain valid. Canonicalization is
   // local because the clear alias itself must not be sent back to Trelio.
@@ -5616,6 +6327,17 @@ export const handleTrelioLocalActionOperation = async (
     rawInput.arguments,
     ready.mirror,
   );
+  if (hasLocalFilePath) {
+    return handleLocalTaskAttachmentStreamOperation({
+      origin,
+      companySlug,
+      rawInput,
+      arguments: canonicalArguments,
+      provider,
+      mirror: ready.mirror,
+      signal,
+    });
+  }
   const protectedRequest = nativeTool === "upload_attachment" || nativeTool === "upload_inline_image"
     ? await protectLocalActionUpload({
         nativeTool,
@@ -7101,7 +7823,7 @@ export const TRELIO_LOCAL_WORKSPACE_TOOL = {
 export const TRELIO_LOCAL_ACTION_TOOL = {
   name: "continue_trelio_local_action",
   title: "Continue a Trelio local action route",
-  description: "Continue the exact action route selected by Trelio for one company. Provider selection is automatic; use only the nativeTool and arguments from that response.",
+  description: "Continue one Trelio local action. For upload_attachment, pass absolute localFilePath and omit dataBase64, sizeBytes and sha256; the bridge streams the file.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -7116,7 +7838,12 @@ export const TRELIO_LOCAL_ACTION_TOOL = {
       },
       arguments: {
         type: "object",
-        description: "Exact original native MCP arguments. The local host protects content before forwarding it.",
+      },
+      localFilePath: {
+        type: "string",
+        minLength: 1,
+        maxLength: 8192,
+        description: "Local-only absolute attachment path.",
       },
     },
   },

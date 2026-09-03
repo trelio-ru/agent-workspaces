@@ -3,6 +3,7 @@
 ## Содержание
 
 - Выбор scope
+- Локальные вложения
 - Контекст и файлы
 - Read-only inspection без Run
 - Agent Run
@@ -84,6 +85,20 @@ mismatch завершается обновлением вместо fallback к 
 Company dossier требует конкретной причины и явного подтверждения широкой
 видимости. Связанный участник задачи может читать dossier, но не получает
 write/Run/link-management права owner scope.
+
+## Локальные вложения
+
+Task attachment с доступным локальным файлом не кодируется в base64 для MCP.
+Только для exact выбранного пользователем или созданного агентом файла агент
+передаёт bundled local action абсолютный `localFilePath`, bridge создаёт
+owner-private snapshot, вычисляет размер/SHA-256, получает session по metadata и
+делает отдельный binary PUT. Потерянный control-ответ восстанавливается read-only
+по idempotency key: одноразовый runtime proof повторно не отправляется. Путь
+остаётся на устройстве. Для encrypted company
+тот же snapshot сначала превращается в signed `TRELIOE1`; plaintext, имя и MIME
+не достигают backend. Потерянный transport-ответ повторяет exact staged bytes и
+reserved attachment ID, поэтому не создаёт дубликат. Inline-image transport
+остаётся отдельным bounded compatibility flow.
 
 ## Контекст и файлы
 

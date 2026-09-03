@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -16,6 +17,7 @@ import {
   TRELIO_LOCAL_PROPOSAL_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   buildEncryptedRestoreHandoffArguments,
+  buildLocalTaskAttachmentStreamRequest,
   buildLocalMarkdownDocument,
   fetchMirrorResult,
   findPreparedEncryptedRestoreRun,
@@ -27,6 +29,7 @@ import {
   localActionMayMutateCompanyContext,
   materializeHistoricalWorkspaceTreeForRestore,
   inspectLocalWorkspaceRevisionDiff,
+  prepareLocalTaskAttachmentUploadSession,
   prepareLocalProposalBundle,
   readLocalWorkspaceRevisionFile,
   protectLocalActionArguments,
@@ -38,11 +41,15 @@ import {
   searchWorkspaceFilesFromMirror,
   selectEncryptedProposalFilesFromManifest,
   signalLocalCompanyMirrorMutation,
+  stageLocalTaskAttachmentUpload,
+  uploadLocalTaskAttachmentStream,
+  uploadLocalTaskAttachmentPayloads,
   uploadLocalActionPayloads,
 } from "../scripts/trelio-local-context.mjs";
 import {
   createAgentEncryptionDevice,
   decryptCompanyPayload,
+  decryptFileFromCompanyContainerBytes,
 } from "../scripts/trelio-company-encryption.mjs";
 import {
   TrelioApiError,
@@ -259,10 +266,306 @@ test("local action schema stays provider-neutral and does not advertise crypto m
     "arguments",
   ]);
   assert.equal(TRELIO_LOCAL_ACTION_TOOL.inputSchema.additionalProperties, false);
+  assert.equal(TRELIO_LOCAL_ACTION_TOOL.inputSchema.properties.localFilePath.type, "string");
   assert.doesNotMatch(
     JSON.stringify(TRELIO_LOCAL_ACTION_TOOL),
     /cipher|private.?key|e2ee|encryption key/iu,
   );
+});
+
+test("local task attachment staging keeps the path local and builds plain stream metadata", async () => {
+  const sourceDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-local-upload-test-"));
+  const sourcePath = path.join(sourceDirectory, "Планы этажей.pdf");
+  const sourceBytes = Buffer.from("%PDF-1.7\nstreaming attachment test\n%%EOF", "utf8");
+  await fs.writeFile(sourcePath, sourceBytes, { mode: 0o600 });
+  let staging;
+
+  try {
+    staging = await stageLocalTaskAttachmentUpload(sourcePath);
+    assert.notEqual(staging.stagedFilePath, sourcePath);
+    assert.equal(staging.sizeBytes, sourceBytes.byteLength);
+    assert.equal(staging.sha256, crypto.createHash("sha256").update(sourceBytes).digest("hex"));
+    assert.deepEqual(await fs.readFile(staging.stagedFilePath), sourceBytes);
+
+    const prepared = await buildLocalTaskAttachmentStreamRequest({
+      rawArguments: {
+        companySlug: "acme",
+        projectSlug: "mobile",
+        taskNumber: 17,
+        clientRequestId: "stream-plain-pdf",
+        dataBase64: "must-not-cross-the-boundary",
+        localFilePath: "/must/not/cross/the-boundary.pdf",
+      },
+      staging,
+    });
+    assert.equal(prepared.value.fileName, "Планы этажей.pdf");
+    assert.equal(prepared.value.contentType, "application/pdf");
+    assert.equal(prepared.value.delivery, "local-stream");
+    assert.equal(prepared.value.sizeBytes, sourceBytes.byteLength);
+    assert.equal(prepared.value.sha256, staging.sha256);
+    assert.equal(Object.hasOwn(prepared.value, "dataBase64"), false);
+    assert.equal(Object.hasOwn(prepared.value, "localFilePath"), false);
+    assert.equal(Object.hasOwn(prepared.value, "encryptedSourceFingerprint"), false);
+    assert.equal(JSON.stringify(prepared.value).includes(sourcePath), false);
+  } finally {
+    if (staging) {
+      await fs.rm(staging.temporaryDirectory, { recursive: true, force: true });
+    }
+    await fs.rm(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("encrypted local task attachment stays binary and decrypts to the staged source", async () => {
+  const sourceDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-encrypted-upload-test-"));
+  const sourcePath = path.join(sourceDirectory, "secret.pdf");
+  const sourceBytes = Buffer.from("%PDF-1.7\nconfidential floor plan\n%%EOF", "utf8");
+  await fs.writeFile(sourcePath, sourceBytes, { mode: 0o600 });
+  const device = await createAgentEncryptionDevice();
+  const companyEncryption = {
+    runtime: {
+      company: { id: "11111111-1111-4111-8111-111111111111", slug: "acme" },
+      scope: {
+        id: "22222222-2222-4222-8222-222222222222",
+        epoch: 1,
+        publicEncryptionJwk: device.publicEncryptionJwk,
+      },
+      device: { id: "33333333-3333-4333-8333-333333333333" },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: device.privateKeys.encryptionPrivateKey,
+      privateJwk: device.privateBundle.encryptionPrivateJwk,
+    },
+  };
+  let staging;
+  let opened;
+
+  try {
+    staging = await stageLocalTaskAttachmentUpload(sourcePath);
+    const prepared = await buildLocalTaskAttachmentStreamRequest({
+      rawArguments: {
+        companySlug: "acme",
+        projectSlug: "mobile",
+        taskNumber: 17,
+        fileName: "secret.pdf",
+        contentType: "application/pdf",
+        clientRequestId: "stream-encrypted-pdf",
+      },
+      staging,
+      companyEncryption,
+    });
+    assert.equal(prepared.value.delivery, "local-stream");
+    assert.equal(Object.hasOwn(prepared.value, "dataBase64"), false);
+    assert.match(prepared.value.fileName, /^~e1:/u);
+    assert.match(prepared.value.contentType, /^~e1:/u);
+    assert.match(prepared.value.encryptedSourceFingerprint, /^[0-9a-f]{64}$/u);
+    assert.notEqual(prepared.value.encryptedSourceFingerprint, staging.sha256);
+    assert.equal((await fs.stat(prepared.uploadFilePath)).size, prepared.sizeBytes);
+    await assert.rejects(fs.stat(staging.stagedFilePath), { code: "ENOENT" });
+
+    const ciphertext = await fs.readFile(prepared.uploadFilePath);
+    opened = await decryptFileFromCompanyContainerBytes({
+      bytes: ciphertext,
+      scopePrivateKey: device.privateKeys.encryptionPrivateKey,
+      scopePrivateJwk: device.privateBundle.encryptionPrivateJwk,
+      expectedCiphertextSha256: prepared.sha256,
+      maximumPlaintextBytes: 1024,
+    });
+    assert.deepEqual(opened.bytes, sourceBytes);
+    assert.equal(opened.originalName, "secret.pdf");
+    assert.equal(opened.mimeType, "application/pdf");
+
+    const metadata = await decryptCompanyPayload({
+      encryptedPayload: prepared.payloads[0],
+      scopePrivateKey: device.privateKeys.encryptionPrivateKey,
+      scopePrivateJwk: device.privateBundle.encryptionPrivateJwk,
+    });
+    assert.deepEqual(metadata.values, {
+      original_name: "secret.pdf",
+      mime_type: "application/pdf",
+    });
+  } finally {
+    opened?.bytes.fill(0);
+    if (staging) {
+      await fs.rm(staging.temporaryDirectory, { recursive: true, force: true });
+    }
+    await fs.rm(sourceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("encrypted task attachment metadata retries three transient network responses", async () => {
+  let attempts = 0;
+  const server = http.createServer(async (request, response) => {
+    for await (const _chunk of request) {
+      // Consume the exact small JSON request before deciding its response.
+    }
+    attempts += 1;
+    if (attempts <= 3) {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "temporary payload storage outage" }));
+      return;
+    }
+    response.writeHead(201, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    await uploadLocalTaskAttachmentPayloads({
+      origin: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+      companyEncryption: {
+        runtime: {
+          company: { slug: "acme" },
+          device: { id: "33333333-3333-4333-8333-333333333333" },
+        },
+      },
+      payloads: [{ entityId: "payload-1" }],
+      retryDelaysMs: [1, 1, 1],
+    });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  assert.equal(attempts, 4);
+});
+
+test("task attachment session recovery never replays the one-use proof-bearing action", async () => {
+  const uploadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const requests = [];
+  let recoveryAttempts = 0;
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({
+      method: request.method,
+      url: request.url,
+      body: Buffer.concat(chunks).toString("utf8"),
+    });
+
+    if (request.method === "POST") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        isError: true,
+        structuredContent: {
+          code: "TASK_ATTACHMENT_UPLOAD_SESSION_IN_PROGRESS",
+          retryable: true,
+        },
+        content: [{ type: "text", text: "retry" }],
+      }));
+      return;
+    }
+
+    recoveryAttempts += 1;
+    if (recoveryAttempts <= 3) {
+      response.writeHead(409, { "content-type": "application/json", "retry-after": "0" });
+      response.end(JSON.stringify({
+        code: "TASK_ATTACHMENT_UPLOAD_SESSION_NOT_READY",
+        message: "not committed yet",
+      }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      uploadSession: {
+        id: uploadId,
+        uploadPath: `/api/agent-workspaces/task-attachment-uploads/${uploadId}/content`,
+        sizeBytes: 17,
+        sha256: "a".repeat(64),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  const actionRequest = {
+    nativeTool: "upload_attachment",
+    runtimeSessionProof: { nonce: "one-use-proof" },
+    arguments: {
+      companySlug: "acme",
+      projectSlug: "mobile",
+      taskNumber: 17,
+      delivery: "local-stream",
+      clientRequestId: "prepare-retry",
+    },
+  };
+
+  try {
+    const address = server.address();
+    const result = await prepareLocalTaskAttachmentUploadSession({
+      origin: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+      companySlug: "acme",
+      actionRequest,
+      retryDelaysMs: [1, 1, 1],
+    });
+    assert.equal(result.structuredContent.uploadSession.id, uploadId);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  assert.equal(requests.filter((request) => request.method === "POST").length, 1);
+  assert.equal(requests.filter((request) => request.method === "GET").length, 4);
+  assert.equal(requests[0].body, JSON.stringify(actionRequest));
+  assert.ok(requests.slice(1).every((request) => (
+    request.url.includes("/task-attachment-uploads/resolve?clientRequestId=prepare-retry")
+    && !request.url.includes("one-use-proof")
+    && request.body === ""
+  )));
+});
+
+test("binary task attachment upload reopens the same file for three safe retries", async () => {
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-upload-retry-test-"));
+  const uploadFilePath = path.join(temporaryDirectory, "attachment.bin");
+  const bytes = Buffer.from("same immutable attachment bytes", "utf8");
+  const digest = crypto.createHash("sha256").update(bytes).digest("hex");
+  await fs.writeFile(uploadFilePath, bytes, { mode: 0o600 });
+  const receivedBodies = [];
+  const receivedHeaders = [];
+  const uploadId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const server = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    receivedBodies.push(Buffer.concat(chunks));
+    receivedHeaders.push(request.headers);
+    if (receivedBodies.length <= 3) {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: "Temporary storage outage" }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    const result = await uploadLocalTaskAttachmentStream({
+      origin: `http://127.0.0.1:${address.port}`,
+      token: "test-token",
+      uploadSession: {
+        id: uploadId,
+        uploadPath: `/api/agent-workspaces/task-attachment-uploads/${uploadId}/content`,
+        sizeBytes: bytes.byteLength,
+        sha256: digest,
+      },
+      uploadFilePath,
+      retryDelaysMs: [1, 1, 1],
+    });
+    assert.deepEqual(result.structuredContent, { ok: true });
+    assert.deepEqual(result.content, [{ type: "text", text: JSON.stringify({ ok: true }) }]);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
+  }
+
+  assert.equal(receivedBodies.length, 4);
+  for (let index = 0; index < receivedBodies.length; index += 1) {
+    assert.deepEqual(receivedBodies[index], bytes);
+    assert.equal(receivedHeaders[index]["content-length"], String(bytes.byteLength));
+    assert.equal(receivedHeaders[index]["x-trelio-content-sha256"], digest);
+  }
 });
 
 test("local action protects nested task content and converts Markdown before upload", async () => {

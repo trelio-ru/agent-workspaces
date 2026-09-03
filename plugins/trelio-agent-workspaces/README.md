@@ -147,9 +147,17 @@ exact include-read, но обычный поиск их не индексиру�
 immutable history, comments и служебная read/ACL metadata в индекс не попадают.
 Task/contact rich text
 передаётся как opaque JSON marker только через verified local-action runtime.
-Task attachment и inline image локально превращаются в signed `TRELIOE1`, а
-filename/MIME — в связанный encrypted payload; backend проверяет exact активное
-bridge-устройство и никогда не запускает plaintext/image pipeline над ciphertext.
+Task attachment с доступным локальным файлом передаётся через
+`continue_trelio_local_action` и абсолютный `localFilePath` только для exact
+выбранного пользователем или созданного агентом файла: путь остаётся на
+устройстве, control plane получает только имя, тип, размер и SHA-256, а bridge
+отправляет файл отдельным binary stream. Base64 не попадает в MCP/model context;
+неоднозначный control-ответ проверяется отдельным idempotency-read без повторной
+отправки одноразового runtime proof, а binary transport повторяет те же staged bytes.
+В encrypted company файл перед отправкой локально превращается в signed
+`TRELIOE1`, а filename/MIME – в связанный encrypted payload; backend проверяет
+exact активное bridge-устройство и никогда не запускает plaintext/image pipeline
+над ciphertext. Inline image пока сохраняет прежний bounded inline transport.
 Параллельные чаты используют те же server locks и `clientRequestId`; новые
 registry row получают стабильный секретный HMAC-locator, поэтому одинаковый
 row key конфликтует/повторяется как одна строка, не раскрывая значение серверу.

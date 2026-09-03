@@ -146,10 +146,11 @@ mutation.
 
 ## Continue ordinary actions
 
-Pass selected native tool and arguments once. The host encrypts protected
-leaves and invokes the native handler. Uploads become signed `TRELIOE1` plus
-metadata; after ambiguity read attachments before reusing the idempotency key.
-Archived rows need exact include flags and stay out of search.
+Pass native arguments once. For `upload_attachment`, use absolute
+`localFilePath` only for an exact user-selected or agent-created file; omit
+base64/size/hash. The host privately streams it, encrypting if needed. On
+ambiguity reread attachments before reusing the key. Archived rows require
+exact include flags.
 
 ## Fail closed
 
