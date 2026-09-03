@@ -4305,9 +4305,20 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   ]);
   const folderGateIndex = onboardingSkill.indexOf("## Confirm the working folder first");
   const prerequisiteIndex = onboardingSkill.indexOf("## Check prerequisites");
+  const hookApprovalIndex = onboardingSkill.indexOf(
+    "make approval of this plugin's hooks an explicit user checkpoint",
+  );
+  const companyResolutionIndex = onboardingSkill.indexOf(
+    "Resolve the exact company before `get_agent_instructions`",
+  );
 
+  // Hook trust is a human checkpoint over the installed bytes. Keeping it
+  // between plugin discovery and company reads prevents a fresh installation
+  // from reaching protected Trelio content with an unreviewed definition.
   assert.ok(folderGateIndex >= 0);
   assert.ok(prerequisiteIndex > folderGateIndex);
+  assert.ok(hookApprovalIndex > prerequisiteIndex);
+  assert.ok(companyResolutionIndex > hookApprovalIndex);
   assert.match(onboardingSkill, /local project with an accessible primary folder/u);
   assert.match(onboardingSkill, /projectless\s+task is not evidence of a selected folder/u);
   assert.match(onboardingSkill, /intentionally an ordinary non-Git context\s+folder/u);
@@ -4434,6 +4445,19 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
   assert.match(
     onboardingSkill,
+    /Installing or enabling a plugin does not make its bundled hooks\s+trusted automatically/u,
+  );
+  assert.match(onboardingSkill, /In Codex Desktop say:/u);
+  assert.match(onboardingSkill, /In Codex CLI say:/u);
+  assert.match(onboardingSkill, /Откройте \/hooks/u);
+  assert.match(onboardingSkill, /`--dangerously-bypass-hook-trust`/u);
+  assert.match(onboardingSkill, /approvalStatus=client_managed_unknown/u);
+  assert.match(
+    onboardingSkill,
+    /A successful or failed `PreToolUse` event proves that the\s+hook is active/u,
+  );
+  assert.match(
+    onboardingSkill,
     /Resolve the exact company before `get_agent_instructions` or any local file\s+write/u,
   );
   assert.match(onboardingSkill, /explicit company slug[\s\S]{0,180}exact selector, not as a hint/u);
@@ -4496,6 +4520,38 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
 });
 
+test("Codex installation makes plugin hook trust explicit before starter onboarding", async () => {
+  const repositoryRoot = path.resolve(pluginDirectory, "..", "..");
+  const instructionPaths = [
+    path.join(repositoryRoot, "README.md"),
+    path.join(repositoryRoot, "docs", "plugin-setup-and-policies.md"),
+    path.join(pluginDirectory, "README.md"),
+  ];
+
+  for (const instructionPath of instructionPaths) {
+    const instructions = await readFile(instructionPath, "utf8");
+    const installIndex = instructions.indexOf(
+      "codex plugin add trelio-agent-workspaces@trelio-plugins",
+    );
+    const hookTrustIndex = instructions.indexOf("После установки");
+    const starterIndex = instructions.indexOf("starter prompt");
+
+    assert.ok(installIndex >= 0, `${instructionPath} must include plugin installation`);
+    assert.ok(
+      hookTrustIndex > installIndex,
+      `${instructionPath} must require hook review after plugin installation`,
+    );
+    assert.ok(
+      starterIndex > hookTrustIndex,
+      `${instructionPath} must require hook review before the starter prompt`,
+    );
+    assert.match(instructions, /Codex Desktop/u);
+    assert.match(instructions, /Codex CLI[^\n]*`\/hooks`/u);
+    assert.match(instructions, /не доверяет\s+plugin-bundled hooks автоматически/u);
+    assert.match(instructions, /bypass-флаг/u);
+  }
+});
+
 test("plugin exposes focused value-free diagnostics for setup and hook failures", async () => {
   const diagnosticsDirectory = path.join(
     pluginDirectory,
@@ -4545,7 +4601,7 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(workerSkill, /dedicated trelio-diagnostics skill/u);
 });
 
-test("bundled skills reserve hook activation for Trelio's missing-proof signal", async () => {
+test("bundled skills reserve missing-proof recovery for Trelio's server signal", async () => {
   const recoveryPhrase = /Откройте\s+настройки\s+плагина\s+Trelio\s+Agent\s+Workspaces,\s+включите\s+Hooks\s+и\s+повторите\s+запрос\./u;
   const recoveryFiles = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),

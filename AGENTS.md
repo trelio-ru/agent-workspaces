@@ -224,6 +224,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
   ID или private key и не объявляет Hooks включёнными: client approval остаётся
   `client_managed_unknown` до отдельного client/live-read подтверждения.
+- Codex onboarding после подтверждённой установки плагина явно останавливается
+  на пользовательском review текущего hook definition: в desktop это раздел
+  Hooks в настройках плагина, в CLI – `/hooks`. Установка либо enable плагина не
+  считаются доверием к его hooks; агент не автоматизирует approval, не использует
+  bypass-флаг и не подменяет live proof результатом doctor-а. Уже наблюдённый
+  `PreToolUse` не требует повторного review в той же задаче, а стандартный
+  `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed recovery.
 - Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

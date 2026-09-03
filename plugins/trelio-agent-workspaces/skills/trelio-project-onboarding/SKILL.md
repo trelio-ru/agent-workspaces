@@ -184,7 +184,28 @@ current task.
    `codex plugin add trelio-agent-workspaces@trelio-plugins`. Treat
    `INSTALLED_BY_DEFAULT` only as a host optimization, never as a reason to
    skip this live installation check.
-2. Resolve the exact company before `get_agent_instructions` or any local file
+2. In Codex, make approval of this plugin's hooks an explicit user checkpoint
+   after confirming that the plugin is installed and before the first protected
+   Trelio call. Installing or enabling a plugin does not make its bundled hooks
+   trusted automatically. If no `PreToolUse` event from this exact plugin has
+   already run in the current task and the user has not just confirmed the
+   review, stop setup and give one client-specific action:
+   - In Codex Desktop say:
+     `Откройте настройки плагина Trelio Agent Workspaces, проверьте раздел Hooks,
+     включите их и повторите запрос.`
+   - In Codex CLI say:
+     `Откройте /hooks, выберите Trelio Agent Workspaces, проверьте текущую
+     конфигурацию, разрешите её и повторите запрос.`
+   The user performs this review. Never automate trust, use
+   `--dangerously-bypass-hook-trust`, or infer approval from an installed/enabled
+   plugin, `hooks.json`, `codex plugin list --json`, or doctor output. In
+   particular, `approvalStatus=client_managed_unknown` is not a positive or
+   negative result. A successful or failed `PreToolUse` event proves that the
+   hook is active for this task, so do not repeat this onboarding checkpoint in
+   that case. The later `TRELIO_RUNTIME_HOOK_REQUIRED` handling remains the
+   end-to-end fail-closed recovery if client trust changes or the hook did not
+   load.
+3. Resolve the exact company before `get_agent_instructions` or any local file
    write. Call `list_companies` unless a live response in the current turn has
    already returned the accessible companies. Read each returned company's
    metadata-only `encryptionState`; a legacy item without that field may be
@@ -204,10 +225,10 @@ current task.
      company is accessible. If several are accessible, ask the user before any
      scoped read or write. A user correction invalidates the previous candidate
      and requires this resolution again before continuing.
-3. Bind a project slug only when the user wants this whole working folder
+4. Bind a project slug only when the user wants this whole working folder
    restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
-4. For `plain` or `encrypted`, call `get_agent_instructions` for the resolved
+5. For `plain` or `encrypted`, call `get_agent_instructions` for the resolved
    company and optional project before substantive work. The logical method
    does not change with transport:
    - For `plain`, use the native result directly.

@@ -66,6 +66,14 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
 ```
 
+После установки явно разрешите hooks плагина. В Codex Desktop откройте
+настройки `Trelio Agent Workspaces`, просмотрите текущую конфигурацию в разделе
+Hooks и включите её. В Codex CLI откройте `/hooks`, выберите источник
+`Trelio Agent Workspaces`, проверьте текущую конфигурацию и отметьте её
+доверенной. Codex не доверяет
+plugin-bundled hooks автоматически и пропускает новую либо изменённую definition
+до такого review; bypass-флаг для онбординга не используется.
+
 Codex CLI регистрирует marketplace и устанавливает plugin разными операциями,
 поэтому сообщение об успешно добавленном источнике ещё не означает готовую
 установку. Policy `INSTALLED_BY_DEFAULT` остаётся ускорением для host-ов,
@@ -83,7 +91,7 @@ codex mcp login trelio
 текущей задаче. Новая нужна только если инструменты в ней фактически не
 появились.
 
-Ручное открытие `Plugins` не является основным OAuth fallback. Полный
+Ручное открытие `Plugins` ради OAuth не является основным fallback. Полный
 перезапуск Codex нужен только тогда, когда новая задача по-прежнему не видит
 инструменты Trelio или использует старую версию плагина.
 
