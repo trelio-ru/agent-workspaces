@@ -4294,6 +4294,9 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
     "utf8",
   );
   const onboardingSkillNormalized = onboardingSkill.replace(/\s+/gu, " ");
+  const managedBindingBlock = onboardingSkill.match(
+    /```markdown\n(<!-- trelio-agent-workspaces:start -->[\s\S]*?<!-- trelio-agent-workspaces:end -->)\n```/u,
+  )?.[1];
 
   assert.deepEqual(codexManifest.interface.defaultPrompt, [
     "Настрой Trelio Agent Workspaces для текущей рабочей папки.",
@@ -4321,7 +4324,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   );
   assert.match(
     onboardingSkill,
-    /contains only regular root\s+`AGENTS\.md` and\/or `AGENTS\.override\.md`/u,
+    /contains only regular root\s+`AGENTS\.md`, `AGENTS\.override\.md`, and\/or `CLAUDE\.md`/u,
   );
   assert.match(onboardingSkill, /atomically rename the exact `\.git` directory/u);
   assert.match(onboardingSkill, /`\.git\.trelio-detached-<UTC-timestamp>`/u);
@@ -4329,7 +4332,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /does not need a separate confirmation/u);
   assert.match(
     onboardingSkill,
-    /do not alter Git and stop before Trelio calls or an\s+`AGENTS\.md` write/u,
+    /do not alter Git and stop before Trelio calls or an\s+instruction-file write/u,
   );
   assert.match(onboardingSkill, /отдельную обычную папку проекта без Git/u);
   assert.match(
@@ -4361,30 +4364,36 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /`\/reload-plugins`/u);
   assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
   assert.match(onboardingAgentMetadata, /\$trelio-project-onboarding/u);
-  assert.match(onboardingSkill, /<!-- trelio-agent-workspaces:start -->/u);
-  assert.match(
-    onboardingSkillNormalized,
-    /Перед первым содержательным ответом по работе в этой папке/u,
-  );
-  assert.match(onboardingSkillNormalized, /получи из Trelio актуальные правила/u);
-  assert.match(
-    onboardingSkillNormalized,
-    /правила компании и, если определён конкретный проект, правила этого проекта/u,
-  );
-  assert.match(
-    onboardingSkillNormalized,
-    /контекст в доступных задачах, досье и их Agent Workspace/u,
-  );
-  assert.match(
-    onboardingSkillNormalized,
-    /По умолчанию считай любой содержательный запрос в этой папке связанным/u,
-  );
-  assert.match(onboardingSkillNormalized, /Пропускай обращение к Trelio только/u);
-  assert.match(onboardingSkillNormalized, /его контекст не проверен/u);
-  assert.match(onboardingSkillNormalized, /не связывает с Trelio Git-репозиторий/u);
+  assert.equal(managedBindingBlock, `<!-- trelio-agent-workspaces:start -->
+## Trelio
+
+Папка привязана к компании «Компания» (\`company-slug\`). Это контекст работы, а не привязка Git-репозитория.
+
+Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
+
+Если нужного контекста нет:
+
+- для точной задачи вызови \`get_task\`;
+- иначе получи правила через \`get_agent_instructions\`, затем вызови Trelio \`search\` с \`companySlugs: ["company-slug"]\`.
+
+До этого не используй WebSearch, WebFetch, другие внешние источники и не отвечай по существу из собственных знаний.
+
+Не решай самостоятельно, что запрос «нерабочий» или не требует Trelio. Пропустить проверку можно только по прямому указанию пользователя в текущем сообщении.
+
+Если Trelio недоступен, сообщи, что контекст не проверен, и не подменяй его догадками.
+<!-- trelio-agent-workspaces:end -->`);
+  assert.match(onboardingSkill, /created with exactly `@AGENTS\.md` followed by one newline/u);
+  assert.match(onboardingSkill, /preserve unrelated instructions and add that standalone\s+import only when it is absent/u);
+  assert.match(onboardingSkill, /import `@AGENTS\.override\.md` instead/u);
+  assert.match(onboardingSkill, /Never add both\s+imports or duplicate one/u);
+  assert.match(onboardingSkill, /non-regular `CLAUDE\.md` target/u);
   assert.match(
     onboardingSkill,
-    /Do not describe\s+the instruction file as uncommitted or suggest committing it/u,
+    /For an `encrypted` company[\s\S]{0,320}Remote\s+`get_agent_instructions` cannot read encrypted rules/u,
+  );
+  assert.match(
+    onboardingSkill,
+    /Do not\s+describe the instruction files as uncommitted or suggest committing them/u,
   );
   assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
   assert.match(

@@ -1,6 +1,6 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in one durable non-Git local context folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in one durable non-Git local context folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding and Claude Code import, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block or CLAUDE.md import, or when the user wants to configure the Trelio skills available to them.
 ---
 
 # Trelio Working-Folder Onboarding
@@ -81,8 +81,8 @@ current task.
      in-progress operation, non-sample hooks, alternates, or repository-local
      configuration beyond ordinary fresh `git init` metadata;
    - outside `.git`, the folder is empty or contains only regular root
-     `AGENTS.md` and/or `AGENTS.override.md` files. Any other entry makes the
-     repository ambiguous rather than disposable.
+     `AGENTS.md`, `AGENTS.override.md`, and/or `CLAUDE.md` files. Any other entry
+     makes the repository ambiguous rather than disposable.
 
    Make this cleanup recoverable: atomically rename the exact `.git` directory,
    without following links or overwriting a target, to a unique root-level
@@ -94,7 +94,7 @@ current task.
 6. For every existing or ambiguous repository—including any parent worktree,
    any commit or remote, a `.git` gitfile, or a no-commit repository that fails
    one strict condition above—do not alter Git and stop before Trelio calls or an
-   `AGENTS.md` write. Say:
+   instruction-file write. Say:
    `Выбрана папка Git-репозитория. Trelio-привязка в неё не записана. Откройте
    отдельную обычную папку проекта без Git и повторите настройку.` Explain that
    Trelio context should come through company/project rules, an exact task or
@@ -234,32 +234,40 @@ Read the selected working-folder instruction files before writing:
 - Never replace unrelated existing instructions. If the managed markers
   already exist, update only their complete block. Otherwise append the block
   after a blank line or create a new file.
+- Also create or safely extend the regular root `CLAUDE.md` so Claude Code loads
+  the same binding. For the normal `AGENTS.md` target, a missing file must be
+  created with exactly `@AGENTS.md` followed by one newline. If `CLAUDE.md`
+  already exists, preserve unrelated instructions and add that standalone
+  import only when it is absent. If the user selected `AGENTS.override.md` as
+  the effective target, import `@AGENTS.override.md` instead. Never add both
+  imports or duplicate one. Reject a symlink, directory, device, or other
+  non-regular `CLAUDE.md` target.
 - Show the exact proposed block or concise diff before the write. Invoking
   onboarding and choosing the company authorizes this expected,
   reversible local edit; do not add a second ceremonial confirmation unless
   the target file or scope is ambiguous.
 
-Use this block, substituting the verified display name and slug:
+For a `plain` company, use this block exactly, substituting only the verified
+display name and slug:
 
 ```markdown
 <!-- trelio-agent-workspaces:start -->
-## Контекст Trelio
+## Trelio
 
-Эта обычная локальная папка задаёт Trelio-контекст компании «Компания»
-(`company-slug`) и не связывает с Trelio Git-репозиторий.
+Папка привязана к компании «Компания» (`company-slug`). Это контекст работы, а не привязка Git-репозитория.
 
-Перед первым содержательным ответом по работе в этой папке обязательно
-используй Trelio Agent Workspaces: получи из Trelio актуальные правила компании
-и, если определён конкретный проект, правила этого проекта. Затем проверь
-относящийся к запросу контекст в доступных задачах, досье и их Agent Workspace.
+Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
-По умолчанию считай любой содержательный запрос в этой папке связанным с
-её рабочим контекстом, даже если пользователь не упомянул Trelio явно. Пропускай
-обращение к Trelio только когда пользователь прямо указал, что запрос не связан с
-Trelio или работой в этой папке.
+Если нужного контекста нет:
 
-Если Trelio недоступен, прямо сообщи, что его контекст не проверен, и не
-подменяй недоступные данные догадками.
+- для точной задачи вызови `get_task`;
+- иначе получи правила через `get_agent_instructions`, затем вызови Trelio `search` с `companySlugs: ["company-slug"]`.
+
+До этого не используй WebSearch, WebFetch, другие внешние источники и не отвечай по существу из собственных знаний.
+
+Не решай самостоятельно, что запрос «нерабочий» или не требует Trelio. Пропустить проверку можно только по прямому указанию пользователя в текущем сообщении.
+
+Если Trelio недоступен, сообщи, что контекст не проверен, и не подменяй его догадками.
 <!-- trelio-agent-workspaces:end -->
 ```
 
@@ -270,9 +278,18 @@ sentence:
 Работа ограничена проектом «Проект» (`project-slug`).
 ```
 
+For an `encrypted` company, keep the same block but replace only its second
+context lookup bullet with the following line. Remote
+`get_agent_instructions` cannot read encrypted rules; the native tool returns
+the authoritative local-provider continuation for this company:
+
+```markdown
+- иначе вызови Trelio `search` с `companySlugs: ["company-slug"]`.
+```
+
 Do not write the current skill list, connection state, user credentials, IDs,
-tokens, or local paths into `AGENTS.md`. Skills and connections are live Trelio
-state and may change after this file is created.
+tokens, or local paths into the instruction files. Skills and connections are
+live Trelio state and may change after these files are created.
 
 ## Connect the local component
 
@@ -483,10 +500,10 @@ returns its complete `ready` result. For transitional states, report the exact
 blocker. Do not present the company as absent merely because a content tool is
 unavailable.
 
-If `AGENTS.md` or `AGENTS.override.md` changed, tell the user that future tasks
-or Claude sessions opened in this folder will use the binding automatically
-and that a new task/session is required for the instruction file to become
-active. The current onboarding process may still finish connection checks
-because this skill already carries the explicit setup scope. Do not describe
-the instruction file as uncommitted or suggest committing it: the binding
-folder is non-Git by contract.
+If `AGENTS.md`, `AGENTS.override.md`, or `CLAUDE.md` changed, tell the user that
+future tasks or Claude sessions opened in this folder will use the binding
+automatically and that a new task/session is required for the instruction files
+to become active. The current onboarding process may still finish connection
+checks because this skill already carries the explicit setup scope. Do not
+describe the instruction files as uncommitted or suggest committing them: the
+binding folder is non-Git by contract.

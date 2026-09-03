@@ -6,7 +6,7 @@
 - OAuth и новый контекст
 - Локальные Node.js и Git
 - Pairing локального bridge
-- Claude Code и Claude Cowork
+- Claude Code
 - Политика моделей
 - Правила компании, проекта и пользователя
 
@@ -154,12 +154,11 @@ bridge вызывает authenticated self-revoke. Неуспешный cleanup 
 secret-write/checkout действия. Права управления правилами и чтения secret
 metadata остаются у основного MCP OAuth.
 
-## Claude Code и Claude Cowork
+## Claude Code
 
 В Claude Code пользователь сначала открывает терминал в постоянной рабочей
 папке и запускает `claude` из неё. Пустая папка допустима, Git-репозиторий
-необязателен. В Cowork задача должна получить доступ к выбранной папке до
-установки плагина.
+необязателен.
 
 ```text
 /plugin marketplace add trelio-ru/agent-workspaces
@@ -181,6 +180,12 @@ claude mcp login plugin:trelio-agent-workspaces:trelio
 завершите эту сессию, снова запустите `claude` из той же папки и попросите
 `Настрой Trelio Agent Workspaces для текущей рабочей папки`. Полный restart –
 последний fallback.
+
+Onboarding безопасно создаёт или обновляет размеченный Trelio-блок в корневом
+`AGENTS.md`. Рядом создаётся обычный `CLAUDE.md` с единственным импортом
+`@AGENTS.md`; если файл уже содержит другие инструкции, они сохраняются, а
+импорт добавляется один раз. Символическая ссылка не используется. Новая
+сессия `claude` нужна, чтобы изменённые инструкции стали активны.
 
 Codex и Claude используют отдельные MCP registrations одного plugin bundle.
 Codex сохраняет свой inline manifest с plugin-root-relative `command`/`cwd` и
