@@ -3865,7 +3865,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.18.1");
+  assert.equal(BRIDGE_VERSION, "1.18.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -8350,6 +8350,33 @@ test("bridge creates a default WORKLOG only when missing and preserves later edi
     assert.equal(
       await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
       "# Формат журнала компании\n",
+    );
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge preserves the leading status column for the first changed path", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-status-columns-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Initial workspace context"]);
+
+    await writeFile(
+      path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"),
+      "# Обновлённый контекст\n",
+      "utf8",
+    );
+
+    assert.equal(
+      await getGitStatus(workspaceDirectory),
+      " M WORKSPACE_CONTEXT.md",
+      "the first short-status line must retain both positional status columns",
     );
   } finally {
     await rm(workspaceDirectory, { recursive: true, force: true });

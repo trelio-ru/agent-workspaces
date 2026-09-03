@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.18.1";
+export const BRIDGE_VERSION = "1.18.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -10823,7 +10823,14 @@ const checkpoint = async (options) => withRun(async ({
 
 export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
   const result = await runGit(["status", "--short"], { cwd: workspaceDirectory });
-  let statusLines = result.stdout.trim() ? result.stdout.trim().split("\n") : [];
+  // Первые два символа porcelain short-status — позиционные колонки index и
+  // worktree. Поэтому нельзя trim-ить весь stdout: у первой unstaged-строки
+  // ведущий пробел является данными, а его потеря затем съедает первую букву
+  // пути при line.slice(3). Убираем только завершающую пустую строку и CR от
+  // Windows-переноса, сохраняя каждую status-строку byte-for-byte по смыслу.
+  let statusLines = result.stdout
+    .split(/\r?\n/u)
+    .filter((line) => line.length > 0);
 
   if (statusLines.includes(`?? ${WORKLOG_FILE_NAME}`)) {
     const worklog = await inspectWorkspaceWorklog(workspaceDirectory);
