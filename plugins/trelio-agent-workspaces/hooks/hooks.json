@@ -15,7 +15,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(mcp__)?trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$",
+        "matcher": "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
         "hooks": [
           {
             "type": "command",

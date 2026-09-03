@@ -208,10 +208,13 @@ runtime-session и прозрачно добавляет одноразовый 
 recovery доступны без admission; context, mutation и Agent Workspace требуют
 proof и полную company policy.
 
-В v1.13 `PreToolUse` matcher ограничен всеми поддерживаемыми формами имени
-Trelio MCP и больше не запускает Node.js для посторонних tools. `SessionStart`
-и `SessionEnd` остаются wildcard lifecycle matchers, а обработка startup,
-resume, compact, clear и будущих source значений живёт в runtime-скрипте.
+`PreToolUse` matcher охватывает direct Trelio MCP в Codex, plugin-qualified
+имена вида `mcp__plugin_trelio-agent-workspaces_trelio__...` в Claude Code и
+exact local facade `continue_trelio_local_action`, который передаёт proof в
+защищённый native-вызов. Другие local и посторонние tools не запускают Node.js.
+`SessionStart` и `SessionEnd` остаются wildcard lifecycle matchers, а обработка
+startup, resume, compact, clear и будущих source значений живёт в
+runtime-скрипте.
 Изменение definition при переходе с v1.12 может потребовать один client review;
 дальнейшие behavior-only исправления скрипта не требуют менять `hooks.json`.
 Параллельные первые protected calls разделяют одну регистрацию, а SessionEnd

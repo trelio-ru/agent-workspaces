@@ -288,8 +288,10 @@ const EXPECTED_RUNTIME_HOOK_COMMAND =
   'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
 // Lifecycle matchers remain intentionally broad. Client event sources may grow
 // without changing the trusted hook definition; the script itself decides how
-// to handle each source. PreToolUse is scoped to every supported Trelio MCP
-// naming form so unrelated tool calls do not pay a process-startup cost.
+// to handle each source. PreToolUse covers direct Trelio calls in both Codex
+// and Claude Code plus the one local action facade that forwards protected
+// native calls. Other local or unrelated tools do not pay a process-startup
+// cost and cannot receive a Trelio runtime proof.
 const EXPECTED_RUNTIME_HOOK_CONTRACT = Object.freeze({
   SessionStart: Object.freeze({
     matcher: "*",
@@ -298,7 +300,7 @@ const EXPECTED_RUNTIME_HOOK_CONTRACT = Object.freeze({
     timeout: 10,
   }),
   PreToolUse: Object.freeze({
-    matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$",
+    matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
     type: "command",
     command: EXPECTED_RUNTIME_HOOK_COMMAND,
     timeout: 15,

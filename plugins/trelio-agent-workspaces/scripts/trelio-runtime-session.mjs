@@ -39,8 +39,14 @@ const PLUGIN_UPGRADE_CODES = new Set([
 ]);
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/u;
 const TRELIO_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
+// Claude Code qualifies MCP servers contributed by a plugin inside hook
+// payloads. Match the exact plugin and server rather than a broad suffix: a
+// different MCP server must never receive a proof signed for a Trelio tool.
+const CLAUDE_PLUGIN_TRELIO_TOOL_PATTERN =
+  /^mcp__plugin_trelio-agent-workspaces_trelio__([a-z0-9_]+)$/iu;
 const LOCAL_ACTION_HOST_TOOL_PATTERNS = [
   /^(?:mcp__)?trelio_remote_skills__continue_trelio_local_action$/iu,
+  /^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$/iu,
   /^(?:mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$/iu,
 ];
 const RUNTIME_STATE_LOCK_WAIT_MILLISECONDS = 5_000;
@@ -86,6 +92,8 @@ export const resolveTrelioMcpToolName = (hookInput) => {
   }
   const doubleUnderscore = rawName.match(/^(?:mcp__)?trelio__([a-z0-9_]+)$/iu);
   if (doubleUnderscore) return doubleUnderscore[1].toLowerCase();
+  const claudePluginQualified = rawName.match(CLAUDE_PLUGIN_TRELIO_TOOL_PATTERN);
+  if (claudePluginQualified) return claudePluginQualified[1].toLowerCase();
   const separated = rawName.match(
     /^(?:mcp[:./-])?trelio[:./-]([a-z0-9_]+)$/iu,
   );

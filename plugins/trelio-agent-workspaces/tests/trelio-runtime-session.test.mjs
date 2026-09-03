@@ -71,11 +71,21 @@ test("hook protects context and mutation but leaves discovery and recovery open"
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__get_task" }), "get_task");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__get_tasks" }), "get_tasks");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__trelio__list_my_tasks" }), "list_my_tasks");
+  assert.equal(resolveTrelioMcpToolName({
+    tool_name: "mcp__plugin_trelio-agent-workspaces_trelio__get_task",
+  }), "get_task");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp:trelio:get_task" }), "get_task");
   assert.equal(resolveTrelioMcpToolName({ tool_name: "mcp__other__trelio__get_task" }), null);
+  assert.equal(resolveTrelioMcpToolName({
+    tool_name: "mcp__plugin_other-plugin_trelio__get_task",
+  }), null);
   assert.equal(resolveTrelioMcpToolName({ tool_name: "exec_command" }), null);
   assert.equal(resolveTrelioMcpToolName({
     tool_name: "mcp__trelio_remote_skills__continue_trelio_local_action",
+    tool_input: { nativeTool: "create_task", arguments: {} },
+  }), "create_task");
+  assert.equal(resolveTrelioMcpToolName({
+    tool_name: "mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action",
     tool_input: { nativeTool: "create_task", arguments: {} },
   }), "create_task");
   assert.equal(resolveTrelioMcpToolName({
@@ -167,7 +177,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
         }],
       }],
       PreToolUse: [{
-        matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$",
+        matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
         handlers: [{
           type: "command",
           command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"',
@@ -187,8 +197,32 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
   const preToolUseMatcher = new RegExp(hooks.hooks.PreToolUse[0].matcher, "u");
   assert.equal(preToolUseMatcher.test("mcp__trelio__get_task"), true);
   assert.equal(preToolUseMatcher.test("mcp__trelio__get_tasks"), true);
+  assert.equal(
+    preToolUseMatcher.test("mcp__plugin_trelio-agent-workspaces_trelio__get_task"),
+    true,
+  );
   assert.equal(preToolUseMatcher.test("mcp:trelio:get_task"), true);
+  assert.equal(
+    preToolUseMatcher.test("mcp__trelio_remote_skills__continue_trelio_local_action"),
+    true,
+  );
+  assert.equal(
+    preToolUseMatcher.test(
+      "mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action",
+    ),
+    true,
+  );
   assert.equal(preToolUseMatcher.test("mcp__other__trelio__get_task"), false);
+  assert.equal(
+    preToolUseMatcher.test("mcp__plugin_other-plugin_trelio__get_task"),
+    false,
+  );
+  assert.equal(
+    preToolUseMatcher.test(
+      "mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_context",
+    ),
+    false,
+  );
   assert.equal(preToolUseMatcher.test("mcp__filesystem__read_file"), false);
   assert.equal(preToolUseMatcher.test("exec_command"), false);
   assert.match(JSON.stringify(hooks), /trelio-runtime-session\.mjs/u);
@@ -298,7 +332,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   }
 });
 
-test("SessionStart pins the initial model and PreToolUse injects a verifiable proof", async () => {
+test("SessionStart pins the initial model and supported host names inject verifiable proofs", async () => {
   const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-e2e-"));
   const transcriptPath = path.join(temporaryHome, "rollout.jsonl");
   const configDirectory = path.join(temporaryHome, ".config", "trelio", "workspace-bridge");
@@ -401,6 +435,68 @@ test("SessionStart pins the initial model and PreToolUse injects a verifiable pr
       ].join("\n")),
       publicKey,
       Buffer.from(proof.signature, "base64url"),
+    ), true);
+
+    // Claude Code qualifies both plugin MCP servers in hook payloads. Reuse
+    // the already registered state here so this assertion isolates name
+    // routing and proves that the resulting signature remains native-tool
+    // bound rather than plugin-namespace bound.
+    const claudeGuarded = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      model: "gpt-5.4",
+      transcript_path: transcriptPath,
+      tool_name: "mcp__plugin_trelio-agent-workspaces_trelio__get_task",
+      tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 3 },
+    }, environment);
+    assert.equal(claudeGuarded.exitCode, 0);
+    assert.equal(claudeGuarded.stderr, "");
+    const claudeUpdatedInput = JSON.parse(
+      claudeGuarded.stdout,
+    ).hookSpecificOutput.updatedInput;
+    assert.equal(claudeUpdatedInput.taskNumber, 3);
+    assert.equal(crypto.verify(
+      null,
+      Buffer.from([
+        "trelio-runtime-proof-v1",
+        runtimeSessionId,
+        "get_task",
+        claudeUpdatedInput.runtimeSessionProof.issuedAt,
+        claudeUpdatedInput.runtimeSessionProof.nonce,
+      ].join("\n")),
+      publicKey,
+      Buffer.from(claudeUpdatedInput.runtimeSessionProof.signature, "base64url"),
+    ), true);
+
+    const localActionGuarded = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      model: "gpt-5.4",
+      transcript_path: transcriptPath,
+      tool_name: "mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action",
+      tool_input: {
+        companySlug: "vkus",
+        nativeTool: "create_task",
+        arguments: { projectSlug: "first", title: "Test" },
+      },
+    }, environment);
+    assert.equal(localActionGuarded.exitCode, 0);
+    assert.equal(localActionGuarded.stderr, "");
+    const localActionInput = JSON.parse(
+      localActionGuarded.stdout,
+    ).hookSpecificOutput.updatedInput;
+    assert.equal(localActionInput.nativeTool, "create_task");
+    assert.equal(crypto.verify(
+      null,
+      Buffer.from([
+        "trelio-runtime-proof-v1",
+        runtimeSessionId,
+        "create_task",
+        localActionInput.runtimeSessionProof.issuedAt,
+        localActionInput.runtimeSessionProof.nonce,
+      ].join("\n")),
+      publicKey,
+      Buffer.from(localActionInput.runtimeSessionProof.signature, "base64url"),
     ), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));
