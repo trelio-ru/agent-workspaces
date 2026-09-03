@@ -10,9 +10,10 @@ starting a disposable Trelio workspace run. The folder is a control-plane entry
 point, not a Git-repository association. Resolve work through current company
 and project rules, an exact task or dossier, and their Agent Workspaces. Keep
 the binding durable in that folder's instruction file. Read live company
-metadata from Trelio. Read the current skill catalog and company-content
-instructions only when the selected company is in ordinary `plain` mode;
-encrypted content stays on the local bridge.
+metadata from Trelio. Read company-content instructions through
+`get_agent_instructions` and follow Trelio's selected provider; encrypted
+content stays on the local bridge. Read the current skill catalog only when the
+selected company is in ordinary `plain` mode.
 
 Discovery and pairing/session recovery remain available without runtime
 admission so setup can be repaired. Protected context/mutation calls receive a
@@ -206,22 +207,23 @@ current task.
 3. Bind a project slug only when the user wants this whole working folder
    restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
-4. Route by the selected company's exact `encryptionState`:
-   - For `plain`, call `get_agent_instructions` for the resolved company and
-     optional project before making substantive setup changes. Follow the
-     effective working rules and authenticated user's personal profile without
-     copying either into the local working-folder binding.
-   - For `encrypted`, do not call `get_agent_instructions`: remote MCP cannot
-     read those encrypted rules. Continue folder binding and local bridge setup
-     from the open company metadata only. Do not claim that the rules were
-     loaded. The local encryption setup below must open this device's company
-     envelope and pass its crypto self-test before onboarding is complete.
-   - For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state,
-     do not call `get_agent_instructions` and do not treat the company as ready.
-     The folder binding and ordinary bridge pairing may be completed, but stop
-     encrypted content work with the exact state and required company-settings
-     action. Never create a Run or use plaintext fallback to probe through a
-     transitional state.
+4. For `plain` or `encrypted`, call `get_agent_instructions` for the resolved
+   company and optional project before substantive work. The logical method
+   does not change with transport:
+   - For `plain`, use the native result directly.
+   - For `encrypted`, follow the returned `providerSelection` through its exact
+     local action after completing bridge pairing and encryption setup below.
+     Do not skip or rename `get_agent_instructions`; Trelio changes only the
+     transport. Treat the rules as loaded only after the local continuation
+     succeeds.
+   Follow the effective working rules and authenticated user's personal profile
+   without copying either into the local working-folder binding.
+   For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state, do
+   not call `get_agent_instructions` and do not treat the company as ready. The
+   folder binding and ordinary bridge pairing may be completed, but stop
+   encrypted content work with the exact state and required company-settings
+   action. Never create a Run or use plaintext fallback to probe through a
+   transitional state.
 
 ## Create or extend the local instruction file
 
@@ -247,7 +249,7 @@ Read the selected working-folder instruction files before writing:
   reversible local edit; do not add a second ceremonial confirmation unless
   the target file or scope is ambiguous.
 
-For a `plain` company, use this block exactly, substituting only the verified
+Use this block exactly for every ready company, substituting only the verified
 display name and slug:
 
 ```markdown
@@ -276,15 +278,6 @@ sentence:
 
 ```markdown
 Работа ограничена проектом «Проект» (`project-slug`).
-```
-
-For an `encrypted` company, keep the same block but replace only its second
-context lookup bullet with the following line. Remote
-`get_agent_instructions` cannot read encrypted rules; the native tool returns
-the authoritative local-provider continuation for this company:
-
-```markdown
-- иначе вызови Trelio `search` с `companySlugs: ["company-slug"]`.
 ```
 
 Do not write the current skill list, connection state, user credentials, IDs,

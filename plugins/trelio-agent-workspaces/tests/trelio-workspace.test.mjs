@@ -4389,8 +4389,9 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /non-regular `CLAUDE\.md` target/u);
   assert.match(
     onboardingSkill,
-    /For an `encrypted` company[\s\S]{0,320}Remote\s+`get_agent_instructions` cannot read encrypted rules/u,
+    /Use this block exactly for every ready company/u,
   );
+  assert.doesNotMatch(onboardingSkill, /replace only its second\s+context lookup bullet/u);
   assert.match(
     onboardingSkill,
     /Do not\s+describe the instruction files as uncommitted or suggest committing them/u,
@@ -4411,7 +4412,9 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /metadata-only `encryptionState`/u);
-  assert.match(onboardingSkill, /For `encrypted`, do not call `get_agent_instructions`/u);
+  assert.match(onboardingSkill, /logical method\s+does not change with transport/iu);
+  assert.match(onboardingSkill, /Do not skip or rename `get_agent_instructions`/u);
+  assert.match(onboardingSkill, /Trelio changes only the\s+transport/u);
   assert.match(onboardingSkill, /For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state/u);
   assert.match(onboardingSkill, /For every non-`plain` company, skip this entire section/u);
   assert.match(onboardingSkill, /do not call\s+`list_agent_skills`/u);

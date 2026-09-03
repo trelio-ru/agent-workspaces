@@ -185,7 +185,9 @@ Onboarding безопасно создаёт или обновляет разм�
 `AGENTS.md`. Рядом создаётся обычный `CLAUDE.md` с единственным импортом
 `@AGENTS.md`; если файл уже содержит другие инструкции, они сохраняются, а
 импорт добавляется один раз. Символическая ссылка не используется. Новая
-сессия `claude` нужна, чтобы изменённые инструкции стали активны.
+сессия `claude` нужна, чтобы изменённые инструкции стали активны. Текст блока
+одинаков для plain и encrypted: меняется выбранный Trelio transport, а не
+логические методы `get_agent_instructions`, `get_task` и `search`.
 
 Codex и Claude используют отдельные MCP registrations одного plugin bundle.
 Codex сохраняет свой inline manifest с plugin-root-relative `command`/`cwd` и
