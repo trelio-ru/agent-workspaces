@@ -309,8 +309,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   Encrypted comment publish replay принимает новый randomized marker только
   через verified bridge и возвращает success лишь после local plaintext
   comparison с фактически сохранённым hydrated comment.
-  Local MCP возвращает полный MCP App result и exact v3 resource metadata,
-  включая `data:` frame CSP; app-only context/action aliases скрыты от модели.
+  Local MCP возвращает полный MCP App result и exact v4 resource metadata,
+  включая `data:` frame CSP; v3 остаётся compatibility resource. Native handoff
+  и local `context` визуально пусты, а review-карточку создаёт только `save`;
+  app-only context/action aliases скрыты от модели.
 - Чистое чтение уже принятого task/dossier Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит

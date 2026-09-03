@@ -52,6 +52,7 @@ import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_ACTION_TOOL,
   TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
@@ -113,6 +114,13 @@ const LOCAL_PROPOSAL_APP_TOOL_ROUTE = new Map([
   ["dismiss_task_checklist_proposal", { kind: "checklist", operation: "action", action: "dismiss" }],
 ]);
 const localProposalRouteById = new Map();
+const LOCAL_PROPOSAL_APP_RESOURCE_PATH_BY_URI = new Map([
+  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v4"],
+  ...TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS.map((uri) => [
+    uri,
+    "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
+  ]),
+]);
 const localProposalAppResourceCache = new Map();
 const COMPANY_SKILL_PLAN_DIRECTORY = path.join(
   resolveWorkspaceBridgeConfigDirectory(),
@@ -2979,7 +2987,7 @@ export const buildLocalProposalAppResourceMeta = () => ({
     csp: {
       connectDomains: [],
       resourceDomains: [],
-      // The shared v3 surface embeds the four reviewed single-proposal Apps as
+      // The shared v4 surface embeds the four reviewed single-proposal Apps as
       // sandboxed data frames. Both modern MCP Apps hosts and older OpenAI
       // hosts must receive the same permission on list and read responses.
       frameDomains: ["data:"],
@@ -3508,22 +3516,31 @@ const handleLocalProposalAppToolCall = async (
 export const readLocalProposalAppResource = async (
   origin,
   uri,
-  { signal } = {},
+  {
+    signal,
+    requireResourceToken = requireToken,
+    requestResource = request,
+  } = {},
 ) => {
-  if (uri !== TRELIO_LOCAL_PROPOSAL_RESOURCE_URI) {
+  const resourcePath = LOCAL_PROPOSAL_APP_RESOURCE_PATH_BY_URI.get(uri);
+  if (!resourcePath) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_RESOURCE_NOT_FOUND",
       "Unknown local Trelio MCP App resource.",
     );
   }
-  const cached = localProposalAppResourceCache.get(origin);
+  // Cache by both origin and immutable ui:// URI. Otherwise a compatibility
+  // read of v3 can poison a later v4 read with bytes labelled as the wrong
+  // resource, defeating the cache-safe rollout this version bump provides.
+  const cacheKey = `${origin}\u0000${uri}`;
+  const cached = localProposalAppResourceCache.get(cacheKey);
   if (cached) return cached;
 
-  const token = await requireToken(origin, { onStatus: () => undefined, signal });
-  const response = await request(
+  const token = await requireResourceToken(origin, { onStatus: () => undefined, signal });
+  const response = await requestResource(
     origin,
     token,
-    "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
+    resourcePath,
     { signal },
   );
   const declaredLength = Number(response.headers.get("content-length") || 0);
@@ -3549,12 +3566,12 @@ export const readLocalProposalAppResource = async (
       );
     }
     const resource = {
-      uri: TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+      uri,
       mimeType: TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
       text: html,
       _meta: buildLocalProposalAppResourceMeta(),
     };
-    localProposalAppResourceCache.set(origin, resource);
+    localProposalAppResourceCache.set(cacheKey, resource);
     return resource;
   } finally {
     bytes.fill(0);

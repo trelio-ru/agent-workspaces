@@ -127,9 +127,10 @@ draft → отдельное publish/apply/dismiss решение. Плагин 
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v3 resource metadata;
-исходная native-карточка закрывает placeholder после выбора local provider, а
-защищённая карточка загружается ниже и вызывает только app-only продолжения.
+полноценный App result со `structuredContent` и exact v4 resource metadata, а v3
+остаётся compatibility path. Native provider-handoff и служебный local `context`
+схлопываются без пустого editor/card; защищённая review-карточка появляется
+только после `save` и вызывает только app-only продолжения.
 
 Обычные mutation/read-tools сохраняют свои native имена, схемы, ACL,
 idempotency и CAS, но для encrypted company выполняются через один exact local
