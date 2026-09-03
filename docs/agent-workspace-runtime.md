@@ -20,7 +20,7 @@
 
 Папка онбординга – отдельная обычная non-Git точка входа. Она не связывает
 репозиторий с Trelio: контекст приходит из правил компании и выбранного проекта,
-точной задачи или досье и их Agent Workspace. Строго пустую Git-оболочку,
+точной задачи или воркспейса. Строго пустую Git-оболочку,
 которую успел создать host, onboarding отделяет recoverable-переименованием
 `.git` и сообщает путь резервной копии. При любом коммите, remote, ref,
 tracked/staged-файле, parent worktree или неоднозначном состоянии настройка не
@@ -37,19 +37,23 @@ metadata и применяется ко всем последующим Workspac
 canonical origin. Любой другой hostname или URL с path/query/credentials
 отклоняется до отправки bearer token.
 
-- `task` – результат принадлежит одной задаче;
-- `dossier` – долговременный именованный предмет без одной owning task;
+- у каждой задачи не больше одного канонического воркспейса;
+- долговременный именованный воркспейс имеет primary owner – один проект или
+  компанию – и может дополнительно связываться с любым числом проектов и задач
+  той же компании;
+- один Run всегда записывает ровно в один воркспейс; остальные выбранные
+  воркспейсы закрепляются только как read-only context.
 
-Project/company не являются material Workspace: это scope правил, ACL и owner
-досье. Project-wide материал сохраняется в project dossier, а действительно
-межпроектный и безопасный для всех участников – в явно подтверждённый company
-dossier.
+Project-wide материал по умолчанию сохраняется в воркспейсе проекта. Материал,
+который действительно нужен нескольким проектам, можно связать с каждым из них,
+не меняя primary project и закрепляемые правила. Company owner выбирается только
+для контекста, безопасного для всех активных участников компании.
 
 Если дана canonical task URL или exact coordinates, агент читает задачу
 напрямую. Иначе он отправляет одним каноническим `search` до пяти отдельных
 лексических вариантов в exact company scope. Один ответ объединяет проекты,
-активные и архивные задачи, task comments и accepted task/dossier Workspace
-files с exact scope metadata. Агент читает relevant документы, проверяет
+активные и архивные задачи, task comments, именованные воркспейсы и accepted
+Workspace files с exact metadata. Агент читает relevant документы, проверяет
 одну вероятную задачу через `get_task`, а 2-20 уже известных exact-задач –
 одним `get_tasks`; повторять `get_task` для такого набора нельзя. Агент не
 выбирает цель по одному похожему заголовку.
@@ -65,7 +69,7 @@ scope нельзя сузить честно либо timeout повторилс
 company/project discriminator. Bare HTTP 504 остаётся transport failure.
 
 Правила компании и проекта не входят в поисковый ranking. После выбора exact
-scope обычные `fetch`, `get_dossier`, `get_project_meta` и
+scope обычные `fetch`, `get_workspace`, `get_project_meta` и
 `get_task_create_meta` возвращают envelope `effectiveInstructions`. Task reads
 используют schema v3: уникальные инструкции находятся один раз в
 `effectiveInstructions.layers`, а каждый элемент `tasks[]` задаёт собственный
@@ -78,13 +82,18 @@ authority/core, а компактный `content` не дублирует payloa
 `get_agent_instructions`; `requires_scope` запускает стандартный consent и
 повторное чтение правил. Внутри уже подготовленного Run более новая revision из
 exact read не заменяет pinned `agent-instructions.md` и `user-profile.md` этого
-Run. Schema v1/v2 не поддерживаются plugin `1.14.2`: совместимая пара
-plugin/backend обязана использовать schema v3 и `get_task_sections`, а version
+Run. Schema v1/v2 не поддерживаются: совместимая пара plugin/backend обязана
+использовать schema v3 и `get_task_sections`, а version
 mismatch завершается обновлением вместо fallback к монолитному payload.
 
-Company dossier требует конкретной причины и явного подтверждения широкой
-видимости. Связанный участник задачи может читать dossier, но не получает
-write/Run/link-management права owner scope.
+ACL воркспейса – union primary owner и явных project/task links. Exact read
+проекта или задачи даёт read воркспейса, exact edit – write/Run; project
+observer остаётся read-only. Каждый активный участник компании читает
+company-owned воркспейс, а write/Run через owner scope остаётся у owner/admin.
+Derived access никогда не даёт transfer/link/reshare права и не раскрывает
+primary project. Registry/contact/meeting связи semantic и сами доступ не
+расширяют. Company workspace требует конкретной причины и явного подтверждения
+широкой видимости.
 
 ## Локальные вложения
 
@@ -102,31 +111,29 @@ reserved attachment ID, поэтому не создаёт дубликат. Inl
 
 ## Контекст и файлы
 
-У Run один writable task/dossier Workspace. Только явно выбранные related
-task/dossier Workspace materialize-ятся как pinned read-only context. Каждый
-target и файл повторно проходят ACL. Старый Run может сохранять immutable
-legacy parent company/project snapshots, но новый Run их не наследует.
+У Run один writable Workspace. Только явно выбранные related workspaces
+materialize-ятся как pinned read-only context. Каждый target и файл повторно
+проходят ACL.
 
-Agent сначала читает явные task/dossier связи, затем при необходимости одним
+Agent сначала читает явные task/workspace связи, затем при необходимости одним
 unified `search` с несколькими формулировками ищет prior context во всех
 доступных проектах exact компании. Он читает точные Workspace hits и передаёт
 до 20 materially relevant workspace IDs в
 `prepare_agent_workspace_run.relatedWorkspaceIds`. Workspace-only уточнение
 может использовать `search_agent_workspace_files`. Tool проверяет все цели и
-закрепляет их до создания Run. Legacy `attach_agent_workspace_context` остаётся
-для продолжения уже открытого старым клиентом Run. Прямо связанные
-task/dossier scopes разрешаются отдельно. Контекст не подмешивается в writable
-tree.
+закрепляет их до создания Run. Lower-level `attach_agent_workspace_context`
+нужен только для продолжения уже открытого Run. Прямо связанные scopes
+разрешаются отдельно. Контекст не подмешивается в writable tree.
 
-Если exact задача и одно досье образуют долговременный общий предмет, Worker
-сам создаёт task/dossier link без формального подтверждения: нужны минимум два
+Если exact задача и один воркспейс образуют долговременный общий предмет, Worker
+сам создаёт task/workspace link без формального подтверждения: нужны минимум два
 независимых устойчивых идентификатора, отсутствие конкурирующего кандидата и
-пригодность всего принятого содержимого для аудитории `task_full`. Связь
-намеренно открывает этим текущим и будущим участникам read-only доступ ко всему
-досье, в том числе из другого проекта, но не owner-project/write/Run/link права.
+пригодность всего принятого содержимого для аудитории задачи. Связь намеренно
+открывает текущим и будущим task readers доступ ко всему воркспейсу, а task
+editors – write/Run; owner-project и link-management права не выдаются.
 После mutation агент сообщает текущему пользователю объекты, evidence и access
 effect без автоматического task comment. Несколько кандидатов, один признак,
-временная релевантность или сомнение в whole-dossier disclosure требуют вопроса;
+временная релевантность или сомнение в whole-workspace disclosure требуют вопроса;
 weak hit игнорируется, а partial fit получает более узкий контекст.
 
 Крупные и binary файлы writable workspace materialize-ятся полностью. В
@@ -134,7 +141,7 @@ read-only context они остаются пятистрочными object poin
 `trelio-workspace context fetch --path <path>`. Bulk hydration запрещена.
 Проверенные bytes кэшируются по SHA-256 и копируются без mutable hardlink.
 
-Writable-копия одного task/dossier Workspace постоянно живёт в одном локальном
+Writable-копия одного Workspace постоянно живёт в одном локальном
 root. Для нового Workspace, открытого из прошедшей onboarding папки с
 управляемым Trelio-блоком, root создаётся внутри этой папки:
 
@@ -197,8 +204,9 @@ Control paths не раскрываются, а backend не получает fi
 
 ## Agent Run
 
-1. Агент вызывает `prepare_agent_workspace_run` один раз для exact task или
-   dossier; Trelio обеспечивает Workspace и создаёт Run с pinned base head, ACL, model policy, immutable
+1. Агент вызывает `prepare_agent_workspace_run` один раз для exact
+   `workspaceId` либо canonical workspace точной задачи; Trelio создаёт Run с
+   pinned base head, ACL, model policy, immutable
    instruction snapshots и related context. Native Trelio discovery не требует
    `search_agent_skills` или `list_agent_skills`; catalog search нужен только
    перед подключённым внешним сервисом, а full list – для явной инвентаризации.

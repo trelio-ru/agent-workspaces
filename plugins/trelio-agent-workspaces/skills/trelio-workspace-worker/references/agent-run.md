@@ -8,27 +8,24 @@ task communication, handoff, submit, or final reporting.
 
 ## Prepare and open the Run
 
-1. Complete `scope-and-context.md` first: resolve one exact task/dossier
-   writable target and only materially relevant same-company task/dossier
+1. Complete `scope-and-context.md` first: resolve one exact writable workspace
+   target and only materially relevant same-company workspace
    contexts. Do not guess IDs, repeat its discovery sequence, inherit
    company/project Workspace context, or use the external Agent Skill catalog
    for native Trelio control-plane work.
-2. Call `prepare_agent_workspace_run` once with the exact writable scope and
-   optional `relatedWorkspaceIds`. Task work uses task scope; a durable named
-   cross-task subject uses dossier scope. The tool rejects company/project
-   Workspace scope, ensures the exact task/dossier Workspace and rechecks write
-   ACL. By default it returns the initiating user's latest portable draft on
+2. Call `prepare_agent_workspace_run` once with the exact `workspaceId`, or
+   task addressing for its canonical workspace, plus optional
+   `relatedWorkspaceIds`. The tool rechecks write ACL for that exact workspace.
+   By default it returns the initiating user's latest portable draft on
    the current accepted head; otherwise it pins rules/profile/runtime policy,
    validates every related context and starts one fully prepared Run. Use
    `startNewRun=true` only for an intentional independent concurrent branch,
    because ordinary continuation must not discard earlier partial work. Do not separately call
    `get_agent_instructions`, `ensure_agent_workspace`,
    `start_agent_workspace_run` or `attach_agent_workspace_context` on this
-   compact path. The legacy tools remain only for continuation/recovery with an
-   already exact old Run. An exact company/project Run created before the
-   dossier-only migration may still be claimed, checkpointed and finished by
-   its existing Run ID; this compatibility never permits preparing or starting
-   another legacy-scope Run.
+   compact path. Lower-level tools remain only for continuation/recovery with
+   an already exact Run. One Run always writes one workspace; every supplied
+   related workspace is pinned read-only.
 3. Do not add runtime fields to prepare. The approved hook injects proof; the
    returned `open` command carries only server-authored runtime state. Execute
    the command through this loaded plugin's logical launcher. On any hook or
@@ -77,13 +74,11 @@ task communication, handoff, submit, or final reporting.
    value, version, grant, setup URL, runtime arguments, or unused discovery
    results.
 6. Read `../context/index.json` and selected snapshots under
-   `../context/related/<workspace-uuid>` as read-only pinned context. A legacy
-   Run may also contain immutable `../context/company` or
-   `../context/project`; preserve and read those only for that already-existing
-   Run, but never expect or create them for new work. For context selected after
-   `open`, use `trelio-workspace context attach --workspace <uuid>`; for an
+   `../context/related/<workspace-uuid>` as read-only pinned context. For
+   context selected after `open`, use
+   `trelio-workspace context attach --workspace <uuid>`; for an
    MCP-attached workspace use `context sync`.
-7. Related and legacy context is pointer-first. Inspect an exact file before use.
+7. Related context is pointer-first. Inspect an exact file before use.
    If it is the five-line `https://trelio.ru/spec/workspace-object/v1` pointer,
    run `trelio-workspace context fetch --path <exact-path>` before reading it.
    Fetch only needed files; never bulk hydrate. Backend reauthorizes Run,

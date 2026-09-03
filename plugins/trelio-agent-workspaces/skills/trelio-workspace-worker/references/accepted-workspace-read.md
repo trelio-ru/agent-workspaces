@@ -1,16 +1,16 @@
 # Accepted Workspace read
 
 Read this file completely before reading, reviewing, summarizing, comparing, or
-answering from already accepted task/dossier Workspace materials without changing
-them.
+answering from already accepted Workspace materials without changing them.
 
 ## Materialize without a Run
 
-1. Resolve the exact task or dossier UUID through `scope-and-context.md` unless it
-   is already known. A working-folder binding does not prove an accepted Workspace
-   exists.
-2. Call `prepare_agent_workspace_read` once with exact `scopeType` and `scopeId`.
-   It rechecks read ACL and returns the current accepted head plus exact
+1. Resolve the exact `workspaceId`, or the exact task whose canonical workspace
+   is needed, through `scope-and-context.md` unless it is already known. A
+   working-folder binding does not prove accepted materials exist.
+2. Call `prepare_agent_workspace_read` once with exact `workspaceId`, `taskId`,
+   or canonical task URL coordinates. It rechecks read ACL and returns the
+   current accepted head plus exact
    `trelio-workspace inspect --workspace ...`. If no accepted materials exist,
    report that fact; do not call `ensure_agent_workspace`,
    `prepare_agent_workspace_run`, or `start_agent_workspace_run` to create them.

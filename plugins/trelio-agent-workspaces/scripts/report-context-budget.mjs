@@ -36,7 +36,7 @@ export const LOCAL_COMPANY_CONTEXT_PATH =
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
   workerSkillBytes: 9_000,
-  // Durable task–dossier sharing is a required discovery decision for ordinary
+  // Durable task–workspace sharing is a required discovery decision for ordinary
   // task Runs, so its bounded policy belongs in scope-and-context rather than a
   // conditionally unread reference. Keep only the exact 1 KiB ceiling increase.
   requiredTaskRunSkillsBytes: 52_000,

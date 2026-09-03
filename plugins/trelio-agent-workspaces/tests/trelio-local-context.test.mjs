@@ -97,13 +97,20 @@ const mirror = {
         participants: [],
         controls: [],
       },
+      relatedWorkspaces: [{
+        id: "44444444-4444-4444-8444-444444444444",
+        title: "Архитектура локального индекса",
+      }],
     },
   }],
-  dossiers: [{
+  workspaceEntries: [{
     id: "44444444-4444-4444-8444-444444444444",
     title: "Архитектура локального индекса",
     description: "Неизменяемые поколения и один writer",
+    state: "active",
+    ownerScope: "project",
     project: { id: "22222222-2222-4222-8222-222222222222", slug: "mobile" },
+    accessibleThroughProjectIds: ["22222222-2222-4222-8222-222222222222"],
   }],
   contextDocuments: [{
     id: "66666666-6666-4666-8666-666666666666",
@@ -160,6 +167,14 @@ test("local mirror search ranks structured and workspace context without remote 
   assert.deepEqual(result.queries, ["релевантный поиск контекста", "fencing token"]);
   assert.equal(result.results.some(({ type }) => type === "task"), true);
   assert.equal(result.results.some(({ type }) => type === "workspace_file"), true);
+  assert.equal(
+    searchCompanyContextMirror(mirror, ["архитектура локального индекса"], 10)
+      .results.some(({ type, id }) => (
+        type === "workspace"
+        && id === "workspace:44444444-4444-4444-8444-444444444444"
+      )),
+    true,
+  );
   assert.equal(JSON.stringify(result).includes("remote"), false);
 });
 
@@ -1186,17 +1201,37 @@ test("local inventory is bounded and task result ids round-trip exactly", () => 
   assert.equal(fetched.generation, mirror.generation);
 });
 
-test("legacy project slugs resolve to canonical mirror records", () => {
+test("historical project slugs resolve to canonical mirror records", () => {
   const listedTasks = listCompanyContextMirror(mirror, "tasks", 0, 50, "mobile-legacy");
-  const listedDossiers = listCompanyContextMirror(mirror, "dossiers", 0, 50, "mobile-legacy");
+  const listedWorkspaces = listCompanyContextMirror(mirror, "workspaces", 0, 50, "mobile-legacy");
   const listedRegistries = listCompanyContextMirror(mirror, "registries", 0, 50, "mobile-legacy");
   const fetched = fetchMirrorResult(mirror, "task:acme/mobile-legacy/17");
 
   assert.equal(listedTasks.total, 1);
   assert.equal(listedTasks.items[0].projectSlug, "mobile");
-  assert.equal(listedDossiers.total, 1);
+  assert.equal(listedWorkspaces.total, 1);
   assert.equal(listedRegistries.total, 1);
   assert.equal(fetched.task.title, "Исправить офлайн синхронизацию");
+});
+
+test("native workspace reads preserve project links and unambiguous result ids", () => {
+  const listed = handleNativeLocalContextRead(mirror, "list_workspaces", {
+    companySlug: "acme",
+    projectSlug: "mobile-legacy",
+  });
+  const fetched = handleNativeLocalContextRead(mirror, "get_workspace", {
+    workspaceId: "44444444-4444-4444-8444-444444444444",
+  });
+  const fileSearch = searchWorkspaceFilesFromMirror(mirror, ["fencing token"], 10);
+
+  assert.equal(listed.workspaces.length, 1);
+  assert.equal(fetched.workspace.title, "Архитектура локального индекса");
+  assert.equal(fetched.effectiveInstructions.agentInstructionsSnapshot, null);
+  assert.match(fileSearch.results[0].id, /^workspace-file:/u);
+  assert.equal(
+    fetchMirrorResult(mirror, fileSearch.results[0].id).file.path,
+    "notes/decision.md",
+  );
 });
 
 test("native fetch ids and pre-encryption URLs resolve through the canonical local mirror", () => {
@@ -1430,9 +1465,9 @@ test("ambiguous restore prepare is recovered only by one exact audit marker", ()
 });
 
 test("encrypted restore handoff lets the bridge report the exact changed paths", () => {
-  const dossierArguments = buildEncryptedRestoreHandoffArguments("dossier");
-  assert.equal(dossierArguments.includes("--file"), false);
-  assert.equal(dossierArguments.includes("--task-outcome"), false);
+  const workspaceArguments = buildEncryptedRestoreHandoffArguments("project");
+  assert.equal(workspaceArguments.includes("--file"), false);
+  assert.equal(workspaceArguments.includes("--task-outcome"), false);
   assert.deepEqual(
     buildEncryptedRestoreHandoffArguments("task").slice(-2),
     ["--task-outcome", "no_status_change"],
@@ -1836,7 +1871,7 @@ test("encrypted mirror generations are schema-isolated while mutation coherence 
     companyId: "11111111-1111-4111-8111-111111111111",
   });
 
-  assert.equal(paths.root.endsWith("schema-3"), true);
+  assert.equal(paths.root.endsWith("schema-4"), true);
   assert.equal(paths.pointer.startsWith(paths.root), true);
   assert.equal(paths.lock.startsWith(paths.root), true);
   assert.equal(paths.generations.startsWith(paths.root), true);
@@ -1869,7 +1904,7 @@ test("local action mutation classification is read-only by contract and fail-clo
 test("cross-process mutation marker is owner-private and contains no company content", async () => {
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-mirror-marker-"));
   const paths = {
-    root: path.join(temporaryDirectory, "schema-3"),
+    root: path.join(temporaryDirectory, "schema-4"),
     mutation: path.join(temporaryDirectory, "mutation.json"),
   };
   try {

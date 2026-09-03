@@ -8,7 +8,7 @@ description: Set up Trelio Agent Workspaces in one durable non-Git local context
 Set up one durable ordinary local context folder in Codex or Claude Code without
 starting a disposable Trelio workspace run. The folder is a control-plane entry
 point, not a Git-repository association. Resolve work through current company
-and project rules, an exact task or dossier, and their Agent Workspaces. Keep
+and project rules, an exact task or workspace, and their Agent Workspaces. Keep
 the binding durable in that folder's instruction file. Read live company
 metadata from Trelio. Read company-content instructions through
 `get_agent_instructions` and follow Trelio's selected provider; encrypted
@@ -99,7 +99,7 @@ current task.
    `Выбрана папка Git-репозитория. Trelio-привязка в неё не записана. Откройте
    отдельную обычную папку проекта без Git и повторите настройку.` Explain that
    Trelio context should come through company/project rules, an exact task or
-   dossier, or their Agent Workspace, rather than a persistent binding inside
+   workspace, or their Agent Workspace, rather than a persistent binding inside
    the code repository.
 
 ## Check prerequisites
@@ -279,7 +279,7 @@ display name and slug:
 
 Папка привязана к компании «Компания» (`company-slug`). Это контекст работы, а не привязка Git-репозитория.
 
-Не создавай рабочие материалы, `tmp/` или `output/` в корне этой папки. Для task/dossier сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в `workspaces/<workspace-id>/`; внутри `workspace/` лежат редактируемые файлы, а `context/` и `.trelio-run.json` остаются служебными.
+Не создавай рабочие материалы, `tmp/` или `output/` в корне этой папки. Для задачи или именованного воркспейса сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в `workspaces/<workspace-id>/`; внутри `workspace/` лежат редактируемые файлы, а `context/` и `.trelio-run.json` остаются служебными.
 
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 

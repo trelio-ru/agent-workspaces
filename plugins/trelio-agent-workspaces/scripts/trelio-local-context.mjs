@@ -49,10 +49,11 @@ import {
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
 
-// Version 3 additionally retains encrypted registry row locators beside the
-// hydrated mirror. They are never exposed to the model; local mutations need
-// them to preserve row identity without sending the clear row key to Trelio.
-const MIRROR_SCHEMA_VERSION = 3;
+// Version 4 replaces the previous split metadata projection with first-class workspace
+// metadata and gives accepted Workspace files their own unambiguous result-id
+// namespace. A schema-specific root means an older process can finish safely
+// without publishing an incompatible generation to a newly updated bridge.
+const MIRROR_SCHEMA_VERSION = 4;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -2826,7 +2827,7 @@ const buildMirror = async ({
       payload: {
         ...hydratedTaskRecords[index].task,
         connections: hydratedTaskRecords[index].connections ?? {},
-        linkedDossiers: hydratedTaskRecords[index].linkedDossiers ?? [],
+        relatedWorkspaces: hydratedTaskRecords[index].relatedWorkspaces ?? [],
       },
     };
   });
@@ -2893,7 +2894,10 @@ const buildMirror = async ({
     viewer: manifest.viewer,
     viewerGroupIds: manifest.viewerGroupIds ?? [],
     projects: manifest.projects ?? [],
-    dossiers: manifest.dossiers ?? [],
+    // Named company/project workspaces are metadata records. Accepted Git
+    // bundles remain in `workspaces` below so existing materialization code can
+    // keep a compact, content-oriented shape without conflating the two lists.
+    workspaceEntries: manifest.workspaces ?? [],
     contextDocuments,
     registryRowLocators,
     instructions: manifest.instructions,
@@ -3123,13 +3127,17 @@ const buildSearchDocuments = (mirror) => {
       },
     });
   }
-  for (const dossier of mirror.dossiers ?? []) {
+  for (const workspace of mirror.workspaceEntries ?? []) {
     documents.push({
-      id: `dossier:${dossier.id}`,
-      type: "dossier",
-      title: String(dossier.title || "Dossier"),
-      text: collectText(dossier).join("\n"),
-      metadata: { dossierId: dossier.id, project: dossier.project ?? null },
+      id: `workspace:${workspace.id}`,
+      type: "workspace",
+      title: String(workspace.title || "Воркспейс"),
+      text: collectText(workspace).join("\n"),
+      metadata: {
+        workspaceId: workspace.id,
+        project: workspace.project ?? null,
+        ownerScope: workspace.ownerScope,
+      },
     });
   }
   for (const contextDocument of mirror.contextDocuments ?? []) {
@@ -3165,7 +3173,12 @@ const buildSearchDocuments = (mirror) => {
   for (const workspace of mirror.workspaces ?? []) {
     for (const file of workspace.documents ?? []) {
       documents.push({
-        id: `workspace:${workspace.id}:${file.path}`,
+        // `workspace:<uuid>` belongs to the first-class workspace itself. A
+        // distinct file prefix plus the accepted head keeps file fetches exact
+        // even when a title/description and a document match the same query.
+        id: `workspace-file:${encodeURIComponent(workspace.id)}`
+          + `:${encodeURIComponent(workspace.acceptedHead)}`
+          + `:${encodeURIComponent(file.path)}`,
         type: "workspace_file",
         title: file.name,
         text: `${file.path}\n${file.text}`,
@@ -3175,7 +3188,6 @@ const buildSearchDocuments = (mirror) => {
           scopeType: workspace.scopeType,
           scopeKey: workspace.scopeKey,
           taskId: workspace.taskId ?? null,
-          dossierId: workspace.dossierId ?? null,
           path: file.path,
           sizeBytes: file.sizeBytes,
         },
@@ -3249,7 +3261,7 @@ export const searchCompanyContextMirror = (
     // remains first when it matches more independent formulations.
     const typeWeight = document.type === "registry"
       ? 40
-      : document.type === "dossier"
+      : document.type === "workspace"
         ? 35
         : document.type === "knowledge-page"
           ? 30
@@ -3295,7 +3307,7 @@ export const searchWorkspaceFilesFromMirror = (mirror, rawQueries, rawLimit) => 
       // global top-N would incorrectly lose a lower-ranked matching file.
       projects: [],
       tasks: [],
-      dossiers: [],
+      workspaceEntries: [],
       contextDocuments: [],
     },
     rawQueries,
@@ -3382,11 +3394,16 @@ export const listCompanyContextMirror = (
           updatedAt: payload?.updatedAt ?? null,
         };
       });
-  } else if (resource === "dossiers") {
-    items = (mirror.dossiers ?? []).filter((dossier) => matchesProjectScope({
-      projectId: dossier.project?.id ?? null,
-      projectSlug: dossier.project?.slug ?? null,
-    }));
+  } else if (resource === "workspaces") {
+    const selectedProject = projectSlug ? resolveMirrorProjectBySlug(mirror, projectSlug) : null;
+    items = (mirror.workspaceEntries ?? []).filter((workspace) => (
+      !projectSlug
+      || workspace.accessibleThroughProjectIds?.includes(selectedProject?.id)
+      || matchesProjectScope({
+        projectId: workspace.project?.id ?? null,
+        projectSlug: workspace.project?.slug ?? null,
+      })
+    ));
   } else if (["knowledge_pages", "contacts", "registries", "meetings"].includes(resource)) {
     const expectedType = resource === "knowledge_pages"
       ? "knowledge_page"
@@ -3411,7 +3428,7 @@ export const listCompanyContextMirror = (
   } else {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
-      "resource must be projects, tasks, dossiers, knowledge_pages, contacts, registries or meetings.",
+      "resource must be projects, tasks, workspaces, knowledge_pages, contacts, registries or meetings.",
     );
   }
 
@@ -3708,7 +3725,7 @@ const buildLocalExactTaskRead = (mirror, rawLocators, knownInstructionLayerKeys 
       instructionScope: instructionSnapshots[index].reference,
       task: buildLocalTaskCore(record),
       connections: record.payload?.connections ?? {},
-      linkedDossiers: record.payload?.linkedDossiers ?? [],
+      relatedWorkspaces: record.payload?.relatedWorkspaces ?? [],
     })),
   };
 };
@@ -4449,22 +4466,36 @@ const getRegistryFromMirror = (mirror, rawInput) => {
   };
 };
 
-const listDossiersFromMirror = (mirror, rawInput) => {
+const listWorkspacesFromMirror = (mirror, rawInput) => {
   const projectSlug = rawInput?.projectSlug ? String(rawInput.projectSlug).trim() : null;
-  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
-  const dossiers = (mirror.dossiers ?? []).filter((dossier) => {
-    if (rawInput?.includeArchived !== true && (dossier.isArchived || dossier.archivedAt)) return false;
-    return matchesProjectScope({
-      projectId: dossier.project?.id ?? null,
-      projectSlug: dossier.project?.slug ?? null,
-    });
+  const project = projectSlug ? resolveMirrorProjectBySlug(mirror, projectSlug) : null;
+  if (projectSlug && !project) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Project is absent from the current local company generation.",
+    );
+  }
+  const workspaces = (mirror.workspaceEntries ?? []).filter((workspace) => {
+    if (rawInput?.includeArchived !== true && workspace.state !== "active") return false;
+    if (!project) return workspace.ownerScope === "company";
+
+    // The primary project remains the rules/lifecycle owner, but every exact
+    // project link expands discovery. The server includes these internal IDs
+    // because deduplicating the company manifest would otherwise erase a
+    // secondary many-to-many relation.
+    return workspace.accessibleThroughProjectIds?.includes(project.id)
+      || workspace.project?.id === project.id;
   });
   return {
     schemaVersion: 1,
     provider: "local_company_context",
-    company: mirror.company,
+    owner: {
+      scope: project ? "project" : "company",
+      company: mirror.company,
+      project,
+    },
     generation: mirror.generation,
-    dossiers,
+    workspaces,
   };
 };
 
@@ -4506,14 +4537,8 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
     }
     return buildLocalExactTaskRead(mirror, input.tasks, input.knownInstructionLayerKeys);
   }
-  if (nativeTool === "list_dossiers") return listDossiersFromMirror(mirror, input);
-  if (nativeTool === "get_dossier") {
-    const dossier = (mirror.dossiers ?? []).find((candidate) => candidate.id === input.dossierId);
-    if (!dossier) {
-      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Dossier is stale.");
-    }
-    return fetchMirrorResult(mirror, `dossier:${dossier.id}`);
-  }
+  if (nativeTool === "list_workspaces") return listWorkspacesFromMirror(mirror, input);
+  if (nativeTool === "get_workspace") return fetchMirrorResult(mirror, `workspace:${input.workspaceId}`);
   if (nativeTool === "list_knowledge_base_pages") {
     return listDomainDocumentsFromMirror(mirror, "knowledge_page", input);
   }
@@ -4720,25 +4745,6 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
       taskNumber: Number(taskNumberText),
     });
   }
-  if (resultId.startsWith("dossier:")) {
-    const dossierId = decodeMirrorDocumentIdPart(resultId.slice("dossier:".length));
-    const dossier = (mirror.dossiers ?? []).find((candidate) => candidate.id === dossierId);
-    if (!dossier) {
-      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Dossier result is stale.");
-    }
-    return {
-      schemaVersion: 1,
-      provider: "local_company_context",
-      generation: mirror.generation,
-      dossier,
-      effectiveInstructions: {
-        agentInstructionsSnapshot: dossier.project?.id
-          ? mirror.instructions?.projects?.find((entry) => entry.projectId === dossier.project.id)?.snapshot
-          : mirror.instructions?.company,
-        userProfileSnapshot: mirror.instructions?.userProfile ?? null,
-      },
-    };
-  }
   if (resultId.startsWith("knowledge-page:")) {
     const encodedParts = resultId.slice("knowledge-page:".length).split(":");
     const [companySlug, pageSlug] = encodedParts.map(decodeMirrorDocumentIdPart);
@@ -4791,30 +4797,50 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     return getWorkspaceFileFromMirror(mirror, { workspaceId, workspaceHead, filePath });
   }
   if (resultId.startsWith("workspace:")) {
-    const separator = resultId.indexOf(":", "workspace:".length);
-    const workspaceId = resultId.slice("workspace:".length, separator);
-    const filePath = resultId.slice(separator + 1);
-    const workspace = (mirror.workspaces ?? []).find((candidate) => candidate.id === workspaceId);
-    const file = workspace?.documents?.find((candidate) => candidate.path === filePath);
-    if (!workspace || !file) {
-      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Workspace result is stale.");
+    const workspaceId = normalizeUuid(
+      decodeMirrorDocumentIdPart(resultId.slice("workspace:".length)),
+      "workspaceId",
+    );
+    const workspace = (mirror.workspaceEntries ?? []).find((candidate) => (
+      candidate.id === workspaceId
+    ));
+    if (!workspace) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+        "Workspace result is stale.",
+      );
     }
+    const acceptedWorkspace = (mirror.workspaces ?? []).find((candidate) => (
+      candidate.id === workspaceId
+    ));
     return {
       schemaVersion: 1,
       provider: "local_company_context",
       generation: mirror.generation,
-      workspace: {
-        id: workspace.id,
-        scopeType: workspace.scopeType,
-        scopeKey: workspace.scopeKey,
-        acceptedHead: workspace.acceptedHead,
+      effectiveInstructions: {
+        agentInstructionsSnapshot: workspace.project?.id
+          ? mirror.instructions?.projects?.find(
+              (entry) => entry.projectId === workspace.project.id,
+            )?.snapshot ?? null
+          : mirror.instructions?.company ?? null,
+        userProfileSnapshot: mirror.instructions?.userProfile ?? null,
       },
-      file,
-      materialize: {
-        nativeTool: "prepare_agent_workspace_read",
-        scopeType: workspace.scopeType,
-        scopeId: workspace.taskId ?? workspace.dossierId,
-      },
+      workspace,
+      acceptedWorkspace: acceptedWorkspace
+        ? {
+            id: acceptedWorkspace.id,
+            acceptedHead: acceptedWorkspace.acceptedHead,
+            files: acceptedWorkspace.documents ?? [],
+          }
+        : null,
+      ...(acceptedWorkspace
+        ? {
+            materialize: {
+              nativeTool: "prepare_agent_workspace_read",
+              workspaceId,
+            },
+          }
+        : {}),
     };
   }
   if (resultId.startsWith("project:")) {
@@ -4885,8 +4911,7 @@ export const getWorkspaceFileFromMirror = (
     file,
     materialize: {
       nativeTool: "prepare_agent_workspace_read",
-      scopeType: workspace.scopeType,
-      scopeId: workspace.taskId ?? workspace.dossierId,
+      workspaceId: workspace.id,
     },
   };
 };
@@ -5886,15 +5911,8 @@ export const handleTrelioLocalContextOperation = async (
         const workspaceId = normalizeUuid(argumentsObject.workspaceId, "workspaceId");
         pathname = `/api/agent-workspaces/workspaces/${workspaceId}`;
       } else {
-        const scopeType = String(argumentsObject.scopeType || "").trim();
-        const scopeId = normalizeUuid(argumentsObject.scopeId, "scopeId");
-        if (!["company", "project", "dossier", "task"].includes(scopeType)) {
-          throw new TrelioLocalContextError(
-            "LOCAL_CONTEXT_INVALID_INPUT",
-            "scopeType must identify one Agent Workspace scope.",
-          );
-        }
-        pathname = `/api/agent-workspaces/scopes/${encodeURIComponent(scopeType)}/${scopeId}`;
+        const taskId = normalizeUuid(argumentsObject.taskId, "taskId");
+        pathname = `/api/agent-workspaces/scopes/task/${taskId}`;
       }
       const rawOverview = await readJson(await request(
         origin,
@@ -7734,7 +7752,7 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
         enum: [
           "projects",
           "tasks",
-          "dossiers",
+          "workspaces",
           "knowledge_pages",
           "contacts",
           "registries",

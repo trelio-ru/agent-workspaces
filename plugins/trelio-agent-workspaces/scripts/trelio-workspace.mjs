@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.19.0";
+export const BRIDGE_VERSION = "1.19.1";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -75,7 +75,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   "- Соблюдай Trelio ACL, закреплённые правила и прямые указания пользователя. Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши.",
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
-  "- Новый Run может записывать только в task или dossier Workspace. Если открыт уже существовавший до миграции legacy company/project Run, разрешено завершить только этот exact pinned Run через обычные checkpoint/finish; не начинай новый Run такой области. Company/project задают ACL и immutable правила, но не являются новыми material Workspace; дополнительный контекст приходит только через явно закреплённые related task/dossier heads. Не считай наличие legacy `context/company` или `context/project` отдельным разрешением на запись.",
+  "- Новый Run записывает ровно в один воркспейс: канонический воркспейс задачи либо выбранный именованный воркспейс. Company/project задают ACL и immutable правила, а дополнительный контекст приходит только через явно закреплённые related task/workspace heads. Один Run никогда не меняет несколько воркспейсов.",
   `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
   "- Approved hook сам подставляет одноразовый runtimeSessionProof в защищённые операции. Никогда не создавай, не копируй и не передавай proof либо model attestation вручную. Только при exact TRELIO_RUNTIME_HOOK_REQUIRED от Trelio остановись и в Codex скажи: «Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и повторите запрос»; в Claude Code/Cowork попроси enable/approve hooks. Ошибка активного PreToolUse hook означает, что Hooks уже работают: сохрани её exact code и причину. Upgrade/host/runtime failure обрабатывай по setup-and-recovery reference текущего навыка. Не обходи gate другим MCP, HTTP, browser или shell.",
   "- Native Trelio MCP и bundled bridge являются единственным штатным control/data plane Agent Workspace. Для внешних сервисов, Agent Secrets, поиска контекста и task proposals загружай только соответствующий reference навыка trelio-workspace-worker; не читай все references заранее и не заменяй защищённый маршрут альтернативным инструментом.",

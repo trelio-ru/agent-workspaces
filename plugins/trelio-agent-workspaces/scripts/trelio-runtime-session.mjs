@@ -17,7 +17,7 @@ import { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs"
 
 const DISCOVERY_TOOLS = new Set([
   "list_knowledge_base_pages", "list_contacts", "list_registries",
-  "search_meetings", "list_dossiers", "list_agent_secrets", "search",
+  "search_meetings", "list_workspaces", "list_agent_secrets", "search",
   "search_tasks", "search_agent_workspace_files", "list_companies",
   "list_projects", "search_agent_skills", "list_agent_skills", "list_my_tasks",
   "list_project_tasks", "list_task_connections", "get_project_meta",

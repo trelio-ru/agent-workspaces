@@ -54,7 +54,7 @@ Use `search` with one to five faithful formulations and a bounded result count:
 }
 ```
 
-Search spans accessible projects, task details, dossiers, knowledge pages,
+Search spans accessible projects, task details, first-class workspaces, knowledge pages,
 contacts, registries, private meetings, and safe accepted Workspace text;
 optional domains still require their OAuth scope. Ranking/previews stay local.
 Treat IDs as opaque and `fetch` only a small relevant set, never the whole mirror.
@@ -67,7 +67,7 @@ returning only the current canonical slug.
 
 An accepted Workspace search result includes the exact native
 `prepare_agent_workspace_read` target. Reading it remains read-only. A writable
-task or dossier still uses the ordinary `prepare_agent_workspace_run` and
+task or named workspace still uses the ordinary `prepare_agent_workspace_run` and
 bridge commands, with the same per-Workspace leases, fencing tokens,
 checkpoints, submit, acceptance, and optimistic head checks as every other
 company. Never create a company-wide Run lock: neighboring tasks must remain
@@ -75,7 +75,7 @@ independent.
 
 When native `search_agent_workspace_files` selects this provider, repeat its
 queries through `operation=search_workspace_files`; the host filters to accepted
-Workspace text before applying the bounded top-N, so ordinary task or dossier
+Workspace text before applying the bounded top-N, so ordinary task or workspace
 matches cannot displace a relevant file. `operation=get_workspace_file` accepts
 the exact `workspaceId`, `workspaceHead`, and `filePath` from that result and
 preserves the native accepted-head fence. These routes do not start a Run or

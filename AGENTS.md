@@ -114,7 +114,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   evidence. Недоступный explicit slug и несколько кандидатов блокируют
   `get_agent_instructions` и запись локальной привязки до выбора пользователя.
 - Управляемый onboarding-блок является единственным filesystem anchor для
-  folder-local layout. Новый task/dossier Workspace создаётся в
+  folder-local layout. Новый task или named Workspace создаётся в
   `<binding-root>/workspaces/<workspace-id>/`, агент работает только в выданном
   `workspace/` и не кладёт `tmp/`, `output/` или материалы рядом с корневым
   `AGENTS.md`. Уже существующие global/registered/custom roots не переносятся;
@@ -140,7 +140,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   Каждый item содержит одну structured compact `task`, без производного
   `document.text`; тяжёлые данные перечислены в `task.deferredSections` и
   выбираются одним `get_task_sections` только для exact нужного subset.
-  Supplemental read не повторяет authority, core, connections или dossiers,
+  Supplemental read не повторяет authority, core, connections или related workspaces,
   а `content` остаётся компактным summary. Company/project/personal layer
   нельзя переносить на непривязанную задачу. Schema v1/v2 больше не являются
   поддерживаемым task-read ABI: их получение означает version mismatch и
@@ -161,14 +161,21 @@ provider-tag workflow или внутренние release playbooks в этот 
   HTTP 504 сохраняет обычный bounded network-retry contract. Regression живёт
   в generic plugin suite, а compact runtime instructions обязаны сохранять тот
   же invariant.
-- После exact read одной задачи и одного досье Worker самостоятельно создаёт
-  долговременную task/dossier связь без формального подтверждения, только если
+- После exact read одной задачи и одного воркспейса Worker самостоятельно создаёт
+  долговременную task/workspace связь без формального подтверждения, только если
   совпадение подтверждено минимум двумя независимыми идентификаторами, нет
-  конкурирующей цели и всё досье подходит аудитории `task_full`. После mutation
-  он сообщает пользователю причину и read-only access effect. Несколько
+  конкурирующей цели и весь воркспейс подходит аудитории задачи. После mutation
+  он сообщает пользователю причину и access effect: task reader получает read,
+  а task editor – write/Run, но не relation management. Несколько
   кандидатов, один признак, временная релевантность или сомнение в раскрытии
-  всего досье требуют вопроса; weak hit игнорируется, partial fit получает более
+  всего воркспейса требуют вопроса; weak hit игнорируется, partial fit получает более
   узкий контекст.
+- Именованный воркспейс имеет одного primary owner – проект или компанию – и
+  может быть явно связан с несколькими проектами и задачами той же компании.
+  ACL является union этих связей: exact read объекта даёт read воркспейса,
+  exact edit даёт write/Run; observer остаётся read-only. Derived access не даёт
+  transfer/link/reshare прав. Primary project продолжает задавать pinned rules,
+  а registry/contact/meeting связи остаются semantic и сами доступ не расширяют.
 - Meeting transcript flow не заканчивается после `create_meeting`: агент читает
   server-returned `workflowStage` / `requiredNextAction` / `mayFinish`, сам
   фиксирует `agent_checked` итог и проверяет актуальный контекст. До первого
@@ -313,7 +320,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   включая `data:` frame CSP; v3 остаётся compatibility resource. Native handoff
   и local `context` визуально пусты, а review-карточку создаёт только `save`;
   app-only context/action aliases скрыты от модели.
-- Чистое чтение уже принятого task/dossier Workspace использует
+- Чистое чтение уже принятого Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит
   exact accepted head и текущие instruction/profile snapshots в private

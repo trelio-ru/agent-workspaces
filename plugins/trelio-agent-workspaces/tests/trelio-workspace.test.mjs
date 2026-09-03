@@ -4015,7 +4015,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.19.0");
+  assert.equal(BRIDGE_VERSION, "1.19.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4216,8 +4216,8 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
   for (const invariant of [
     /Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши/u,
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*` и read-only `\.\.\/context\/\*\*`/u,
-    /Новый Run может записывать только в task или dossier Workspace/u,
-    /legacy company\/project Run.*только этот exact pinned Run/u,
+    /Новый Run записывает ровно в один воркспейс/u,
+    /Один Run никогда не меняет несколько воркспейсов/u,
     /exact diff.*только после явного подтверждения/u,
     /Approved hook сам подставляет одноразовый runtimeSessionProof/u,
     /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
@@ -4268,7 +4268,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "meetings.md",
     "scope-and-context.md",
     "accepted-workspace-read.md",
-    "dossier-transfer.md",
+    "workspace-transfer.md",
     "task-controls.md",
     "task-comment-proposals.md",
     "task-status-proposals.md",
@@ -4292,44 +4292,48 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(agentRunReference, /latest portable draft on\s+the current accepted head/u);
   assert.match(agentRunReference, /checkpoint --type draft/u);
   assert.match(agentRunReference, /startNewRun=true/u);
-  assert.match(agentRunReference, /rejects company\/project\s+Workspace scope/u);
-  assert.match(agentRunReference, /inherit\s+company\/project Workspace context/u);
+  assert.match(agentRunReference, /exact `workspaceId`, or\s+task addressing/u);
+  assert.match(agentRunReference, /One Run always writes one workspace/u);
   assert.match(agentRunReference, /Complete `scope-and-context\.md` first/u);
   assert.match(agentRunReference, /Do not guess IDs, repeat its discovery sequence/u);
   const scopeReference = await readFile(
     path.join(workerDirectory, "references", "scope-and-context.md"),
     "utf8",
   );
-  assert.match(scopeReference, /Do not call `list_dossiers` merely to\s+discover context/u);
+  assert.match(scopeReference, /Do not call `list_workspaces` merely to discover context/u);
   assert.match(scopeReference, /Call the canonical unified `search` once/u);
-  assert.match(scopeReference, /same call searches\s+projects, active and archived tasks/u);
-  assert.match(scopeReference, /not consecutive mandatory procedures/u);
-  assert.match(scopeReference, /without a\s+project filter/u);
+  assert.match(scopeReference, /same call searches\s+first-class workspaces, projects, active and archived tasks/u);
+  assert.match(scopeReference, /optional refinements, not\s+mandatory consecutive stages/u);
+  assert.match(scopeReference, /explicitly linked\s+to several projects/u);
   assert.match(scopeReference, /Company\/project rules are not\s+search documents/u);
   assert.match(scopeReference, /call `get_tasks` once.*do not make repeated `get_task` calls/su);
   assert.match(scopeReference, /Current `get_task` and `get_tasks` return `schemaVersion: 3`/u);
   assert.match(scopeReference, /Text `content` is only a summary/u);
-  assert.match(scopeReference, /one structured `task`, never a derived `document\.text` copy/u);
+  assert.match(scopeReference, /one structured `task`; Text `content` is only a summary/u);
   assert.match(scopeReference, /Resolve every key in\s+the item's `instructionScope\.orderedLayerKeys`/u);
-  assert.match(scopeReference, /Never concatenate the whole catalog for every task/u);
+  assert.match(scopeReference, /Never apply a company,\s+project, or personal layer to a task that does not reference it/u);
   assert.match(scopeReference, /inspect `task\.deferredSections`/u);
   assert.match(scopeReference, /Call `get_task_sections`\s+once/u);
-  assert.match(scopeReference, /do not repeat `get_task` or\s+request all sections as a default/u);
+  assert.match(scopeReference, /do not repeat `get_task` or request all\s+sections by default/u);
   assert.match(scopeReference, /`itemCount: 0` means known-empty; `null`\s+means not counted/u);
-  assert.match(scopeReference, /comments with bounded `commentsPage`/u);
-  assert.match(scopeReference, /without repeating effective instructions,\s+core fields, connections, or linked dossiers/u);
-  assert.match(scopeReference, /Schema v1\/v2 are not supported/u);
-  assert.match(scopeReference, /plugin\/backend version mismatch/u);
-  assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and `user-profile\.md` remain authoritative/u);
+  assert.match(scopeReference, /without\s+repeating effective instructions, core fields, connections, or related\s+workspaces/u);
+  assert.match(scopeReference, /Schema v1\/v2 is unsupported/u);
+  assert.match(scopeReference, /plugin\/backend mismatch/u);
+  assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and\s+`user-profile\.md` remain authoritative/u);
   assert.match(scopeReference, /Do not call\s+`get_agent_instructions` again after loaded instructions/u);
-  assert.match(scopeReference, /The link is durable, not a one-Run dependency/u);
   assert.match(scopeReference, /at least two stable independent identifiers/u);
-  assert.match(scopeReference, /call `link_task_dossier` without confirmation/u);
-  assert.match(scopeReference, /`task_full` readers cross-project read-only access to the whole accepted dossier/u);
-  assert.match(scopeReference, /Add no task\s+comment or notification unless separately asked/u);
-  assert.match(scopeReference, /unclear whole-\s+dossier disclosure require a question/u);
-  assert.match(scopeReference, /A weak hit does not/u);
-  assert.match(scopeReference, /exact-read the relation before retry/u);
+  assert.match(scopeReference, /call\s+`link_workspace_task` without a ceremonial confirmation/u);
+  assert.match(scopeReference, /whole accepted workspace to\s+current and future task readers/u);
+  assert.match(scopeReference, /task editors get\s+write\/Run/u);
+  assert.match(scopeReference, /Add no comment or notification unless separately asked/u);
+  assert.match(scopeReference, /unclear\s+whole-workspace disclosure require a question/u);
+  assert.match(scopeReference, /A weak hit is ignored/u);
+  assert.match(scopeReference, /`link_workspace_project`/u);
+  assert.match(scopeReference, /primary project and governing rules stay\s+unchanged/u);
+  assert.match(scopeReference, /Workspace access is the union/u);
+  assert.match(scopeReference, /project member or moderator may write and run/u);
+  assert.match(scopeReference, /Relation-derived access never grants link management/u);
+  assert.match(scopeReference, /Registry, contact, and meeting associations are semantic references only/u);
   const acceptedReadReference = await readFile(
     path.join(workerDirectory, "references", "accepted-workspace-read.md"),
     "utf8",
@@ -4498,7 +4502,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /отдельную обычную папку проекта без Git/u);
   assert.match(
     onboardingSkill,
-    /company\/project rules, an exact task or\s+dossier, or their Agent Workspace/u,
+    /company\/project rules, an exact task or\s+workspace, or their Agent Workspace/u,
   );
   assert.match(onboardingSkill, /stop before every setup side\s+effect/u);
   assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
@@ -4530,7 +4534,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
 
 Папка привязана к компании «Компания» (\`company-slug\`). Это контекст работы, а не привязка Git-репозитория.
 
-Не создавай рабочие материалы, \`tmp/\` или \`output/\` в корне этой папки. Для task/dossier сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в \`workspaces/<workspace-id>/\`; внутри \`workspace/\` лежат редактируемые файлы, а \`context/\` и \`.trelio-run.json\` остаются служебными.
+Не создавай рабочие материалы, \`tmp/\` или \`output/\` в корне этой папки. Для задачи или именованного воркспейса сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в \`workspaces/<workspace-id>/\`; внутри \`workspace/\` лежат редактируемые файлы, а \`context/\` и \`.trelio-run.json\` остаются служебными.
 
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
@@ -5015,17 +5019,17 @@ test("private skill management keeps owner-only confirmation, E2EE and assignmen
   assert.doesNotMatch(managementSkill, /\[TODO:/u);
 });
 
-test("workspace skill transfers dossiers only with two-sided management authority", async () => {
+test("workspace skill transfers workspaces only with two-sided management authority", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
-  assert.match(workspaceSkill, /plan_dossier_transfer/u);
-  assert.match(workspaceSkill, /apply_dossier_transfer/u);
+  assert.match(workspaceSkill, /plan_workspace_transfer/u);
+  assert.match(workspaceSkill, /apply_workspace_transfer/u);
   assert.match(workspaceSkill, /manage both sides/u);
-  assert.match(workspaceSkill, /Read inherited from a linked task never satisfies this check/u);
+  assert.match(workspaceSkill, /Access derived from a task\/project relation never satisfies this check/u);
   assert.match(workspaceSkill, /confirmCompanyWideAccess: true/u);
-  assert.match(workspaceSkill, /DOSSIER_TRANSFER_OUTDATED/u);
+  assert.match(workspaceSkill, /WORKSPACE_TRANSFER_STATE_CHANGED/u);
   assert.match(workspaceSkill, /Do not\s+cancel another Run/u);
-  assert.match(workspaceSkill, /Dossier UUID, accepted Git history, revisions,\s+and task links must remain unchanged/u);
+  assert.match(workspaceSkill, /Workspace UUID, accepted Git history, revisions,\s+task links, project links/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {
@@ -5273,7 +5277,7 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
   assert.match(skillMarkdown, /Do not copy\s+the full transcript/u);
   assert.match(skillMarkdown, /expectedAccessRevision/u);
   assert.match(skillMarkdown, /one free-form Markdown document/u);
-  assert.match(skillMarkdown, /one or many tasks, dossiers, projects, or the company/u);
+  assert.match(skillMarkdown, /one or many tasks, workspaces, projects, or the company/u);
   assert.match(skillMarkdown, /Present the complete target-grouped meeting plan/u);
   assert.match(skillMarkdown, /successful create is not a terminal result/u);
   assert.match(skillMarkdown, /do not end the current\s+turn, ask whether to continue/u);
