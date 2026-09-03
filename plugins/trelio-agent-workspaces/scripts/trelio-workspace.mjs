@@ -341,7 +341,15 @@ const PLUGIN_UPDATE_NETWORK_RETRY_DELAYS_MS = Object.freeze([1_000, 3_000]);
 // local directory to turn a routine update into an unbounded copy/hash job.
 const CODEX_RETAINED_PLUGIN_MAX_FILE_COUNT = 512;
 const CODEX_RETAINED_PLUGIN_MAX_BYTES = 32 * 1024 * 1024;
-const DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
+// До folder-first onboarding все writable Workspace жили в одном глобальном
+// каталоге. Он остаётся compatibility-root для уже материализованных данных и
+// для ручного запуска bridge вне управляемой Trelio-папки; новые Workspace из
+// привязанной папки получают локальный `workspaces/` рядом с её AGENTS.md.
+const LEGACY_DEFAULT_WORKSPACES_DIRECTORY = path.join(os.homedir(), "Trelio Workspaces");
+export const WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME = "workspaces";
+const WORKING_FOLDER_BINDING_MARKER_START = "<!-- trelio-agent-workspaces:start -->";
+const WORKING_FOLDER_BINDING_MARKER_END = "<!-- trelio-agent-workspaces:end -->";
+const WORKING_FOLDER_INSTRUCTIONS_MAX_BYTES = 256 * 1024;
 const CACHE_ROOT_DIRECTORY = process.platform === "win32"
   ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "Trelio", "workspace-bridge", "cache")
   : path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "trelio", "workspace-bridge");
@@ -8851,24 +8859,265 @@ const withWorkspaceOpenLock = async (workspaceId, handler) => {
   }
 };
 
-const resolveWorkspaceRootDirectory = async ({ workspaceId, runId, directoryOption }) => {
-  if (directoryOption) return path.resolve(String(directoryOption));
+const readWorkingFolderInstructionFile = async (filePath) => {
+  let fileStat;
 
-  const persistentRoot = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
-
-  if (!runId || await readOptionalRunMetadata(persistentRoot)) {
-    return persistentRoot;
+  try {
+    fileStat = await fs.lstat(filePath);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
   }
 
-  // До persistent-layout каждый Run жил в отдельном UUID-каталоге. Уже
-  // начатый legacy Run продолжается на месте, чтобы ни один dirty draft не
-  // пришлось копировать или молча бросать при обновлении bridge.
-  const legacyRoot = path.join(persistentRoot, runId);
-  const legacyMetadata = await readOptionalRunMetadata(legacyRoot);
+  // Инструкция выбирает путь для расшифрованной рабочей копии. Symlink,
+  // special file и неожиданно большой файл не могут служить таким trust
+  // anchor: это ограничивает и подмену пути, и неограниченное чтение вверх от
+  // cwd. Onboarding сам пишет только маленький обычный Markdown-файл.
+  if (
+    !fileStat.isFile()
+    || fileStat.isSymbolicLink()
+    || fileStat.size > WORKING_FOLDER_INSTRUCTIONS_MAX_BYTES
+  ) {
+    return null;
+  }
 
-  return legacyMetadata?.workspaceId === workspaceId && legacyMetadata?.runId === runId
-    ? legacyRoot
-    : persistentRoot;
+  const flags = fsConstants.O_RDONLY
+    | (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW || 0));
+  let handle;
+
+  try {
+    handle = await fs.open(filePath, flags);
+  } catch (error) {
+    // The entry may have been replaced between lstat and open. Treat that as
+    // no trusted binding instead of following the replacement.
+    if (error.code === "ELOOP" || error.code === "ENOENT") return null;
+    throw error;
+  }
+
+  try {
+    const openedStat = await handle.stat();
+    if (
+      !openedStat.isFile()
+      || openedStat.size > WORKING_FOLDER_INSTRUCTIONS_MAX_BYTES
+    ) {
+      return null;
+    }
+    return handle.readFile({ encoding: "utf8" });
+  } finally {
+    await handle.close();
+  }
+};
+
+const containsManagedWorkingFolderBinding = (markdown) => {
+  if (typeof markdown !== "string") return false;
+  const startIndex = markdown.indexOf(WORKING_FOLDER_BINDING_MARKER_START);
+  const endIndex = markdown.indexOf(
+    WORKING_FOLDER_BINDING_MARKER_END,
+    startIndex + WORKING_FOLDER_BINDING_MARKER_START.length,
+  );
+
+  if (startIndex < 0 || endIndex < 0) return false;
+  const managedBlock = markdown.slice(startIndex, endIndex);
+
+  // Оба комментария могут встретиться в документации, поэтому требуем ещё и
+  // известный заголовок самого binding-блока. `## Контекст Trelio` остаётся
+  // совместимым с уже настроенными ранними папками, а новый onboarding пишет
+  // краткий `## Trelio`. Это не разбирает company slug и не переносит server
+  // authority в filesystem: маркер отвечает только за выбор одобренной папки.
+  return /(?:^|\n)## (?:Контекст )?Trelio(?:\r?\n|$)/u.test(managedBlock);
+};
+
+export const findTrelioWorkingFolderRoot = async (startDirectory = process.cwd()) => {
+  let currentDirectory = path.resolve(startDirectory);
+
+  while (true) {
+    // AGENTS.override.md и AGENTS.md проверяются оба: onboarding выбирает
+    // effective target по правилам клиента, а bridge не должен зависеть от
+    // того, какой из двух файлов Codex сейчас считает приоритетным.
+    for (const fileName of ["AGENTS.override.md", "AGENTS.md"]) {
+      const markdown = await readWorkingFolderInstructionFile(
+        path.join(currentDirectory, fileName),
+      );
+
+      if (containsManagedWorkingFolderBinding(markdown)) {
+        return currentDirectory;
+      }
+    }
+
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) return null;
+    currentDirectory = parentDirectory;
+  }
+};
+
+const pathEntryExists = async (candidatePath) => {
+  try {
+    await fs.lstat(candidatePath);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+};
+
+const resolveRegisteredWorkspaceRootDirectory = async ({ workspaceId, runId, origin }) => {
+  const candidates = [];
+
+  for (const registeredRoot of [...new Set(await readRunRegistry())]) {
+    const rootDirectory = path.resolve(registeredRoot);
+    let metadata;
+    let metadataOrigin;
+
+    try {
+      metadata = await readOptionalRunMetadata(rootDirectory);
+      metadataOrigin = metadata
+        ? normalizeOrigin(metadata.origin || DEFAULT_ORIGIN)
+        : null;
+    } catch {
+      // Registry может содержать stale или повреждённую запись другого
+      // Workspace. Cleanup отдельно оставит её нетронутой; она не должна
+      // отправлять новый Workspace в неизвестный каталог.
+      continue;
+    }
+
+    if (
+      metadata?.workspaceId === workspaceId
+      && metadataOrigin === origin
+      && path.resolve(String(metadata.workspaceDirectory || ""))
+        === path.join(rootDirectory, "workspace")
+    ) {
+      candidates.push({ rootDirectory, runId: String(metadata.runId || "") });
+    }
+  }
+
+  // Explicit continuation выбирает exact ранее материализованный Run, когда
+  // старый custom --dir успел создать несколько roots. Для нового Run два
+  // подходящих roots неоднозначны: bridge не угадывает, где лежит dirty draft.
+  const exactRunCandidates = runId
+    ? candidates.filter((candidate) => candidate.runId === runId)
+    : [];
+  const selectedCandidates = exactRunCandidates.length > 0
+    ? exactRunCandidates
+    : candidates;
+
+  if (selectedCandidates.length > 1) {
+    throw new Error(
+      "Для этого Agent Workspace зарегистрировано несколько локальных roots. Повторите open с exact --dir.",
+    );
+  }
+
+  return selectedCandidates[0]?.rootDirectory || null;
+};
+
+const resolveWorkspaceRootDirectory = async ({
+  workspaceId,
+  runId,
+  directoryOption,
+  origin,
+  startDirectory = process.cwd(),
+}) => {
+  if (directoryOption) {
+    return {
+      rootDirectory: path.resolve(String(directoryOption)),
+      layout: "explicit",
+      workingFolderRoot: null,
+    };
+  }
+
+  const legacyPersistentRoot = path.join(LEGACY_DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
+
+  if (await pathEntryExists(legacyPersistentRoot)) {
+    if (!runId || await readOptionalRunMetadata(legacyPersistentRoot)) {
+      return {
+        rootDirectory: legacyPersistentRoot,
+        layout: "legacy-default",
+        workingFolderRoot: null,
+      };
+    }
+
+    // До persistent-layout каждый Run жил в отдельном UUID-каталоге. Уже
+    // начатый legacy Run продолжается на месте, чтобы ни один dirty draft не
+    // пришлось копировать или молча бросать при обновлении bridge.
+    const legacyRunRoot = path.join(legacyPersistentRoot, runId);
+    const legacyRunMetadata = await readOptionalRunMetadata(legacyRunRoot);
+
+    return {
+      rootDirectory: legacyRunMetadata?.workspaceId === workspaceId
+        && legacyRunMetadata?.runId === runId
+        ? legacyRunRoot
+        : legacyPersistentRoot,
+      layout: "legacy-default",
+      workingFolderRoot: null,
+    };
+  }
+
+  // Registry сохраняет единство локального root после переименования папки,
+  // запуска из другого окна или обновления bridge. Существующие данные всегда
+  // важнее нового default и никогда не мигрируют автоматически.
+  const registeredRoot = await resolveRegisteredWorkspaceRootDirectory({
+    workspaceId,
+    runId,
+    origin,
+  });
+  if (registeredRoot) {
+    return {
+      rootDirectory: registeredRoot,
+      layout: "registered",
+      workingFolderRoot: null,
+    };
+  }
+
+  const workingFolderRoot = await findTrelioWorkingFolderRoot(startDirectory);
+  if (workingFolderRoot) {
+    return {
+      rootDirectory: path.join(
+        workingFolderRoot,
+        WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME,
+        workspaceId,
+      ),
+      layout: "working-folder",
+      workingFolderRoot,
+    };
+  }
+
+  // Manual/non-onboarded clients retain the old predictable default. Folder-
+  // local placement is never inferred from an arbitrary cwd without a managed
+  // Trelio binding.
+  return {
+    rootDirectory: legacyPersistentRoot,
+    layout: "legacy-default",
+    workingFolderRoot: null,
+  };
+};
+
+const ensureWorkingFolderWorkspacesDirectory = async (workingFolderRoot) => {
+  const workingFolderStat = await fs.lstat(workingFolderRoot);
+  if (!workingFolderStat.isDirectory() || workingFolderStat.isSymbolicLink()) {
+    throw new Error("Привязанная рабочая папка Trelio больше не является безопасным каталогом.");
+  }
+
+  const workspacesDirectory = path.join(
+    workingFolderRoot,
+    WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME,
+  );
+  let created = false;
+
+  try {
+    const directoryStat = await fs.lstat(workspacesDirectory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error("Путь workspaces в привязанной папке не является безопасным каталогом.");
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await fs.mkdir(workspacesDirectory, { mode: 0o700 });
+    created = true;
+  }
+
+  // Только созданный bridge каталог можно без неожиданного изменения прав
+  // усилить до owner-only. Уже существующий обычный `workspaces/` принадлежит
+  // пользователю; приватность содержимого обеспечивает каждый root 0700.
+  if (created) await ensurePrivateDirectory(workspacesDirectory);
+  return workspacesDirectory;
 };
 
 const assertValidMaterializedRoot = async (
@@ -8970,10 +9219,14 @@ const preflightWorkspaceDirectory = async ({
     return { rootDirectoryExists: true, existingMetadata, legacyContainer: false };
   }
 
-  const defaultPersistentRoot = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
+  const defaultPersistentRoot = path.join(LEGACY_DEFAULT_WORKSPACES_DIRECTORY, workspaceId);
 
   if (directoryOption || path.resolve(rootDirectory) !== path.resolve(defaultPersistentRoot)) {
-    throw new Error("Выбранный --dir уже существует, но не принадлежит Trelio Workspace.");
+    throw new Error(
+      directoryOption
+        ? "Выбранный --dir уже существует, но не принадлежит Trelio Workspace."
+        : "Локальный root уже существует, но не принадлежит Trelio Workspace.",
+    );
   }
 
   // Старый layout оставлял под workspace-id только UUID-каталоги Run. Новый
@@ -9120,11 +9373,20 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   const runtimeSessionId = parseRuntimeSessionOption(options);
   const runtimeAttestation = parseSelfReportedRuntimeAttestationOptions(options);
   const requestedRunId = options.run ? requireUuid(options.run, "run") : null;
-  const rootDirectory = await resolveWorkspaceRootDirectory({
+  const rootResolution = await resolveWorkspaceRootDirectory({
     workspaceId,
     runId: requestedRunId,
     directoryOption: options.dir,
+    origin,
   });
+  const { rootDirectory } = rootResolution;
+
+  // Проверяем (и при первом open создаём) только общий folder-local container
+  // до server start/claim. Небезопасный `workspaces` должен остановить команду
+  // до появления Run, который bridge затем не сможет материализовать.
+  if (rootResolution.layout === "working-folder") {
+    await ensureWorkingFolderWorkspacesDirectory(rootResolution.workingFolderRoot);
+  }
   let rootDirectoryExists = false;
 
   try {
@@ -9497,7 +9759,17 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
   }
 
   if (!rootDirectoryExists) {
-    await fs.mkdir(rootDirectory, { recursive: true, mode: 0o700 });
+    if (rootResolution.layout === "working-folder") {
+      // Повторная проверка непосредственно перед mkdir закрывает обычную гонку
+      // между network preflight и локальной материализацией.
+      await ensureWorkingFolderWorkspacesDirectory(rootResolution.workingFolderRoot);
+      // Parent уже проверен, поэтому exact non-recursive mkdir не последует по
+      // внезапно появившемуся root-symlink и не присвоит существующий каталог.
+      await fs.mkdir(rootDirectory, { mode: 0o700 });
+      await ensurePrivateDirectory(rootDirectory);
+    } else {
+      await fs.mkdir(rootDirectory, { recursive: true, mode: 0o700 });
+    }
   }
   let ownsRootDirectory = !rootDirectoryExists;
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-workspace-"));
@@ -13045,7 +13317,7 @@ const discoverDefaultRunRoots = async () => {
   let workspaceEntries = [];
 
   try {
-    workspaceEntries = await fs.readdir(DEFAULT_WORKSPACES_DIRECTORY, { withFileTypes: true });
+    workspaceEntries = await fs.readdir(LEGACY_DEFAULT_WORKSPACES_DIRECTORY, { withFileTypes: true });
   } catch (error) {
     if (error.code === "ENOENT") {
       return roots;
@@ -13058,7 +13330,7 @@ const discoverDefaultRunRoots = async () => {
       continue;
     }
 
-    const workspaceDirectory = path.join(DEFAULT_WORKSPACES_DIRECTORY, workspaceEntry.name);
+    const workspaceDirectory = path.join(LEGACY_DEFAULT_WORKSPACES_DIRECTORY, workspaceEntry.name);
     if (await readOptionalRunMetadata(workspaceDirectory)) {
       roots.push(workspaceDirectory);
     }
@@ -13431,7 +13703,7 @@ const planSkillRuntimeCachePrune = async ({ settings }) => {
 
 const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
   const resolvedRoot = path.resolve(root.rootDirectory);
-  const defaultPrefix = `${path.resolve(DEFAULT_WORKSPACES_DIRECTORY)}${path.sep}`;
+  const defaultPrefix = `${path.resolve(LEGACY_DEFAULT_WORKSPACES_DIRECTORY)}${path.sep}`;
 
   if (
     !resolvedRoot.startsWith(defaultPrefix)

@@ -12,9 +12,10 @@
 
 ## Выбор scope
 
-Локальный Trelio-блок `AGENTS.md` задаёт company/control-plane binding, но не
-выбирает writable Workspace автоматически. Workspace-контекст ищется без
-project-фильтра, потому что полезные связи могут быть межпроектными.
+Локальный Trelio-блок `AGENTS.md` задаёт company/control-plane binding и место
+для новых локальных roots, но не выбирает identity writable Workspace
+автоматически. Workspace-контекст ищется без project-фильтра, потому что
+полезные связи могут быть межпроектными.
 
 Папка онбординга – отдельная обычная non-Git точка входа. Она не связывает
 репозиторий с Trelio: контекст приходит из правил компании и выбранного проекта,
@@ -118,15 +119,27 @@ read-only context они остаются пятистрочными object poin
 `trelio-workspace context fetch --path <path>`. Bulk hydration запрещена.
 Проверенные bytes кэшируются по SHA-256 и копируются без mutable hardlink.
 
-По умолчанию writable-копия одного task/dossier Workspace постоянно живёт в
-одном локальном root:
+Writable-копия одного task/dossier Workspace постоянно живёт в одном локальном
+root. Для нового Workspace, открытого из прошедшей onboarding папки с
+управляемым Trelio-блоком, root создаётся внутри этой папки:
 
 ```text
-~/Trelio Workspaces/<workspace-id>/
+<папка-онбординга>/workspaces/<workspace-id>/
 ├── workspace/          # видимые рабочие файлы агента
 ├── context/            # защищённый pinned-контекст текущего Run
 └── .trelio-run.json    # private metadata bridge
 ```
+
+Binding ищется от текущего `cwd` вверх только по обычному bounded
+`AGENTS.override.md` или `AGENTS.md` с каноническими managed-маркерами и
+заголовком `## Trelio`; прежний managed-заголовок `## Контекст Trelio`
+поддерживается для уже настроенных папок. Сам по себе произвольный `cwd` не
+является основанием писать туда: вне onboarding-контекста остаётся fallback
+`~/Trelio Workspaces/<workspace-id>/`. Уже существующий global, custom `--dir`
+или зарегистрированный root переиспользуется на прежнем месте; bridge не
+переносит и не копирует локальную рабочую историю автоматически. Новые
+folder-local roots и созданный bridge каталог `workspaces/` получают owner-only
+права; существующий `workspaces/` обязан быть обычным каталогом, а не symlink.
 
 Следующие Run переиспользуют тот же `workspace/`, а не создают копию по
 `run-id`. Перед `start` или `claim` bridge получает live server overview,
@@ -137,6 +150,11 @@ status или недоступный backend не допускает новый 
 persistent root одновременно открывается только один локальный Run. Уже
 начатый legacy Run из `<workspace-id>/<run-id>/workspace` продолжается на месте;
 после его безопасного завершения новые Run переходят на общий root.
+
+Корень onboarding-папки остаётся только control-plane entrypoint: агент не
+создаёт рядом с `AGENTS.md` рабочие `tmp/`, `output/`, исходники или результаты.
+После `open` он работает в напечатанном `workspace/` и использует внутренние
+`sources/`, `work/`, `artifacts/`, `derived/` и `worklog/` по runtime-контракту.
 
 Для запроса только на чтение `prepare_agent_workspace_read` возвращает exact
 `trelio-workspace inspect` command. Она materialize-ит current accepted head и

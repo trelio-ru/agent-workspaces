@@ -113,6 +113,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   repository name, соседние файлы и fuzzy similarity не являются company
   evidence. Недоступный explicit slug и несколько кандидатов блокируют
   `get_agent_instructions` и запись локальной привязки до выбора пользователя.
+- Управляемый onboarding-блок является единственным filesystem anchor для
+  folder-local layout. Новый task/dossier Workspace создаётся в
+  `<binding-root>/workspaces/<workspace-id>/`, агент работает только в выданном
+  `workspace/` и не кладёт `tmp/`, `output/` или материалы рядом с корневым
+  `AGENTS.md`. Уже существующие global/registered/custom roots не переносятся;
+  без managed binding сохраняется fallback `~/Trelio Workspaces/`.
 - Plugin change допустим для общего security/fail-closed defect,
   несовместимости Codex/Claude/MCP/OAuth/hooks, дефекта generic host либо нового
   общего primitive, который нельзя безопасно доставить независимым runtime.

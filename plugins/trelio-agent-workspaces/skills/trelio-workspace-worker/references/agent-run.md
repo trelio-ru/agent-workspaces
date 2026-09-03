@@ -6,13 +6,6 @@ task-scoped Run, also read `task-run.md`, `task-status-proposals.md`,
 `task-comment-proposals.md`, and `task-checklist-proposals.md` before opening,
 task communication, handoff, submit, or final reporting.
 
-## Contents
-
-- Prepare and open the Run
-- Read and use materialized context
-- Execute, checkpoint, and submit
-- Blockers, restore, concurrency, and cleanup
-
 ## Prepare and open the Run
 
 1. Complete `scope-and-context.md` first: resolve one exact task/dossier
@@ -63,7 +56,9 @@ task communication, handoff, submit, or final reporting.
    update.
 ## Read and use materialized context
 
-1. Work in the path printed by `open`.
+1. Work in the path printed by `open`. New onboarded roots use
+   `<working-folder>/workspaces/<workspace-id>/workspace`; never put Run files
+   beside root `AGENTS.md`.
 2. Codex reads protected `AGENTS.md`; Claude loads protected `CLAUDE.md` whose
    only import is `@AGENTS.md`. Do not create another copy.
 3. Read `../context/agent-instructions.md`, the immutable company/project rule

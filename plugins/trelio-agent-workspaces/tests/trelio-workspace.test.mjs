@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -33,6 +34,7 @@ import {
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
   LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
+  WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME,
   WORKSPACE_CONTEXT_FILE_NAME,
   BridgePluginUpgradeRequiredError,
   BrowserOpenError,
@@ -68,6 +70,7 @@ import {
   materializeRuntimeControlFiles,
   resolveWorkspaceContextFileName,
   ensureWorkspaceWorklog,
+  findTrelioWorkingFolderRoot,
   normalizeAgentSkillPackagePath,
   normalizeAgentSkillDeviceConsentChallenge,
   normalizeResolvedSkillRuntimeArtifact,
@@ -128,6 +131,85 @@ const testCompany = {
 };
 const companyHead = "a".repeat(40);
 const relatedHead = "b".repeat(40);
+
+test("working-folder binding lookup walks ancestors and rejects lookalike instruction files", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-working-folder-"));
+  const workingFolderDirectory = path.join(temporaryDirectory, "company");
+  const nestedDirectory = path.join(workingFolderDirectory, "nested", "shell");
+  const instructionsPath = path.join(workingFolderDirectory, "AGENTS.md");
+
+  try {
+    await mkdir(nestedDirectory, { recursive: true });
+    await writeFile(
+      instructionsPath,
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "## Trelio",
+        "<!-- trelio-agent-workspaces:end -->",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.equal(
+      await realpath(await findTrelioWorkingFolderRoot(nestedDirectory)),
+      await realpath(workingFolderDirectory),
+    );
+    assert.equal(WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME, "workspaces");
+
+    await writeFile(
+      instructionsPath,
+      "<!-- trelio-agent-workspaces:start -->\n## Контекст Trelio\n<!-- trelio-agent-workspaces:end -->\n",
+      "utf8",
+    );
+    assert.equal(
+      await realpath(await findTrelioWorkingFolderRoot(nestedDirectory)),
+      await realpath(workingFolderDirectory),
+      "an already-onboarded folder with the legacy managed heading stays bound",
+    );
+
+    await writeFile(
+      instructionsPath,
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "Это только похожий фрагмент документации без managed-заголовка.",
+        "<!-- trelio-agent-workspaces:end -->",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    assert.equal(await findTrelioWorkingFolderRoot(nestedDirectory), null);
+
+    if (process.platform !== "win32") {
+      const linkedInstructionsPath = path.join(temporaryDirectory, "linked-agents.md");
+      await writeFile(
+        linkedInstructionsPath,
+        "<!-- trelio-agent-workspaces:start -->\n## Trelio\n<!-- trelio-agent-workspaces:end -->\n",
+        "utf8",
+      );
+      await rm(instructionsPath);
+      await symlink(linkedInstructionsPath, instructionsPath);
+      assert.equal(
+        await findTrelioWorkingFolderRoot(nestedDirectory),
+        null,
+        "a symlinked instruction file cannot select the materialization root",
+      );
+      await rm(instructionsPath);
+    }
+
+    await writeFile(
+      instructionsPath,
+      `${"x".repeat(256 * 1024)}\n<!-- trelio-agent-workspaces:start -->\n## Trelio\n<!-- trelio-agent-workspaces:end -->\n`,
+      "utf8",
+    );
+    assert.equal(
+      await findTrelioWorkingFolderRoot(nestedDirectory),
+      null,
+      "an oversized instruction file cannot select a plaintext materialization root",
+    );
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
 
 test("encrypted data-plane routing is exact and never moves plain companies", () => {
   const company = {
@@ -2106,8 +2188,14 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-bridge-lazy-open-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
-  const rootDirectory = path.join(temporaryDirectory, "materialized-run");
   const writableWorkspaceId = "44444444-4444-4444-8444-444444444444";
+  const workingFolderDirectory = path.join(temporaryDirectory, "company-project");
+  const sessionDirectory = path.join(workingFolderDirectory, "session");
+  const rootDirectory = path.join(
+    workingFolderDirectory,
+    "workspaces",
+    writableWorkspaceId,
+  );
   const platformRulesRevisionId = "88888888-8888-4888-8888-888888888888";
   const platformRulesMarkdown = [
     "# Платформенные правила Agent Workspaces",
@@ -2172,6 +2260,19 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
           suite: "trelio-e2ee-v1",
           state: "plain",
           company: testCompany,
+        }));
+        return;
+      }
+
+      if (
+        request.method === "GET"
+        && request.url === `/api/agent-workspaces/workspaces/${writableWorkspaceId}`
+      ) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({
+          workspace: { id: writableWorkspaceId, acceptedHead: baseExport.head },
+          company: testCompany,
+          runs: [{ id: runId, status: "running" }],
         }));
         return;
       }
@@ -2272,6 +2373,19 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
 
   try {
     await mkdir(homeDirectory, { recursive: true });
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(
+      path.join(workingFolderDirectory, "AGENTS.md"),
+      [
+        "<!-- trelio-agent-workspaces:start -->",
+        "## Trelio",
+        "",
+        "Папка привязана к компании «Bridge test company» (`bridge-test-company`).",
+        "<!-- trelio-agent-workspaces:end -->",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
@@ -2290,18 +2404,33 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
         origin,
         "--workspace",
         writableWorkspaceId,
-        "--dir",
-        rootDirectory,
       ],
       {
-        cwd: temporaryDirectory,
+        // The command may run from a descendant shell. The nearest managed
+        // onboarding binding, not the arbitrary cwd, owns `workspaces/`.
+        cwd: sessionDirectory,
         encoding: "utf8",
         timeout: 10_000,
         env: { ...process.env, HOME: homeDirectory },
       },
     );
 
-    assert.equal(opened.stdout.trim(), path.join(rootDirectory, "workspace"));
+    assert.equal(
+      await realpath(opened.stdout.trim()),
+      await realpath(path.join(rootDirectory, "workspace")),
+    );
+    await assert.rejects(
+      stat(path.join(homeDirectory, "Trelio Workspaces", writableWorkspaceId)),
+      { code: "ENOENT" },
+      "a new onboarded Workspace must not fall back to the legacy global root",
+    );
+    if (process.platform !== "win32") {
+      assert.equal(
+        (await stat(rootDirectory)).mode & 0o777,
+        0o700,
+        "a folder-local root containing decrypted bytes stays owner-only",
+      );
+    }
     assert.equal(
       await readFile(path.join(rootDirectory, "workspace", "AGENTS.md"), "utf8"),
       AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
@@ -2371,10 +2500,31 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       seenUrls.filter((url) => url.includes("/objects/") || url.includes("/context-objects/")).length,
       0,
     );
+    await assert.rejects(
+      execFileAsync(
+        process.execPath,
+        [
+          bridgePath,
+          "open",
+          "--origin",
+          origin,
+          "--workspace",
+          writableWorkspaceId,
+        ],
+        {
+          cwd: temporaryDirectory,
+          encoding: "utf8",
+          timeout: 10_000,
+          env: { ...process.env, HOME: homeDirectory },
+        },
+      ),
+      /незавершённый Agent Run/u,
+      "the private registry must reuse the first folder-local root outside its binding cwd",
+    );
     assert.equal(
       compatibilityRequests,
-      2,
-      "bridge must confirm the freshly cached SHA-256 in a second preflight",
+      3,
+      "the first open confirms a fresh SHA-256 and registered reuse needs one current preflight",
     );
     assert.ifError(serverError);
   } finally {
@@ -4380,6 +4530,8 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
 
 Папка привязана к компании «Компания» (\`company-slug\`). Это контекст работы, а не привязка Git-репозитория.
 
+Не создавай рабочие материалы, \`tmp/\` или \`output/\` в корне этой папки. Для task/dossier сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в \`workspaces/<workspace-id>/\`; внутри \`workspace/\` лежат редактируемые файлы, а \`context/\` и \`.trelio-run.json\` остаются служебными.
+
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
 Если нужного контекста нет:
@@ -4401,6 +4553,10 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(
     onboardingSkill,
     /Use this block exactly for every ready company/u,
+  );
+  assert.match(
+    onboardingSkill,
+    /canonical relative `workspaces\/<workspace-id>\/` contract above is intentional/u,
   );
   assert.doesNotMatch(onboardingSkill, /replace only its second\s+context lookup bullet/u);
   assert.match(

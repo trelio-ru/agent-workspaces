@@ -279,6 +279,8 @@ display name and slug:
 
 Папка привязана к компании «Компания» (`company-slug`). Это контекст работы, а не привязка Git-репозитория.
 
+Не создавай рабочие материалы, `tmp/` или `output/` в корне этой папки. Для task/dossier сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в `workspaces/<workspace-id>/`; внутри `workspace/` лежат редактируемые файлы, а `context/` и `.trelio-run.json` остаются служебными.
+
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
 Если нужного контекста нет:
@@ -302,8 +304,10 @@ sentence:
 ```
 
 Do not write the current skill list, connection state, user credentials, IDs,
-tokens, or local paths into the instruction files. Skills and connections are
-live Trelio state and may change after these files are created.
+tokens, or machine-specific absolute paths into the instruction files. The
+canonical relative `workspaces/<workspace-id>/` contract above is intentional;
+skills and connections are live Trelio state and may change after these files
+are created.
 
 ## Connect the local component
 
