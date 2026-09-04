@@ -128,9 +128,10 @@ draft → отдельное publish/apply/dismiss решение. Плагин 
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v4 resource metadata, а v3
-остаётся compatibility path. Native provider-handoff и служебный local `context`
-схлопываются без пустого editor/card; защищённая review-карточка появляется
+полноценный App result со `structuredContent` и exact v5 resource metadata, а v4/v3
+остаются compatibility paths. Bundle использует sandboxed `srcdoc`-frames без
+`data:` frame permission. Native provider-handoff и служебный local `context` скрывают DOM
+и сворачиваются до валидного size `1×1` без пустого editor/card; защищённая review-карточка появляется
 только после `save` и вызывает только app-only продолжения.
 
 Обычные mutation/read-tools сохраняют свои native имена, схемы, ACL,

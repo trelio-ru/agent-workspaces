@@ -1692,21 +1692,15 @@ test("local MCP exposes the proposal App resource without adding its HTML to too
     method: "resources/list",
     params: {},
   });
-  const uri = "ui://trelio/task-proposals/v4.html";
+  const uri = "ui://trelio/task-proposals/v5.html";
   assert.deepEqual(listed.result.resources.map((resource) => resource.uri), [uri]);
-  assert.deepEqual(
-    listed.result.resources[0]._meta.ui.csp.frameDomains,
-    ["data:"],
-  );
-  assert.deepEqual(
-    listed.result.resources[0]._meta["openai/widgetCSP"].frame_domains,
-    ["data:"],
-  );
+  assert.equal(listed.result.resources[0]._meta.ui.csp.frameDomains, undefined);
+  assert.equal(listed.result.resources[0]._meta["openai/widgetCSP"].frame_domains, undefined);
   // resources/read uses this exact builder too. Assert both metadata dialects
   // here so a future refactor cannot restore the host-specific loading shell.
   const readMeta = buildLocalProposalAppResourceMeta();
-  assert.deepEqual(readMeta.ui.csp.frameDomains, ["data:"]);
-  assert.deepEqual(readMeta["openai/widgetCSP"].frame_domains, ["data:"]);
+  assert.equal(readMeta.ui.csp.frameDomains, undefined);
+  assert.equal(readMeta["openai/widgetCSP"].frame_domains, undefined);
   assert.doesNotMatch(JSON.stringify((await handleLocalMcpMessage({
     jsonrpc: "2.0",
     id: 2,
@@ -1729,24 +1723,28 @@ test("local MCP exposes the proposal App resource without adding its HTML to too
   assert.equal(read.result.contents[0].uri, uri);
   assert.match(read.result.contents[0].text, /proposal/u);
 
-  const legacyUri = "ui://trelio/task-proposals/v3.html";
-  const legacyRead = await handleLocalMcpMessage({
-    jsonrpc: "2.0",
-    id: 4,
-    method: "resources/read",
-    params: { uri: legacyUri },
-  }, {
-    readResource: async (_origin, exactUri) => ({
-      uri: exactUri,
-      mimeType: "text/html;profile=mcp-app",
-      text: "<!doctype html><title>legacy proposal</title>",
-    }),
-  });
-  assert.equal(legacyRead.result.contents[0].uri, legacyUri);
-  assert.match(legacyRead.result.contents[0].text, /legacy proposal/u);
+  for (const [index, legacyUri] of [
+    "ui://trelio/task-proposals/v4.html",
+    "ui://trelio/task-proposals/v3.html",
+  ].entries()) {
+    const legacyRead = await handleLocalMcpMessage({
+      jsonrpc: "2.0",
+      id: 4 + index,
+      method: "resources/read",
+      params: { uri: legacyUri },
+    }, {
+      readResource: async (_origin, exactUri) => ({
+        uri: exactUri,
+        mimeType: "text/html;profile=mcp-app",
+        text: "<!doctype html><title>legacy proposal</title>",
+      }),
+    });
+    assert.equal(legacyRead.result.contents[0].uri, legacyUri);
+    assert.match(legacyRead.result.contents[0].text, /legacy proposal/u);
+  }
 });
 
-test("local proposal App keeps v4 and legacy v3 fetches cache-safe", async () => {
+test("local proposal App keeps current and legacy fetches cache-safe", async () => {
   const requestedPaths = [];
   const resourceHtml = "<!doctype html><title>taskProposalBlocks</title>";
   const resourceBytes = Buffer.from(resourceHtml, "utf8");
@@ -1764,19 +1762,23 @@ test("local proposal App keeps v4 and legacy v3 fetches cache-safe", async () =>
     },
   };
   const origin = "https://proposal-cache-test.invalid";
-  const currentUri = "ui://trelio/task-proposals/v4.html";
-  const legacyUri = "ui://trelio/task-proposals/v3.html";
+  const currentUri = "ui://trelio/task-proposals/v5.html";
+  const legacyV4Uri = "ui://trelio/task-proposals/v4.html";
+  const legacyV3Uri = "ui://trelio/task-proposals/v3.html";
 
   const current = await readLocalProposalAppResource(origin, currentUri, options);
-  const legacy = await readLocalProposalAppResource(origin, legacyUri, options);
+  const legacyV4 = await readLocalProposalAppResource(origin, legacyV4Uri, options);
+  const legacyV3 = await readLocalProposalAppResource(origin, legacyV3Uri, options);
   const currentAgain = await readLocalProposalAppResource(origin, currentUri, options);
 
   assert.deepEqual(requestedPaths, [
+    "/api/agent-workspaces/mcp-app-resources/task-proposals-v5",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v4",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
   ]);
   assert.equal(current.uri, currentUri);
-  assert.equal(legacy.uri, legacyUri);
+  assert.equal(legacyV4.uri, legacyV4Uri);
+  assert.equal(legacyV3.uri, legacyV3Uri);
   assert.equal(currentAgain, current);
 });
 
@@ -1801,7 +1803,7 @@ test("local proposal continuation returns a real MCP App result instead of JSON 
     },
   });
 
-  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v4.html");
+  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v5.html");
   assert.equal(result.structuredContent.kind, "taskProposalBlocks");
   assert.equal(result.structuredContent.blocks[0].type, "commentProposal");
   assert.equal(

@@ -115,11 +115,15 @@ const LOCAL_PROPOSAL_APP_TOOL_ROUTE = new Map([
 ]);
 const localProposalRouteById = new Map();
 const LOCAL_PROPOSAL_APP_RESOURCE_PATH_BY_URI = new Map([
-  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v4"],
-  ...TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS.map((uri) => [
-    uri,
-    "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
-  ]),
+  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v5"],
+  ...TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS.map((uri) => {
+    // Keep every immutable ui:// generation paired with the matching backend
+    // endpoint. A legacy read must never populate the cache with newer bytes
+    // under an older URI or vice versa.
+    const version = uri.match(/\/v(\d+)\.html$/u)?.[1];
+    if (!version) throw new Error(`Invalid local proposal resource URI: ${uri}`);
+    return [uri, `/api/agent-workspaces/mcp-app-resources/task-proposals-v${version}`];
+  }),
 ]);
 const localProposalAppResourceCache = new Map();
 const COMPANY_SKILL_PLAN_DIRECTORY = path.join(
@@ -2987,10 +2991,8 @@ export const buildLocalProposalAppResourceMeta = () => ({
     csp: {
       connectDomains: [],
       resourceDomains: [],
-      // The shared v4 surface embeds the four reviewed single-proposal Apps as
-      // sandboxed data frames. Both modern MCP Apps hosts and older OpenAI
-      // hosts must receive the same permission on list and read responses.
-      frameDomains: ["data:"],
+      // The shared surface uses sandboxed srcdoc frames. They inherit this
+      // closed policy and need no external frame origin permission.
     },
   },
   "openai/widgetDescription": "Независимые предложения комментариев, чек-листов, статусов и снятия контролей в одном ответе.",
@@ -2998,7 +3000,6 @@ export const buildLocalProposalAppResourceMeta = () => ({
   "openai/widgetCSP": {
     connect_domains: [],
     resource_domains: [],
-    frame_domains: ["data:"],
   },
 });
 
@@ -3530,7 +3531,7 @@ export const readLocalProposalAppResource = async (
     );
   }
   // Cache by both origin and immutable ui:// URI. Otherwise a compatibility
-  // read of v3 can poison a later v4 read with bytes labelled as the wrong
+  // read of a legacy generation can poison a later current read with bytes labelled as the wrong
   // resource, defeating the cache-safe rollout this version bump provides.
   const cacheKey = `${origin}\u0000${uri}`;
   const cached = localProposalAppResourceCache.get(cacheKey);

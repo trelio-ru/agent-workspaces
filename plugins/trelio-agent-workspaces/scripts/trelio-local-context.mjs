@@ -69,8 +69,9 @@ const MIRROR_STALE_READ_REFRESH_WAIT_MS = 30 * 1000;
 const MIRROR_LOCK_HEARTBEAT_MS = 20 * 1000;
 const MIRROR_GENERATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS = 600;
-export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v4.html";
+export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v5.html";
 export const TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS = [
+  "ui://trelio/task-proposals/v4.html",
   "ui://trelio/task-proposals/v3.html",
 ];
 export const TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE = "text/html;profile=mcp-app";
