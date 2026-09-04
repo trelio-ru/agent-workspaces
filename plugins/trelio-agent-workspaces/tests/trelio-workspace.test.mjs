@@ -4329,7 +4329,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   );
   assert.match(scopeReference, /Do not call `list_workspaces` merely to discover context/u);
   assert.match(scopeReference, /Call the canonical unified `search` once/u);
-  assert.match(scopeReference, /same call searches\s+first-class active and archived workspaces, projects, active and archived tasks/u);
+  assert.match(scopeReference, /The same call searches\s+first-class active and archived workspaces, projects, active and archived\s+tasks/u);
   assert.match(scopeReference, /Archived Workspace results carry an explicit `\[Архив\]` title marker/u);
   assert.match(scopeReference, /optional refinements, not\s+mandatory consecutive stages/u);
   assert.match(scopeReference, /explicitly linked\s+to several projects/u);
