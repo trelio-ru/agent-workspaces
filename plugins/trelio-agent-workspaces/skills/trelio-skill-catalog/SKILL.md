@@ -11,14 +11,11 @@ Catalog discovery is available without runtime admission. `get_agent_skill` is
 a protected context read: the approved client hook injects its one-use
 `runtimeSessionProof` automatically. Never author or copy runtime fields. When
 Trelio itself returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop the protected catalog
-read and give one host-specific action. In Codex tell the user only: `Откройте
-настройки плагина Trelio Agent Workspaces, включите Hooks и повторите запрос.`
-In Claude Code/Cowork tell the user only to enable/approve this plugin's hooks
-and retry. Do not initially suggest installing, updating or reinstalling the
-plugin, running `trelio-workspace login`, starting a new task/session, or
-restarting the app. Escalate only after Hooks are enabled and a retry still
-proves that the current session did not load them or returns a separate,
-specific version, installation, pairing, or session error. Never bypass the
+read. The response proves only that proof was absent. If review of the current
+definition is unconfirmed, ask for the host-specific enable/approve action in
+plugin settings or `/hooks`. If current trust is confirmed, do not repeat that
+advice: use the diagnostics skill to inspect the loaded definition, matcher,
+owner-process chronology, and actual `PreToolUse` dispatch. Never bypass the
 catalog gate.
 
 A `PreToolUse` failure proves that the hook is active. Preserve its exact code

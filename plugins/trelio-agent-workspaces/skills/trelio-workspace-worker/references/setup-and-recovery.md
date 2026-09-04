@@ -12,15 +12,25 @@ without admission; the approved hook injects a fresh one-use proof for context,
 mutation, and Agent Workspace calls.
 
 If Trelio itself returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work.
-In Codex tell the user only: `Откройте настройки плагина Trelio Agent
-Workspaces, включите Hooks и повторите запрос.` In Claude Code/Cowork tell the
-user only to enable/approve this plugin's hooks and retry. Do not initially
-suggest installing, updating, or reinstalling the plugin, running
-`trelio-workspace login`, starting a new task/session, or restarting the app.
-Escalate only after Hooks are enabled and a retry still proves that the current
-session did not load them or returns a separate version, installation, pairing,
-or session error. Never bypass admission through another MCP, direct HTTP,
-browser automation, or a shell script.
+The signal proves only that the request arrived without proof; it does not say
+why. If review of the current definition is not confirmed, give one
+host-specific action: in Codex ask the user to enable/approve this plugin's
+current Hooks in plugin settings or `/hooks`; in Claude Code/Cowork ask for the
+equivalent plugin-hook approval. If current trust is already confirmed, do not
+repeat the enable advice and do not reset OAuth, pairing, Node, or Git.
+
+For confirmed Codex trust, inspect the exact loaded definition and matcher, then
+compare plugin installation/trust-write time with the owning App Server and task
+start. Core/App Server versions before `0.154.0-alpha.2` do not reload user
+config after local plugin installation. If an older owner predates the current
+plugin or trust write, or chronology is unavailable, fully quit every
+Codex/ChatGPT process, reopen the app, create one fresh task, and retry exactly
+one protected read. Closing a window or creating a task under the same owner is
+not a restart. If the owner definitely started after trust yet the exact call
+still produces no `PreToolUse` event or runtime session, capture the canonical
+tool, hook events, runtime counts, and exact server response and classify a
+client hook-dispatch failure. Never bypass admission through another MCP,
+direct HTTP, browser automation, or a shell script.
 
 A `PreToolUse` failure proves that the hook ran. Preserve its exact structured
 code and reason rather than replacing it with the missing-Hooks response.
@@ -87,6 +97,10 @@ system Node and requires version 22+. A missing PATH alias is not a Node
 failure when the launcher succeeds. If Codex still shows bare `node`, follow
 the normal plugin update/new-task path. Never reset OAuth, reinstall Node, or
 repeat restart advice after the launcher has verified a compatible runtime.
+For a startup timeout on a plugin older than `1.19.5`, update first: that local
+host could block its bounded MCP handshake on cache retention. Version `1.19.5`
+starts retention only after the initialize response has been written; retry it
+in a fresh owner process.
 
 Do not claim readiness because skill text is visible. Confirm it with a
 successful low-risk MCP read such as `get_my_context` or `get_task`.

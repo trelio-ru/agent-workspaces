@@ -77,7 +77,11 @@ installed manifest/entrypoint и, когда это безопасно, прод
 exact загруженную immutable-версию в приватном retention-каталоге и после
 команды восстанавливает её прежний versioned path. Поэтому уже открытая задача
 не теряет свой `SKILL.md`, когда Codex очищает старую cache-папку; новые задачи
-по-прежнему получают актуальную версию.
+по-прежнему получают актуальную версию. Локальный `trelio-remote-skills` также
+делает best-effort retention своей загруженной версии, но начиная с `1.19.5`
+запускает его только после записи MCP `initialize` response. Обход и копирование
+cache не входят в ограниченный startup handshake, поэтому медленный либо
+конкурентный Windows filesystem не блокирует появление local tool catalog.
 
 ## OAuth и новый контекст
 
@@ -236,13 +240,23 @@ server cleanup.
 Agent Run закрепляет snapshot и hook-observed runtime; exact open command
 передаёт bridge только `--runtime-session UUID`. Сессия живёт до SessionEnd или
 24 часов и не пересматривает model/effort после первоначального допуска.
-Только когда сам Trelio возвращает `TRELIO_RUNTIME_HOOK_REQUIRED` из-за
-отсутствующего proof, в Codex требуется открыть настройки плагина Trelio Agent
-Workspaces, включить Hooks и повторить запрос. Для Claude Code/Cowork
-применяется эквивалентное enable/approve plugin hooks. Ошибка, уже возвращённая
-активным `PreToolUse`, доказывает, что hook запущен: её structured code и
-причина сохраняются, а неизвестный внутренний отказ получает отдельный
-`TRELIO_RUNTIME_HOOK_FAILED`.
+Ответ Trelio `TRELIO_RUNTIME_HOOK_REQUIRED` доказывает только, что запрос пришёл
+без proof; он не различает выключенные Hooks и доверенную definition, которую
+owning client process не загрузил или не запустил. Protected work
+останавливается. Если review текущей definition не подтверждён, пользователь
+включает/разрешает её в настройках плагина или `/hooks`; при подтверждённом
+trust повторять эту инструкцию нельзя. Тогда проверяются exact matcher и
+хронология установки/записи trust относительно owning App Server. Codex
+core/App Server до `0.154.0-alpha.2` не перечитывает user config после локальной
+установки plugin: если owner старше изменения либо хронология неизвестна, нужно
+полностью завершить все процессы Codex/ChatGPT, открыть приложение заново,
+создать новую задачу и один раз повторить protected read. Закрытие окна и новая
+задача в прежнем owner-процессе не являются restart. Если новый owner точно
+запущен после trust, а `PreToolUse` всё равно отсутствует, это отдельный client
+hook-dispatch failure; сохраняются canonical tool, hook events, runtime counts
+и exact server response. Ошибка активного `PreToolUse` доказывает, что hook
+запущен: её structured code и причина сохраняются, а неизвестный внутренний
+отказ получает отдельный `TRELIO_RUNTIME_HOOK_FAILED`.
 
 При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
 `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` Codex сначала проверяет

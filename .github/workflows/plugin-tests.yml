@@ -116,14 +116,22 @@ jobs:
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
 
-      # Execute the exact commandWindows definition through cmd.exe with Node
-      # removed from PATH. This protects the desktop failure mode where MCP can
-      # use the bundled runtime but an approved hook silently cannot start.
+      # Execute the exact commandWindows definition through both cmd.exe and
+      # Windows PowerShell with Node removed from PATH. This protects hosts that
+      # select a different outer shell for the same approved hook definition.
       - name: Run Windows hook launcher regression
         run: >-
           node --test
           --test-name-pattern="configured platform hook launcher"
           plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+
+      # A cache snapshot can be slow on Windows and must not consume Codex's
+      # bounded local-MCP startup window before the initialize response exists.
+      - name: Run Windows Remote MCP handshake regression
+        run: >-
+          node --test
+          --test-name-pattern="stdio initialize is not blocked by Codex plugin retention"
+          plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
 
       # GitHub's Windows runner account is an administrator. Re-run the real
       # bridge guard as a disposable standard user so an accidental dependency

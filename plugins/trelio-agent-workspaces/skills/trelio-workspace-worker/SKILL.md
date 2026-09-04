@@ -101,12 +101,12 @@ the Run procedure only when workspace work is chosen.
 
 Never author, copy, preserve, or retry `runtimeSessionProof` or
 `runtimeAttestation`; the approved hook injects a fresh proof. If Trelio itself
-returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work. In Codex tell the
-user only: `Откройте настройки плагина Trelio Agent Workspaces, включите Hooks
-и повторите запрос.` In Claude Code/Cowork ask the user only to enable/approve
-this plugin's hooks and retry. Do not initially suggest installation, update,
-`trelio-workspace login`, a new task/session, or restart. Escalate only after
-Hooks are enabled and a retry proves a separate problem.
+returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work: the response proves
+that proof is absent, not why. If review of the current hook definition is not
+confirmed, ask for the host-specific enable/approve action. If current trust is
+already confirmed, do not repeat that advice; immediately read the
+setup/recovery reference and diagnose the owning client process and hook
+dispatch chronology.
 
 A `PreToolUse` failure proves the hook ran: preserve its exact code and reason.
 For `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`,

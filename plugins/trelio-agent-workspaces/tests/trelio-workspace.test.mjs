@@ -4047,7 +4047,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.19.4");
+  assert.equal(BRIDGE_VERSION, "1.19.5");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4252,7 +4252,8 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     /Один Run никогда не меняет несколько воркспейсов/u,
     /exact diff.*только после явного подтверждения/u,
     /Approved hook сам подставляет одноразовый runtimeSessionProof/u,
-    /TRELIO_RUNTIME_HOOK_REQUIRED.*настройки плагина Trelio Agent Workspaces.*включите Hooks.*повторите запрос/u,
+    /TRELIO_RUNTIME_HOOK_REQUIRED.*отсутствие proof, а не выключенные Hooks/u,
+    /trust подтверждён.*не повторяй.*диагностируй owning client process/u,
     /активного PreToolUse hook означает, что Hooks уже работают/u,
     /Не обходи gate другим MCP, HTTP, browser или shell/iu,
     /Native Trelio MCP и bundled bridge являются единственным штатным control\/data plane/u,
@@ -4795,8 +4796,7 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(workerSkill, /dedicated trelio-diagnostics skill/u);
 });
 
-test("bundled skills reserve missing-proof recovery for Trelio's server signal", async () => {
-  const recoveryPhrase = /Откройте\s+настройки\s+плагина\s+Trelio\s+Agent\s+Workspaces,\s+включите\s+Hooks\s+и\s+повторите\s+запрос\./u;
+test("bundled skills distinguish missing proof from disabled hook trust", async () => {
   const recoveryFiles = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
     path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
@@ -4814,16 +4814,29 @@ test("bundled skills reserve missing-proof recovery for Trelio's server signal",
 
   for (const filePath of recoveryFiles) {
     const instructions = await readFile(filePath, "utf8");
-    assert.match(instructions, recoveryPhrase);
-    assert.match(instructions, /Trelio itself\s+returns\s+`TRELIO_RUNTIME_HOOK_REQUIRED`/u);
+    assert.match(
+      instructions,
+      /(?:Trelio itself\s+returns\s+`TRELIO_RUNTIME_HOOK_REQUIRED`|`TRELIO_RUNTIME_HOOK_REQUIRED`\s+from Trelio)/u,
+    );
+    assert.match(instructions, /proof/u);
+    assert.match(instructions, /current (?:definition|trust)/u);
+    assert.match(instructions, /do\s+not\s+repeat/u);
+    assert.match(instructions, /(?:owning|owner-process)/u);
     assert.match(
       instructions,
       /A `PreToolUse` failure[\s\S]{0,160}proves[\s\S]{0,80}(?:hook is active|hook ran)/u,
     );
     assert.match(instructions, /AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED/u);
-    assert.match(instructions, /Do not\s+initially\s+suggest/u);
-    assert.match(instructions, /Escalate only/u);
   }
+
+  const diagnosticsSkill = await readFile(recoveryFiles[0], "utf8");
+  const setupRecovery = await readFile(recoveryFiles.at(-1), "utf8");
+  for (const instructions of [diagnosticsSkill, setupRecovery]) {
+    assert.match(instructions, /0\.154\.0-alpha\.2/u);
+    assert.match(instructions, /fully quit (?:all|every)\s+Codex\/ChatGPT process/u);
+    assert.match(instructions, /Closing a window[\s\S]{0,100}not a (?:process )?restart/u);
+  }
+  assert.match(setupRecovery, /Version `1\.19\.5`[\s\S]{0,120}initialize response/u);
 
   assert.doesNotMatch(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,

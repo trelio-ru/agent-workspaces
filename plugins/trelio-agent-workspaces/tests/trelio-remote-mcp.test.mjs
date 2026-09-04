@@ -44,7 +44,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "1.19.4");
+  }), "1.19.5");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -377,7 +377,7 @@ const assertLoopbackPortClosed = async (port) => new Promise((resolve, reject) =
   });
 });
 
-const createStdioHarness = (callTool) => {
+const createStdioHarness = (callTool, options = {}) => {
   const inputStream = new PassThrough();
   const outputStream = new PassThrough();
   const frames = [];
@@ -409,6 +409,7 @@ const createStdioHarness = (callTool) => {
     outputStream,
     origin: "https://trelio.test",
     callTool,
+    ...options,
   });
 
   return {
@@ -441,6 +442,48 @@ const createStdioHarness = (callTool) => {
     },
   };
 };
+
+test("stdio initialize is not blocked by Codex plugin retention", async () => {
+  let markRetentionStarted;
+  let releaseRetention;
+  const retentionStarted = new Promise((resolve) => {
+    markRetentionStarted = resolve;
+  });
+  const retentionBlocked = new Promise((resolve) => {
+    releaseRetention = resolve;
+  });
+  const harness = createStdioHarness(
+    async () => {
+      throw new Error("initialize unexpectedly invoked a tool");
+    },
+    {
+      retainInstallation: async () => {
+        markRetentionStarted();
+        await retentionBlocked;
+      },
+    },
+  );
+
+  try {
+    harness.send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "retention-regression", version: "1.0.0" },
+      },
+    });
+    const response = await harness.waitForFrame(({ id }) => id === 1);
+    assert.equal(response.result.protocolVersion, "2025-03-26");
+    assert.equal(response.result.serverInfo.name, "trelio-remote-skills");
+    await retentionStarted;
+  } finally {
+    releaseRetention();
+    await harness.close();
+  }
+});
 
 test("Remote MCP browser handoff verifies the form GET and uses a private macOS fallback", async () => {
   const setupUrl = "http://127.0.0.1:45678/?nonce=must-stay-local";
@@ -2181,7 +2224,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.19.4");
+  assert.equal(frames[0].result.serverInfo.version, "1.19.5");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);

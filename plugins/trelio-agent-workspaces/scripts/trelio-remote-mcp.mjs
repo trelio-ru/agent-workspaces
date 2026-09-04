@@ -3831,12 +3831,8 @@ export const runStdioHost = async ({
   origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
   callTool = handleToolCall,
   handleMessage = handleLocalMcpMessage,
+  retainInstallation = retainLoadedCodexPluginInstallation,
 } = {}) => {
-  // Codex may refresh a marketplace before the user invokes the workspace
-  // bridge. Snapshotting at local host startup covers that normal path too;
-  // source checkouts and Claude fail the strict Codex cache-path check and
-  // intentionally continue without changing their own plugin lifecycle.
-  await retainLoadedCodexPluginInstallation().catch(() => undefined);
   const input = readline.createInterface({
     input: inputStream,
     crlfDelay: Infinity,
@@ -3844,7 +3840,22 @@ export const runStdioHost = async ({
   });
   const activeToolCalls = new Map();
   const inFlightDispatches = new Set();
+  let retentionStarted = false;
   let outputQueue = Promise.resolve();
+
+  const startRetentionAfterHandshake = () => {
+    if (retentionStarted) return;
+    retentionStarted = true;
+    // Codex gives a local MCP server a bounded startup window. Hashing,
+    // copying and restoring versioned plugin trees before `initialize` used
+    // that entire window on slower or contended filesystems, especially when
+    // several tasks started the same server together. The snapshot remains a
+    // best-effort lifecycle safeguard, but it must begin only after the MCP
+    // handshake is on the wire and remain outside the dispatch/output queue.
+    void Promise.resolve()
+      .then(() => retainInstallation())
+      .catch(() => undefined);
+  };
 
   const enqueueResponse = (response) => {
     if (!response) {
@@ -3894,6 +3905,9 @@ export const runStdioHost = async ({
         callTool,
         signal: controller?.signal,
       }));
+      if (message?.jsonrpc === "2.0" && message.method === "initialize") {
+        startRetentionAfterHandshake();
+      }
     } finally {
       if (controller && activeToolCalls.get(message.id) === controller) {
         activeToolCalls.delete(message.id);

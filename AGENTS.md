@@ -243,7 +243,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   считаются доверием к его hooks; агент не автоматизирует approval, не использует
   bypass-флаг и не подменяет live proof результатом doctor-а. Уже наблюдённый
   `PreToolUse` не требует повторного review в той же задаче, а стандартный
-  `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed recovery.
+  `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed сигналом отсутствующего
+  proof, но сам по себе не доказывает, что Hooks выключены. При уже
+  подтверждённом trust агент не повторяет enable-инструкцию: он проверяет exact
+  matcher и хронологию plugin/trust относительно owning App Server. Для Codex
+  core/App Server до `0.154.0-alpha.2`, не перечитывающего config после
+  установки, требуется полностью завершить все процессы Codex/ChatGPT, открыть
+  приложение заново и проверить один protected read в новой задаче; закрытие
+  окна или новая задача в прежнем owner-процессе restart-ом не считаются.
 - Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,
@@ -253,7 +260,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   server имеет explicit `type: http`, а bundled paths используют
   `${CLAUDE_PLUGIN_ROOT}`. Сводить эти определения в один companion-файл,
   возвращать bare `node`, машинный absolute path или менять `hooks.json` ради
-  PATH-совместимости нельзя.
+  PATH-совместимости нельзя. Retention exact загруженной Codex plugin-version
+  запускается только после записи MCP `initialize` response и никогда не входит
+  в handshake/output queue: медленный или конкурентный cache snapshot не должен
+  расходовать ограниченное startup-время локального server.
 - Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
   только exact executable через scoped one-use delivery. Стабильный
   installation-managed API key/client secret может повторно использоваться

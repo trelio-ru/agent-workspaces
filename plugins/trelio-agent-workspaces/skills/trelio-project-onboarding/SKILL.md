@@ -20,14 +20,12 @@ admission so setup can be repaired. Protected context/mutation calls receive a
 one-use `runtimeSessionProof` from the approved client hook automatically;
 never author or copy runtime fields. When Trelio itself returns
 `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected setup and give one host-specific
-action. In Codex tell the user only:
-`Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и повторите
-запрос.` In Claude Code/Cowork tell the user only to enable/approve this
-plugin's hooks and retry. Do not initially suggest installing, updating or
-reinstalling the plugin, running `trelio-workspace login`, starting a new
-task/session, or restarting the app. Escalate only after Hooks are enabled and
-a retry still proves that the current session did not load them or returns a
-separate, specific version, installation, pairing, or session error.
+action only when review of the current definition is unconfirmed: in Codex ask
+the user to enable/approve this plugin's Hooks in settings or `/hooks`; in
+Claude Code/Cowork ask for the equivalent approval. The response proves only
+that proof was absent. If current trust is confirmed, do not repeat that advice:
+switch to the diagnostics skill and inspect the loaded definition, matcher,
+owner-process chronology, and actual `PreToolUse` dispatch.
 
 A `PreToolUse` failure proves that the hook is active. Preserve its exact code
 and reason. On `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
@@ -202,9 +200,9 @@ current task.
    particular, `approvalStatus=client_managed_unknown` is not a positive or
    negative result. A successful or failed `PreToolUse` event proves that the
    hook is active for this task, so do not repeat this onboarding checkpoint in
-   that case. The later `TRELIO_RUNTIME_HOOK_REQUIRED` handling remains the
-   end-to-end fail-closed recovery if client trust changes or the hook did not
-   load.
+   that case. A later `TRELIO_RUNTIME_HOOK_REQUIRED` remains an end-to-end
+   fail-closed signal that proof was absent; it does not by itself prove that
+   trust was disabled, so confirmed trust routes to exact client diagnostics.
 3. Resolve the exact company before `get_agent_instructions` or any local file
    write. Call `list_companies` unless a live response in the current turn has
    already returned the accessible companies. Read each returned company's

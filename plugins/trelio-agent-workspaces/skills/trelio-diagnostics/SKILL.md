@@ -103,13 +103,27 @@ that live proof was not performed instead of claiming success.
 
 - A successful protected read proves that the approved hook injected a valid
   proof in this task.
-- Only when Trelio itself returns `TRELIO_RUNTIME_HOOK_REQUIRED`, tell a Codex
-  user: `Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и
-  повторите запрос.` In Claude Code/Cowork, ask the user to enable or approve
-  this plugin's hooks and retry. Do not initially suggest installing, updating
-  or reinstalling the plugin, pairing, login, a new task or an app restart for
-  this signal. Escalate only after Hooks are enabled and the retry returns a
-  separate exact installation, version, pairing or session error.
+- `TRELIO_RUNTIME_HOOK_REQUIRED` from Trelio proves only that the request
+  arrived without a proof; it does not distinguish disabled hooks from a
+  trusted definition that the owning client process never loaded or dispatched.
+  Stop protected work. If review of the current definition is not confirmed,
+  give the host-specific Hooks enable/approve action. If it is confirmed, do
+  not repeat that advice: inspect the loaded definition, exact matcher, and the
+  chronology of plugin installation, trust write, owning App Server start, and
+  task start.
+- Codex core/App Server versions before `0.154.0-alpha.2` do not reload user
+  config after local plugin installation. If that older owner predates the
+  plugin/trust change, or the chronology cannot prove otherwise, fully quit all
+  Codex/ChatGPT processes, reopen the app, create one fresh task, and retry one
+  protected read. Closing a window or creating a task under the same owner is
+  not a process restart. Do not map a combined app's marketing version to a
+  core version without reading the bundled core/CLI version.
+- If the owning process definitely started after the current definition became
+  trusted and the exact matched call still has no `PreToolUse` event or runtime
+  session, preserve the canonical tool name, hook start/completion evidence,
+  runtime counts, and server error. Classify that as client hook dispatch
+  failure; login, pairing, and reinstall are not justified without separate
+  evidence.
 - A `PreToolUse` failure proves that the hook ran. Preserve its exact
   structured code and reason. Never reclassify it as
   `TRELIO_RUNTIME_HOOK_REQUIRED` or tell the user to enable Hooks.
@@ -163,7 +177,11 @@ Later behavior-only fixes in the runtime script do not require another
   launcher from `${CLAUDE_PLUGIN_ROOT}`; a literal relative-path `ENOENT` needs
   the Claude plugin update plus `/reload-plugins`, not a cwd-dependent manual
   launch. Run the bundled launcher diagnostic above before classifying a
-  Node.js/runtime prerequisite. Do not reset remote Trelio OAuth.
+  Node.js/runtime prerequisite. A startup timeout from plugin versions before
+  `1.19.5` may be the local host performing cache retention before its MCP
+  initialize response; update the plugin and start a fresh owner process before
+  retrying. Do not reset remote Trelio OAuth or reinstall Node when the launcher
+  diagnostic is ready.
 - Doctor reports Node below 22: offer the platform's normal Node.js LTS install
   path and obtain explicit confirmation before running a package-manager
   command.

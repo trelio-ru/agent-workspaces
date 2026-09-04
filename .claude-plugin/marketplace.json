@@ -8,7 +8,7 @@
       "name": "trelio-agent-workspaces",
       "source": "./plugins/trelio-agent-workspaces",
       "description": "Guided Trelio setup diagnostics and working-folder onboarding, guarded project and private-skill management, scoped Agent Workspaces, one-use Agent Secret delivery, live skill catalogs, declarative Remote MCP, and backend-managed signed runtimes.",
-      "version": "1.19.4"
+      "version": "1.19.5"
     }
   ]
 }

@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.19.4";
+export const BRIDGE_VERSION = "1.19.5";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -77,7 +77,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Не изменяй `AGENTS.md`, `CLAUDE.md`, `.trelio/**` и read-only `../context/**`.",
   "- Новый Run записывает ровно в один воркспейс: канонический воркспейс задачи либо выбранный именованный воркспейс. Company/project задают ACL и immutable правила, а дополнительный контекст приходит только через явно закреплённые related task/workspace heads. Один Run никогда не меняет несколько воркспейсов.",
   `- Для изменения личного профиля или company/project правил оцени область \`current_request\` / \`task\` / \`personal\` / \`project\` / \`company\`, подготовь exact diff через \`plan_my_agent_profile_update\` или \`plan_agent_instructions_update\` и публикуй только после явного подтверждения. Не прячь инструкции в \`${workspaceContextFileName}\`; новая revision действует только на будущие Runs.`,
-  "- Approved hook сам подставляет одноразовый runtimeSessionProof в защищённые операции. Никогда не создавай, не копируй и не передавай proof либо model attestation вручную. Только при exact TRELIO_RUNTIME_HOOK_REQUIRED от Trelio остановись и в Codex скажи: «Откройте настройки плагина Trelio Agent Workspaces, включите Hooks и повторите запрос»; в Claude Code/Cowork попроси enable/approve hooks. Ошибка активного PreToolUse hook означает, что Hooks уже работают: сохрани её exact code и причину. Upgrade/host/runtime failure обрабатывай по setup-and-recovery reference текущего навыка. Не обходи gate другим MCP, HTTP, browser или shell.",
+  "- Approved hook сам подставляет одноразовый runtimeSessionProof в защищённые операции. Никогда не создавай, не копируй и не передавай proof либо model attestation вручную. При exact TRELIO_RUNTIME_HOOK_REQUIRED от Trelio остановись: ответ доказывает отсутствие proof, а не выключенные Hooks. Если review текущей definition не подтверждён, попроси пользователя enable/approve hooks; если trust подтверждён, не повторяй эту инструкцию и сразу диагностируй owning client process по setup-and-recovery reference. Ошибка активного PreToolUse hook означает, что Hooks уже работают: сохрани её exact code и причину. Upgrade/host/runtime failure обрабатывай по тому же reference. Не обходи gate другим MCP, HTTP, browser или shell.",
   "- Native Trelio MCP и bundled bridge являются единственным штатным control/data plane Agent Workspace. Для внешних сервисов, Agent Secrets, поиска контекста и task proposals загружай только соответствующий reference навыка trelio-workspace-worker; не читай все references заранее и не заменяй защищённый маршрут альтернативным инструментом.",
   "",
   "## Начало Run",
@@ -283,15 +283,16 @@ const RUNTIME_SESSION_DIAGNOSTIC_LIMIT = 256;
 const RUNTIME_SESSION_LOCK_STALE_MILLISECONDS = 15_000;
 const EXPECTED_RUNTIME_HOOK_COMMAND =
   '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
-// Codex executes Windows hook commands through cmd.exe. Keep this override
-// quote-free so both the legacy escaped-argument runner and the current
-// outer-quoted runner can pass it intact. The UTF-16LE PowerShell payload only
-// joins the trusted plugin root to the bundled .cmd launcher and runtime hook;
-// the launcher remains the single place that resolves a compatible Node.js.
+// Codex executes a Windows hook through the shell selected for the local
+// environment, which can be cmd.exe or PowerShell. Keep the outer command free
+// of shell-specific variable syntax and quotes so both runners pass it intact.
+// The UTF-16LE PowerShell payload joins the trusted plugin root to the bundled
+// .cmd launcher and runtime hook; the launcher remains the single place that
+// resolves a compatible Node.js.
 const WINDOWS_RUNTIME_HOOK_BOOTSTRAP =
   "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
 const EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS = [
-  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "powershell.exe",
   "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
   Buffer.from(WINDOWS_RUNTIME_HOOK_BOOTSTRAP, "utf16le").toString("base64"),
 ].join(" ");

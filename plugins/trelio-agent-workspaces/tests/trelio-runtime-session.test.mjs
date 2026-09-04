@@ -25,7 +25,7 @@ const expectedRuntimeHookCommand =
 const windowsRuntimeHookBootstrap =
   "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
 const expectedRuntimeHookCommandWindows = [
-  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "powershell.exe",
   "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
   Buffer.from(windowsRuntimeHookBootstrap, "utf16le").toString("base64"),
 ].join(" ");
@@ -252,7 +252,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
   assert.doesNotMatch(JSON.stringify(hooks), /title|rename/u);
 });
 
-test("configured platform hook launcher starts without Node.js on PATH", async () => {
+test("configured platform hook launcher starts in every Windows shell without Node.js on PATH", async () => {
   const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-launcher-"));
   try {
     const hooks = JSON.parse(await readFile(
@@ -263,59 +263,112 @@ test("configured platform hook launcher starts without Node.js on PATH", async (
     const command = process.platform === "win32"
       ? handler.commandWindows
       : handler.command;
-    const shell = process.platform === "win32"
-      ? (process.env.ComSpec || "cmd.exe")
-      : (process.env.SHELL || "/bin/sh");
-    const shellArguments = process.platform === "win32"
-      ? ["/d", "/s", "/c", command]
-      : ["-lc", command];
+    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    const windowsPowerShell = path.join(
+      systemRoot,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const shellCases = process.platform === "win32"
+      ? [
+        {
+          name: "cmd.exe",
+          program: process.env.ComSpec || path.join(systemRoot, "System32", "cmd.exe"),
+          arguments: ["/d", "/s", "/c", command],
+          expectedExitCode: 2,
+        },
+        {
+          name: "Windows PowerShell",
+          program: windowsPowerShell,
+          arguments: [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+          ],
+          // Windows PowerShell's `-Command` host normalizes a failing native
+          // process to its own generic exit code 1. The exact hook diagnostic
+          // below proves that the inner launcher still reached Node and
+          // returned its intentional non-zero hook result.
+          expectedExitCode: 1,
+        },
+      ]
+      : [{
+        name: "POSIX shell",
+        program: process.env.SHELL || "/bin/sh",
+        arguments: ["-lc", command],
+        expectedExitCode: 2,
+      }];
     const isolatedPath = process.platform === "win32"
-      ? path.join(process.env.SystemRoot || "C:\\Windows", "System32")
+      ? [
+        path.dirname(windowsPowerShell),
+        path.join(systemRoot, "System32"),
+        systemRoot,
+      ].join(path.delimiter)
       : "/usr/bin:/bin";
 
-    const result = await new Promise((resolve, reject) => {
-      const child = spawn(shell, shellArguments, {
-        env: {
-          ...process.env,
-          HOME: temporaryHome,
-          USERPROFILE: temporaryHome,
-          CODEX_HOME: temporaryHome,
-          CODEX_THREAD_ID: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
-          CODEX_MCP_NODE_PATH: process.execPath,
-          CLAUDE_PLUGIN_ROOT: pluginDirectory,
-          PLUGIN_ROOT: pluginDirectory,
-          CLAUDE_CODE_ENTRYPOINT: "",
-          CLAUDE_EFFORT: "",
-          PATH: isolatedPath,
-        },
-        stdio: ["pipe", "pipe", "pipe"],
+    for (const [index, shellCase] of shellCases.entries()) {
+      const shellHome = path.join(temporaryHome, `shell-${index}`);
+      await mkdir(shellHome, { recursive: true });
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(shellCase.program, shellCase.arguments, {
+          env: {
+            ...process.env,
+            HOME: shellHome,
+            USERPROFILE: shellHome,
+            CODEX_HOME: shellHome,
+            CODEX_THREAD_ID: `019f9fcd-899a-72b3-91f6-fdf3134381b${index}`,
+            CODEX_MCP_NODE_PATH: process.execPath,
+            CLAUDE_PLUGIN_ROOT: pluginDirectory,
+            PLUGIN_ROOT: pluginDirectory,
+            CLAUDE_CODE_ENTRYPOINT: "",
+            CLAUDE_EFFORT: "",
+            PATH: isolatedPath,
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => { stdout += chunk; });
+        child.stderr.on("data", (chunk) => { stderr += chunk; });
+        child.once("error", reject);
+        child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+        child.stdin.end(JSON.stringify({
+          hook_event_name: "PreToolUse",
+          session_id: `019f9fcd-899a-72b3-91f6-fdf3134381b${index}`,
+          tool_name: "mcp__trelio__get_task",
+          tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
+        }));
       });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (chunk) => { stdout += chunk; });
-      child.stderr.on("data", (chunk) => { stderr += chunk; });
-      child.once("error", reject);
-      child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
-      child.stdin.end(JSON.stringify({
-        hook_event_name: "PreToolUse",
-        session_id: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
-        tool_name: "mcp__trelio__get_task",
-        tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
-      }));
-    });
 
-    // The deliberately incomplete input must reach the real hook and fail on
-    // missing model attestation, not at shell or Node resolution.
-    assert.equal(result.exitCode, 2);
-    assert.equal(result.stdout, "");
-    // Windows PowerShell 5 may serialize its first-run progress record to
-    // stderr as CLIXML, so assert the hook code itself without requiring it to
-    // be the first byte. The exit code and absence of launcher errors still
-    // prove that the configured command reached the real hook.
-    assert.match(result.stderr, /TRELIO_RUNTIME_HOOK_FAILED:/u);
-    assert.doesNotMatch(result.stderr, /not recognized|not found|could not find Node/iu);
+      // The deliberately incomplete input must reach the real hook and fail on
+      // missing model attestation, not at shell or Node resolution. Exercising
+      // both native Windows shells protects Codex environments whose terminal
+      // selection differs from the command-prompt default.
+      assert.equal(
+        result.exitCode,
+        shellCase.expectedExitCode,
+        `${shellCase.name}: ${result.stderr}`,
+      );
+      assert.equal(result.stdout, "", shellCase.name);
+      // Windows PowerShell 5 may serialize its first-run progress record to
+      // stderr as CLIXML, so assert the hook code itself without requiring it
+      // to be the first byte. The exit code and absence of launcher errors
+      // still prove that the configured command reached the real hook.
+      assert.match(result.stderr, /TRELIO_RUNTIME_HOOK_FAILED:/u, shellCase.name);
+      assert.doesNotMatch(
+        result.stderr,
+        /not recognized|not found|could not find Node|CouldNotAutoLoadModule/iu,
+        shellCase.name,
+      );
+    }
   } finally {
     await rm(temporaryHome, { recursive: true, force: true });
   }
@@ -357,7 +410,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.5");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
@@ -415,7 +468,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v1\.19\.4 больше не поддерживается; требуется v1\.17\.13/u);
+    assert.match(result.stderr, /v1\.19\.5 больше не поддерживается; требуется v1\.17\.13/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -433,7 +486,7 @@ test("SessionStart pins the initial model and supported host names inject verifi
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.5");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -667,7 +720,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.5");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -776,7 +829,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.5");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
