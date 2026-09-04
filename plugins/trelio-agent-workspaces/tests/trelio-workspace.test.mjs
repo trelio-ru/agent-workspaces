@@ -60,6 +60,7 @@ import {
   collectAgentSkillDeviceConsentThroughLoopback,
   collectCompanyEncryptionKeyThroughLoopback,
   hardenWindowsPrivatePath,
+  resolveWindowsPowerShellExecutable,
   getGitStatus,
   hydrateAgentCompanyEncryptedJson,
   hydrateEncryptedAgentSkillRuntimeResolution,
@@ -4046,7 +4047,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.19.3");
+  assert.equal(BRIDGE_VERSION, "1.19.4");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -6412,6 +6413,17 @@ test("Windows ACL command transports its path without PowerShell argument parsin
   assert.throws(
     () => buildWindowsPrivateAclPowerShellInvocation(targetPath, "junction"),
     /Unsupported Windows private path kind/u,
+  );
+});
+
+test("Windows private ACL resolves inbox PowerShell without process PATH", () => {
+  assert.equal(
+    resolveWindowsPowerShellExecutable({ SystemRoot: "D:\\Windows" }),
+    "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  );
+  assert.equal(
+    resolveWindowsPowerShellExecutable({ SYSTEMROOT: "E:\\Windows" }),
+    "E:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
   );
 });
 

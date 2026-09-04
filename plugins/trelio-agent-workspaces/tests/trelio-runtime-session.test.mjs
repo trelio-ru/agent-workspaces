@@ -310,7 +310,11 @@ test("configured platform hook launcher starts without Node.js on PATH", async (
     // missing model attestation, not at shell or Node resolution.
     assert.equal(result.exitCode, 2);
     assert.equal(result.stdout, "");
-    assert.match(result.stderr, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
+    // Windows PowerShell 5 may serialize its first-run progress record to
+    // stderr as CLIXML, so assert the hook code itself without requiring it to
+    // be the first byte. The exit code and absence of launcher errors still
+    // prove that the configured command reached the real hook.
+    assert.match(result.stderr, /TRELIO_RUNTIME_HOOK_FAILED:/u);
     assert.doesNotMatch(result.stderr, /not recognized|not found|could not find Node/iu);
   } finally {
     await rm(temporaryHome, { recursive: true, force: true });
@@ -353,7 +357,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
@@ -411,7 +415,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v1\.19\.3 больше не поддерживается; требуется v1\.17\.13/u);
+    assert.match(result.stderr, /v1\.19\.4 больше не поддерживается; требуется v1\.17\.13/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -429,7 +433,7 @@ test("SessionStart pins the initial model and supported host names inject verifi
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -663,7 +667,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -772,7 +776,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.4");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));

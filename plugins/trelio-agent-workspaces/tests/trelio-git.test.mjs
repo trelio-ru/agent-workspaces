@@ -278,7 +278,7 @@ test("bridge doctor exposes machine-readable local prerequisite status", async (
   assert.equal(report.git.status, "ready");
   assert.equal(report.git.smokeTest, "ready");
   assert.equal(report.plugin.status, "ready");
-  assert.equal(report.plugin.loadedVersion, "1.19.3");
+  assert.equal(report.plugin.loadedVersion, "1.19.4");
   assert.equal(report.plugin.hooks.status, "ready");
   assert.equal(report.plugin.hooks.preToolUseScope, "trelio_mcp");
   assert.equal(report.plugin.hooks.approvalStatus, "client_managed_unknown");

@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.19.3";
+export const BRIDGE_VERSION = "1.19.4";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -1671,12 +1671,31 @@ export const buildWindowsPrivateAclPowerShellInvocation = (targetPath, targetKin
   };
 };
 
+export const resolveWindowsPowerShellExecutable = (environment = process.env) => {
+  // Desktop processes can inherit a deliberately narrow PATH even though the
+  // operating system's inbox Windows PowerShell is present. Resolve it from
+  // the trusted OS installation root just like the Node/Git launchers do,
+  // otherwise the runtime hook can start correctly and still fail while
+  // hardening its private session state.
+  const systemRoot = environment.SYSTEMROOT
+    || environment.SystemRoot
+    || environment.WINDIR
+    || "C:\\Windows";
+  return path.win32.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+};
+
 export const hardenWindowsPrivatePath = async (targetPath, targetKind) => {
   const invocation = buildWindowsPrivateAclPowerShellInvocation(
     targetPath,
     targetKind,
   );
-  await execFileAsync("powershell.exe", invocation.args, {
+  await execFileAsync(resolveWindowsPowerShellExecutable(), invocation.args, {
     encoding: "utf8",
     env: {
       ...process.env,
