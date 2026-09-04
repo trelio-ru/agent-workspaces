@@ -53,8 +53,10 @@ Project-wide материал по умолчанию сохраняется в 
 напрямую. Иначе он отправляет одним каноническим `search` до пяти отдельных
 лексических вариантов в exact company scope. Один ответ объединяет проекты,
 активные и архивные задачи, task comments, именованные воркспейсы и accepted
-Workspace files с exact metadata. Агент читает relevant документы, проверяет
-одну вероятную задачу через `get_task`, а 2-20 уже известных exact-задач –
+Workspace files с exact metadata. Архивный воркспейс остаётся в поиске с
+меткой `[Архив]` и `workspaceState=archived`, но доступен только для чтения;
+обычный inventory скрывает его без `includeArchived=true`. Агент читает relevant
+документы, проверяет одну вероятную задачу через `get_task`, а 2-20 уже известных exact-задач –
 одним `get_tasks`; повторять `get_task` для такого набора нельзя. Агент не
 выбирает цель по одному похожему заголовку.
 `search_tasks` и `search_agent_workspace_files` нужны только для task-only или

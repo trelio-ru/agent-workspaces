@@ -34,9 +34,13 @@ order; do not make repeated `get_task` calls. Otherwise:
    exact permitted `companySlugs`. Omit company scope only when discovery is
    genuinely cross-company. Do not concatenate synonyms into one query.
 3. Inspect the mixed result set as one context decision. The same call searches
-   first-class workspaces, projects, active and archived tasks, task
-   descriptions/comments, and accepted Workspace files. A plausible task must
-   not suppress a procedure or prior decision found in another workspace.
+   first-class active and archived workspaces, projects, active and archived
+   tasks, task descriptions/comments, and accepted Workspace files. A plausible
+   task must not suppress a procedure or prior decision found in another workspace.
+   Archived Workspace results carry an explicit `[Архив]` title marker and
+   `workspaceState=archived`; they remain valid read-only context, not writable
+   Run targets. Ordinary `list_workspaces` inventory still hides them unless
+   `includeArchived=true` is explicitly requested.
 4. Prefer results found by several variants. Use returned exact metadata and
    `fetch` to inspect up to three material documents or task candidates. Call
    `get_workspace` for a first-class workspace, `get_task` for one probable

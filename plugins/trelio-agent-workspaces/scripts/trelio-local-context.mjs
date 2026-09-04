@@ -3104,6 +3104,9 @@ const buildRegistrySearchPayload = (payload) => {
 
 const buildSearchDocuments = (mirror) => {
   const documents = [];
+  const workspaceEntryById = new Map(
+    (mirror.workspaceEntries ?? []).map((workspace) => [workspace.id, workspace]),
+  );
   for (const project of mirror.projects ?? []) {
     documents.push({
       id: `project:${mirror.company.slug}/${project.slug}`,
@@ -3129,13 +3132,18 @@ const buildSearchDocuments = (mirror) => {
     });
   }
   for (const workspace of mirror.workspaceEntries ?? []) {
+    const workspaceTitle = String(workspace.title || "Воркспейс");
+    const isArchived = workspace.state === "archived";
     documents.push({
       id: `workspace:${workspace.id}`,
       type: "workspace",
-      title: String(workspace.title || "Воркспейс"),
+      // Search display title carries a textual marker, while fetch/get_workspace
+      // still returns the untouched canonical title from workspaceEntries.
+      title: isArchived ? `[Архив] ${workspaceTitle}` : workspaceTitle,
       text: collectText(workspace).join("\n"),
       metadata: {
         workspaceId: workspace.id,
+        workspaceState: workspace.state,
         project: workspace.project ?? null,
         ownerScope: workspace.ownerScope,
       },
@@ -3172,6 +3180,8 @@ const buildSearchDocuments = (mirror) => {
     });
   }
   for (const workspace of mirror.workspaces ?? []) {
+    const workspaceEntry = workspaceEntryById.get(workspace.id);
+    const workspaceState = workspaceEntry?.state ?? null;
     for (const file of workspace.documents ?? []) {
       documents.push({
         // `workspace:<uuid>` belongs to the first-class workspace itself. A
@@ -3181,10 +3191,11 @@ const buildSearchDocuments = (mirror) => {
           + `:${encodeURIComponent(workspace.acceptedHead)}`
           + `:${encodeURIComponent(file.path)}`,
         type: "workspace_file",
-        title: file.name,
+        title: workspaceState === "archived" ? `[Архив] ${file.name}` : file.name,
         text: `${file.path}\n${file.text}`,
         metadata: {
           workspaceId: workspace.id,
+          workspaceState,
           workspaceHead: workspace.acceptedHead,
           scopeType: workspace.scopeType,
           scopeKey: workspace.scopeKey,
@@ -3214,7 +3225,7 @@ export const searchCompanyContextMirror = (
   mirror,
   rawQueries,
   rawLimit = 20,
-  { maximumQueries = MAX_SEARCH_QUERIES } = {},
+  { maximumQueries = MAX_SEARCH_QUERIES, documentTypes = null } = {},
 ) => {
   const queries = [...new Map((Array.isArray(rawQueries) ? rawQueries : [])
     .map((query) => normalizeBoundedString(query, "query", 500))
@@ -3229,9 +3240,17 @@ export const searchCompanyContextMirror = (
     );
   }
   const limit = Math.max(1, Math.min(MAX_SEARCH_RESULTS, Math.trunc(Number(rawLimit) || 20)));
+  const allowedDocumentTypes = Array.isArray(documentTypes)
+    ? new Set(documentTypes)
+    : null;
   const results = [];
 
   for (const document of getSearchIndex(mirror)) {
+    // Specialized refinements reuse the canonical in-memory index and ranking,
+    // but filter before top-N so other result kinds cannot displace the target
+    // corpus. Keeping the original mirror also preserves Workspace archive
+    // metadata needed for an explicit historical-result marker.
+    if (allowedDocumentTypes && !allowedDocumentTypes.has(document.type)) continue;
     const { normalizedTitle, normalizedBody } = document;
     const matchedQueries = [];
     let previewQuery = queries[0][0];
@@ -3301,18 +3320,10 @@ export const searchCompanyContextMirror = (
 
 export const searchWorkspaceFilesFromMirror = (mirror, rawQueries, rawLimit) => {
   const search = searchCompanyContextMirror(
-    {
-      ...mirror,
-      // Reuse the canonical ranking/snippet implementation, but make this
-      // compatibility operation genuinely Workspace-only. Filtering after a
-      // global top-N would incorrectly lose a lower-ranked matching file.
-      projects: [],
-      tasks: [],
-      workspaceEntries: [],
-      contextDocuments: [],
-    },
+    mirror,
     rawQueries,
     rawLimit,
+    { documentTypes: ["workspace_file"] },
   );
   return { ...search, resultType: "workspace_file" };
 };

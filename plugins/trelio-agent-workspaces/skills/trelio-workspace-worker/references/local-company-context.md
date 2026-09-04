@@ -54,8 +54,10 @@ Use `search` with one to five faithful formulations and a bounded result count:
 }
 ```
 
-Search spans accessible projects, task details, first-class workspaces, knowledge pages,
-contacts, registries, private meetings, and safe accepted Workspace text;
+Search spans accessible projects, task details, first-class active and archived
+workspaces, knowledge pages, contacts, registries, private meetings, and safe
+accepted Workspace text. Archived Workspace and file results include an explicit
+`[Архив]` title marker plus `workspaceState=archived` and remain read-only;
 optional domains still require their OAuth scope. Ranking/previews stay local.
 Treat IDs as opaque and `fetch` only a small relevant set, never the whole mirror.
 

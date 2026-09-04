@@ -178,6 +178,79 @@ test("local mirror search ranks structured and workspace context without remote 
   assert.equal(JSON.stringify(result).includes("remote"), false);
 });
 
+test("local search exposes archived workspaces as marked read-only history outside default inventory", () => {
+  const archivedWorkspaceId = "77777777-7777-4777-8777-777777777777";
+  const archivedWorkspace = {
+    ...mirror,
+    workspaceEntries: [...mirror.workspaceEntries, {
+      id: archivedWorkspaceId,
+      title: "История миграции каталога",
+      description: "Архивное решение по индексу",
+      state: "archived",
+      ownerScope: "project",
+      project: { id: "22222222-2222-4222-8222-222222222222", slug: "mobile" },
+      accessibleThroughProjectIds: ["22222222-2222-4222-8222-222222222222"],
+      permissions: { canRead: true, canWrite: false, canApprove: false },
+    }],
+    workspaces: [...mirror.workspaces, {
+      id: archivedWorkspaceId,
+      scopeType: "project",
+      scopeKey: `workspace:${archivedWorkspaceId}`,
+      taskId: null,
+      acceptedHead: "e".repeat(40),
+      documents: [{
+        path: "notes/migration-history.md",
+        name: "migration-history.md",
+        sizeBytes: 48,
+        text: "Историческое решение по переносу каталога.",
+      }],
+    }],
+  };
+
+  const workspaceResult = searchCompanyContextMirror(
+    archivedWorkspace,
+    ["история миграции каталога"],
+    10,
+  ).results.find((result) => result.id === `workspace:${archivedWorkspaceId}`);
+  assert.equal(workspaceResult?.title, "[Архив] История миграции каталога");
+  assert.equal(workspaceResult?.workspaceState, "archived");
+
+  const fileResult = searchWorkspaceFilesFromMirror(
+    archivedWorkspace,
+    ["историческое решение"],
+    10,
+  ).results.find((result) => result.workspaceId === archivedWorkspaceId);
+  assert.equal(fileResult?.title, "[Архив] migration-history.md");
+  assert.equal(fileResult?.workspaceState, "archived");
+
+  const activeInventory = handleNativeLocalContextRead(
+    archivedWorkspace,
+    "list_workspaces",
+    { projectSlug: "mobile" },
+  );
+  assert.equal(
+    activeInventory.workspaces.some((workspace) => workspace.id === archivedWorkspaceId),
+    false,
+  );
+  const completeInventory = handleNativeLocalContextRead(
+    archivedWorkspace,
+    "list_workspaces",
+    { projectSlug: "mobile", includeArchived: true },
+  );
+  const archivedInventoryEntry = completeInventory.workspaces.find((workspace) => (
+    workspace.id === archivedWorkspaceId
+  ));
+  assert.equal(archivedInventoryEntry?.state, "archived");
+  assert.equal(archivedInventoryEntry?.permissions?.canWrite, false);
+
+  const exactWorkspace = fetchMirrorResult(
+    archivedWorkspace,
+    `workspace:${archivedWorkspaceId}`,
+  );
+  assert.equal(exactWorkspace.workspace.title, "История миграции каталога");
+  assert.equal(exactWorkspace.workspace.permissions.canWrite, false);
+});
+
 test("agent-skill routing searches hydrated catalog terms only in the local mirror", () => {
   const result = handleNativeLocalContextRead(mirror, "search_agent_skills", {
     companySlug: "acme",
