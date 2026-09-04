@@ -229,6 +229,14 @@ Control paths не раскрываются, а backend не получает fi
 current head и осознанно переносит inspected changes. Restore создаёт новую
 accepted revision со старым деревом, не переписывая историю.
 
+`COMPANY_STORAGE_BALANCE_REQUIRED` означает, что Trelio не смог сохранить
+новый платный объём. Bridge не повторяет такой HTTP-ответ автоматически и
+показывает точный recovery: локальные файлы не удаляются, текущий Run не нужно
+отменять или заменять новым, а после пополнения баланса повторяется та же
+`checkpoint`, `pause`, `finish` либо `submit` команда. Это отдельный billing
+blocker, а не подтверждение сохранённого draft и не переход в
+`waiting_for_human`.
+
 ## Task-scoped результат
 
 Task handoff содержит semantic outcome:
@@ -280,6 +288,11 @@ blocker с exact summary/question/next action и `draftHead`. Только по�
 Другой компьютер может claim-нуть тот же Run и получить draft плюс read-only
 `context/run-checkpoint.json`. Полная переписка не переносится. Dirty или
 diverged локальное дерево никогда не перезаписывается автоматически.
+
+При storage billing blocker агент останавливает mutation без частых повторов,
+сохраняет локальный root и сообщает, кому нужно пополнить баланс. После
+пополнения он продолжает exact Run и повторяет исходный шаг; новый human
+blocker, новый Run или cancellation для этого не создаются.
 
 ## Restore и cleanup
 

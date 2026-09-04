@@ -33,6 +33,7 @@ import {
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
   BRIDGE_VERSION,
+  COMPANY_STORAGE_BALANCE_REQUIRED_CODE,
   LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
   WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME,
   WORKSPACE_CONTEXT_FILE_NAME,
@@ -71,6 +72,7 @@ import {
   resolveWorkspaceContextFileName,
   ensureWorkspaceWorklog,
   findTrelioWorkingFolderRoot,
+  formatBridgeCommandError,
   normalizeAgentSkillPackagePath,
   normalizeAgentSkillDeviceConsentChallenge,
   normalizeResolvedSkillRuntimeArtifact,
@@ -654,6 +656,31 @@ test("encrypted Workspace cooldown never retries HTTP errors or a failed second 
     /timeout/u,
   );
   assert.equal(transportAttempts, 2, "the second transport failure must not start another cycle");
+});
+
+test("storage billing blocker preserves the current Run and gives one exact recovery", () => {
+  const error = new TrelioApiError(
+    400,
+    "raw backend message",
+    null,
+    COMPANY_STORAGE_BALANCE_REQUIRED_CODE,
+    { code: COMPANY_STORAGE_BALANCE_REQUIRED_CODE },
+  );
+  const finishMessage = formatBridgeCommandError(error, "finish");
+
+  assert.match(finishMessage, /^COMPANY_STORAGE_BALANCE_REQUIRED:/u);
+  assert.match(finishMessage, /Локальные файлы не удалены/u);
+  assert.match(finishMessage, /текущий Agent Run сохранён/u);
+  assert.match(finishMessage, /не создавайте новый/u);
+  assert.match(finishMessage, /повторите ту же команду trelio-workspace finish/u);
+  assert.doesNotMatch(finishMessage, /Trelio API 400/u);
+  assert.equal(isEncryptedWorkspaceRetryableTransportError(error), false);
+
+  assert.match(
+    formatBridgeCommandError(error, "open"),
+    /Автоматически повторять запрос не нужно/u,
+  );
+  assert.equal(formatBridgeCommandError(new Error("обычная ошибка"), "finish"), "обычная ошибка");
 });
 
 test("encrypted draft reuse requires an exact head, scope and writer device", () => {

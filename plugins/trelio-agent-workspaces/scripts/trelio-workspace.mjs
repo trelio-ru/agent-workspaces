@@ -1106,6 +1106,34 @@ export class TrelioApiError extends Error {
   }
 }
 
+export const COMPANY_STORAGE_BALANCE_REQUIRED_CODE = "COMPANY_STORAGE_BALANCE_REQUIRED";
+const RUN_STORAGE_CONTINUATION_COMMANDS = new Set([
+  "checkpoint",
+  "pause",
+  "finish",
+  "submit",
+]);
+
+export const formatBridgeCommandError = (error, command = "") => {
+  if (
+    !(error instanceof TrelioApiError)
+    || error.code !== COMPANY_STORAGE_BALANCE_REQUIRED_CODE
+  ) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  const normalizedCommand = String(command || "").trim().toLowerCase();
+
+  if (RUN_STORAGE_CONTINUATION_COMMANDS.has(normalizedCommand)) {
+    return `${COMPANY_STORAGE_BALANCE_REQUIRED_CODE}: на балансе компании недостаточно средств для сохранения нового объёма. `
+      + "Локальные файлы не удалены; текущий Agent Run сохранён для продолжения. "
+      + `Не отменяйте его и не создавайте новый. После пополнения баланса повторите ту же команду trelio-workspace ${normalizedCommand}.`;
+  }
+
+  return `${COMPANY_STORAGE_BALANCE_REQUIRED_CODE}: на балансе компании недостаточно средств для сохранения нового объёма. `
+    + "Автоматически повторять запрос не нужно. Пополните баланс и повторите исходную команду.";
+};
+
 export const request = async (origin, token, pathname, options = {}) => {
   const headers = buildBridgeRequestHeaders(token, options.headers || {});
 
@@ -14289,5 +14317,5 @@ const runEntrypoint = async () => {
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runEntrypoint().catch((error) => fail(error instanceof Error ? error.message : String(error)));
+  runEntrypoint().catch((error) => fail(formatBridgeCommandError(error, process.argv[2])));
 }

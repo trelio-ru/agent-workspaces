@@ -134,6 +134,13 @@ task communication, handoff, submit, or final reporting.
 
 ## Blockers, restore, concurrency, and cleanup
 
+- On `COMPANY_STORAGE_BALANCE_REQUIRED`, stop the mutation and do not retry,
+  cancel, or create another Run. Tell the user that company balance blocks new
+  storage, local files remain intact, and the current Run is preserved. After
+  an authorized person replenishes the balance, repeat the exact same
+  `checkpoint`, `pause`, `finish`, or `submit` command. Do not convert this
+  transport blocker into `waiting_for_human`: a human checkpoint is valid only
+  after its draft was durably saved.
 - Cancel only when the user explicitly abandons/withdraws an open Run; call
   `cancel_agent_workspace_run` with a concrete audit reason. If it returns
   `providerSelection.tool=continue_trelio_local_workspace`, continue that exact

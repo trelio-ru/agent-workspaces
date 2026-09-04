@@ -396,6 +396,12 @@ proposal или иной Trelio mutation, поэтому пользовател�
 До rollout нового backend неизвестный ему draft-promotion route безопасно
 возвращается к обычной полной encrypted-загрузке.
 
+`COMPANY_STORAGE_BALANCE_REQUIRED` также не повторяется автоматически. Bridge
+оставляет локальные файлы и текущий Agent Run для продолжения и прямо просит
+после пополнения баланса повторить ту же `checkpoint`, `pause`, `finish` или
+`submit` команду. Отменять Run, начинать новый или создавать ложный human
+blocker не нужно.
+
 Явно брошенный Run отменяется после native route через
 `continue_trelio_local_workspace` / `cancel_run`. В encrypted-компании reason
 шифруется локально; backend получает только подписанную ссылку и всё равно
