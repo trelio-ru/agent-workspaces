@@ -127,10 +127,15 @@ that live proof was not performed instead of claiming success.
   current task before asking for a new one. Never edit a version file, forge a
   header, scan caches, or bypass admission through HTTP, browser or another MCP.
 
-The v1.13 hook definition scopes `PreToolUse` to Trelio MCP while leaving
-lifecycle matchers forward-compatible. Its definition hash may require one
-client review when upgrading from v1.12. Later behavior-only fixes in the
-runtime script do not require another `hooks.json` change or trust review.
+The current hook definition scopes `PreToolUse` to Trelio MCP while leaving
+lifecycle matchers forward-compatible. It must launch through the bundled
+`launch-trelio-node` on macOS/Linux and expose the quote-free `commandWindows`
+override that reaches `launch-trelio-node.cmd` on Windows. Bare `node` in the
+loaded hook command is a stale, incompatible definition: update the official
+plugin, approve the changed definition once, and start one new task. Do not ask
+the user to install Node merely because the desktop process PATH lacks it.
+Later behavior-only fixes in the runtime script do not require another
+`hooks.json` change or trust review.
 
 ## Apply only the matching repair
 

@@ -154,7 +154,9 @@ prompt:
 Диагностика независимо проверяет установленную и фактически загруженную версии,
 целостность hook definition, remote MCP/OAuth и локальные prerequisites. Она не
 считает целый `hooks.json` доказательством его одобрения клиентом и не выдаёт
-ошибку внутри уже запущенного `PreToolUse` за выключенные Hooks.
+ошибку внутри уже запущенного `PreToolUse` за выключенные Hooks. Runtime hooks
+запускаются через bundled Node launcher и не зависят от наличия команды `node`
+в PATH процесса Codex; для Windows используется отдельный `commandWindows`.
 
 ## Установка в Claude Code и Claude Cowork
 

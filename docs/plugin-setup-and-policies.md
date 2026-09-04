@@ -222,9 +222,13 @@ exact local facade `continue_trelio_local_action`, который передаё
 защищённый native-вызов. Другие local и посторонние tools не запускают Node.js.
 `SessionStart` и `SessionEnd` остаются wildcard lifecycle matchers, а обработка
 startup, resume, compact, clear и будущих source значений живёт в
-runtime-скрипте.
-Изменение definition при переходе с v1.12 может потребовать один client review;
-дальнейшие behavior-only исправления скрипта не требуют менять `hooks.json`.
+runtime-скрипте. Hook не вызывает bare `node`: на macOS/Linux он использует
+bundled `launch-trelio-node`, а на Windows – quote-free `commandWindows`, который
+через Windows PowerShell передаёт управление bundled `.cmd` launcher. Поэтому
+MCP и hooks используют один Node-resolution contract даже при урезанном PATH
+desktop-процесса. Любое изменение `hooks.json` может потребовать один новый
+client review; дальнейшие behavior-only исправления скрипта definition не
+меняют.
 Параллельные первые protected calls разделяют одну регистрацию, а SessionEnd
 сначала удаляет локальный private key и только затем делает bounded best-effort
 server cleanup.

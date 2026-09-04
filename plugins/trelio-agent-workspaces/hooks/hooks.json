@@ -7,7 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "commandWindows": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAHIAdQBuAHQAaQBtAGUALQBzAGUAcwBzAGkAbwBuAC4AbQBqAHMAJwApADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
             "timeout": 10
           }
         ]
@@ -19,7 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "commandWindows": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAHIAdQBuAHQAaQBtAGUALQBzAGUAcwBzAGkAbwBuAC4AbQBqAHMAJwApADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
             "timeout": 15
           }
         ]
@@ -31,7 +33,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
+            "commandWindows": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAHIAdQBuAHQAaQBtAGUALQBzAGUAcwBzAGkAbwBuAC4AbQBqAHMAJwApADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
             "timeout": 3
           }
         ]

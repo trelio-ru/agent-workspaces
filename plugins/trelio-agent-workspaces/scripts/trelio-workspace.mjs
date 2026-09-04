@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.19.2";
+export const BRIDGE_VERSION = "1.19.3";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -282,7 +282,19 @@ const MINIMUM_NODE_MAJOR_VERSION = 22;
 const RUNTIME_SESSION_DIAGNOSTIC_LIMIT = 256;
 const RUNTIME_SESSION_LOCK_STALE_MILLISECONDS = 15_000;
 const EXPECTED_RUNTIME_HOOK_COMMAND =
-  'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+// Codex executes Windows hook commands through cmd.exe. Keep this override
+// quote-free so both the legacy escaped-argument runner and the current
+// outer-quoted runner can pass it intact. The UTF-16LE PowerShell payload only
+// joins the trusted plugin root to the bundled .cmd launcher and runtime hook;
+// the launcher remains the single place that resolves a compatible Node.js.
+const WINDOWS_RUNTIME_HOOK_BOOTSTRAP =
+  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
+const EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS = [
+  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
+  Buffer.from(WINDOWS_RUNTIME_HOOK_BOOTSTRAP, "utf16le").toString("base64"),
+].join(" ");
 // Lifecycle matchers remain intentionally broad. Client event sources may grow
 // without changing the trusted hook definition; the script itself decides how
 // to handle each source. PreToolUse covers direct Trelio calls in both Codex
@@ -294,18 +306,21 @@ const EXPECTED_RUNTIME_HOOK_CONTRACT = Object.freeze({
     matcher: "*",
     type: "command",
     command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    commandWindows: EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS,
     timeout: 10,
   }),
   PreToolUse: Object.freeze({
     matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
     type: "command",
     command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    commandWindows: EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS,
     timeout: 15,
   }),
   SessionEnd: Object.freeze({
     matcher: "*",
     type: "command",
     command: EXPECTED_RUNTIME_HOOK_COMMAND,
+    commandWindows: EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS,
     timeout: 3,
   }),
 });
@@ -737,6 +752,7 @@ const readObservedRuntimeHookContract = (hooksManifest, eventName) => {
     matcher: group.matcher,
     type: handler?.type,
     command: handler?.command,
+    commandWindows: handler?.commandWindows,
     timeout: handler?.timeout,
   };
 };

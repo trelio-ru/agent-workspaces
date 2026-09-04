@@ -19,6 +19,16 @@ import {
 const hookScriptPath = fileURLToPath(
   new URL("../scripts/trelio-runtime-session.mjs", import.meta.url),
 );
+const pluginDirectory = fileURLToPath(new URL("..", import.meta.url));
+const expectedRuntimeHookCommand =
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+const windowsRuntimeHookBootstrap =
+  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
+const expectedRuntimeHookCommandWindows = [
+  "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+  "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
+  Buffer.from(windowsRuntimeHookBootstrap, "utf16le").toString("base64"),
+].join(" ");
 
 const runHook = (hookInput, environment) => new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [hookScriptPath], {
@@ -163,6 +173,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
         handlers: group.hooks.map((handler) => ({
           type: handler.type,
           command: handler.command,
+          commandWindows: handler.commandWindows,
           timeout: handler.timeout,
         })),
       })),
@@ -172,7 +183,8 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
         matcher: "*",
         handlers: [{
           type: "command",
-          command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"',
+          command: expectedRuntimeHookCommand,
+          commandWindows: expectedRuntimeHookCommandWindows,
           timeout: 10,
         }],
       }],
@@ -180,7 +192,8 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
         matcher: "^(mcp__)?trelio__[a-z0-9_]+$|^mcp__plugin_trelio-agent-workspaces_trelio__[a-z0-9_]+$|^(mcp[:./-])?trelio[:./-][a-z0-9_]+$|^(mcp__)?trelio_remote_skills__continue_trelio_local_action$|^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$|^(mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$",
         handlers: [{
           type: "command",
-          command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"',
+          command: expectedRuntimeHookCommand,
+          commandWindows: expectedRuntimeHookCommandWindows,
           timeout: 15,
         }],
       }],
@@ -188,7 +201,8 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
         matcher: "*",
         handlers: [{
           type: "command",
-          command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"',
+          command: expectedRuntimeHookCommand,
+          commandWindows: expectedRuntimeHookCommandWindows,
           timeout: 3,
         }],
       }],
@@ -226,7 +240,81 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
   assert.equal(preToolUseMatcher.test("mcp__filesystem__read_file"), false);
   assert.equal(preToolUseMatcher.test("exec_command"), false);
   assert.match(JSON.stringify(hooks), /trelio-runtime-session\.mjs/u);
+  // Codex versions affected by the Windows cmd.exe quoting regressions can
+  // silently skip a command containing literal quotes. The encoded payload is
+  // intentionally readable here while the actual command remains quote-free.
+  assert.doesNotMatch(expectedRuntimeHookCommandWindows, /["']/u);
+  const encodedCommand = expectedRuntimeHookCommandWindows.split(" ").at(-1);
+  assert.equal(
+    Buffer.from(encodedCommand, "base64").toString("utf16le"),
+    windowsRuntimeHookBootstrap,
+  );
   assert.doesNotMatch(JSON.stringify(hooks), /title|rename/u);
+});
+
+test("configured platform hook launcher starts without Node.js on PATH", async () => {
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-launcher-"));
+  try {
+    const hooks = JSON.parse(await readFile(
+      path.join(pluginDirectory, "hooks", "hooks.json"),
+      "utf8",
+    ));
+    const [handler] = hooks.hooks.PreToolUse[0].hooks;
+    const command = process.platform === "win32"
+      ? handler.commandWindows
+      : handler.command;
+    const shell = process.platform === "win32"
+      ? (process.env.ComSpec || "cmd.exe")
+      : (process.env.SHELL || "/bin/sh");
+    const shellArguments = process.platform === "win32"
+      ? ["/d", "/s", "/c", command]
+      : ["-lc", command];
+    const isolatedPath = process.platform === "win32"
+      ? path.join(process.env.SystemRoot || "C:\\Windows", "System32")
+      : "/usr/bin:/bin";
+
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(shell, shellArguments, {
+        env: {
+          ...process.env,
+          HOME: temporaryHome,
+          USERPROFILE: temporaryHome,
+          CODEX_HOME: temporaryHome,
+          CODEX_THREAD_ID: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
+          CODEX_MCP_NODE_PATH: process.execPath,
+          CLAUDE_PLUGIN_ROOT: pluginDirectory,
+          PLUGIN_ROOT: pluginDirectory,
+          CLAUDE_CODE_ENTRYPOINT: "",
+          CLAUDE_EFFORT: "",
+          PATH: isolatedPath,
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.once("error", reject);
+      child.once("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+      child.stdin.end(JSON.stringify({
+        hook_event_name: "PreToolUse",
+        session_id: "019f9fcd-899a-72b3-91f6-fdf3134381bb",
+        tool_name: "mcp__trelio__get_task",
+        tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
+      }));
+    });
+
+    // The deliberately incomplete input must reach the real hook and fail on
+    // missing model attestation, not at shell or Node resolution.
+    assert.equal(result.exitCode, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
+    assert.doesNotMatch(result.stderr, /not recognized|not found|could not find Node/iu);
+  } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
 });
 
 test("an active hook failure does not append unrelated setup steps", async () => {
@@ -265,7 +353,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.2");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
@@ -323,7 +411,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v1\.19\.2 больше не поддерживается; требуется v1\.17\.13/u);
+    assert.match(result.stderr, /v1\.19\.3 больше не поддерживается; требуется v1\.17\.13/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -341,7 +429,7 @@ test("SessionStart pins the initial model and supported host names inject verifi
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.2");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -575,7 +663,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.2");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -684,7 +772,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.2");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.3");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));

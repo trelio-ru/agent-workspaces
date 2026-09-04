@@ -116,6 +116,15 @@ jobs:
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
 
+      # Execute the exact commandWindows definition through cmd.exe with Node
+      # removed from PATH. This protects the desktop failure mode where MCP can
+      # use the bundled runtime but an approved hook silently cannot start.
+      - name: Run Windows hook launcher regression
+        run: >-
+          node --test
+          --test-name-pattern="configured platform hook launcher"
+          plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+
       # GitHub's Windows runner account is an administrator. Re-run the real
       # bridge guard as a disposable standard user so an accidental dependency
       # on SeSecurityPrivilege or another elevated token right fails in CI.

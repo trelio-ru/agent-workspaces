@@ -29,6 +29,14 @@ For `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
 `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, follow the required-version
 procedure below and never tell the user to enable Hooks for that failure.
 
+If Hooks are already enabled and the same server-side missing-proof response
+repeats, inspect the exact loaded plugin with bundled doctor. The current hook
+contract uses `launch-trelio-node` on macOS/Linux and a quote-free
+`commandWindows` path to `launch-trelio-node.cmd` on Windows. Bare `node` means
+the task loaded a stale incompatible hook definition: update the official
+plugin, approve the changed definition once, and open one new task. Do not
+install Node or reset OAuth when the bundled launcher is available.
+
 ## Missing MCP tools
 
 If the workspace skill is available but Trelio MCP tools are absent, treat the

@@ -310,12 +310,14 @@ call approved hook закрепляет наблюдаемые model/effort в p
 доступны без допуска. Agent Run сохраняет pinned policy/runtime snapshot; смена
 runtime позже не отзывает уже допущенную client session.
 
-В v1.13 hook запускает `PreToolUse` только для Trelio MCP, защищает параллельную
-первую регистрацию локальной блокировкой и удаляет private key до bounded
-сетевого cleanup на `SessionEnd`. Lifecycle matcher остаётся wildcard: новые
-client event sources обрабатываются скриптом без изменения `hooks.json`.
-Поэтому переход с v1.12 может потребовать одно новое одобрение definition, а
-дальнейшие behavior-only исправления – нет.
+Hook запускает `PreToolUse` только для Trelio MCP, защищает параллельную первую
+регистрацию локальной блокировкой и удаляет private key до bounded сетевого
+cleanup на `SessionEnd`. Lifecycle matcher остаётся wildcard: новые client event
+sources обрабатываются скриптом без изменения `hooks.json`. Сам hook не зависит
+от bare `node`: на macOS/Linux он использует bundled `launch-trelio-node`, а на
+Windows отдельный quote-free `commandWindows` передаёт запуск bundled `.cmd`
+launcher. Изменение hook definition может потребовать одно новое одобрение в
+клиенте; дальнейшие behavior-only исправления – нет.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

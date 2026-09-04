@@ -4046,7 +4046,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.19.2");
+  assert.equal(BRIDGE_VERSION, "1.19.3");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4785,7 +4785,8 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(diagnosticsSkill, /Do not create or mutate an\s+object just to test a hook/u);
   assert.match(diagnosticsSkill, /installed version already satisfies the requirement/u);
   assert.match(diagnosticsSkill, /do not update again/u);
-  assert.match(diagnosticsSkill, /definition hash may require one\s+client review/u);
+  assert.match(diagnosticsSkill, /approve the changed definition once/u);
+  assert.match(diagnosticsSkill, /quote-free `commandWindows`/u);
   assert.match(diagnosticsSkill, /behavior-only fixes[\s\S]{0,100}do not require another/u);
   assert.match(diagnosticsSkill, /never exposes session IDs or keys/u);
   assert.match(diagnosticsAgentMetadata, /Диагностика Trelio/u);
