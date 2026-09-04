@@ -1,9 +1,8 @@
 # Local company context provider
 
-Read this reference only after native Trelio returns the exact
-`providerSelection.provider=local_company_context` route. That field is an
-authoritative runtime decision made from live company state. Do not infer the
-provider from task wording, an earlier session, a failed search, or convenience.
+Read only when native `providerSelection` or exact-task `proposalProvider`
+selects `local_company_context`. Plain tasks omit it and need no extra read.
+Never infer either authoritative route.
 If the local tool returns `provider=native_trelio`, stop this route and continue
 with the ordinary native tool named by the current operation.
 
@@ -106,8 +105,10 @@ stay hidden. Never reproduce bridge steps or repeat an unconfirmed restore.
 
 ## Use the same proposal lifecycle
 
-When a native comment/status/control/checklist proposal tool returns the local
-proposal route, call `continue_trelio_local_proposal`. It has three operations:
+Use an exact task's `proposalProvider` directly; keep the current task Run's
+`runId` target when the proposal follows that Run. Do not call a native proposal
+tool first. Otherwise honor its local route. Call
+`continue_trelio_local_proposal`; it has three operations:
 
 - `context`: pass `kind` and `payload.target`, where target is exactly one
   `runId` or `projectSlug` plus `taskNumber`.
@@ -128,6 +129,9 @@ checklist/control decisions remain item-specific. Context/save/action reuse the
 same server-side ACL, advisory locks, optimistic state revisions, public-comment
 snapshot hashes, and idempotent apply/dismiss/publication behavior as native
 Trelio.
+
+The v8 App puts a one-hour, revision-bound opaque capability in model-hidden
+metadata. Version 1.19.5 remains compatible through v5 and its old app tools.
 
 When one response needs two or more cards and native
 `render_task_proposals` or compatibility `render_task_comment_proposals`

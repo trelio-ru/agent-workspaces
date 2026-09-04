@@ -43,9 +43,10 @@ References are additive; do not read unrelated files speculatively.
 - **Task, workspace, project/company binding, writable scope, related context,
   task relation, or work case discovery:** read
   [`references/scope-and-context.md`](references/scope-and-context.md).
-- **Native Trelio returns `providerSelection.provider=local_company_context`:**
+- **Native result selects local `providerSelection`, or an exact task returns
+  local `proposalProvider`:**
   read [`references/local-company-context.md`](references/local-company-context.md)
-  and follow that exact route. Never choose this provider by inference.
+  and follow that server-selected route; never infer this provider.
 - **Read/review an accepted Workspace without changing it:**
   read [`references/accepted-workspace-read.md`](references/accepted-workspace-read.md),
   plus scope/context only when the target is not exact. Never start a Run only to

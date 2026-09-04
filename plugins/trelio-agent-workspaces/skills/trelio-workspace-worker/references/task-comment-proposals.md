@@ -29,9 +29,11 @@ card is needed.
 
 ## Prepare one editable draft
 
-When this comment is the sole interactive proposal card and no earlier private
-proposal for the same task is known in the current conversation, call
-`propose_task_comment` once on the create-only normal path. Its `proposalText`
+When this is the sole proposal card with no known private proposal for the task,
+follow an exact task `proposalProvider` through local `context` then `save`,
+without mounting the native App. Otherwise call `propose_task_comment` once on
+the create-only path. Plain tasks omit `proposalProvider`, so this remains one
+call without a provider preflight. Its `proposalText`
 must already be one standalone publication-ready cumulative update. Never
 write it as an addition, correction, strengthening, or update of an earlier
 unpublished proposal or the automatic system handoff:

@@ -345,6 +345,14 @@ test("native exact-task reads preserve schema-v3 instruction and deferred-sectio
   assert.equal(result.effectiveInstructions.schemaVersion, 3);
   assert.equal(result.effectiveInstructions.status, "loaded");
   assert.equal(result.tasks[0].locator.projectSlug, "mobile");
+  assert.deepEqual(result.tasks[0].proposalProvider, {
+    automatic: true,
+    provider: "local_company_context",
+    server: "trelio-remote-skills",
+    tool: "continue_trelio_local_proposal",
+    companySlug: "acme",
+    target: { projectSlug: "mobile", taskNumber: 17 },
+  });
   assert.equal(result.tasks[0].task.title, "Исправить офлайн синхронизацию");
   assert.equal(result.tasks[0].task.deferredSections.tool, "get_task_sections");
   assert.equal(result.tasks[0].task.deferredSections.available.length, 10);

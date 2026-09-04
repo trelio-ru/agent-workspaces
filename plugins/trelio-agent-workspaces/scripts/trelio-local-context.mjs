@@ -69,8 +69,9 @@ const MIRROR_STALE_READ_REFRESH_WAIT_MS = 30 * 1000;
 const MIRROR_LOCK_HEARTBEAT_MS = 20 * 1000;
 const MIRROR_GENERATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS = 600;
-export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v5.html";
+export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v8.html";
 export const TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS = [
+  "ui://trelio/task-proposals/v5.html",
   "ui://trelio/task-proposals/v4.html",
   "ui://trelio/task-proposals/v3.html",
 ];
@@ -3513,6 +3514,18 @@ const selectTaskInstructions = (mirror, task) => ({
   userProfileSnapshot: mirror.instructions?.userProfile ?? null,
 });
 
+const buildLocalTaskProposalProvider = (mirror, task) => ({
+  automatic: true,
+  provider: "local_company_context",
+  server: "trelio-remote-skills",
+  tool: "continue_trelio_local_proposal",
+  companySlug: mirror.company.slug,
+  target: {
+    projectSlug: task.projectSlug,
+    taskNumber: task.number,
+  },
+});
+
 const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
   const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
   const task = (mirror.tasks ?? []).find((candidate) => (
@@ -3529,6 +3542,10 @@ const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
     provider: "local_company_context",
     generation: mirror.generation,
     ...task.payload,
+    // This object exists only in a decrypted encrypted-company response. The
+    // ordinary native task result stays byte-for-byte free of local routing,
+    // while the agent can skip a doomed native proposal render immediately.
+    proposalProvider: buildLocalTaskProposalProvider(mirror, task),
     effectiveInstructions: selectTaskInstructions(mirror, task),
   };
 };
@@ -3781,6 +3798,9 @@ const buildLocalExactTaskRead = (mirror, rawLocators, knownInstructionLayerKeys 
         projectSlug: record.projectSlug,
         taskNumber: record.number,
       },
+      // Provider selection rides the already required exact encrypted task
+      // read; there is no model-visible preflight and no field on plain tasks.
+      proposalProvider: buildLocalTaskProposalProvider(mirror, record),
       instructionScope: instructionSnapshots[index].reference,
       task: buildLocalTaskCore(record),
       connections: record.payload?.connections ?? {},
@@ -7831,7 +7851,7 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
 export const TRELIO_LOCAL_PROPOSAL_TOOL = {
   name: "continue_trelio_local_proposal",
   title: "Continue Trelio proposal",
-  description: "Continue the selected local proposal route.",
+  description: "Continue the exact proposalProvider route.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -7845,7 +7865,7 @@ export const TRELIO_LOCAL_PROPOSAL_TOOL = {
       },
       payload: {
         type: "object",
-        description: "Exact fields from the selected proposal route and its immediately preceding context response.",
+        description: "For context/save use proposalProvider.target or the current Run; actions use context fields.",
       },
     },
   },
