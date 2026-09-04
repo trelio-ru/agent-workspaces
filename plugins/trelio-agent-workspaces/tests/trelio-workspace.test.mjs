@@ -45,6 +45,7 @@ import {
   assertMaterializedWorkspaceFileTypes,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
+  buildCompanyE2eeAgentSecretWrite,
   buildEncryptedDerivedArtifactsDigest,
   buildAgentSkillPackage,
   buildAgentSkillRuntimePath,
@@ -76,6 +77,7 @@ import {
   normalizeAgentSkillPackagePath,
   normalizeAgentSkillDeviceConsentChallenge,
   normalizeResolvedSkillRuntimeArtifact,
+  openCompanyE2eeAgentSecretCheckout,
   openBrowser,
   parseAndValidateAgentSkillPackage,
   parseAgentSecretSetInput,
@@ -108,6 +110,8 @@ import {
   createAgentEncryptionDevice,
   decryptFileFromCompanyContainer,
   encryptCompanyPayload,
+  hpkeSeal,
+  wrapAndRememberAgentEncryptionDevice,
 } from "../scripts/trelio-company-encryption.mjs";
 import {
   buildSecretBrowserArguments,
@@ -4042,7 +4046,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "1.19.1");
+  assert.equal(BRIDGE_VERSION, "1.19.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4836,24 +4840,27 @@ test("workspace skill recovers stale OAuth grants without discarding existing sc
   assert.match(workspaceSkill, /retry the exact low-risk read once/u);
 });
 
-test("workspace skill follows the company Agent Secret storage policy before creation", async () => {
+test("workspace skill derives Agent Secret protection from company encryption", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
   assert.match(workspaceSkill, /call\s+`list_agent_secrets` for the exact target scope/u);
-  assert.match(workspaceSkill, /read its\s+company-level\s+`storagePolicy`/u);
-  assert.match(workspaceSkill, /`prefer_trelio`/u);
-  assert.match(workspaceSkill, /`contextual`/u);
-  assert.match(workspaceSkill, /`local_only`/u);
-  assert.match(workspaceSkill, /Ask the user before creating the\s+immutable record when the context is ambiguous/u);
-  assert.match(workspaceSkill, /cannot\s+override company `local_only`/u);
-  assert.match(workspaceSkill, /A policy change never migrates an existing\s+record/u);
+  assert.match(workspaceSkill, /Storage follows the company's exact encryption state and is not a user choice/u);
+  assert.match(workspaceSkill, /plain company uses `storageMode=trelio`/u);
+  assert.match(workspaceSkill, /encrypted company uses `storageMode=company_e2ee`/u);
+  assert.match(workspaceSkill, /Trelio\s+stores the signed ciphertext and cannot decrypt it/u);
+  assert.match(workspaceSkill, /There is no `local_device` Agent Secret mode/u);
+  assert.match(workspaceSkill, /wants a credential to\s+remain local only, do not create or configure an Agent Secret/u);
+  assert.match(workspaceSkill, /Do not ask the\s+user to choose a storage mode/u);
+  assert.match(workspaceSkill, /MCP placeholder creation is available only\s+for a plain company/u);
+  assert.match(workspaceSkill, /every E2EE\s+rotation is a complete replacement/u);
+  assert.match(workspaceSkill, /never writes Agent\s+Secret values to its private config/u);
   assert.match(workspaceSkill, /`allowAgentSaveChatSecrets`/u);
   assert.match(workspaceSkill, /`save_known_agent_secret`/u);
   assert.match(workspaceSkill, /merely sharing it, asking\s+to sign in, or asking to use it is not storage consent/u);
   assert.match(workspaceSkill, /`userExplicitlyRequestedPersistentStorage=true`/u);
   assert.match(workspaceSkill, /original plaintext remains in the chat and may remain\s+in the AI client's tool history/u);
-  assert.match(workspaceSkill, /Do not use this path\s+for `local_device`/u);
-  assert.match(workspaceSkill, /Do not use this path[\s\S]{0,180}or ask the user to provide a new value/u);
+  assert.match(workspaceSkill, /This MCP path cannot save an encrypted-company\s+secret because MCP has no company key/u);
+  assert.match(workspaceSkill, /Never ask for a new value\s+merely to make the chat exception available/u);
 });
 
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
@@ -5391,7 +5398,7 @@ test("workspace instructions keep a canonical safe Agent Secret reference and us
   assert.match(workspaceSkill, /do not assume that it inherits the system Chrome password\s+manager/u);
   assert.match(workspaceSkill, /already authenticated, continue with that session and do\s+not request or consume the Agent Secret/u);
   assert.match(workspaceSkill, /explicitly asks to see/u);
-  assert.match(workspaceSkill, /protected Trelio reveal/u);
+  assert.match(workspaceSkill, /protected\s+Trelio reveal/u);
   assert.match(workspaceSkill, /publicUrl/u);
   assert.match(workspaceSkill, /selects one or several fields/u);
   assert.match(workspaceSkill, /direct user gesture/u);
@@ -5821,23 +5828,192 @@ test("secret set sends one atomic named-field bundle from protected stdin", {
   }
 });
 
-test("local-device secret set persists values only in private config and sends attestation metadata", {
-  timeout: 10_000,
+test("company-E2EE Agent Secret is signed, opaque and opened only for granted fields", async () => {
+  const companyId = "88888888-8888-4888-8888-888888888888";
+  const companyMemberId = "99999999-9999-4999-8999-999999999999";
+  const secretId = "77777777-7777-4777-8777-777777777771";
+  const scopeId = "55555555-5555-4555-8555-555555555555";
+  const deviceId = "44444444-4444-4444-8444-444444444444";
+  const scope = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const [scopePublicEncryptionJwk, scopePrivateJwk, device] = await Promise.all([
+    webcrypto.subtle.exportKey("jwk", scope.publicKey),
+    webcrypto.subtle.exportKey("jwk", scope.privateKey),
+    createAgentEncryptionDevice(),
+  ]);
+  const companyEncryption = {
+    runtime: {
+      state: "encrypted",
+      accessState: "ready",
+      company: { id: companyId, slug: "encrypted-company" },
+      scope: { id: scopeId, epoch: 3, publicEncryptionJwk: scopePublicEncryptionJwk },
+      device: { id: deviceId },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: scope.privateKey,
+      privateJwk: scopePrivateJwk,
+    },
+  };
+  const context = {
+    storageMode: "company_e2ee",
+    encryptionState: "encrypted",
+    secretId,
+    companyId,
+    companyMemberId,
+    currentVersion: 4,
+    fields: [
+      { key: "username", type: "username", required: true },
+      { key: "password", type: "password", required: true },
+      { key: "totp", type: "totp", required: true },
+    ],
+  };
+  const plaintextValues = {
+    username: "synthetic-e2ee-login",
+    password: "synthetic-e2ee-password",
+    // RFC 6238 SHA-1 seed: the six-digit code at Unix time 59 is 287082.
+    totp: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+  };
+
+  const write = await buildCompanyE2eeAgentSecretWrite({
+    context,
+    valuePayload: { values: plaintextValues },
+    companyEncryption,
+  });
+  assert.equal(write.contentProtection, "company_e2ee_v1");
+  assert.equal(write.expectedCurrentVersion, 4);
+  assert.deepEqual(write.fieldKeys, ["username", "password", "totp"]);
+  assert.deepEqual(write.values, {
+    $trelioE2ee: { v: 1, id: secretId, field: "values_json" },
+  });
+  assert.equal(write.encryptedPayloads[0].entityRevision, 5);
+  assert.equal(write.encryptedPayloads[0].writerDeviceId, deviceId);
+  assert.equal(typeof write.encryptedPayloads[0].signature, "string");
+  assert.doesNotMatch(JSON.stringify(write), /synthetic-e2ee-login|synthetic-e2ee-password|GEZDGNB/u);
+
+  const checkout = {
+    storageMode: "company_e2ee",
+    grantId: "66666666-6666-4666-8666-666666666661",
+    secretId,
+    runId,
+    companyId,
+    companyMemberId,
+    secretVersion: 5,
+    fieldKeys: ["username", "totp"],
+    fields: [
+      { key: "username", label: "opaque", type: "username", required: true },
+      { key: "totp", label: "opaque", type: "totp", required: true },
+    ],
+    values: write.values,
+    encryptedPayload: write.encryptedPayloads[0],
+  };
+  const opened = await openCompanyE2eeAgentSecretCheckout({
+    payload: checkout,
+    companyEncryption,
+    nowMs: 59_000,
+  });
+  assert.deepEqual({ ...opened }, {
+    username: plaintextValues.username,
+    totp: "287082",
+  });
+  assert.equal("password" in opened, false);
+
+  // The ordinary UI signs the same payload shape with a browser identity.
+  // Checkout must accept it too: otherwise only bridge-created versions could
+  // ever be consumed by an Agent Run.
+  const browserWrittenCheckout = {
+    ...checkout,
+    encryptedPayload: {
+      ...checkout.encryptedPayload,
+      writerDeviceId: null,
+      writerIdentityId: "33333333-3333-4333-8333-333333333333",
+    },
+  };
+  const browserWrittenOpened = await openCompanyE2eeAgentSecretCheckout({
+    payload: browserWrittenCheckout,
+    companyEncryption,
+    nowMs: 59_000,
+  });
+  assert.deepEqual({ ...browserWrittenOpened }, {
+    username: plaintextValues.username,
+    totp: "287082",
+  });
+
+  await assert.rejects(
+    openCompanyE2eeAgentSecretCheckout({
+      payload: {
+        ...checkout,
+        encryptedPayload: {
+          ...checkout.encryptedPayload,
+          writerIdentityId: "33333333-3333-4333-8333-333333333333",
+        },
+      },
+      companyEncryption,
+      nowMs: 59_000,
+    }),
+    /не совпадает с consumed grant/u,
+  );
+
+  await assert.rejects(
+    openCompanyE2eeAgentSecretCheckout({
+      payload: { ...checkout, secretVersion: 6 },
+      companyEncryption,
+      nowMs: 59_000,
+    }),
+    /не совпадает с consumed grant/u,
+  );
+});
+
+
+test("encrypted-company secret set and exec round-trip only ciphertext through the server", {
+  timeout: 15_000,
 }, async () => {
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-set-local-"));
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-e2ee-roundtrip-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
   const rootDirectory = path.join(temporaryDirectory, "run");
   const workspaceDirectory = path.join(rootDirectory, "workspace");
-  const secretId = "77777777-7777-4777-8777-777777777771";
-  const grantId = "66666666-6666-4666-8666-666666666661";
   const companyId = "88888888-8888-4888-8888-888888888888";
   const companyMemberId = "99999999-9999-4999-8999-999999999999";
-  const values = {
-    username: "synthetic-local-login",
-    password: "synthetic-local-password",
+  const userId = "12121212-1212-4212-8212-121212121212";
+  const secretId = "77777777-7777-4777-8777-777777777772";
+  const grantId = "66666666-6666-4666-8666-666666666662";
+  const scopeId = "55555555-5555-4555-8555-555555555556";
+  const deviceId = "44444444-4444-4444-8444-444444444445";
+  const company = { id: companyId, slug: "encrypted-company", name: "Encrypted company" };
+  const secretValues = {
+    username: "synthetic-roundtrip-login",
+    password: "synthetic-roundtrip-password",
   };
-  const mutations = [];
-  let confirmedAttestationId = null;
+  const scope = await webcrypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"],
+  );
+  const [scopePublicEncryptionJwk, scopePrivateEncryptionJwk, device] = await Promise.all([
+    webcrypto.subtle.exportKey("jwk", scope.publicKey),
+    webcrypto.subtle.exportKey("jwk", scope.privateKey),
+    createAgentEncryptionDevice(),
+  ]);
+  const envelopeAad = {
+    purpose: "test-company-scope-envelope",
+    companyId,
+    scopeId,
+    scopeEpoch: 1,
+    recipientId: deviceId,
+  };
+  const envelope = await hpkeSeal({
+    recipientPublicEncryptionJwk: device.publicEncryptionJwk,
+    plaintext: Buffer.from(JSON.stringify({
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      scopePrivateEncryptionJwk,
+    }), "utf8"),
+    aad: envelopeAad,
+  });
+  let writeBody = null;
   let consumeCount = 0;
   let serverError = null;
 
@@ -5845,91 +6021,105 @@ test("local-device secret set persists values only in private config and sends a
     try {
       assert.equal(request.headers.authorization, "Bearer integration-token");
       assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
+      assert.equal(request.headers["x-trelio-agent-secret-company-e2ee"], "v1");
+      response.setHeader("content-type", "application/json");
+
       if (request.method === "GET" && request.url === "/api/agent-workspaces/bridge-compatibility") {
-        response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
+        return;
+      }
+      if (request.method === "GET" && request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        const fingerprint = new URL(request.url, "http://loopback").searchParams.get("fingerprint");
+        response.end(JSON.stringify({
+          suite: COMPANY_ENCRYPTION_SUITE,
+          state: "encrypted",
+          company,
+          viewer: { userId },
+          ...(fingerprint
+            ? {
+                accessState: "ready",
+                scope: { id: scopeId, epoch: 1, publicEncryptionJwk: scopePublicEncryptionJwk },
+                device: { id: deviceId, fingerprint: device.fingerprint },
+                envelope: {
+                  recipientType: "agent_device",
+                  recipientId: deviceId,
+                  scopeId,
+                  scopeEpoch: 1,
+                  hpkeEnc: envelope.enc,
+                  ciphertext: envelope.ciphertext,
+                  aad: envelopeAad,
+                },
+              }
+            : {}),
+        }));
         return;
       }
       if (
         request.method === "GET"
-        && request.url === `/api/agent-secrets/secrets/${secretId}/bridge-write-context?runId=${runId}`
+        && request.url === "/api/agent-secrets/secrets/" + secretId
+          + "/bridge-write-context?runId=" + runId
       ) {
-        response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
-          storageMode: "local_device",
+          storageMode: "company_e2ee",
+          encryptionState: "encrypted",
           secretId,
           companyId,
           companyMemberId,
           currentVersion: 0,
           fields: [
-            { key: "username", label: "Логин", type: "username", required: true },
-            { key: "password", label: "Пароль", type: "password", required: true },
+            { key: "username", label: "opaque", type: "username", required: true },
+            { key: "password", label: "opaque", type: "password", required: true },
           ],
         }));
         return;
       }
       if (
-        request.method === "POST"
-        && request.url === `/api/agent-secrets/secrets/${secretId}/local-writes/prepare`
+        request.method === "PUT"
+        && request.url === "/api/agent-secrets/secrets/" + secretId + "/value-from-bridge"
       ) {
-        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
-        mutations.push({ type: "prepare", body });
-        confirmedAttestationId = body.attestationId;
-        response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({
-          attestationId: body.attestationId,
-          secretId,
-          companyId,
-          companyMemberId,
-          secretVersion: 1,
-        }));
-        return;
-      }
-      if (request.method === "POST" && request.url?.startsWith("/api/agent-secrets/local-writes/")) {
-        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
-        mutations.push({ type: "confirm", body });
-        response.setHeader("content-type", "application/json");
+        writeBody = JSON.parse((await readRequestBody(request)).toString("utf8"));
         response.end(JSON.stringify({ status: "active" }));
         return;
       }
       if (
         request.method === "POST"
-        && request.url === `/api/agent-secrets/checkout-grants/${grantId}/consume`
+        && request.url === "/api/agent-secrets/checkout-grants/" + grantId + "/consume"
       ) {
+        assert.ok(writeBody);
         assert.deepEqual(
           JSON.parse((await readRequestBody(request)).toString("utf8")),
           { runId },
         );
         consumeCount += 1;
-        response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
-          storageMode: "local_device",
+          storageMode: "company_e2ee",
           grantId,
           secretId,
           runId,
           companyId,
           companyMemberId,
-          localAttestationId: confirmedAttestationId,
           secretVersion: 1,
           fieldKeys: ["username", "password"],
           fields: [
-            { key: "username", label: "Логин", type: "username", required: true },
-            { key: "password", label: "Пароль", type: "password", required: true },
+            { key: "username", label: "opaque", type: "username", required: true },
+            { key: "password", label: "opaque", type: "password", required: true },
           ],
+          values: writeBody.values,
+          encryptedPayload: writeBody.encryptedPayloads[0],
           executable: process.execPath,
           deliveryMode: "env",
           environmentVariables: {
-            username: "LOCAL_USERNAME",
-            password: "LOCAL_PASSWORD",
+            username: "E2EE_USERNAME",
+            password: "E2EE_PASSWORD",
           },
         }));
         return;
       }
-      throw new Error(`Unexpected local Agent Secret request: ${request.method} ${request.url}`);
+      throw new Error("Unexpected encrypted Agent Secret request: " + request.method + " " + request.url);
     } catch (error) {
       serverError = error;
       response.statusCode = 500;
-      response.end("Synthetic local Agent Secret test failure");
+      response.end("Synthetic encrypted Agent Secret test failure");
     }
   });
 
@@ -5944,58 +6134,81 @@ test("local-device secret set persists values only in private config and sends a
     });
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = "http://127.0.0.1:" + address.port;
     await writeTestCredential(homeDirectory, origin);
+
+    const wrapped = await wrapAndRememberAgentEncryptionDevice({
+      device,
+      encryptionSecret: "synthetic encryption phrase",
+      companyId,
+    });
+    const originHash = createHash("sha256").update(origin).digest("hex").slice(0, 32);
+    const deviceDirectory = path.join(
+      homeDirectory,
+      ".config",
+      "trelio",
+      "workspace-bridge",
+      "company-encryption",
+      originHash,
+      companyId,
+    );
+    await mkdir(deviceDirectory, { recursive: true, mode: 0o700 });
+    await writeFile(
+      path.join(deviceDirectory, "device.json"),
+      JSON.stringify(wrapped.record) + "\n",
+      { mode: 0o600 },
+    );
+    await writeFile(
+      path.join(deviceDirectory, "trusted-unlock.json"),
+      JSON.stringify({
+        format: "trelio-agent-encryption-device-unlock",
+        version: 1,
+        companyId,
+        fingerprint: wrapped.record.fingerprint,
+        trustedUnlockKey: wrapped.trustedUnlockKey,
+        createdAt: new Date().toISOString(),
+      }) + "\n",
+      { mode: 0o600 },
+    );
     await writeFile(
       path.join(rootDirectory, ".trelio-run.json"),
-      `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
+      JSON.stringify({ schemaVersion: 3, origin, runId, company }, null, 2) + "\n",
       "utf8",
     );
-    const result = await execBridgeWithInput([
+    const childEnvironment = {
+      ...process.env,
+      HOME: homeDirectory,
+      TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
+      TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+    };
+
+    const saved = await execBridgeWithInput([
       "secret",
       "set",
       "--secret",
       secretId,
       "--format",
       "fields-json",
-    ], JSON.stringify(values), {
+    ], JSON.stringify(secretValues), {
       cwd: workspaceDirectory,
       encoding: "utf8",
-      timeout: 8_000,
-      env: {
-        ...process.env,
-        HOME: homeDirectory,
-        TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
-        TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
-      },
+      timeout: 10_000,
+      env: childEnvironment,
     });
-    assert.match(result.stdout, /сохранено только на этом компьютере/u);
-    assert.equal(JSON.stringify(mutations).includes(values.username), false);
-    assert.equal(JSON.stringify(mutations).includes(values.password), false);
-    assert.deepEqual(mutations.map((item) => item.type), ["prepare", "confirm"]);
-    assert.deepEqual(mutations[0].body.fieldKeys, ["username", "password"]);
-    const originKey = createHash("sha256").update(origin).digest("hex");
-    const localFile = path.join(
-      homeDirectory,
-      ".config",
-      "trelio",
-      "workspace-bridge",
-      "agent-secrets",
-      originKey,
-      companyMemberId,
-      secretId,
-      "secret.json",
+    assert.match(saved.stdout, /локально зашифровано ключом компании/u);
+    assert.equal(saved.stderr, "");
+    assert.ok(writeBody);
+    assert.equal(writeBody.contentProtection, "company_e2ee_v1");
+    assert.equal(writeBody.expectedCurrentVersion, 0);
+    assert.doesNotMatch(
+      JSON.stringify(writeBody),
+      /synthetic-roundtrip-login|synthetic-roundtrip-password/u,
     );
-    const localStat = await stat(localFile);
-    if (process.platform !== "win32") assert.equal(localStat.mode & 0o777, 0o600);
-    const localRecord = JSON.parse(await readFile(localFile, "utf8"));
-    assert.deepEqual(localRecord.values, values);
-    assert.equal(localRecord.secretVersion, 1);
-    assert.match(localRecord.attestationId, /^[0-9a-f-]{36}$/u);
+    assert.equal(
+      await pathExists(path.join(homeDirectory, ".config", "trelio", "workspace-bridge", "agent-secrets")),
+      false,
+    );
 
-    // Consume-ответ намеренно не содержит values/value. Bridge должен взять
-    // exact подтверждённый контейнер из private storage и передать его только
-    // закреплённому executable через заявленные имена переменных окружения.
     const checkout = await execFileAsync(process.execPath, [
       bridgePath,
       "secret",
@@ -6005,19 +6218,16 @@ test("local-device secret set persists values only in private config and sends a
       "--",
       process.execPath,
       "-e",
-      "if (!process.env.LOCAL_USERNAME || !process.env.LOCAL_PASSWORD) process.exit(2); process.stdout.write('local-ok')",
+      "if (process.env.E2EE_USERNAME !== 'synthetic-roundtrip-login'"
+        + " || process.env.E2EE_PASSWORD !== 'synthetic-roundtrip-password') process.exit(2);"
+        + " process.stdout.write('e2ee-ok')",
     ], {
       cwd: workspaceDirectory,
       encoding: "utf8",
-      timeout: 8_000,
-      env: {
-        ...process.env,
-        HOME: homeDirectory,
-        TRELIO_WORKSPACE_DISABLE_AUTO_UPDATE: "1",
-        TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
-      },
+      timeout: 10_000,
+      env: childEnvironment,
     });
-    assert.equal(checkout.stdout, "local-ok");
+    assert.equal(checkout.stdout, "e2ee-ok");
     assert.equal(checkout.stderr, "");
     assert.equal(consumeCount, 1);
     assert.ifError(serverError);
@@ -6446,6 +6656,8 @@ test("bridge adds its release version and bearer credential to every API request
   assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
   assert.equal(headers.get("x-trelio-agent-skill-device-consent"), "v1");
   assert.equal(headers.get("x-trelio-company-skill-e2ee"), "v1");
+  assert.equal(headers.get("x-trelio-agent-secret-company-e2ee"), "v1");
+  assert.equal(headers.get("x-trelio-e2ee"), "trelio-e2ee-v1");
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
 });

@@ -53,7 +53,7 @@ import {
 } from "./trelio-company-encryption.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "1.19.1";
+export const BRIDGE_VERSION = "1.19.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -168,6 +168,7 @@ const PRODUCTION_ENCRYPTED_DATA_PLANE_ORIGIN = "https://e2ee.trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
 const AGENT_SKILL_DEVICE_CONSENT_HEADER = "x-trelio-agent-skill-device-consent";
 const AGENT_SKILL_COMPANY_E2EE_HEADER = "x-trelio-company-skill-e2ee";
+const AGENT_SECRET_COMPANY_E2EE_HEADER = "x-trelio-agent-secret-company-e2ee";
 const AGENT_RULES_SHA256_HEADER = "x-trelio-agent-rules-sha256";
 // Legacy OAuth остаётся только как явный rollback для старого backend. Даже
 // там bridge не просит права на рабочие правила и чтение metadata секретов:
@@ -212,10 +213,6 @@ const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.
 const WORKSPACE_OPEN_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "workspace-open-locks");
 const WORKSPACE_OPEN_LOCK_INITIALIZATION_STALE_MS = 5 * 60 * 1000;
 const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
-// Local Agent Secrets живут рядом с device-session, но в отдельном private
-// namespace. Каталог не зависит от workspace path и поэтому не может случайно
-// попасть в Git, checkpoint или handoff.
-const LOCAL_AGENT_SECRETS_DIRECTORY = path.join(CONFIG_DIRECTORY, "agent-secrets");
 // Company keys are never stored inside a materialized Workspace. Every
 // company gets one owner-only local device record plus a separate remembered
 // wrapping key; neither file contains the user-entered phrase.
@@ -1066,6 +1063,14 @@ export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
   // capability header remains fail-closed even during rolling installations
   // where two binaries temporarily report the same marketplace version.
   headers.set(AGENT_SKILL_COMPANY_E2EE_HEADER, "v1");
+  // Agent Secret ciphertext uses a separately versioned payload contract.
+  // Advertising it on every bridge request lets the backend reject an old
+  // executable before either reading protected stdin or consuming a grant.
+  headers.set(AGENT_SECRET_COMPANY_E2EE_HEADER, "v1");
+  // The bridge is a crypto-aware client for the entire encrypted data plane.
+  // This shared protocol header keeps Agent Secret mutations inside the same
+  // fail-closed plaintext guard used by the browser.
+  headers.set("x-trelio-e2ee", COMPANY_ENCRYPTION_SUITE);
 
   if (token) {
     headers.set("authorization", `Bearer ${token}`);
@@ -12689,132 +12694,86 @@ const readSecretInput = async (fileOption) => {
 const AGENT_SECRET_FIELD_KEY_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u;
 const AGENT_SECRET_MAX_FIELD_COUNT = 50;
 const AGENT_SECRET_FIELDS_JSON_FORMAT = "fields-json";
-const LOCAL_AGENT_SECRET_SCHEMA_VERSION = 1;
+const AGENT_SECRET_FIELD_TYPES = new Set([
+  "username",
+  "password",
+  "token",
+  "text",
+  "key",
+  "certificate",
+  "totp",
+]);
 
-const resolveLocalAgentSecretFile = (origin, companyMemberId, secretId) => {
-  const originKey = crypto.createHash("sha256").update(origin).digest("hex");
-  return path.join(
-    LOCAL_AGENT_SECRETS_DIRECTORY,
-    originKey,
-    requireUuid(companyMemberId, "company member"),
-    requireUuid(secretId, "secret"),
-    "secret.json",
-  );
-};
-
-const normalizeLocalAgentSecretRecord = (rawRecord, expected) => {
-  const record = rawRecord && typeof rawRecord === "object" ? rawRecord : {};
-  const values = record.values && typeof record.values === "object" && !Array.isArray(record.values)
-    ? record.values
-    : null;
+const normalizeAgentSecretBridgeFields = (rawFields) => {
   if (
-    record.schemaVersion !== LOCAL_AGENT_SECRET_SCHEMA_VERSION
-    || record.origin !== expected.origin
-    || record.companyId !== expected.companyId
-    || record.companyMemberId !== expected.companyMemberId
-    || record.secretId !== expected.secretId
-    || !Number.isSafeInteger(record.secretVersion)
-    || record.secretVersion < 1
-    || !UUID_PATTERN.test(record.attestationId || "")
-    || !values
+    !Array.isArray(rawFields)
+    || rawFields.length < 1
+    || rawFields.length > AGENT_SECRET_MAX_FIELD_COUNT
   ) {
-    throw new Error("Локальная копия Agent Secret не совпадает с текущей карточкой Trelio.");
+    throw new Error("Trelio вернул некорректную схему полей Agent Secret.");
   }
-  const normalizedValues = Object.create(null);
-  for (const [key, value] of Object.entries(values)) {
-    if (!AGENT_SECRET_FIELD_KEY_PATTERN.test(key) || typeof value !== "string") {
-      throw new Error("Локальная копия Agent Secret содержит некорректное поле.");
+
+  const seenKeys = new Set();
+  return rawFields.map((rawField) => {
+    const field = rawField && typeof rawField === "object" ? rawField : {};
+    if (
+      !AGENT_SECRET_FIELD_KEY_PATTERN.test(field.key || "")
+      || seenKeys.has(field.key)
+      || !AGENT_SECRET_FIELD_TYPES.has(field.type)
+      || typeof field.required !== "boolean"
+    ) {
+      throw new Error("Trelio вернул некорректную схему полей Agent Secret.");
     }
-    normalizedValues[key] = value;
-  }
-  return { ...record, values: normalizedValues };
-};
-
-const readLocalAgentSecretRecord = async (origin, context) => {
-  const filePath = resolveLocalAgentSecretFile(origin, context.companyMemberId, context.secretId);
-  const rawRecord = await readPrivateJsonFile(filePath);
-  if (!rawRecord || Object.keys(rawRecord).length === 0) {
-    throw new Error("На этом компьютере нет локальной копии Agent Secret.");
-  }
-  return {
-    filePath,
-    record: normalizeLocalAgentSecretRecord(rawRecord, {
-      origin,
-      companyId: context.companyId,
-      companyMemberId: context.companyMemberId,
-      secretId: context.secretId,
-    }),
-  };
-};
-
-const readExistingLocalAgentSecretRecord = async (origin, context) => {
-  const filePath = resolveLocalAgentSecretFile(origin, context.companyMemberId, context.secretId);
-  const rawRecord = await readPrivateJsonFile(filePath);
-  if (!rawRecord || Object.keys(rawRecord).length === 0) return null;
-  return normalizeLocalAgentSecretRecord(rawRecord, {
-    origin,
-    companyId: context.companyId,
-    companyMemberId: context.companyMemberId,
-    secretId: context.secretId,
+    seenKeys.add(field.key);
+    return {
+      key: field.key,
+      type: field.type,
+      required: field.required,
+    };
   });
 };
 
-const isRetryableLocalSecretMutationError = (error) => (
-  error instanceof TypeError
-  || (error instanceof TrelioApiError && error.statusCode >= 500)
-);
-
-// prepare/confirm идемпотентны по attestationId. Три коротких повтора нужны
-// только для transport/5xx; явные 4xx никогда не маскируются новым запросом.
-const requestLocalSecretMutation = async (origin, token, pathname, body) => {
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await request(origin, token, pathname, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      return response.json();
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableLocalSecretMutationError(error) || attempt === 3) throw error;
-      await wait(250 * attempt);
-    }
-  }
-  throw lastError;
-};
-
-const fetchAgentSecretWriteContext = async ({ origin, token, secretId, runId }) => {
+const fetchAgentSecretWriteContext = async ({
+  requestOrigin,
+  token,
+  secretId,
+  runId,
+}) => {
   const response = await request(
-    origin,
+    requestOrigin,
     token,
     `/api/agent-secrets/secrets/${secretId}/bridge-write-context?runId=${encodeURIComponent(runId)}`,
   );
   const context = await response.json();
   if (
     context.secretId !== secretId
-    || !["trelio", "local_device"].includes(context.storageMode)
+    || !["trelio", "company_e2ee"].includes(context.storageMode)
     || !UUID_PATTERN.test(context.companyId || "")
     || !UUID_PATTERN.test(context.companyMemberId || "")
     || !Number.isSafeInteger(context.currentVersion)
     || context.currentVersion < 0
-    || !Array.isArray(context.fields)
+    || (
+      context.storageMode === "company_e2ee"
+      && context.encryptionState !== "encrypted"
+    )
+    || (
+      context.storageMode === "trelio"
+      && context.encryptionState !== undefined
+      && context.encryptionState !== "plain"
+    )
   ) {
     throw new Error("Trelio вернул некорректный контекст записи Agent Secret.");
   }
-  return context;
+  return {
+    ...context,
+    fields: normalizeAgentSecretBridgeFields(context.fields),
+  };
 };
 
-const buildCompleteLocalAgentSecretValues = ({ valuePayload, context, previousRecord }) => {
+const buildCompleteAgentSecretValues = ({ valuePayload, context }) => {
   const fields = context.fields;
   const allowedKeys = new Set(fields.map((field) => field.key));
   const values = Object.create(null);
-  if (previousRecord?.secretVersion === context.currentVersion) {
-    for (const [key, value] of Object.entries(previousRecord.values)) {
-      if (allowedKeys.has(key)) values[key] = value;
-    }
-  }
   if (valuePayload.value !== undefined) {
     if (fields.length !== 1) {
       throw new Error("Для многополевого Agent Secret обязателен --format fields-json.");
@@ -12828,64 +12787,97 @@ const buildCompleteLocalAgentSecretValues = ({ valuePayload, context, previousRe
   }
   for (const field of fields) {
     if (field.required && typeof values[field.key] !== "string") {
-      throw new Error(`Обязательное поле Agent Secret «${field.key}» не задано локально.`);
+      throw new Error(`Обязательное поле Agent Secret «${field.key}» не задано.`);
     }
+  }
+  if (Object.keys(values).length === 0) {
+    throw new Error("Новая версия Agent Secret должна содержать хотя бы одно поле.");
   }
   return values;
 };
 
-const persistAndConfirmLocalAgentSecret = async ({
-  origin,
-  token,
-  runId,
+/**
+ * Build one complete signed E2EE version in process memory.
+ *
+ * Encrypted companies intentionally do not support partial server-side merge:
+ * the server has no company key. Every rotation therefore seals the complete
+ * current field set and binds it to the stable secret id plus next CAS version.
+ */
+export const buildCompanyE2eeAgentSecretWrite = async ({
   context,
-  values,
-  sourceAttestationId,
+  valuePayload,
+  companyEncryption,
 }) => {
-  const attestationId = crypto.randomUUID();
+  if (
+    context.storageMode !== "company_e2ee"
+    || context.encryptionState !== "encrypted"
+    || !companyEncryption
+    || companyEncryption.runtime?.state !== "encrypted"
+    || companyEncryption.runtime?.accessState !== "ready"
+    || companyEncryption.runtime?.company?.id !== context.companyId
+    || !companyEncryption.runtime?.scope?.publicEncryptionJwk
+    || !UUID_PATTERN.test(companyEncryption.runtime?.scope?.id || "")
+    || !Number.isSafeInteger(companyEncryption.runtime?.scope?.epoch)
+    || companyEncryption.runtime.scope.epoch < 1
+    || !UUID_PATTERN.test(companyEncryption.runtime?.device?.id || "")
+    || !companyEncryption.device?.privateKeys?.signingPrivateKey
+  ) {
+    throw new Error("Agent Secret не совпадает с открытым E2EE-контекстом компании.");
+  }
+
+  const values = buildCompleteAgentSecretValues({ valuePayload, context });
   const fieldKeys = context.fields
     .map((field) => field.key)
     .filter((key) => typeof values[key] === "string");
-  const prepared = await requestLocalSecretMutation(
-    origin,
-    token,
-    `/api/agent-secrets/secrets/${context.secretId}/local-writes/prepare`,
-    {
-      runId,
-      attestationId,
-      expectedCurrentVersion: context.currentVersion,
-      fieldKeys,
-      ...(sourceAttestationId ? { sourceAttestationId } : {}),
+  const nextVersion = context.currentVersion + 1;
+  const entityType = "agent_secret.value";
+  const encrypted = await encryptCompanyPayload({
+    payload: {
+      suite: COMPANY_ENCRYPTION_SUITE,
+      version: 1,
+      source: {
+        kind: "agent_secret_value",
+        secretId: context.secretId,
+        version: nextVersion,
+      },
+      values: {
+        // Spread converts the parser's deliberately null-prototype map into a
+        // canonical JSON object accepted by the shared E2EE codec.
+        values_json: { ...values },
+      },
     },
-  );
-  if (
-    prepared.attestationId !== attestationId
-    || prepared.secretId !== context.secretId
-    || prepared.companyId !== context.companyId
-    || prepared.companyMemberId !== context.companyMemberId
-    || !Number.isSafeInteger(prepared.secretVersion)
-    || prepared.secretVersion < 1
-  ) {
-    throw new Error("Trelio вернул некорректное подтверждение локальной записи Agent Secret.");
-  }
-  const filePath = resolveLocalAgentSecretFile(origin, context.companyMemberId, context.secretId);
-  await writePrivateJsonFile(filePath, {
-    schemaVersion: LOCAL_AGENT_SECRET_SCHEMA_VERSION,
-    origin,
-    companyId: context.companyId,
-    companyMemberId: context.companyMemberId,
-    secretId: context.secretId,
-    secretVersion: prepared.secretVersion,
-    attestationId,
-    values,
+    scopePublicEncryptionJwk: companyEncryption.runtime.scope.publicEncryptionJwk,
+    aad: {
+      companyId: context.companyId,
+      scopeId: companyEncryption.runtime.scope.id,
+      scopeEpoch: companyEncryption.runtime.scope.epoch,
+      entityType,
+      entityId: context.secretId,
+      entityRevision: nextVersion,
+      purpose: "content",
+    },
   });
-  await requestLocalSecretMutation(
-    origin,
-    token,
-    `/api/agent-secrets/local-writes/${attestationId}/confirm`,
-    { runId },
+  const payload = {
+    ...encrypted,
+    scopeId: companyEncryption.runtime.scope.id,
+    scopeEpoch: companyEncryption.runtime.scope.epoch,
+    entityType,
+    entityId: context.secretId,
+    entityRevision: nextVersion,
+    writerDeviceId: companyEncryption.runtime.device.id,
+  };
+  payload.signature = await signCompanyEncryptionRecord(
+    companyEncryption.device.privateKeys.signingPrivateKey,
+    buildAgentEncryptedPayloadSignatureRecord(payload),
   );
-  return { filePath, secretVersion: prepared.secretVersion };
+
+  return {
+    contentProtection: "company_e2ee_v1",
+    values: buildCompanyEncryptedJsonMarker(context.secretId, "values_json"),
+    fieldKeys,
+    encryptedPayloads: [payload],
+    expectedCurrentVersion: context.currentVersion,
+  };
 };
 
 /**
@@ -12947,7 +12939,13 @@ export const parseAgentSecretSetInput = (input, formatOption) => {
   return { values };
 };
 
-const setSecretValue = async (options, positional) => withRun(async ({ metadata, origin, token }) => {
+const setSecretValue = async (options, positional) => withRun(async ({
+  metadata,
+  origin,
+  workspaceOrigin,
+  token,
+  companyEncryption,
+}) => {
   if (positional[0] !== "set") {
     throw new Error("Поддерживаются `secret set` и `secret exec`.");
   }
@@ -12961,77 +12959,44 @@ const setSecretValue = async (options, positional) => withRun(async ({ metadata,
     throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
   }
   const context = await fetchAgentSecretWriteContext({
-    origin,
+    requestOrigin: workspaceOrigin,
     token,
     secretId,
     runId: metadata.runId,
   });
+  // Fail before reading one-shot stdin/file when routing and the locally
+  // opened company key disagree. Loading the credential cannot help repair a
+  // stale or malformed E2EE context and would only widen its memory lifetime.
+  if ((context.storageMode === "company_e2ee") !== Boolean(companyEncryption)) {
+    throw new Error("Agent Secret не совпадает с открытым E2EE-контекстом компании.");
+  }
   const input = await readSecretInput(options.file);
   const valuePayload = parseAgentSecretSetInput(input, options.format);
-  if (context.storageMode === "local_device") {
-    const previousRecord = await readExistingLocalAgentSecretRecord(origin, context);
-    const values = buildCompleteLocalAgentSecretValues({ valuePayload, context, previousRecord });
-    await persistAndConfirmLocalAgentSecret({
-      origin,
-      token,
-      runId: metadata.runId,
+  const protectedValue = context.storageMode === "company_e2ee"
+    ? await buildCompanyE2eeAgentSecretWrite({
       context,
-      values,
-    });
-    process.stdout.write("Значение секрета сохранено только на этом компьютере; Trelio получил подтверждение локальной копии.\n");
-    return;
-  }
-  const response = await request(origin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
+      valuePayload,
+      companyEncryption,
+    })
+    : valuePayload;
+  const response = await request(workspaceOrigin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ runId: metadata.runId, ...valuePayload }),
+    body: JSON.stringify({ runId: metadata.runId, ...protectedValue }),
   });
   await response.json();
-  process.stdout.write("Значение секрета зашифровано и сохранено новой версией.\n");
-});
-
-const adoptLocalSecretValue = async (options, positional) => withRun(async ({
-  metadata,
-  origin,
-  token,
-}) => {
-  if (positional[0] !== "adopt") {
-    throw new Error("Поддерживается команда `trelio-workspace secret adopt --secret UUID`.");
-  }
-  const secretId = requireUuid(options.secret, "secret");
-  if (!metadata.runId) {
-    throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
-  }
-  await ensureBridgeCompatibility(origin, token);
-  const context = await fetchAgentSecretWriteContext({
-    origin,
-    token,
-    secretId,
-    runId: metadata.runId,
-  });
-  if (context.storageMode !== "local_device") {
-    throw new Error("Переподтверждение устройства доступно только для local-device Agent Secret.");
-  }
-  const { record } = await readLocalAgentSecretRecord(origin, context);
-  if (record.secretVersion !== context.currentVersion) {
-    throw new Error("Скопированная локальная версия Agent Secret устарела относительно Trelio.");
-  }
-  await persistAndConfirmLocalAgentSecret({
-    origin,
-    token,
-    runId: metadata.runId,
-    context,
-    values: record.values,
-    sourceAttestationId: record.attestationId,
-  });
-  process.stdout.write("Локальная копия Agent Secret подтверждена на этом компьютере.\n");
+  process.stdout.write(
+    context.storageMode === "company_e2ee"
+      ? "Значение локально зашифровано ключом компании и сохранено новой версией.\n"
+      : "Значение секрета зашифровано и сохранено новой версией.\n",
+  );
 });
 
 const decodeAgentSecretBase32 = (rawValue) => {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const normalized = rawValue.toUpperCase().replace(/=+$/u, "").replace(/[\s-]/gu, "");
   if (!normalized || /[^A-Z2-7]/u.test(normalized)) {
-    throw new Error("Локальный TOTP seed имеет некорректную Base32-кодировку.");
+    throw new Error("TOTP seed имеет некорректную Base32-кодировку.");
   }
   let bits = "";
   for (const character of normalized) bits += alphabet.indexOf(character).toString(2).padStart(5, "0");
@@ -13042,9 +13007,9 @@ const decodeAgentSecretBase32 = (rawValue) => {
   return Buffer.from(bytes);
 };
 
-// В local_device даже одноразовый TOTP вычисляется локально: seed не нужен
-// Trelio ни для хранения, ни для checkout. Возвращается только текущий код.
-const deriveLocalAgentSecretTotp = (seed, nowMs = Date.now()) => {
+// Для company E2EE одноразовый код вычисляется после локального открытия
+// ciphertext. Сервер не получает seed и видит только opaque payload.
+const deriveAgentSecretTotp = (seed, nowMs = Date.now()) => {
   const counter = Math.floor(nowMs / 30_000);
   const message = Buffer.alloc(8);
   message.writeBigUInt64BE(BigInt(counter));
@@ -13057,60 +13022,161 @@ const deriveLocalAgentSecretTotp = (seed, nowMs = Date.now()) => {
   return String(binary % 1_000_000).padStart(6, "0");
 };
 
-const resolveCheckoutSecretValues = async (origin, payload) => {
-  if (payload.storageMode !== "local_device") {
-    if (typeof payload.value === "string") {
-      return payload.values && typeof payload.values === "object" && !Array.isArray(payload.values)
-        ? payload.values
-        : { value: payload.value };
-    }
-    if (!payload.values || typeof payload.values !== "object" || Array.isArray(payload.values)) {
-      throw new Error("Trelio вернул некорректный набор полей Agent Secret.");
-    }
-    return payload.values;
-  }
+/**
+ * Open one ACL-gated Agent Secret ciphertext and return only fields explicitly
+ * bound to the consumed grant. The full plaintext bundle exists only in this
+ * process and is never written to the bridge config or Workspace.
+ */
+export const openCompanyE2eeAgentSecretCheckout = async ({
+  payload,
+  companyEncryption,
+  nowMs = Date.now(),
+}) => {
+  const encryptedPayload = payload?.encryptedPayload;
+  const scope = companyEncryption?.runtime?.scope;
+  const marker = payload?.values?.$trelioE2ee;
   if (
-    !UUID_PATTERN.test(payload.secretId || "")
+    payload?.storageMode !== "company_e2ee"
+    || !UUID_PATTERN.test(payload.secretId || "")
     || !UUID_PATTERN.test(payload.companyId || "")
     || !UUID_PATTERN.test(payload.companyMemberId || "")
-    || !UUID_PATTERN.test(payload.localAttestationId || "")
     || !Number.isSafeInteger(payload.secretVersion)
+    || payload.secretVersion < 1
     || !Array.isArray(payload.fieldKeys)
     || !Array.isArray(payload.fields)
+    || !companyEncryption
+    || companyEncryption.runtime?.state !== "encrypted"
+    || companyEncryption.runtime?.accessState !== "ready"
+    || companyEncryption.runtime?.company?.id !== payload.companyId
+    || !companyEncryption.scopePrivateEncryptionKey?.privateKey
+    || !companyEncryption.scopePrivateEncryptionKey?.privateJwk
+    || !scope
+    || !encryptedPayload
+    || marker?.v !== 1
+    || marker?.id !== payload.secretId
+    || marker?.field !== "values_json"
   ) {
-    throw new Error("Trelio вернул некорректную metadata локального Agent Secret.");
+    throw new Error("Trelio вернул некорректный E2EE checkout Agent Secret.");
   }
-  const context = {
-    secretId: payload.secretId,
-    companyId: payload.companyId,
-    companyMemberId: payload.companyMemberId,
-  };
-  const { record } = await readLocalAgentSecretRecord(origin, context);
+
+  const fields = normalizeAgentSecretBridgeFields(payload.fields);
+  const fieldKeys = payload.fieldKeys.map((value) => String(value));
+  const fieldByKey = new Map(fields.map((field) => [field.key, field]));
+  const hasWriterIdentity = UUID_PATTERN.test(encryptedPayload.writerIdentityId || "");
+  const hasWriterDevice = UUID_PATTERN.test(encryptedPayload.writerDeviceId || "");
+  const hasExactWriter = (
+    hasWriterIdentity
+    && (encryptedPayload.writerDeviceId === null || encryptedPayload.writerDeviceId === undefined)
+  ) || (
+    hasWriterDevice
+    && (encryptedPayload.writerIdentityId === null || encryptedPayload.writerIdentityId === undefined)
+  );
   if (
-    record.secretVersion !== payload.secretVersion
-    || record.attestationId !== payload.localAttestationId
+    fieldKeys.length < 1
+    || fieldKeys.length > AGENT_SECRET_MAX_FIELD_COUNT
+    || new Set(fieldKeys).size !== fieldKeys.length
+    || fieldKeys.some((key) => !AGENT_SECRET_FIELD_KEY_PATTERN.test(key) || !fieldByKey.has(key))
+    || fields.some((field) => !fieldKeys.includes(field.key))
+    || encryptedPayload.suite !== COMPANY_ENCRYPTION_SUITE
+    || encryptedPayload.schemaVersion !== 1
+    || encryptedPayload.scopeId !== scope.id
+    || encryptedPayload.scopeEpoch !== scope.epoch
+    || encryptedPayload.entityType !== "agent_secret.value"
+    || encryptedPayload.entityId !== payload.secretId
+    || encryptedPayload.entityRevision !== payload.secretVersion
+    // A version may be published either by the unlocked browser or by a paired
+    // bridge. The server has already verified the matching signature; locally
+    // we still require exactly one bounded provenance identity and reject an
+    // ambiguous/missing writer before opening ciphertext.
+    || !hasExactWriter
+    || typeof encryptedPayload.signature !== "string"
+    || encryptedPayload.signature.length === 0
+    || encryptedPayload.aad?.suite !== COMPANY_ENCRYPTION_SUITE
+    || encryptedPayload.aad?.companyId !== payload.companyId
+    || encryptedPayload.aad?.scopeId !== scope.id
+    || encryptedPayload.aad?.scopeEpoch !== scope.epoch
+    || encryptedPayload.aad?.entityType !== "agent_secret.value"
+    || encryptedPayload.aad?.entityId !== payload.secretId
+    || encryptedPayload.aad?.entityRevision !== payload.secretVersion
+    || encryptedPayload.aad?.schemaVersion !== 1
+    || encryptedPayload.aad?.purpose !== "content"
   ) {
-    throw new Error("Локальная копия Agent Secret не подтверждена для этого checkout grant.");
+    throw new Error("E2EE payload Agent Secret не совпадает с consumed grant.");
   }
-  const fieldTypes = new Map(payload.fields.map((field) => [field.key, field.type]));
+
+  const opened = await decryptCompanyPayload({
+    encryptedPayload,
+    scopePrivateKey: companyEncryption.scopePrivateEncryptionKey?.privateKey,
+    scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey?.privateJwk,
+  });
+  const rawValues = opened?.values?.values_json;
+  if (
+    !hasExactJsonKeys(opened, ["source", "suite", "values", "version"])
+    || opened.suite !== COMPANY_ENCRYPTION_SUITE
+    || opened.version !== 1
+    || !hasExactJsonKeys(opened.source, ["kind", "secretId", "version"])
+    || opened.source.kind !== "agent_secret_value"
+    || opened.source.secretId !== payload.secretId
+    || opened.source.version !== payload.secretVersion
+    || !hasExactJsonKeys(opened.values, ["values_json"])
+    || !rawValues
+    || typeof rawValues !== "object"
+    || Array.isArray(rawValues)
+    || Object.keys(rawValues).length > AGENT_SECRET_MAX_FIELD_COUNT
+    || Object.entries(rawValues).some(([key, value]) => (
+      !AGENT_SECRET_FIELD_KEY_PATTERN.test(key) || typeof value !== "string"
+    ))
+  ) {
+    throw new Error("Расшифрованный Agent Secret не соответствует payload contract.");
+  }
+
   const values = Object.create(null);
-  for (const fieldKey of payload.fieldKeys) {
-    const value = record.values[fieldKey];
-    if (
-      !AGENT_SECRET_FIELD_KEY_PATTERN.test(fieldKey)
-      || typeof value !== "string"
-      || !fieldTypes.has(fieldKey)
-    ) {
-      throw new Error("Локальная копия Agent Secret не содержит поле checkout grant.");
+  for (const fieldKey of fieldKeys) {
+    const value = rawValues[fieldKey];
+    if (typeof value !== "string") {
+      throw new Error("Agent Secret ciphertext не содержит поле consumed grant.");
     }
-    values[fieldKey] = fieldTypes.get(fieldKey) === "totp"
-      ? deriveLocalAgentSecretTotp(value)
+    values[fieldKey] = fieldByKey.get(fieldKey).type === "totp"
+      ? deriveAgentSecretTotp(value, nowMs)
       : value;
   }
   return values;
 };
 
-const executeSecretCheckout = async (options, positional) => withRun(async ({ metadata, origin, token }) => {
+const resolveCheckoutSecretValues = async (payload, companyEncryption) => {
+  if (payload.storageMode === "company_e2ee") {
+    return openCompanyE2eeAgentSecretCheckout({ payload, companyEncryption });
+  }
+  if (
+    (payload.storageMode !== undefined && payload.storageMode !== "trelio")
+    || companyEncryption
+  ) {
+    throw new Error("Trelio вернул checkout с неподдерживаемым storage mode.");
+  }
+
+  const rawValues = typeof payload.value === "string"
+    && (!payload.values || typeof payload.values !== "object" || Array.isArray(payload.values))
+    ? { value: payload.value }
+    : payload.values;
+  if (
+    !rawValues
+    || typeof rawValues !== "object"
+    || Array.isArray(rawValues)
+    || Object.entries(rawValues).some(([key, value]) => (
+      !AGENT_SECRET_FIELD_KEY_PATTERN.test(key) || typeof value !== "string"
+    ))
+  ) {
+    throw new Error("Trelio вернул некорректный набор полей Agent Secret.");
+  }
+  return rawValues;
+};
+
+const executeSecretCheckout = async (options, positional) => withRun(async ({
+  metadata,
+  workspaceOrigin,
+  token,
+  companyEncryption,
+}) => {
   if (positional[0] !== "exec") {
     throw new Error("Поддерживается команда `trelio-workspace secret exec --grant UUID -- COMMAND [ARGS...]`.");
   }
@@ -13131,7 +13197,7 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
   // time-bound только по server policy. Ответ в любом случае живёт лишь в
   // памяти этого bridge process и не печатается, не пишется в metadata и не
   // передаётся MCP.
-  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+  const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // runId берётся только из materialized `.trelio-run.json`. Backend сверяет
@@ -13148,7 +13214,7 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({ me
     throw new Error("Checkout grant принадлежит другому Trelio Agent Run.");
   }
 
-  const secretValues = await resolveCheckoutSecretValues(origin, payload);
+  const secretValues = await resolveCheckoutSecretValues(payload, companyEncryption);
   const secretValue = typeof payload.value === "string"
     ? payload.value
     : payload.fieldKeys?.length === 1 && typeof secretValues[payload.fieldKeys[0]] === "string"
@@ -13214,8 +13280,9 @@ const reportSecretBrowserFillOutcome = async ({
 
 const executeSecretBrowserFill = async (options, positional) => withRun(async ({
   metadata,
-  origin,
+  workspaceOrigin,
   token,
+  companyEncryption,
 }) => {
   if (positional[0] !== "browser-fill") {
     throw new Error("Поддерживается команда `trelio-workspace secret browser-fill --grant UUID --target HTTPS_URL`.");
@@ -13231,7 +13298,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
 
   // Plaintext появляется только в памяти bridge после atomic consume. Target
   // URL не доверяется: helper повторно сравнит его с закреплённым origin.
-  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+  const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ runId: metadata.runId }),
@@ -13256,7 +13323,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
   let localResult = null;
   let outcomeReported = false;
   try {
-    const secretValues = await resolveCheckoutSecretValues(origin, payload);
+    const secretValues = await resolveCheckoutSecretValues(payload, companyEncryption);
     const result = await runSecretBrowserFill({
       secretValues,
       targetUrl,
@@ -13270,7 +13337,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     localResult = result;
 
     await reportSecretBrowserFillOutcome({
-      origin,
+      origin: workspaceOrigin,
       token,
       grantId,
       runId: metadata.runId,
@@ -13301,7 +13368,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     let outcomeError = null;
     try {
       await reportSecretBrowserFillOutcome({
-        origin,
+        origin: workspaceOrigin,
         token,
         grantId,
         runId: metadata.runId,
@@ -14015,7 +14082,6 @@ const printHelp = () => {
   process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH\n");
   process.stdout.write("  JSON_PRODUCER | trelio-workspace secret set --secret UUID --format fields-json\n");
   process.stdout.write("  trelio-workspace secret set --secret UUID --file PATH --format fields-json\n");
-  process.stdout.write("  trelio-workspace secret adopt --secret UUID\n");
 };
 
 const runUpdatedBridgeEntrypoint = async (
@@ -14281,8 +14347,6 @@ const main = async () => {
   } else if (command === "secret") {
     if (positional[0] === "set") {
       await setSecretValue(options, positional);
-    } else if (positional[0] === "adopt") {
-      await adoptLocalSecretValue(options, positional);
     } else if (positional[0] === "browser-fill") {
       await executeSecretBrowserFill(options, positional);
     } else {

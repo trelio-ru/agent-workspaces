@@ -216,130 +216,93 @@ Plugin не кеширует value и не повышает policy, возвра
 
 ## Agent Secrets
 
-Agent Secrets являются контейнерами именованных полей: один контейнер может
-содержать `username`, `password`, `totp` и другие связанные значения. При
-создании каждого контейнера пользователь выбирает неизменяемый режим `trelio`
-либо `local_device`. В первом случае Trelio Vault хранит encrypted bundle; во
-втором Trelio видит только safe schema/status и последнее device attestation,
-а значения лежат в private JSON bridge вне workspace и Git. MCP создаёт
-одноразовый grant для exact версии, набора полей, Run и executable. Bridge
-передаёт выбранные поля локально через разрешённый JSON `stdin`/private temp
-file либо exact `fieldKey -> ENV_NAME`. TOTP seed не выдаётся: код вычисляет
-backend или, в local mode, сам bridge. Trelio команду не исполняет.
+Agent Secret – контейнер именованных полей: одна карточка может содержать
+`username`, `password`, `totp` и другие связанные значения. Режим хранения
+пользователь больше не выбирает: он однозначно следует состоянию компании.
 
-Для browser-поля используется отдельный
+В обычной компании используется `trelio`. Trelio Vault хранит bundle,
+зашифрованный серверным keyring, и открывает его только внутри разрешённого
+reveal либо checkout. В зашифрованной компании используется
+`company_e2ee`: browser или paired bridge шифрует и подписывает payload ключом
+company scope до отправки. Backend проверяет ACL, writer, scope, revision и CAS,
+но получает и хранит только ciphertext и расшифровать значение не может.
+
+`local_device`, company storage policy, локальных файлов со значениями,
+attestation и команд переноса нет. Если значение должно остаться
+только на устройстве, его просто не создают и не сохраняют как Agent Secret.
+У такого значения соответственно нет Trelio ACL, reveal, одноразовых grants,
+доступа с нескольких устройств и unattended Workspace-исполнения.
+
+MCP создаёт одноразовый grant для exact версии, набора полей, Run и executable.
+Bridge передаёт выбранные поля локально через разрешённый JSON `stdin`, private
+temp file либо exact `fieldKey -> ENV_NAME`. Для E2EE сервер возвращает только
+ACL-gated ciphertext: bridge проверяет его company/scope/secret/version binding,
+расшифровывает в памяти и выпускает лишь поля grant. TOTP seed не выдаётся
+исполняемой программе: код вычисляет backend для обычной компании или bridge
+после локальной E2EE-расшифровки. Trelio команду не исполняет.
+
+Для browser-полей используется отдельный
 `prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
 `trelio-workspace` и ordered steps. Каждый step содержит exact HTTPS URL и
 несколько `fieldKey -> CSS-selector`; логин и пароль одной страницы обязательно
-передаются одним step. Возвращённая единственная команда открывает ровно одно
-окно/вкладку постоянного локального профиля Trelio Secret Browser и сохраняет
-их для последующих страниц того же входа. Отдельный grant или browser process
-на каждое поле запрещён.
-Trusted adapter работает через локальный DevTools transport и isolated world,
+передаются одним step. Возвращённая единственная команда открывает одно
+окно/вкладку постоянного локального профиля Trelio Secret Browser. Trusted
+adapter работает через локальный DevTools transport и isolated world,
 повторно сверяет exact URL/origin и записывает значение без MCP, argv, stdout
-или clipboard. Широкое browser-extension permission ему не требуется.
-Cross-origin iframe, отсутствующее/неоднозначное/hidden/read-only поле и переход
-на незакреплённый URL отклоняют автоматический сеанс без второго fallback-окна
-и повтора значения.
-Password saving выключен только в выделенном профиле; обычный профиль
-пользователя не изменяется.
+или clipboard. В E2EE-компании ciphertext открывается в памяти bridge.
+Cross-origin iframe, отсутствующее, неоднозначное, hidden или read-only поле и
+переход на незакреплённый URL завершают сеанс без fallback-окна и повторной
+выдачи значения.
 
-До нового checkout/fill runtime сначала использует content-free auth probe
-выбранного сервиса, если он предусмотрен. Подтверждённая авторизованная сессия
-продолжает работу без чтения Agent Secret. Dedicated profile постоянный и
-сохраняет provider cookies/session между запусками; его подготовка не очищает
-данные входа. Неясный probe не считается доказанным logout.
+До нового checkout/fill runtime использует content-free auth probe выбранного
+сервиса, если он предусмотрен. Подтверждённая авторизованная сессия продолжает
+работу без чтения Agent Secret. Dedicated profile сохраняет provider
+cookies/session между запусками; его подготовка не очищает данные входа.
+Неясный probe не считается доказанным logout.
 
-Системный browser считается локальным machine trust root. Resolver использует
-только exact canonical Chrome/Edge/Chromium path, regular non-symlink
-executable и на POSIX отклоняет world-writable файл. Group-writable установка,
-включая обычный macOS admin-group mode `0775`, не выдаётся за отсутствующий
-browser.
+Для ручного входа пользователь сам работает в выбранной browser-поверхности.
+Агент не вводит, не читает и не инспектирует credential, а после возврата
+проверяет только состояние авторизации.
 
-Для личного интерактивного входа пользователь может выбрать ручной handoff.
-Агент открывает страницу входа в видимом in-app Browser Codex либо системном
-Chrome/Edge, прекращает автоматизацию и ждёт подтверждения пользователя.
-Встроенный Browser считается отдельной browser-поверхностью; нельзя
-предполагать, что он наследует менеджер паролей системного Chrome. Системный
-browser может использовать собственный. Агент не
-вводит и не читает credential, а после возврата проверяет только состояние
-авторизации. После URL/origin/selector failure второе окно не открывается без
-выбора пользователя.
+Если пользователь прямо просит показать значение, штатный путь – защищённый
+reveal exact Agent Secret, а не plaintext в чате. Пользователь с `canReveal`
+получает value-free `publicUrl`, сам проходит fresh auth и выбирает поля.
+В encrypted-компании browser расшифровывает ciphertext локально. Значения видны
+30 секунд; копирование выполняется только прямым действием пользователя.
+Trelio пытается очистить неизменённый clipboard, но OS или clipboard manager
+может сохранить историю. Агент не открывает и не инспектирует reveal.
 
-Если пользователь прямо просит показать Trelio-stored значение, штатный путь –
-защищённый reveal exact Agent Secret, а не plaintext в чате. Пользователь с
-`canReveal` получает exact value-free `publicUrl`, сам один раз проходит fresh
-auth и выбирает одно либо несколько полей; при отсутствии права создаётся
-обычный запрос `reveal`. Значения видны 30 секунд. Копирование выполняется
-только прямым действием пользователя; Trelio пытается через 30 секунд очистить
-неизменённый clipboard, но OS или clipboard manager может сохранить историю.
-Агент не открывает ссылку, не управляет и не инспектирует поверхность с
-открытым значением. Для `local_device` reveal нет.
+Нельзя просить secret в чате, помещать его в argv, shell variable, workspace,
+MCP output, комментарий, checkpoint или handoff, заменять executable на
+shell/logger/`env`/`cat` либо сохранять plaintext в локальном bridge config.
+Карточка создаётся без значения, а значение вводится в защищённой Trelio форме
+или подаётся из существующего доверенного producer/file напрямую в bridge.
 
-Atomic consume по-прежнему создаёт аудит `secret.checked_out` с пользователем
-и временем. Adapter отдельно сообщает безопасный
-`secret.browser_fill_succeeded|failed`; audit хранит origin и reason
-code, но не path/query, DOM selector или plaintext. Обычный browser tool с
-literal-text API для этого flow не применяется и не получает read-back.
-
-Нельзя просить secret в чате, помещать его в argv/shell variable/workspace,
-заменять executable на shell/logger/`env`/`cat` или сохранять plaintext в
-checkpoint/handoff. Новая запись создаётся placeholder-ом, а значение вводится
-в защищённой Trelio форме либо подаётся из уже существующего локального
-producer/file напрямую в bridge. Единственное исключение для prompt/MCP –
-описанный ниже opt-in перенос точного значения, которое уже оказалось в
-текущем чате; агент не просит прислать новое значение ради этого пути.
-
-Перед созданием placeholder агент вызывает `list_agent_secrets` для exact
-scope и читает company-level `storagePolicy` и
-`allowAgentSaveChatSecrets`. `prefer_trelio` означает Trelio,
-если пользователь прямо не попросил local; `contextual` означает local только
-для личного интерактивного single-device сценария, Trelio для shared,
-multi-device или unattended исполнения и обязательный вопрос при
-неоднозначности; `local_only` допускает только local и принудительно
-проверяется backend. Прямое указание пользователя уточняет первые два режима,
-но не обходит `local_only`. Изменение политики не мигрирует существующие
-карточки.
+Перед созданием агент вызывает `list_agent_secrets` для exact scope, чтобы
+исключить дубликат, и читает `allowAgentSaveChatSecrets`. Storage mode не
+передаётся и вопрос о выборе хранения не задаётся. MCP placeholder доступен
+только обычной компании; в encrypted-компании карточку создаёт пользователь в
+защищённом browser UI, где локально шифруются также name, description и labels.
 
 `allowAgentSaveChatSecrets` по умолчанию выключен и не является общим
-разрешением на сохранение. Когда он равен `true`, пользователь уже прислал
-точное значение в текущем диалоге и отдельной прямой командой попросил
-сохранить именно его, агент может вызвать `save_known_agent_secret`. Mere
-sharing, просьба войти или использовать credential не считаются storage
-consent. Tool допускает только `trelio`, `manage` ACL и active applicable Run;
-требует exact `expectedCurrentVersion`, stable `clientRequestId` и literal
-`userExplicitlyRequestedPersistentStorage=true`. Plaintext проходит один раз
-в sensitive MCP input, остаётся в исходном чате и может остаться в tool
-history, но не возвращается в response/audit. Для `local_device`, argv,
-workspace, comments, checkpoint и handoff исключения нет; защищённая форма и
-bridge из существующего локального источника остаются предпочтительными.
+разрешением. Когда он равен `true`, пользователь уже прислал точное значение в
+текущем диалоге и отдельно попросил сохранить именно его, агент может вызвать
+`save_known_agent_secret` только для существующего `trelio`-секрета обычной
+компании с `manage` и active Run. Нужны exact `expectedCurrentVersion`,
+стабильный `clientRequestId` и literal
+`userExplicitlyRequestedPersistentStorage=true`. Plaintext уже остаётся в чате
+и может остаться в tool history, но не возвращается в response/audit. Для
+`company_e2ee` этот MCP-путь закрыт: у MCP нет ключа компании; используется
+защищённая форма или bridge из существующего локального источника.
 
-`secret set` сначала получает безопасный write context и только затем читает
-stdin/file. В local mode двухфазные idempotent prepare/confirm передают серверу
-только attestation id, version и field keys; private container проверяется как
-owner-only `0700/0600` (либо эквивалентный Windows ACL). UI показывает
-последнее подтверждение устройства, а не live-доступность компьютера.
-
-При смене компьютера обычной миграцией профиля или из backup переносится только
-подкаталог `agent-secrets/` из private config. `credentials.json`, device-session
-и другие pairing-данные копировать нельзя: новый bridge привязывается отдельно.
-После pairing команда внутри активного Run `trelio-workspace secret adopt
---secret UUID` сверяет exact origin/company/member/secret/version и по явному
-действию пользователя считает скопированный контейнер той же логической
-версией, не отправляя значение либо digest в Trelio. Без digest сервер не может
-побайтно проверить локальную копию: её целостность обеспечивает локальная
-миграция/backup. Новая attestation заменяет старую и отзывает прежние grants,
-но не удаляет физический файл со старого устройства. Отзыв server-card также
-не является remote wipe.
-
-Однополевый `secret set` по умолчанию сохраняет входные bytes как одно
-строковое значение, даже если они похожи на JSON. Для атомарной записи
-многополевого контейнера producer/file передаёт один JSON-объект с exact
-ключами полей и строковыми либо `null`-значениями и явно указывает
-`--format fields-json`. Автоопределения JSON нет: это сохраняет совместимость
-для scalar-секретов, которые сами содержат JSON. Логин, пароль и другие поля
-одной учётной записи не нужно разносить по отдельным Agent Secrets только из-за
-локальной загрузки.
+`secret set` сначала проверяет версию plugin и получает value-free write
+context, затем читает stdin/file. Однополевый ввод без format сохраняется одной
+строкой, даже если похож на JSON. Многополевый контейнер передаётся одним
+JSON-объектом с exact ключами и строковыми либо `null`-значениями при явном
+`--format fields-json`. В encrypted-компании bridge строит подписанный
+`agent_secret.value` payload в памяти. Поскольку сервер не может объединить
+зашифрованные поля, каждая E2EE-ротация является полной заменой: все required
+поля вводятся заново, а пропущенные, пустые или `null` optional-поля удаляются.
 
 Если выбранный secret стал устойчивой зависимостью workspace, агент сохраняет
 в `WORKSPACE_CONTEXT.md` только безопасную ссылку:

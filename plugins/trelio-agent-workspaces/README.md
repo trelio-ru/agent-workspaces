@@ -491,7 +491,8 @@ Keychain/DPAPI-хранилище.
 - MCP использует OAuth и штатные ACL компании, проекта, воркспейса и задачи.
 - Bridge использует отдельную узкую device-session вместо MCP token.
 - Agent Secrets выдаются один раз точному executable и не попадают в prompt,
-  argv или workspace.
+  argv или workspace; в encrypted-компании bridge локально открывает
+  ACL-gated company ciphertext, который сервер расшифровать не может.
 - Только явно помеченный backend-ом стабильный installation-managed credential
   может повторно использовать exact grant в том же Run/release до `expiresAt`;
   plugin не расширяет этот срок и не сохраняет value.
