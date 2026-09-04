@@ -32,7 +32,10 @@ the agent.
    personal request silently.
 7. For a confirmed `project` or `company` scope, prepare the complete
    replacement and exact diff with `plan_agent_instructions_update`. Show the
-   full plan, rationale, and target scope.
+   full plan, rationale, and target scope. The normalized UTF-8 limit is 16 KiB
+   for company rules and 8 KiB for project rules; from 75%, move detailed
+   procedures into an Agent Skill or project documentation instead of trying to
+   compress them into the rule layer.
 8. Do not publish on your own initiative. Call `publish_my_agent_profile` or
    `publish_agent_instructions` only after explicit confirmation of that exact
    diff and scope, using its exact `expectedRevisionId`, an audit summary, and

@@ -9,6 +9,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import {
+  assertLocalAgentInstructionPublicationWithinLimit,
   assertHydratedLocalProposalPublicationMatches,
   canonicalizeProposalTargetFromMirror,
   TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS,
@@ -57,6 +58,58 @@ import {
 } from "../scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("encrypted local rule publications enforce company/project UTF-8 limits before encryption", () => {
+  assert.deepEqual(
+    assertLocalAgentInstructionPublicationWithinLimit({
+      nativeTool: "plan_agent_instructions_update",
+      arguments: { companySlug: "acme", instructionsMarkdown: "a".repeat((16 * 1024) - 1) },
+    }),
+    { sizeBytes: 16 * 1024, maxBytes: 16 * 1024 },
+  );
+  assert.throws(
+    () => assertLocalAgentInstructionPublicationWithinLimit({
+      nativeTool: "publish_agent_instructions",
+      arguments: { companySlug: "acme", instructionsMarkdown: "a".repeat(16 * 1024) },
+    }),
+    (error) => (
+      error?.code === "LOCAL_ACTION_AGENT_INSTRUCTIONS_TOO_LARGE"
+      && /Лимит – 16 КиБ/u.test(error.message)
+    ),
+  );
+  assert.deepEqual(
+    assertLocalAgentInstructionPublicationWithinLimit({
+      nativeTool: "publish_agent_instructions",
+      arguments: {
+        companySlug: "acme",
+        projectSlug: "mobile",
+        instructionsMarkdown: "a".repeat((8 * 1024) - 1),
+      },
+    }),
+    { sizeBytes: 8 * 1024, maxBytes: 8 * 1024 },
+  );
+  assert.throws(
+    () => assertLocalAgentInstructionPublicationWithinLimit({
+      nativeTool: "plan_agent_instructions_update",
+      arguments: {
+        companySlug: "acme",
+        projectSlug: "mobile",
+        instructionsMarkdown: "я".repeat(4 * 1024),
+      },
+    }),
+    (error) => (
+      error?.code === "LOCAL_ACTION_AGENT_INSTRUCTIONS_TOO_LARGE"
+      && /Лимит – 8 КиБ/u.test(error.message)
+    ),
+  );
+  assert.equal(
+    assertLocalAgentInstructionPublicationWithinLimit({
+      nativeTool: "create_task",
+      arguments: { instructionsMarkdown: "a".repeat(20 * 1024) },
+    }),
+    null,
+  );
+});
 
 const mirror = {
   schemaVersion: 1,

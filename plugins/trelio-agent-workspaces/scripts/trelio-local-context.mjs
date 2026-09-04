@@ -8,7 +8,7 @@
  * without sending the query or snippets back to Trelio.
  */
 import crypto from "node:crypto";
-import { isUtf8 } from "node:buffer";
+import { Buffer, isUtf8 } from "node:buffer";
 import { execFile } from "node:child_process";
 import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
@@ -689,6 +689,12 @@ const LOCAL_ACTION_PROTECTED_FIELDS = new Map([
   ["url", "url"],
 ]);
 const LOCAL_ACTION_STRING_ARRAY_FIELDS = new Set(["aliases", "tags", "searchTerms", "options"]);
+const LOCAL_AGENT_INSTRUCTION_PUBLICATION_TOOLS = new Set([
+  "plan_agent_instructions_update",
+  "publish_agent_instructions",
+]);
+const LOCAL_COMPANY_AGENT_INSTRUCTIONS_MAX_BYTES = 16 * 1024;
+const LOCAL_PROJECT_AGENT_INSTRUCTIONS_MAX_BYTES = 8 * 1024;
 const LOCAL_ACTION_CONTENT_SLUG_TOOLS = new Set([
   "create_knowledge_base_page",
   "update_knowledge_base_page",
@@ -719,6 +725,43 @@ const isEncryptedLocalActionMarker = (value) => {
     && !Array.isArray(candidate)
     && candidate.$trelioE2ee,
   );
+};
+
+/**
+ * Validate working-rule plaintext while it still exists at the trusted local
+ * boundary. The remote backend receives only an E2EE marker and therefore
+ * cannot reconstruct the semantic byte count. Normalization intentionally
+ * matches the backend/browser contract and never truncates the confirmed text.
+ */
+export const assertLocalAgentInstructionPublicationWithinLimit = ({
+  nativeTool,
+  arguments: rawArguments,
+}) => {
+  if (!LOCAL_AGENT_INSTRUCTION_PUBLICATION_TOOLS.has(nativeTool)) return null;
+
+  const instructionsMarkdown = rawArguments?.instructionsMarkdown;
+  if (typeof instructionsMarkdown !== "string") return null;
+
+  const isProjectScope = typeof rawArguments?.projectSlug === "string"
+    && rawArguments.projectSlug.trim().length > 0;
+  const maxBytes = isProjectScope
+    ? LOCAL_PROJECT_AGENT_INSTRUCTIONS_MAX_BYTES
+    : LOCAL_COMPANY_AGENT_INSTRUCTIONS_MAX_BYTES;
+  const normalizedBody = instructionsMarkdown.replace(/\r\n?/gu, "\n").trim();
+  const normalizedMarkdown = normalizedBody ? `${normalizedBody}\n` : "";
+  const sizeBytes = Buffer.byteLength(normalizedMarkdown, "utf8");
+
+  if (sizeBytes > maxBytes) {
+    const scopeLabel = isProjectScope ? "проекта" : "компании";
+    throw new TrelioLocalContextError(
+      "LOCAL_ACTION_AGENT_INSTRUCTIONS_TOO_LARGE",
+      `Рабочие правила ${scopeLabel} занимают ${sizeBytes} байт в UTF-8. `
+      + `Лимит – ${maxBytes / 1024} КиБ (${maxBytes} байт). `
+      + "Сократите текст или вынесите подробную процедуру в навык агента либо проектную документацию.",
+    );
+  }
+
+  return { sizeBytes, maxBytes };
 };
 
 const extractLocalRichTextPlainText = (value) => {
@@ -1361,6 +1404,10 @@ export const protectLocalActionArguments = async ({
   const expectedPayloadValues = {};
   let objectSequence = 0;
   const normalizedArguments = normalizeLocalActionRichTextInputs(rawArguments);
+  assertLocalAgentInstructionPublicationWithinLimit({
+    nativeTool,
+    arguments: normalizedArguments,
+  });
   const stableRequestId = typeof normalizedArguments.clientRequestId === "string"
     ? normalizedArguments.clientRequestId.trim()
     : "";
