@@ -48,6 +48,11 @@ import {
   encryptFileToCompanyContainer,
   signCompanyEncryptionRecord,
 } from "./trelio-company-encryption.mjs";
+import {
+  CONTEXT_SEARCH_RANKING_POLICY_VERSION,
+  compareContextSearchCandidates,
+  normalizeContextSearchText,
+} from "./trelio-context-search-ranking.mjs";
 
 // Version 4 replaces the previous split metadata projection with first-class workspace
 // metadata and gives accepted Workspace files their own unambiguous result-id
@@ -3051,6 +3056,10 @@ export const syncCompanyContextMirror = async ({
 const collectText = (value, output = []) => {
   if (typeof value === "string") {
     if (value.trim()) output.push(value);
+  } else if (typeof value === "number" || typeof value === "boolean") {
+    // PostgreSQL indexes scalar custom-field and registry values through their
+    // textual projection. Preserve the same searchable evidence locally.
+    output.push(String(value));
   } else if (Array.isArray(value)) {
     value.forEach((item) => collectText(item, output));
   } else if (value && typeof value === "object") {
@@ -3059,12 +3068,7 @@ const collectText = (value, output = []) => {
   return output;
 };
 
-const normalizeSearchText = (value) => String(value ?? "")
-  .normalize("NFKC")
-  .toLocaleLowerCase("ru")
-  .replace(/[^\p{L}\p{N}]+/gu, " ")
-  .trim()
-  .replace(/\s+/gu, " ");
+const normalizeSearchText = normalizeContextSearchText;
 
 const buildPreview = (text, normalizedQuery) => {
   const compact = String(text || "").replace(/\s+/gu, " ").trim();
@@ -3078,33 +3082,68 @@ const buildPreview = (text, normalizedQuery) => {
   return compact.slice(start, start + 600);
 };
 
-const buildTaskSearchText = (taskPayload) => {
+const buildSearchField = (source, value, options = {}) => {
+  const text = typeof value === "string" ? value : collectText(value).join("\n");
+  const compactText = text.trim();
+  if (!compactText) return null;
+
+  return {
+    source,
+    text: compactText,
+    previewText: String(options.previewText ?? compactText),
+    allowQueryContainsField: options.allowQueryContainsField === true,
+  };
+};
+
+const compactSearchFields = (fields) => fields.filter(Boolean);
+
+const buildTaskSearchFields = (taskPayload, taskNumber = null) => {
   const task = taskPayload?.task ?? taskPayload ?? {};
-  const customFields = task.customFields?.fields ?? task.customFields ?? [];
+  const customFields = Array.isArray(task.customFields?.fields)
+    ? task.customFields.fields
+    : Array.isArray(task.customFields)
+      ? task.customFields
+      : [];
   const comments = Array.isArray(task.comments)
     ? task.comments.filter((comment) => comment?.kind === "manual")
     : [];
+  const checklists = Array.isArray(task.checklists) ? task.checklists : [];
+  const controls = Array.isArray(task.controls) ? task.controls : [];
+  const attachments = Array.isArray(task.attachments) ? task.attachments : [];
 
   // Rich-text JSON and its plain-text projection carry the same prose.  The
   // mirror retains the canonical JSON for an exact fetch, while the ephemeral
-  // search index takes only the plain projection so RAM does not double again.
-  return collectText({
-    title: task.title,
-    description: task.descriptionPlainText ?? task.description,
-    status: task.status?.name ?? task.status?.code,
-    assignee: task.assignee,
-    participants: task.participants,
-    participantGroups: task.participantGroups,
-    controls: task.controls,
-    checklists: (task.checklists ?? []).map((checklist) => ({
-      title: checklist.title,
-      items: (checklist.items ?? []).map((item) => item.content),
-    })),
-    customFields,
-    attachments: (task.attachments ?? []).map((attachment) => attachment.originalName),
-    comments: comments.map((comment) => comment.bodyPlainText),
-  }).join("\n");
+  // index uses exactly the native task-search corpus. Statuses and people stay
+  // fetchable but cannot create local-only candidates; controls enter only via
+  // the active, viewer-visible projection already enforced by the task read.
+  return compactSearchFields([
+    buildSearchField("task-number", taskNumber === null ? "" : String(taskNumber)),
+    buildSearchField("task-title", task.title),
+    buildSearchField("task-description", task.descriptionPlainText ?? task.description),
+    ...checklists.flatMap((checklist) => [
+      buildSearchField("task-checklist", checklist?.title),
+      ...(checklist?.items ?? []).map((item) => buildSearchField(
+        "task-checklist",
+        item?.content,
+        { previewText: [checklist?.title, item?.content].filter(Boolean).join(": ") },
+      )),
+    ]),
+    ...controls.map((control) => buildSearchField("task-control", control?.note)),
+    ...customFields.map((field) => buildSearchField(
+      "task-custom-field",
+      [field?.name, field?.value],
+      { previewText: `Поле «${String(field?.name ?? "")}»: ${collectText(field?.value).join(", ")}` },
+    )),
+    ...attachments
+      .filter((attachment) => attachment?.isArchived !== true && attachment?.state !== "archived")
+      .map((attachment) => buildSearchField("task-attachment", attachment?.originalName)),
+    ...comments.map((comment) => buildSearchField("task-comment", comment?.bodyPlainText)),
+  ]);
 };
+
+const buildTaskSearchText = (taskPayload) => buildTaskSearchFields(taskPayload)
+  .map((field) => field.text)
+  .join("\n");
 
 const buildRegistrySearchPayload = (payload) => {
   const registry = payload?.registry ?? {};
@@ -3129,11 +3168,10 @@ const buildRegistrySearchPayload = (payload) => {
   return {
     registry: {
       slug: registry.slug,
-      slugAliases: registry.slugAliases,
       title: registry.title,
       description: registry.description,
       searchTerms: registry.searchTerms,
-      columns: ordinaryColumns.map((column) => ({ label: column?.label })),
+      columns: ordinaryColumns.map((column) => ({ key: column?.key, label: column?.label })),
     },
     rows: (payload?.rows ?? [])
       .filter((row) => !row?.isArchived && row?.isTechnical !== true)
@@ -3150,27 +3188,169 @@ const buildRegistrySearchPayload = (payload) => {
   };
 };
 
+const buildRegistrySearchFields = (payload) => {
+  const searchable = buildRegistrySearchPayload(payload);
+  const registry = searchable.registry ?? {};
+  const fields = [
+    buildSearchField(
+      "registry-title",
+      registry.title,
+      { allowQueryContainsField: true },
+    ),
+    buildSearchField(
+      "registry-title",
+      registry.slug,
+      { previewText: registry.title, allowQueryContainsField: true },
+    ),
+    ...(registry.searchTerms ?? []).map((term) => buildSearchField(
+      "registry-search-term",
+      term,
+      { allowQueryContainsField: true },
+    )),
+    buildSearchField("registry-description", registry.description),
+    ...(registry.columns ?? []).map((column) => buildSearchField("registry-column", column?.label)),
+  ];
+
+  for (const row of searchable.rows ?? []) {
+    fields.push(buildSearchField("registry-row-key", row?.rowKey));
+    fields.push(buildSearchField(
+      "registry-row-note",
+      row?.note,
+      { previewText: `${row?.rowKey ?? ""} · ${row?.note ?? ""}` },
+    ));
+    for (const [key, value] of Object.entries(row?.values ?? {})) {
+      const columnLabel = (registry.columns ?? []).find((column) => column?.key === key)?.label ?? key;
+      fields.push(buildSearchField(
+        "registry-row-value",
+        String(value),
+        { previewText: `${row?.rowKey ?? ""} · ${columnLabel}: ${String(value)}` },
+      ));
+    }
+  }
+
+  return compactSearchFields(fields);
+};
+
+const buildContactSearchFields = (payload) => {
+  const contact = payload?.contact ?? {};
+
+  return compactSearchFields([
+    buildSearchField("contact-name", contact.displayName),
+    ...(contact.aliases ?? []).map((alias) => buildSearchField("contact-alias", alias)),
+    ...(contact.tags ?? []).map((tag) => buildSearchField("contact-tag", tag)),
+    buildSearchField("contact-detail", [contact.person, contact.organization]),
+    buildSearchField("contact-description", contact.descriptionPlainText),
+    ...(contact.channels ?? []).map((channel) => buildSearchField(
+      "contact-channel",
+      [channel?.label, channel?.value, channel?.source],
+      { previewText: [channel?.label, channel?.value].filter(Boolean).join(" · ") },
+    )),
+    ...(contact.identifiers ?? []).map((identifier) => buildSearchField(
+      "contact-identifier",
+      [identifier?.label, identifier?.value, identifier?.kind],
+      { previewText: [identifier?.label, identifier?.value].filter(Boolean).join(" · ") },
+    )),
+  ]);
+};
+
+const buildKnowledgePageSearchFields = (payload) => {
+  const page = payload?.page ?? {};
+  return compactSearchFields([
+    buildSearchField("knowledge-page-title", [page.title, page.slug]),
+    buildSearchField("knowledge-page-body", page.bodyPlainText),
+  ]);
+};
+
+const buildMeetingSearchFields = (payload) => {
+  const meeting = payload?.meeting ?? {};
+  return compactSearchFields([
+    buildSearchField("meeting", meeting.title),
+    buildSearchField("meeting", payload?.result?.resultMarkdown),
+    ...(payload?.sources ?? []).map((source) => buildSearchField("meeting", source?.contentText)),
+  ]);
+};
+
+const buildContextDocumentSearchFields = (contextDocument) => {
+  if (contextDocument.type === "registry") {
+    return buildRegistrySearchFields(contextDocument.payload);
+  }
+  if (contextDocument.type === "contact") {
+    return buildContactSearchFields(contextDocument.payload);
+  }
+  if (contextDocument.type === "knowledge_page") {
+    return buildKnowledgePageSearchFields(contextDocument.payload);
+  }
+  return buildMeetingSearchFields(contextDocument.payload);
+};
+
+const buildContextDocumentStableKey = (mirror, contextDocument, resultType) => {
+  const entity = contextDocument.payload?.[
+    contextDocument.type === "knowledge_page" ? "page" : contextDocument.type
+  ] ?? {};
+  const identity = resultType === "registry"
+    ? `${contextDocument.projectSlug ?? ""}/${entity.slug ?? contextDocument.id}`
+    : resultType === "knowledge-page"
+      ? entity.slug ?? contextDocument.id
+      : contextDocument.id;
+
+  return `${mirror.company.slug}/${identity}/${resultType}`;
+};
+
+const buildContextDocumentReferenceValues = (contextDocument) => {
+  const entity = contextDocument.payload?.[
+    contextDocument.type === "knowledge_page" ? "page" : contextDocument.type
+  ] ?? {};
+
+  return [
+    contextDocument.id,
+    entity.id,
+    entity.slug,
+    ...(entity.slugAliases ?? []),
+    entity.publicPath,
+  ].filter(Boolean).map(String);
+};
+
 const buildSearchDocuments = (mirror) => {
   const documents = [];
   const workspaceEntryById = new Map(
     (mirror.workspaceEntries ?? []).map((workspace) => [workspace.id, workspace]),
   );
   for (const project of mirror.projects ?? []) {
+    const fields = compactSearchFields([
+      buildSearchField("project", [project.name, project.slug, project.slugAliases]),
+    ]);
     documents.push({
       id: `project:${mirror.company.slug}/${project.slug}`,
       type: "project",
       title: String(project.name || project.slug),
-      text: collectText(project).join("\n"),
+      stableKey: `${mirror.company.slug}/${project.slug}/project`,
+      referenceValues: [
+        project.id,
+        project.slug,
+        ...(project.slugAliases ?? []),
+        project.publicPath,
+      ].filter(Boolean),
+      fields,
+      text: fields.map((field) => field.text).join("\n"),
       metadata: { projectId: project.id, projectSlug: project.slug },
     });
   }
   for (const task of mirror.tasks ?? []) {
     const taskPayload = task.payload?.task ?? task.payload;
+    const fields = buildTaskSearchFields(taskPayload, task.number);
     documents.push({
       id: `task:${mirror.company.slug}/${task.projectSlug}/${task.number}`,
       type: "task",
       title: String(taskPayload?.title || `Task ${task.number}`),
-      text: buildTaskSearchText(taskPayload),
+      stableKey: `${mirror.company.slug}/${task.projectSlug}/${task.number}/task`,
+      referenceValues: [
+        task.id,
+        task.number,
+        `#${task.number}`,
+        taskPayload?.publicPath,
+      ].filter((value) => value !== null && value !== undefined).map(String),
+      fields,
+      text: fields.map((field) => field.text).join("\n"),
       metadata: {
         taskId: task.id,
         projectId: task.projectId,
@@ -3182,13 +3362,20 @@ const buildSearchDocuments = (mirror) => {
   for (const workspace of mirror.workspaceEntries ?? []) {
     const workspaceTitle = String(workspace.title || "Воркспейс");
     const isArchived = workspace.state === "archived";
+    const fields = compactSearchFields([
+      buildSearchField("workspace-title", workspaceTitle),
+      buildSearchField("workspace-description", workspace.description),
+    ]);
     documents.push({
       id: `workspace:${workspace.id}`,
       type: "workspace",
       // Search display title carries a textual marker, while fetch/get_workspace
       // still returns the untouched canonical title from workspaceEntries.
       title: isArchived ? `[Архив] ${workspaceTitle}` : workspaceTitle,
-      text: collectText(workspace).join("\n"),
+      stableKey: `${mirror.company.slug}/${workspace.id}/workspace`,
+      referenceValues: [workspace.id],
+      fields,
+      text: fields.map((field) => field.text).join("\n"),
       metadata: {
         workspaceId: workspace.id,
         workspaceState: workspace.state,
@@ -3207,17 +3394,18 @@ const buildSearchDocuments = (mirror) => {
     ) {
       continue;
     }
-    const searchablePayload = contextDocument.type === "registry"
-      ? buildRegistrySearchPayload(contextDocument.payload)
-      : contextDocument.payload;
     const resultType = contextDocument.type === "knowledge_page"
       ? "knowledge-page"
       : contextDocument.type;
+    const fields = buildContextDocumentSearchFields(contextDocument);
     documents.push({
       id: `context:${contextDocument.type}:${contextDocument.id}`,
       type: resultType,
       title: String(contextDocument.title || resultType),
-      text: collectText(searchablePayload).join("\n"),
+      stableKey: buildContextDocumentStableKey(mirror, contextDocument, resultType),
+      referenceValues: buildContextDocumentReferenceValues(contextDocument),
+      fields,
+      text: fields.map((field) => field.text).join("\n"),
       metadata: {
         contextDocumentId: contextDocument.id,
         sourceType: contextDocument.type,
@@ -3231,16 +3419,29 @@ const buildSearchDocuments = (mirror) => {
     const workspaceEntry = workspaceEntryById.get(workspace.id);
     const workspaceState = workspaceEntry?.state ?? null;
     for (const file of workspace.documents ?? []) {
+      const documentId = `workspace-file:${encodeURIComponent(workspace.id)}`
+        + `:${encodeURIComponent(workspace.acceptedHead)}`
+        + `:${encodeURIComponent(file.path)}`;
+      const fields = compactSearchFields([
+        buildSearchField("workspace-file", `${file.path}\n${file.text}`),
+      ]);
       documents.push({
         // `workspace:<uuid>` belongs to the first-class workspace itself. A
         // distinct file prefix plus the accepted head keeps file fetches exact
         // even when a title/description and a document match the same query.
-        id: `workspace-file:${encodeURIComponent(workspace.id)}`
-          + `:${encodeURIComponent(workspace.acceptedHead)}`
-          + `:${encodeURIComponent(file.path)}`,
+        id: documentId,
         type: "workspace_file",
         title: workspaceState === "archived" ? `[Архив] ${file.name}` : file.name,
-        text: `${file.path}\n${file.text}`,
+        stableKey: [
+          mirror.company.slug,
+          workspace.id,
+          workspace.acceptedHead,
+          file.path,
+          "workspace-file",
+        ].join("/"),
+        referenceValues: [workspace.id, file.path, file.name],
+        fields,
+        text: fields.map((field) => field.text).join("\n"),
         metadata: {
           workspaceId: workspace.id,
           workspaceState,
@@ -3262,12 +3463,80 @@ const getSearchIndex = (mirror) => {
   if (cached) return cached;
   const index = buildSearchDocuments(mirror).map((document) => ({
     ...document,
-    normalizedTitle: normalizeSearchText(document.title),
-    normalizedBody: normalizeSearchText(document.text),
+    fields: document.fields.map((field) => ({
+      ...field,
+      normalizedText: normalizeSearchText(field.text),
+    })),
   }));
   mirrorSearchIndexCache.set(mirror, index);
   return index;
 };
+
+const matchLocalSearchField = (field, normalizedQuery) => {
+  if (
+    field.normalizedText.includes(normalizedQuery)
+    || (
+      field.allowQueryContainsField
+      && field.normalizedText.length > 0
+      && normalizedQuery.includes(field.normalizedText)
+    )
+  ) {
+    return true;
+  }
+
+  const tokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
+  if (tokens.length === 0) return false;
+  const fieldTokens = field.normalizedText.split(" ").filter(Boolean);
+  const matchedTokens = tokens.filter((token) => {
+    if (field.normalizedText.includes(token)) return true;
+    if (token.length < 6) return false;
+
+    // Native PostgreSQL search uses the Russian dictionary. The encrypted
+    // provider cannot send plaintext there, so a conservative six-character
+    // stem keeps common endings aligned without making short words fuzzy.
+    const stem = token.slice(0, 6);
+    return fieldTokens.some((fieldToken) => fieldToken.length >= 6 && fieldToken.startsWith(stem));
+  }).length;
+  const requiredCoverage = tokens.length <= 2 ? 1 : 0.6;
+  return matchedTokens / tokens.length >= requiredCoverage;
+};
+
+const buildLocalRankingCandidate = (document, matches) => ({
+  type: document.type,
+  title: document.title,
+  stableKey: document.stableKey,
+  referenceValues: document.referenceValues,
+  matches,
+});
+
+const findStrongestLocalSearchMatch = (document, normalizedQuery, originalQuery) => {
+  let strongestMatch = null;
+
+  for (const field of document.fields) {
+    if (!matchLocalSearchField(field, normalizedQuery)) continue;
+    const match = {
+      query: originalQuery,
+      source: field.source,
+      previewText: field.previewText,
+    };
+    if (
+      !strongestMatch
+      || compareContextSearchCandidates(
+        buildLocalRankingCandidate(document, [match]),
+        buildLocalRankingCandidate(document, [strongestMatch]),
+      ) < 0
+    ) {
+      strongestMatch = match;
+    }
+  }
+
+  return strongestMatch;
+};
+
+const findLocalSearchMatches = (document, queries) => queries.flatMap(([normalized, original]) => {
+  const match = findStrongestLocalSearchMatch(document, normalized, original);
+  return match ? [match] : [];
+});
 
 export const searchCompanyContextMirror = (
   mirror,
@@ -3299,68 +3568,46 @@ export const searchCompanyContextMirror = (
     // corpus. Keeping the original mirror also preserves Workspace archive
     // metadata needed for an explicit historical-result marker.
     if (allowedDocumentTypes && !allowedDocumentTypes.has(document.type)) continue;
-    const { normalizedTitle, normalizedBody } = document;
-    const matchedQueries = [];
-    let previewQuery = queries[0][0];
-    let score = 0;
-    for (const [normalized, original] of queries) {
-      const tokens = normalized.split(" ").filter((token) => token.length > 1);
-      const titleTokenMatches = tokens.filter((token) => normalizedTitle.includes(token)).length;
-      const bodyTokenMatches = tokens.filter((token) => normalizedBody.includes(token)).length;
-      const tokenCoverage = tokens.length > 0
-        ? Math.max(titleTokenMatches, bodyTokenMatches) / tokens.length
-        : 0;
-      if (normalizedTitle.includes(normalized)) {
-        matchedQueries.push(original);
-        score += 140;
-      } else if (normalizedBody.includes(normalized)) {
-        matchedQueries.push(original);
-        score += 100;
-      } else if (tokenCoverage >= (tokens.length <= 2 ? 1 : 0.6)) {
-        matchedQueries.push(original);
-        score += Math.round(40 + 60 * tokenCoverage + 10 * titleTokenMatches);
-      } else {
-        continue;
-      }
-      previewQuery = normalized;
-    }
-    if (matchedQueries.length === 0) continue;
-    // Prefer first-class structured objects at equal lexical coverage. A file
-    // remains first when it matches more independent formulations.
-    const typeWeight = document.type === "registry"
-      ? 40
-      : document.type === "workspace"
-        ? 35
-        : document.type === "knowledge-page"
-          ? 30
-          : document.type === "contact"
-            ? 25
-            : document.type === "workspace_file"
-              ? 20
-              : document.type === "task"
-                ? 15
-                : document.type === "project"
-                  ? 10
-                  : 5;
+    const matches = findLocalSearchMatches(document, queries);
+    if (matches.length === 0) continue;
+    const previewMatch = matches.reduce((strongestMatch, match) => (
+      compareContextSearchCandidates(
+        buildLocalRankingCandidate(document, [match]),
+        buildLocalRankingCandidate(document, [strongestMatch]),
+      ) < 0
+        ? match
+        : strongestMatch
+    ));
     results.push({
       id: document.id,
       type: document.type,
       title: document.title,
-      matchedQueries,
-      score: score + matchedQueries.length * 1_000 + typeWeight,
-      preview: buildPreview(document.text, previewQuery),
+      stableKey: document.stableKey,
+      referenceValues: document.referenceValues,
+      matches,
+      matchedQueries: matches.map((match) => match.query),
+      preview: buildPreview(
+        previewMatch?.previewText ?? document.text,
+        normalizeSearchText(previewMatch?.query ?? queries[0][1]),
+      ),
       ...document.metadata,
     });
   }
 
-  results.sort((left, right) => right.score - left.score || left.id.localeCompare(right.id, "ru"));
+  results.sort(compareContextSearchCandidates);
   return {
     schemaVersion: 1,
     provider: "local_company_context",
+    rankingPolicyVersion: CONTEXT_SEARCH_RANKING_POLICY_VERSION,
     company: { id: mirror.company.id, slug: mirror.company.slug, name: mirror.company.name },
     generation: mirror.generation,
     queries: queries.map(([, original]) => original),
-    results: results.slice(0, limit).map(({ score: _score, ...result }) => result),
+    results: results.slice(0, limit).map(({
+      stableKey: _stableKey,
+      referenceValues: _referenceValues,
+      matches: _matches,
+      ...result
+    }) => result),
     hasMore: results.length > limit,
     freshness: { mirroredAt: mirror.createdAt, serverGeneration: mirror.serverGeneration },
   };
@@ -4126,7 +4373,10 @@ const listTasksFromMirror = (mirror, rawInput, { personal = false } = {}) => {
 };
 
 const searchTasksFromMirror = (mirror, rawInput) => {
-  const queries = normalizeBoundedStringArray(rawInput?.queries, "queries", 12, 500);
+  const queries = [...new Map(normalizeBoundedStringArray(rawInput?.queries, "queries", 12, 500)
+    .map((query) => [normalizeSearchText(query), query]))
+    .entries()]
+    .filter(([normalized]) => normalized);
   if (queries.length === 0) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
@@ -4161,34 +4411,8 @@ const searchTasksFromMirror = (mirror, rawInput) => {
     return project?.slug ?? slug;
   }))];
   const limit = Math.max(1, Math.min(100, Math.trunc(Number(rawInput?.limit) || 20)));
-  const sourcePriority = {
-    title: 6,
-    description: 5,
-    checklist: 4,
-    "custom-field": 3,
-    attachment: 2,
-    comment: 1,
-  };
   const candidates = [];
-
-  /**
-   * PostgreSQL's Russian full-text dictionary normally absorbs common word
-   * endings. The encrypted route cannot send the query to that dictionary, so
-   * use a deliberately conservative six-character lexical stem locally. Six
-   * characters keeps `релевантный`/`релевантного` equivalent without turning
-   * short words into broad substring matches.
-   */
-  const localTaskQueryMatches = (text, normalizedQuery) => {
-    const normalizedText = normalizeSearchText(text);
-    if (!normalizedQuery) return false;
-    if (normalizedText.includes(normalizedQuery)) return true;
-    const textTokens = normalizedText.split(" ").filter(Boolean);
-    return normalizedQuery.split(" ").filter(Boolean).every((queryToken) => {
-      if (queryToken.length < 6) return textTokens.includes(queryToken);
-      const stem = queryToken.slice(0, 6);
-      return textTokens.some((textToken) => textToken.length >= 6 && textToken.startsWith(stem));
-    });
-  };
+  const rankingQueries = queries;
 
   for (const record of mirror.tasks ?? []) {
     if (projectMatchers.length > 0 && !projectMatchers.some((matches) => matches(record))) continue;
@@ -4197,40 +4421,24 @@ const searchTasksFromMirror = (mirror, rawInput) => {
     const project = detail.project
       ?? (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
       ?? { id: record.projectId, slug: record.projectSlug, name: null };
-    const searchableFields = {
-      title: String(task.title || ""),
-      description: String(task.descriptionPlainText || ""),
-      checklist: collectText((task.checklists ?? []).map((checklist) => ({
-        title: checklist.title,
-        items: (checklist.items ?? []).map((item) => item.content),
-      }))).join("\n"),
-      "custom-field": collectText(task.customFields ?? {}).join("\n"),
-      attachment: collectText((task.attachments ?? []).map((attachment) => (
-        attachment.originalName
-      ))).join("\n"),
-      comment: collectText((task.comments ?? [])
-        .filter((comment) => comment?.kind === "manual" || comment?.type === "manual")
-        .map((comment) => comment.bodyPlainText ?? comment.content ?? "")).join("\n"),
-    };
-    const matches = [];
-    queries.forEach((query) => {
-      const normalizedQuery = normalizeSearchText(query);
-      const rankedSources = Object.entries(searchableFields)
-        .filter(([, text]) => localTaskQueryMatches(text, normalizedQuery))
-        .sort(([left], [right]) => sourcePriority[right] - sourcePriority[left]);
-      if (rankedSources.length === 0) return;
-      const [source, text] = rankedSources[0];
-      matches.push({
-        query,
-        source,
-        previewText: buildPreview(text, normalizedQuery),
-        resultRank: 0,
-      });
-    });
-    if (matches.length === 0) continue;
     const publicPath = task.publicPath
       ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${record.number}/`;
+    const rankingDocument = {
+      type: "task",
+      title: String(task.title || `Task ${record.number}`),
+      stableKey: `${mirror.company.slug}/${record.projectSlug}/${record.number}/task`,
+      referenceValues: [record.id, record.number, `#${record.number}`, publicPath]
+        .filter((value) => value !== null && value !== undefined)
+        .map(String),
+      fields: buildTaskSearchFields(task, record.number).map((field) => ({
+        ...field,
+        normalizedText: normalizeSearchText(field.text),
+      })),
+    };
+    const matches = findLocalSearchMatches(rankingDocument, rankingQueries);
+    if (matches.length === 0) continue;
     candidates.push({
+      type: "task",
       id: `task:${mirror.company.slug}/${record.projectSlug}/${record.number}`,
       taskId: record.id,
       number: record.number,
@@ -4262,28 +4470,35 @@ const searchTasksFromMirror = (mirror, rawInput) => {
                 ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${task.parentTask.number}/`,
           }
         : null,
+      stableKey: rankingDocument.stableKey,
+      referenceValues: rankingDocument.referenceValues,
       matches,
     });
   }
 
-  candidates.sort((left, right) => {
-    if (left.matches.length !== right.matches.length) return right.matches.length - left.matches.length;
-    const leftScore = left.matches.reduce((sum, match) => sum + sourcePriority[match.source], 0);
-    const rightScore = right.matches.reduce((sum, match) => sum + sourcePriority[match.source], 0);
-    return rightScore - leftScore || String(left.url).localeCompare(String(right.url), "ru");
-  });
+  candidates.sort(compareContextSearchCandidates);
   candidates.forEach((candidate, resultRank) => {
     candidate.matches.forEach((match) => { match.resultRank = resultRank; });
   });
-  const tasks = candidates.slice(0, limit).map((candidate) => ({
+  const tasks = candidates.slice(0, limit).map(({
+    type: _type,
+    stableKey: _stableKey,
+    referenceValues: _referenceValues,
+    ...candidate
+  }) => ({
     ...candidate,
+    matches: candidate.matches.map((match) => ({
+      ...match,
+      source: match.source.replace(/^task-/u, ""),
+    })),
     matchedQueries: candidate.matches.map((match) => match.query),
     matchCount: candidate.matches.length,
   }));
   return {
     searchMode: "lexical",
+    rankingPolicyVersion: CONTEXT_SEARCH_RANKING_POLICY_VERSION,
     scope: { companySlugs: [mirror.company.slug], projectSlugs: canonicalProjectSlugs },
-    queries,
+    queries: queries.map(([, original]) => original),
     tasks,
     pagination: {
       limit,

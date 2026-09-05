@@ -53,12 +53,13 @@ Use `search` with one to five faithful formulations and a bounded result count:
 }
 ```
 
-Search spans accessible projects, task details, first-class active and archived
-workspaces, knowledge pages, contacts, registries, private meetings, and safe
-accepted Workspace text. Archived Workspace and file results include an explicit
-`[Архив]` title marker plus `workspaceState=archived` and remain read-only;
-optional domains still require their OAuth scope. Ranking/previews stay local.
-Treat IDs as opaque and `fetch` only a small relevant set, never the whole mirror.
+Search covers projects; task number/title/description/checklists, visible active
+control notes, custom fields/attachment names/manual comments; workspaces, pages,
+contacts, registries, meetings and accepted text. Status/assignee/participants
+are excluded. Archive results are marked/read-only; optional domains need scopes.
+`context-search-v1`: exact refs > query coverage > field/lexical quality >
+true-tie authority > stable key; entity type has no fixed priority. Ranking stays
+local. Fetch only a relevant set.
 
 Use `list` only for explicit inventory or a task known by project but not number;
 it accepts the documented resource, optional project/offset, and `limit<=100`.

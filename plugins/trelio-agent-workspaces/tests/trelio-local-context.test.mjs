@@ -219,6 +219,7 @@ test("local mirror search ranks structured and workspace context without remote 
   );
 
   assert.equal(result.provider, "local_company_context");
+  assert.equal(result.rankingPolicyVersion, "context-search-v1");
   assert.deepEqual(result.queries, ["релевантный поиск контекста", "fencing token"]);
   assert.equal(result.results.some(({ type }) => type === "task"), true);
   assert.equal(result.results.some(({ type }) => type === "workspace_file"), true);
@@ -231,6 +232,61 @@ test("local mirror search ranks structured and workspace context without remote 
     true,
   );
   assert.equal(JSON.stringify(result).includes("remote"), false);
+});
+
+test("local task corpus keeps useful controls but excludes status and people", () => {
+  const corpusMirror = structuredClone(mirror);
+  const task = corpusMirror.tasks[0].payload.task;
+  task.status = { code: "statusuniquenoise", name: "statusuniquenoise" };
+  task.assignee = { displayName: "assigneeuniquenoise" };
+  task.participants = [{ displayName: "participantuniquenoise" }];
+  task.controls = [{ note: "controluniquesignal", visibility: "shared" }];
+
+  assert.equal(
+    searchCompanyContextMirror(corpusMirror, ["controluniquesignal"], 10)
+      .results.some((result) => result.type === "task"),
+    true,
+  );
+  for (const excludedQuery of [
+    "statusuniquenoise",
+    "assigneeuniquenoise",
+    "participantuniquenoise",
+  ]) {
+    assert.equal(
+      searchCompanyContextMirror(corpusMirror, [excludedQuery], 10)
+        .results.some((result) => result.type === "task"),
+      false,
+    );
+  }
+});
+
+test("local mixed search gives contacts no implicit type priority", () => {
+  const rankingMirror = structuredClone(mirror);
+  rankingMirror.tasks[0].projectSlug = "a-mobile";
+  rankingMirror.tasks[0].payload.task.title = "Orion";
+  rankingMirror.contextDocuments.push({
+    id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+    type: "contact",
+    title: "Orion",
+    revisionToken: "e".repeat(64),
+    projectId: null,
+    projectSlug: null,
+    payload: {
+      contact: {
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        displayName: "Orion",
+        aliases: [],
+        tags: [],
+        channels: [],
+        identifiers: [],
+      },
+    },
+  });
+
+  const mixed = searchCompanyContextMirror(rankingMirror, ["Orion"], 10)
+    .results.filter((result) => result.type === "task" || result.type === "contact");
+
+  assert.deepEqual(mixed.map((result) => result.type), ["task", "contact"]);
 });
 
 test("local search exposes archived workspaces as marked read-only history outside default inventory", () => {
@@ -404,10 +460,36 @@ test("native task search keeps ordinary lexical result ids and never needs a rem
   });
 
   assert.equal(result.searchMode, "lexical");
+  assert.equal(result.rankingPolicyVersion, "context-search-v1");
   assert.equal(result.tasks.length, 1);
   assert.equal(result.tasks[0].id, "task:acme/mobile/17");
   assert.equal(result.tasks[0].matchCount, 2);
   assert.deepEqual(result.scope.projectSlugs, ["mobile"]);
+});
+
+test("native task refinement uses controls but not status or people in the local provider", () => {
+  const corpusMirror = structuredClone(mirror);
+  const task = corpusMirror.tasks[0].payload.task;
+  task.status = { code: "statusrefinementnoise", name: "statusrefinementnoise" };
+  task.assignee = { displayName: "assigneerefinementnoise" };
+  task.participants = [{ displayName: "participantrefinementnoise" }];
+  task.controls = [{ note: "controlrefinementsignal", visibility: "shared" }];
+
+  const search = (query) => handleNativeLocalContextRead(corpusMirror, "search_tasks", {
+    queries: [query],
+    companySlugs: ["acme"],
+    projectSlugs: ["mobile"],
+    limit: 20,
+  });
+
+  assert.equal(search("controlrefinementsignal").tasks[0]?.matches[0]?.source, "control");
+  for (const excludedQuery of [
+    "statusrefinementnoise",
+    "assigneerefinementnoise",
+    "participantrefinementnoise",
+  ]) {
+    assert.equal(search(excludedQuery).tasks.length, 0);
+  }
 });
 
 test("local action schema stays provider-neutral and does not advertise crypto mechanics", () => {

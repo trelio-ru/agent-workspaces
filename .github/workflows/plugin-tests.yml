@@ -79,6 +79,7 @@ jobs:
         run: |
           node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-context.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs

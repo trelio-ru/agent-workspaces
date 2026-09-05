@@ -1,0 +1,189 @@
+{
+  "policyVersion": "context-search-v1",
+  "cases": [
+    {
+      "name": "exact structural reference wins before broader coverage",
+      "candidates": [
+        {
+          "id": "broad-page",
+          "type": "knowledge-page",
+          "title": "Migration 42 handbook",
+          "stableKey": "acme/handbook/knowledge-page",
+          "referenceValues": ["handbook"],
+          "matches": [
+            { "query": "42", "source": "knowledge-page-body", "previewText": "Migration wave 42" },
+            { "query": "migration", "source": "knowledge-page-body", "previewText": "Migration wave 42" }
+          ]
+        },
+        {
+          "id": "exact-task",
+          "type": "task",
+          "title": "Prepare migration",
+          "stableKey": "acme/mobile/42/task",
+          "referenceValues": ["42", "#42"],
+          "matches": [
+            { "query": "42", "source": "task-number", "previewText": "#42" }
+          ]
+        }
+      ],
+      "expectedOrder": ["exact-task", "broad-page"]
+    },
+    {
+      "name": "independent formulation coverage wins after exact references",
+      "candidates": [
+        {
+          "id": "one-query-contact",
+          "type": "contact",
+          "title": "North logistics",
+          "stableKey": "acme/900/contact",
+          "referenceValues": [],
+          "matches": [
+            { "query": "north", "source": "contact-name", "previewText": "North logistics" }
+          ]
+        },
+        {
+          "id": "two-query-task",
+          "type": "task",
+          "title": "North logistics migration",
+          "stableKey": "acme/mobile/7/task",
+          "referenceValues": [],
+          "matches": [
+            { "query": "north", "source": "task-title", "previewText": "North logistics migration" },
+            { "query": "migration", "source": "task-title", "previewText": "North logistics migration" }
+          ]
+        }
+      ],
+      "expectedOrder": ["two-query-task", "one-query-contact"]
+    },
+    {
+      "name": "primary name or title beats a structured field",
+      "candidates": [
+        {
+          "id": "structured-contact",
+          "type": "contact",
+          "title": "Vendor",
+          "stableKey": "acme/100/contact",
+          "referenceValues": [],
+          "matches": [
+            { "query": "atlas", "source": "contact-tag", "previewText": "atlas" }
+          ]
+        },
+        {
+          "id": "title-task",
+          "type": "task",
+          "title": "Atlas",
+          "stableKey": "acme/mobile/8/task",
+          "referenceValues": [],
+          "matches": [
+            { "query": "atlas", "source": "task-title", "previewText": "Atlas" }
+          ]
+        }
+      ],
+      "expectedOrder": ["title-task", "structured-contact"]
+    },
+    {
+      "name": "row-backed registry wins only after semantic evidence ties",
+      "candidates": [
+        {
+          "id": "tag-contact",
+          "type": "contact",
+          "title": "Atlas vendor",
+          "stableKey": "acme/000/contact",
+          "referenceValues": [],
+          "matches": [
+            { "query": "atlas", "source": "contact-tag", "previewText": "atlas" }
+          ]
+        },
+        {
+          "id": "row-registry",
+          "type": "registry",
+          "title": "Vendors",
+          "stableKey": "acme/mobile/vendors/registry",
+          "referenceValues": [],
+          "matches": [
+            { "query": "atlas", "source": "registry-row-value", "previewText": "North · System: atlas" }
+          ]
+        }
+      ],
+      "expectedOrder": ["row-registry", "tag-contact"]
+    },
+    {
+      "name": "entity type has no global tie priority",
+      "candidates": [
+        {
+          "id": "contact-late-key",
+          "type": "contact",
+          "title": "Orion",
+          "stableKey": "acme/999/contact",
+          "referenceValues": [],
+          "matches": [
+            { "query": "orion", "source": "contact-name", "previewText": "Orion" }
+          ]
+        },
+        {
+          "id": "task-early-key",
+          "type": "task",
+          "title": "Orion",
+          "stableKey": "acme/000/task",
+          "referenceValues": [],
+          "matches": [
+            { "query": "orion", "source": "task-title", "previewText": "Orion" }
+          ]
+        }
+      ],
+      "expectedOrder": ["task-early-key", "contact-late-key"]
+    },
+    {
+      "name": "first-class object beats derived material at a true evidence tie",
+      "candidates": [
+        {
+          "id": "workspace-file",
+          "type": "workspace_file",
+          "title": "decision.md",
+          "stableKey": "acme/000/workspace-file",
+          "referenceValues": [],
+          "matches": [
+            { "query": "fence", "source": "workspace-file", "previewText": "fence" }
+          ]
+        },
+        {
+          "id": "task-attachment",
+          "type": "task",
+          "title": "Migration",
+          "stableKey": "acme/999/task",
+          "referenceValues": [],
+          "matches": [
+            { "query": "fence", "source": "task-attachment", "previewText": "fence" }
+          ]
+        }
+      ],
+      "expectedOrder": ["task-attachment", "workspace-file"]
+    },
+    {
+      "name": "archive display marker does not lower relevance",
+      "candidates": [
+        {
+          "id": "active-workspace",
+          "type": "workspace",
+          "title": "Plan",
+          "stableKey": "acme/999/workspace",
+          "referenceValues": [],
+          "matches": [
+            { "query": "plan", "source": "workspace-title", "previewText": "Plan" }
+          ]
+        },
+        {
+          "id": "archived-workspace",
+          "type": "workspace",
+          "title": "[Archive] Plan",
+          "stableKey": "acme/000/workspace",
+          "referenceValues": [],
+          "matches": [
+            { "query": "plan", "source": "workspace-title", "previewText": "Plan" }
+          ]
+        }
+      ],
+      "expectedOrder": ["archived-workspace", "active-workspace"]
+    }
+  ]
+}

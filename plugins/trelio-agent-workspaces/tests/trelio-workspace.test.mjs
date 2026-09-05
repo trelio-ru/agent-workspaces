@@ -4164,7 +4164,7 @@ test("release CI pins Node 22 and avoids the parent test-runner IPC", async () =
   );
   assert.equal([
     ...genericJobSource.matchAll(/node plugins\/trelio-agent-workspaces\/tests\/[^\s]+\.test\.mjs/gu),
-  ].length, 8);
+  ].length, 9);
   assert.doesNotMatch(genericJobSource, /node --test/u);
 });
 
