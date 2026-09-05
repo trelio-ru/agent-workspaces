@@ -18,7 +18,7 @@ import { createServer, request as requestHttp } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import {
@@ -280,10 +280,10 @@ test("encrypted data-plane routing is exact and never moves plain companies", ()
  * `execFile` does not have an `input` option, so tests must close the pipe
  * explicitly just like a real producer would.
  */
-const execBridgeWithInput = (argumentsList, input, options) => new Promise((resolve, reject) => {
+const execBridgeWithInput = (argumentsList, input, options, nodeArguments = []) => new Promise((resolve, reject) => {
   const child = execFile(
     process.execPath,
-    [bridgePath, ...argumentsList],
+    [...nodeArguments, bridgePath, ...argumentsList],
     options,
     (error, stdout, stderr) => {
       if (error) {
@@ -5993,9 +5993,7 @@ test("company-E2EE Agent Secret is signed, opaque and opened only for granted fi
 });
 
 
-test("encrypted-company secret set and exec round-trip only ciphertext through the server", {
-  timeout: 15_000,
-}, async () => {
+const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-secret-e2ee-roundtrip-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
   const rootDirectory = path.join(temporaryDirectory, "run");
@@ -6005,6 +6003,12 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
   const userId = "12121212-1212-4212-8212-121212121212";
   const secretId = "77777777-7777-4777-8777-777777777772";
   const grantId = "66666666-6666-4666-8666-666666666662";
+  const browserGrants = [
+    { id: "66666666-6666-4666-8666-666666666663", selector: "#password", outcome: "succeeded" },
+    { id: "66666666-6666-4666-8666-666666666664", selector: "#missing", outcome: "failed" },
+    { id: "66666666-6666-4666-8666-666666666665", selector: "#throws", outcome: "failed" },
+  ];
+  const targetUrl = "https://service.example/login";
   const scopeId = "55555555-5555-4555-8555-555555555556";
   const deviceId = "44444444-4444-4444-8444-444444444445";
   const company = { id: companyId, slug: "encrypted-company", name: "Encrypted company" };
@@ -6041,19 +6045,34 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
   let writeBody = null;
   let consumeCount = 0;
   let serverError = null;
+  const outcomes = [];
+  const encryptionRequestPlanes = [];
+  const consumedGrantIds = new Set();
 
-  const server = createServer(async (request, response) => {
+  const handleRequest = async (request, response, plane) => {
     try {
+      // Model the production virtual hosts separately. The encrypted host
+      // publishes Workspace transport only, so a misplaced Secret call must
+      // reproduce nginx's HTML 404 before reaching a backend handler.
+      if (plane === "encrypted" && !request.url?.startsWith("/api/agent-workspaces/")) {
+        response.statusCode = 404;
+        response.setHeader("content-type", "text/html");
+        response.end("<html><h1>404 Not Found</h1></html>");
+        return;
+      }
       assert.equal(request.headers.authorization, "Bearer integration-token");
       assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
       assert.equal(request.headers["x-trelio-agent-secret-company-e2ee"], "v1");
       response.setHeader("content-type", "application/json");
 
       if (request.method === "GET" && request.url === "/api/agent-workspaces/bridge-compatibility") {
+        assert.equal(plane, "canonical");
         response.end(JSON.stringify({ supported: true, minimumVersion: BRIDGE_VERSION }));
         return;
       }
       if (request.method === "GET" && request.url?.startsWith("/api/agent-workspaces/encryption/runtime?")) {
+        assert.equal(plane, dedicatedDataPlane ? "encrypted" : "canonical");
+        encryptionRequestPlanes.push(plane);
         const fingerprint = new URL(request.url, "http://loopback").searchParams.get("fingerprint");
         response.end(JSON.stringify({
           suite: COMPANY_ENCRYPTION_SUITE,
@@ -6106,19 +6125,25 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
         response.end(JSON.stringify({ status: "active" }));
         return;
       }
-      if (
-        request.method === "POST"
-        && request.url === "/api/agent-secrets/checkout-grants/" + grantId + "/consume"
-      ) {
+      const browserGrant = browserGrants.find((grant) => (
+        request.url === `/api/agent-secrets/checkout-grants/${grant.id}/consume`
+      ));
+      if (request.method === "POST" && (
+        request.url === "/api/agent-secrets/checkout-grants/" + grantId + "/consume"
+        || browserGrant
+      )) {
         assert.ok(writeBody);
         assert.deepEqual(
           JSON.parse((await readRequestBody(request)).toString("utf8")),
           { runId },
         );
+        const consumedGrantId = browserGrant?.id ?? grantId;
+        assert.equal(consumedGrantIds.has(consumedGrantId), false, "checkout must remain one-use");
+        consumedGrantIds.add(consumedGrantId);
         consumeCount += 1;
         response.end(JSON.stringify({
           storageMode: "company_e2ee",
-          grantId,
+          grantId: consumedGrantId,
           secretId,
           runId,
           companyId,
@@ -6131,13 +6156,36 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
           ],
           values: writeBody.values,
           encryptedPayload: writeBody.encryptedPayloads[0],
-          executable: process.execPath,
-          deliveryMode: "env",
-          environmentVariables: {
-            username: "E2EE_USERNAME",
-            password: "E2EE_PASSWORD",
-          },
+          ...(browserGrant ? {
+            executable: "trelio-workspace",
+            deliveryMode: "browser",
+            targetOrigin: new URL(targetUrl).origin,
+            targetUrlSha256: createHash("sha256").update(targetUrl).digest("hex"),
+            browserFieldSelector: browserGrant.selector,
+          } : {
+            executable: process.execPath,
+            deliveryMode: "env",
+            environmentVariables: {
+              username: "E2EE_USERNAME",
+              password: "E2EE_PASSWORD",
+            },
+          }),
         }));
+        return;
+      }
+      const outcomeGrant = browserGrants.find((grant) => (
+        request.url === `/api/agent-secrets/checkout-grants/${grant.id}/browser-fill-outcome`
+      ));
+      if (request.method === "POST" && outcomeGrant) {
+        assert.equal(consumedGrantIds.has(outcomeGrant.id), true);
+        const outcome = JSON.parse((await readRequestBody(request)).toString("utf8"));
+        assert.deepEqual(outcome, {
+          runId,
+          outcome: outcomeGrant.outcome,
+          ...(outcomeGrant.outcome === "failed" ? { reasonCode: "field_not_found" } : {}),
+        });
+        outcomes.push({ grantId: outcomeGrant.id, ...outcome });
+        response.end(JSON.stringify({ status: "recorded" }));
         return;
       }
       throw new Error("Unexpected encrypted Agent Secret request: " + request.method + " " + request.url);
@@ -6146,20 +6194,68 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
       response.statusCode = 500;
       response.end("Synthetic encrypted Agent Secret test failure");
     }
-  });
+  };
+  const server = createServer((request, response) => handleRequest(request, response, "canonical"));
+  const dataPlaneServer = createServer((request, response) => handleRequest(request, response, "encrypted"));
 
   try {
     await Promise.all([
       mkdir(homeDirectory, { recursive: true }),
       mkdir(workspaceDirectory, { recursive: true }),
     ]);
-    await new Promise((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
+    await Promise.all([server, dataPlaneServer].map((listener) => new Promise((resolve, reject) => {
+      listener.once("error", reject);
+      listener.listen(0, "127.0.0.1", resolve);
+    })));
     const address = server.address();
     assert.ok(address && typeof address === "object");
-    const origin = "http://127.0.0.1:" + address.port;
+    const dataPlaneAddress = dataPlaneServer.address();
+    assert.ok(dataPlaneAddress && typeof dataPlaneAddress === "object");
+    const origin = "https://trelio.ru";
+    const dataPlaneOrigin = "https://e2ee.trelio.ru";
+    const preloadPath = path.join(temporaryDirectory, "synthetic-transport.mjs");
+    // Keep the actual routing allowlist and CLI intact. Only this disposable
+    // child redirects the two allowed production origins to loopback fixtures;
+    // every other destination fails before any network request. The browser
+    // adapter is replaced at the module boundary so tests cannot launch or
+    // inspect a real browser, while checkout, E2EE opening and audit stay real.
+    const browserModuleUrl = pathToFileURL(path.join(pluginDirectory, "scripts", "trelio-secret-browser.mjs")).href;
+    const browserFixtureSource = `
+      export class SecretBrowserFillError extends Error {
+        constructor(message, reasonCode) { super(message); this.reasonCode = reasonCode; }
+      }
+      export async function runSecretBrowserFill({ secretValues, fieldSelector }) {
+        if (JSON.stringify(secretValues) !== ${JSON.stringify(JSON.stringify(secretValues))}) {
+          throw new Error("Synthetic browser received incorrect fields");
+        }
+        if (fieldSelector === "#throws") {
+          throw new SecretBrowserFillError("Synthetic field missing", "field_not_found");
+        }
+        return fieldSelector === "#missing"
+          ? { outcome: "failed", reasonCode: "field_not_found" }
+          : { outcome: "succeeded" };
+      }
+    `;
+    await writeFile(preloadPath, `
+      import { registerHooks } from "node:module";
+      const destinations = new Map(${JSON.stringify([
+        [origin, `http://127.0.0.1:${address.port}`],
+        [dataPlaneOrigin, `http://127.0.0.1:${dataPlaneAddress.port}`],
+      ])});
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (input, options) => {
+        const requested = new URL(input);
+        const destination = destinations.get(requested.origin);
+        if (!destination) throw new Error("Unexpected synthetic transport origin");
+        return originalFetch(new URL(requested.pathname + requested.search, destination), options);
+      };
+      registerHooks({ load(url, context, nextLoad) {
+        return url === ${JSON.stringify(browserModuleUrl)}
+          ? { format: "module", source: ${JSON.stringify(browserFixtureSource)}, shortCircuit: true }
+          : nextLoad(url, context);
+      } });
+    `, "utf8");
+    const nodeArguments = ["--import", pathToFileURL(preloadPath).href];
     await writeTestCredential(homeDirectory, origin);
 
     const wrapped = await wrapAndRememberAgentEncryptionDevice({
@@ -6197,7 +6293,13 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
     );
     await writeFile(
       path.join(rootDirectory, ".trelio-run.json"),
-      JSON.stringify({ schemaVersion: 3, origin, runId, company }, null, 2) + "\n",
+      JSON.stringify({
+        schemaVersion: 3,
+        origin,
+        runId,
+        company,
+        ...(dedicatedDataPlane ? { encryption: { enabled: true, dataPlaneOrigin } } : {}),
+      }, null, 2) + "\n",
       "utf8",
     );
     const childEnvironment = {
@@ -6219,9 +6321,10 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
       encoding: "utf8",
       timeout: 10_000,
       env: childEnvironment,
-    });
+    }, nodeArguments);
     assert.match(saved.stdout, /локально зашифровано ключом компании/u);
     assert.equal(saved.stderr, "");
+    assert.doesNotMatch(saved.stdout, /synthetic-roundtrip-login|synthetic-roundtrip-password/u);
     assert.ok(writeBody);
     assert.equal(writeBody.contentProtection, "company_e2ee_v1");
     assert.equal(writeBody.expectedCurrentVersion, 0);
@@ -6235,6 +6338,7 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
     );
 
     const checkout = await execFileAsync(process.execPath, [
+      ...nodeArguments,
       bridgePath,
       "secret",
       "exec",
@@ -6255,12 +6359,46 @@ test("encrypted-company secret set and exec round-trip only ciphertext through t
     assert.equal(checkout.stdout, "e2ee-ok");
     assert.equal(checkout.stderr, "");
     assert.equal(consumeCount, 1);
+    for (const grant of browserGrants) {
+      const fill = execFileAsync(process.execPath, [
+        ...nodeArguments,
+        bridgePath,
+        "secret", "browser-fill", "--grant", grant.id, "--target", targetUrl,
+      ], {
+        cwd: workspaceDirectory,
+        encoding: "utf8",
+        timeout: 10_000,
+        env: childEnvironment,
+      });
+      if (grant.outcome === "succeeded") {
+        const result = await fill;
+        assert.match(result.stdout, /Секрет автоматически вставлен/u);
+        assert.equal(result.stderr, "");
+        assert.doesNotMatch(result.stdout, /synthetic-roundtrip-login|synthetic-roundtrip-password/u);
+      } else {
+        await assert.rejects(fill, (error) => {
+          assert.equal(error.code, 1);
+          assert.doesNotMatch(error.stdout + error.stderr, /synthetic-roundtrip-login|synthetic-roundtrip-password/u);
+          assert.doesNotMatch(error.stderr, /audit outcome|Trelio API 404/u);
+          return true;
+        });
+      }
+    }
+    assert.equal(consumeCount, 4);
+    assert.equal(outcomes.length, 3);
+    assert.ok(encryptionRequestPlanes.length >= 10, "each operation must still open its company scope");
     assert.ifError(serverError);
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    await Promise.all([server, dataPlaneServer].map((listener) => new Promise((resolve) => listener.close(resolve))));
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
-});
+};
+
+for (const dedicatedDataPlane of [false, true]) {
+  test(`encrypted-company secrets keep set, exec and browser fill on the canonical API (${dedicatedDataPlane ? "separate" : "shared"} data plane)`, {
+    timeout: 25_000,
+  }, () => verifyEncryptedSecretApiRouting(dedicatedDataPlane));
+}
 
 test("secret checkout self-dispatches trelio-workspace without resolving PATH", {
   timeout: 10_000,

@@ -10559,6 +10559,9 @@ const withRun = async (handler) => {
   return handler({
     metadata: activeMetadata,
     metadataPath,
+    // The encrypted alias publishes only /api/agent-workspaces/. Other API
+    // families, including Agent Secrets, keep the paired canonical origin;
+    // companyEncryption still seals/opens their E2EE payloads locally.
     origin,
     workspaceOrigin,
     token,
@@ -12770,13 +12773,13 @@ const normalizeAgentSecretBridgeFields = (rawFields) => {
 };
 
 const fetchAgentSecretWriteContext = async ({
-  requestOrigin,
+  origin,
   token,
   secretId,
   runId,
 }) => {
   const response = await request(
-    requestOrigin,
+    origin,
     token,
     `/api/agent-secrets/secrets/${secretId}/bridge-write-context?runId=${encodeURIComponent(runId)}`,
   );
@@ -12978,7 +12981,6 @@ export const parseAgentSecretSetInput = (input, formatOption) => {
 const setSecretValue = async (options, positional) => withRun(async ({
   metadata,
   origin,
-  workspaceOrigin,
   token,
   companyEncryption,
 }) => {
@@ -12995,7 +12997,7 @@ const setSecretValue = async (options, positional) => withRun(async ({
     throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
   }
   const context = await fetchAgentSecretWriteContext({
-    requestOrigin: workspaceOrigin,
+    origin,
     token,
     secretId,
     runId: metadata.runId,
@@ -13015,7 +13017,7 @@ const setSecretValue = async (options, positional) => withRun(async ({
       companyEncryption,
     })
     : valuePayload;
-  const response = await request(workspaceOrigin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
+  const response = await request(origin, token, `/api/agent-secrets/secrets/${secretId}/value-from-bridge`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ runId: metadata.runId, ...protectedValue }),
@@ -13209,7 +13211,7 @@ const resolveCheckoutSecretValues = async (payload, companyEncryption) => {
 
 const executeSecretCheckout = async (options, positional) => withRun(async ({
   metadata,
-  workspaceOrigin,
+  origin,
   token,
   companyEncryption,
 }) => {
@@ -13233,7 +13235,7 @@ const executeSecretCheckout = async (options, positional) => withRun(async ({
   // time-bound только по server policy. Ответ в любом случае живёт лишь в
   // памяти этого bridge process и не печатается, не пишется в metadata и не
   // передаётся MCP.
-  const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // runId берётся только из materialized `.trelio-run.json`. Backend сверяет
@@ -13316,7 +13318,7 @@ const reportSecretBrowserFillOutcome = async ({
 
 const executeSecretBrowserFill = async (options, positional) => withRun(async ({
   metadata,
-  workspaceOrigin,
+  origin,
   token,
   companyEncryption,
 }) => {
@@ -13334,7 +13336,11 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
 
   // Plaintext появляется только в памяти bridge после atomic consume. Target
   // URL не доверяется: helper повторно сравнит его с закреплённым origin.
-  const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+  // Secret checkout and its audit outcome share the canonical API host even
+  // when this Run transfers Workspace ciphertext through a dedicated alias.
+  // Choose it before consuming a one-use grant; a host fallback after a failed
+  // request could otherwise repeat an already completed credential delivery.
+  const response = await request(origin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ runId: metadata.runId }),
@@ -13373,7 +13379,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     localResult = result;
 
     await reportSecretBrowserFillOutcome({
-      origin: workspaceOrigin,
+      origin,
       token,
       grantId,
       runId: metadata.runId,
@@ -13404,7 +13410,7 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     let outcomeError = null;
     try {
       await reportSecretBrowserFillOutcome({
-        origin: workspaceOrigin,
+        origin,
         token,
         grantId,
         runId: metadata.runId,
