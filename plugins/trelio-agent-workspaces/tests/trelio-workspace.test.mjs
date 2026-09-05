@@ -6051,14 +6051,18 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
 
   const handleRequest = async (request, response, plane) => {
     try {
-      // Model the production virtual hosts separately. The encrypted host
-      // publishes Workspace transport only, so a misplaced Secret call must
-      // reproduce nginx's HTML 404 before reaching a backend handler.
-      if (plane === "encrypted" && !request.url?.startsWith("/api/agent-workspaces/")) {
+      // Run-bound Secret operations follow the same selected transport as the
+      // encrypted Workspace. Only the four bridge endpoints are published on
+      // that host; browser/card/ACL APIs remain outside this narrow boundary.
+      const isSecretBridgePath = /^\/api\/agent-secrets\/(?:secrets\/[0-9a-f-]{36}\/(?:bridge-write-context|value-from-bridge)|checkout-grants\/[0-9a-f-]{36}\/(?:consume|browser-fill-outcome))(?:\?|$)/u.test(request.url);
+      if (plane === "encrypted" && !request.url?.startsWith("/api/agent-workspaces/") && !isSecretBridgePath) {
         response.statusCode = 404;
         response.setHeader("content-type", "text/html");
         response.end("<html><h1>404 Not Found</h1></html>");
         return;
+      }
+      if (isSecretBridgePath) {
+        assert.equal(plane, dedicatedDataPlane ? "encrypted" : "canonical");
       }
       assert.equal(request.headers.authorization, "Bearer integration-token");
       assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
@@ -6395,7 +6399,7 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
 };
 
 for (const dedicatedDataPlane of [false, true]) {
-  test(`encrypted-company secrets keep set, exec and browser fill on the canonical API (${dedicatedDataPlane ? "separate" : "shared"} data plane)`, {
+  test(`encrypted-company secrets keep set, exec and browser fill on the selected Workspace transport (${dedicatedDataPlane ? "separate" : "shared"} data plane)`, {
     timeout: 25_000,
   }, () => verifyEncryptedSecretApiRouting(dedicatedDataPlane));
 }

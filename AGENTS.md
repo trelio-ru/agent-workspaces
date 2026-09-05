@@ -276,11 +276,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
   Любой credential не попадает в model-visible output, argv, ambient
   environment, workspace, comments, checkpoints, handoff или logs.
-- `/api/agent-secrets/**` использует канонический origin paired Run, включая
-  write context, запись, consume и browser outcome. `workspaceOrigin` относится
-  только к `/api/agent-workspaces/`: выделенный E2EE hostname не публикует
-  Agent Secrets. E2EE payload по-прежнему шифруется и открывается локально;
-  retry на другом host после consume запрещён.
+- Run-bound Agent Secret write context, запись значения, consume и browser
+  outcome используют тот же `workspaceOrigin`, что и Workspace: для encrypted
+  company – выбранный E2EE data plane, для plain – canonical origin. Отсутствие
+  узкого API route на сервере нельзя обходить переносом ciphertext на основной
+  host; после неопределённого consume запрещён повтор на другом host.
 - Уже присланные chat values сохраняются только через local
   `continue_trelio_local_action`/`save_known_agent_secret` после прямой storage
   просьбы, company opt-in, manage/create ACL и active Run. В обоих режимах это

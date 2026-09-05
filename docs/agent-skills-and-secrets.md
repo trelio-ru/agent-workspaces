@@ -293,13 +293,12 @@ ACL-gated ciphertext: bridge проверяет его company/scope/secret/vers
 исполняемой программе: код вычисляет backend для обычной компании или bridge
 после локальной E2EE-расшифровки. Trelio команду не исполняет.
 
-Bridge обращается к `/api/agent-secrets/**` через канонический origin Trelio,
-закреплённый при pairing и в Run. Это относится к контексту записи, сохранению
-значения, consume grant и browser-fill outcome. Выделенный E2EE hostname
-обслуживает только `/api/agent-workspaces/`; состояние шифрования компании не
-переносит на него другие API. В обоих случаях E2EE payload остаётся
-зашифрованным при передаче и открывается только локально. После неопределённого
-результата consume bridge не повторяет выдачу на другом host.
+Run-bound Agent Secret операции следуют выбранному транспорту Workspace.
+Для encrypted company write context, сохранение значения, consume grant и
+browser-fill outcome идут через E2EE data plane; для plain company – через
+канонический origin. E2EE host публикует только эти узкие bridge endpoints,
+а не browser reveal, карточки и управление доступом. Отсутствующий маршрут
+требует серверного исправления; bridge не повторяет выдачу на другом host.
 
 Для browser-полей используется отдельный
 `prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
