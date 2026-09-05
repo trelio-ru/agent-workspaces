@@ -30,8 +30,8 @@ card is needed.
 ## Prepare one editable draft
 
 When this is the sole proposal card with no known private proposal for the task,
-follow an exact task `proposalProvider` through local `context` then `save`,
-without mounting the native App. Otherwise call `propose_task_comment` once on
+follow its exact `proposalProvider`: headless context, then local render.
+Otherwise call `propose_task_comment` once on
 the create-only path. Plain tasks omit `proposalProvider`, so this remains one
 call without a provider preflight. Its `proposalText`
 must already be one standalone publication-ready cumulative update. Never

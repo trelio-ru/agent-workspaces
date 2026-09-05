@@ -105,22 +105,20 @@ stay hidden. Never reproduce bridge steps or repeat an unconfirmed restore.
 
 ## Use the same proposal lifecycle
 
-Use an exact task's `proposalProvider` directly; keep the current task Run's
-`runId` target when the proposal follows that Run. Do not call a native proposal
-tool first. Otherwise honor its local route. Call
-`continue_trelio_local_proposal`; it has three operations:
+Use the exact task `proposalProvider`, preserve its Run `runId`, and never
+preflight a native proposal tool. Its routes are:
 
-- `context`: pass `kind` and `payload.target`, where target is exactly one
-  `runId` or `projectSlug` plus `taskNumber`.
-- `save`: pass the same target, plaintext draft text/reasons, and every exact
-  revision/snapshot field from the immediately preceding context response.
-  The trusted host encrypts prose locally, uploads only signed ciphertext, and
-  sends opaque markers into the existing proposal service.
-- `action`: after a separate explicit user decision, pass exact `proposalId`,
-  `expectedRevision`, `action`, `confirmed=true`, and the selected open IDs.
-  Comment publish passes reviewed `bodyText` and requires hydrated
-  persisted-comment equality on success/replay. Never infer confirmation from
-  Run completion or rendering.
+- `get_trelio_local_proposal_context`: headless `kind` and `payload.target` –
+  either `runId` or `projectSlug` plus `taskNumber`.
+- `render_trelio_local_proposal`, `operation=save`: the same target, plaintext
+  draft/reasons, and exact revision/snapshot fields from that context response.
+  The host uploads only locally encrypted, signed ciphertext.
+
+App buttons use hidden tools. Text-only `operation=action` requires a decision
+plus exact
+`proposalId`, `expectedRevision`, `action`, `confirmed=true`, and open IDs.
+Comment publish passes reviewed `bodyText` and verifies persisted hydrated text.
+Run completion or rendering is never confirmation.
 
 Kinds are `comment`, `status`, `control_clear`, and `checklist`. Preserve the
 normal proposal references' semantic rules: unpublished drafts are not public
@@ -131,11 +129,11 @@ snapshot hashes, and idempotent apply/dismiss/publication behavior as native
 Trelio.
 
 The v8 App puts a one-hour, revision-bound opaque capability in model-hidden
-metadata. Version 1.19.5 remains compatible through v5 and its old app tools.
+metadata. Saved v5 cards retain their old app tools.
 
 When one response needs two or more cards and native
 `render_task_proposals` or compatibility `render_task_comment_proposals`
-selects this local route, make one `continue_trelio_local_proposal` call with
+selects this local route, make one `render_trelio_local_proposal` call with
 `kind=bundle`, `operation=save`, and `payload.blocks` copied from the intended
 native bundle. All direct task blocks must name this same exact company; Run
 blocks are checked server-side against it. The host preserves text/card order,

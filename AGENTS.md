@@ -326,11 +326,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   Encrypted comment publish replay принимает новый randomized marker только
   через verified bridge и возвращает success лишь после local plaintext
   comparison с фактически сохранённым hydrated comment.
-  Local MCP возвращает полный MCP App result и exact v5 resource metadata;
-  v4/v3 остаются compatibility resources. Bundle использует sandboxed
-  `srcdoc`-frames без `data:` frame CSP. Native handoff и local `context` скрывают DOM
-  и передают хосту валидный size `1×1`, а review-карточку создаёт только `save`;
-  app-only context/action aliases скрыты от модели.
+  Local proposal ABI разделён: `get_trelio_local_proposal_context` – headless
+  read без UI metadata; только `render_trelio_local_proposal` монтирует v8 App
+  после `save`. App-only aliases скрыты от модели, а v5/v4/v3 сохраняются для
+  старых карточек. Bundle использует sandboxed `srcdoc` без `data:` frame CSP.
 - Чистое чтение уже принятого Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без
   создания Run, lease, checkpoint или task mutation. Bridge materialize-ит

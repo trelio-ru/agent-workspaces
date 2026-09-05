@@ -5,7 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN } from "./trelio-workspace.mjs";
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
-  TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
 } from "./trelio-local-context.mjs";
 
@@ -43,7 +44,7 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   taskRunWithProposalBundleBytes: 55_000,
   requiredTaskRunPluginLayerBytes: 61_000,
   taskRunWithProposalBundlePluginLayerBytes: 64_000,
-  localProviderToolSchemasBytes: 3_000,
+  localProviderToolSchemasBytes: 3_500,
   plainCompanyTaskRunPluginLayerBytes: 64_000,
   encryptedCompanyTaskRunPluginLayerBytes: 73_000,
 });
@@ -98,7 +99,8 @@ export const buildPluginContextBudgetReport = async () => {
     source: "scripts/trelio-local-context.mjs#local-provider-tools",
     ...measureContextText(JSON.stringify([
       TRELIO_LOCAL_CONTEXT_TOOL,
-      TRELIO_LOCAL_PROPOSAL_TOOL,
+      TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+      TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
       TRELIO_LOCAL_WORKSPACE_TOOL,
     ])),
   };
@@ -144,7 +146,7 @@ export const buildPluginContextBudgetReport = async () => {
         runtimeAgents,
         taskRunWithProposalBundle,
       ]),
-      // Ordinary companies see only three compact provider-neutral schemas. The
+      // Ordinary companies see only four compact provider-neutral schemas. The
       // complete protected-provider manual remains absent from their skill
       // path and therefore cannot consume their task context window.
       plainCompanyTaskRunPluginLayer: sumMeasurements([

@@ -410,7 +410,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.0.0");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
@@ -468,7 +468,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v1\.19\.6 больше не поддерживается; требуется v1\.17\.13/u);
+    assert.match(result.stderr, /v2\.0\.0 больше не поддерживается; требуется v1\.17\.13/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -486,7 +486,7 @@ test("SessionStart pins the initial model and supported host names inject verifi
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.0.0");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -720,7 +720,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.0.0");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -829,7 +829,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "1.19.6");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.0.0");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));

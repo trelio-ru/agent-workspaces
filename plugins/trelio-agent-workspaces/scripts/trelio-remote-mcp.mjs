@@ -51,7 +51,8 @@ import {
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_ACTION_TOOL,
-  TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
@@ -3213,7 +3214,8 @@ const LOCAL_PROPOSAL_APP_TOOLS = [
 const LOCAL_TOOLS = [
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_ACTION_TOOL,
-  TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   ...LOCAL_PROPOSAL_APP_TOOLS,
   {
@@ -3525,7 +3527,7 @@ const readLocalProposalAppCapabilityTarget = (
   return { capability, target };
 };
 
-const buildLocalProposalRootPayload = ({ result, companySlug, kind, operation }) => {
+const buildLocalProposalRenderPayload = ({ result, companySlug, kind, operation }) => {
   if (result?.provider === "native_trelio") return result;
 
   if (kind === "bundle") {
@@ -3581,14 +3583,14 @@ const buildLocalProposalRootPayload = ({ result, companySlug, kind, operation })
   };
 };
 
-export const buildLocalProposalRootResult = ({
+export const buildLocalProposalRenderResult = ({
   result,
   companySlug,
   kind,
   operation,
   origin = null,
 }) => {
-  const structuredContent = buildLocalProposalRootPayload({
+  const structuredContent = buildLocalProposalRenderPayload({
     result,
     companySlug,
     kind,
@@ -3940,13 +3942,42 @@ export const handleToolCall = async (
     // and MCP App metadata. The local handler hydrates only protected values.
     return handleTrelioLocalActionOperation(origin, rawArguments, { signal });
   }
-  if (name === TRELIO_LOCAL_PROPOSAL_TOOL.name) {
+  if (name === TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL.name) {
+    const result = await proposalOperation(
+      origin,
+      {
+        ...rawArguments,
+        // The headless descriptor cannot be used to save or decide a draft.
+        // Fixing the operation here keeps the no-UI boundary independent from
+        // model-supplied JSON and makes the readOnlyHint true in practice.
+        operation: "context",
+      },
+      { signal },
+    );
+    return result?.provider === "native_trelio"
+      ? buildTextResult(result)
+      : buildLocalProposalChildResult({
+          result,
+          companySlug: rawArguments?.companySlug,
+          kind: rawArguments?.kind,
+        });
+  }
+  if (name === TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.name) {
+    if (!["save", "action"].includes(rawArguments?.operation)) {
+      // Tool schemas are guidance for some MCP clients rather than a trusted
+      // enforcement boundary. Reject a forged context call before the shared
+      // operation handler can accidentally attach the render template again.
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "render_trelio_local_proposal supports only save or action.",
+      );
+    }
     const result = await proposalOperation(
       origin,
       rawArguments,
       { signal },
     );
-    return buildLocalProposalRootResult({
+    return buildLocalProposalRenderResult({
       result,
       companySlug: rawArguments?.companySlug,
       kind: rawArguments?.kind,

@@ -15,7 +15,9 @@ import {
   TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS,
   TRELIO_LOCAL_CONTEXT_TOOL,
   TRELIO_LOCAL_ACTION_TOOL,
-  TRELIO_LOCAL_PROPOSAL_TOOL,
+  TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
+  TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   buildEncryptedRestoreHandoffArguments,
   buildLocalTaskAttachmentStreamRequest,
@@ -349,7 +351,8 @@ test("native exact-task reads preserve schema-v3 instruction and deferred-sectio
     automatic: true,
     provider: "local_company_context",
     server: "trelio-remote-skills",
-    tool: "continue_trelio_local_proposal",
+    contextTool: "get_trelio_local_proposal_context",
+    renderTool: "render_trelio_local_proposal",
     companySlug: "acme",
     target: { projectSlug: "mobile", taskNumber: 17 },
   });
@@ -1516,11 +1519,12 @@ test("ambiguous project routing aliases fail closed", () => {
 test("always-visible local schemas stay compact and provider-neutral", () => {
   const schemas = JSON.stringify([
     TRELIO_LOCAL_CONTEXT_TOOL,
-    TRELIO_LOCAL_PROPOSAL_TOOL,
+    TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
+    TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
     TRELIO_LOCAL_WORKSPACE_TOOL,
   ]);
 
-  assert.equal(Buffer.byteLength(schemas, "utf8") <= 3_000, true);
+  assert.equal(Buffer.byteLength(schemas, "utf8") <= 3_500, true);
   assert.doesNotMatch(schemas, /encrypt|e2ee|cipher|private key/iu);
   assert.deepEqual(TRELIO_LOCAL_CONTEXT_TOOL.inputSchema.properties.operation.enum, [
     "native_read",
@@ -1532,14 +1536,25 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
     "get_workspace_file",
   ]);
   assert.equal(TRELIO_LOCAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
-  assert.equal(TRELIO_LOCAL_PROPOSAL_TOOL.annotations.readOnlyHint, false);
-  assert.deepEqual(TRELIO_LOCAL_PROPOSAL_TOOL.inputSchema.properties.kind.enum, [
+  assert.equal(TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
+  assert.equal(TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL._meta, undefined);
+  assert.equal(TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.annotations.readOnlyHint, false);
+  assert.deepEqual(TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.inputSchema.properties.kind.enum, [
     "comment",
     "status",
     "control_clear",
     "checklist",
     "bundle",
   ]);
+  assert.deepEqual(
+    TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.inputSchema.properties.operation.enum,
+    ["save", "action"],
+  );
+  assert.equal(
+    TRELIO_LOCAL_PROPOSAL_RENDER_TOOL._meta.ui.resourceUri,
+    TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
+  );
+  assert.doesNotMatch(schemas, /continue_trelio_local_proposal/u);
   assert.deepEqual(TRELIO_LOCAL_WORKSPACE_TOOL.inputSchema.properties.operation.enum, [
     "list_revisions",
     "get_revision_diff",

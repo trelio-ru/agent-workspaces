@@ -264,12 +264,15 @@ snapshot и optimistic proposal revision. Для сложной коррекци
 context/render-flow.
 
 Для encrypted company exact task read дополнительно возвращает компактный
-`proposalProvider=local_company_context` с canonical task target. Агент использует
-его сразу и не вызывает native proposal tool как отдельный preflight. Для plain
-company поля нет, поэтому обычный one-call `propose_task_comment` и его model
-context не меняются. Local proposal App v8 выдаёт capability только в hidden
-metadata; generic app-only state/action tools не попадают в model context, а v5
-kind-specific tools остаются совместимостью для уже запущенного плагина 1.19.5.
+`proposalProvider=local_company_context` с canonical task target и двумя exact
+маршрутами: `get_trelio_local_proposal_context` читает данные без App metadata,
+а `render_trelio_local_proposal` создаёт review-карточку только после `save`.
+Агент использует их сразу и не вызывает native proposal tool как отдельный
+preflight. Для plain company поля нет, поэтому обычный one-call
+`propose_task_comment` и его model context не меняются. Local proposal App v8
+выдаёт capability только в hidden metadata; generic app-only state/action tools
+не попадают в model context, а v5 kind-specific tools остаются resource-level
+совместимостью уже сохранённых карточек.
 
 MCP App даёт редактируемый текст и кнопку «Опубликовать»; text-only клиент
 публикует только после явной команды. В proposal включаются только важные

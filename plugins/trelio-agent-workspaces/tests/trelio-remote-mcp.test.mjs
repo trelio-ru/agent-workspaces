@@ -12,7 +12,7 @@ import {
   RemoteMcpHostError,
   assertExactReadOnlyToolList,
   buildLocalProposalAppResourceMeta,
-  buildLocalProposalRootResult,
+  buildLocalProposalRenderResult,
   buildRemoteMcpRequestHeaders,
   collectCredentialThroughLoopback,
   doctorWithCredential,
@@ -45,7 +45,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "1.19.6");
+  }), "2.0.0");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -1680,7 +1680,8 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.deepEqual(response.result.tools.map(({ name }) => name), [
     "continue_trelio_local_context",
     "continue_trelio_local_action",
-    "continue_trelio_local_proposal",
+    "get_trelio_local_proposal_context",
+    "render_trelio_local_proposal",
     "continue_trelio_local_workspace",
     "get_task_proposal_app_state",
     "perform_task_proposal_app_action",
@@ -1714,15 +1715,25 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.match(tool.description, /exact Trelio settings URL/u);
   }
-  const providerTools = response.result.tools.slice(0, 4);
-  const appOnlyProposalTools = response.result.tools.slice(4, 18);
+  const providerTools = response.result.tools.slice(0, 5);
+  const appOnlyProposalTools = response.result.tools.slice(5, 19);
   const actionTool = providerTools.find(({ name }) => name === "continue_trelio_local_action");
   const establishedProviderTools = providerTools.filter(({ name }) => (
     name !== "continue_trelio_local_action"
+    && name !== "render_trelio_local_proposal"
   ));
   assert.equal(Buffer.byteLength(JSON.stringify(establishedProviderTools), "utf8") <= 3_000, true);
   assert.equal(Buffer.byteLength(JSON.stringify(actionTool), "utf8") <= 900, true);
   assert.doesNotMatch(JSON.stringify(providerTools), /encrypt|e2ee|cipher|private key/iu);
+  const contextTool = providerTools.find(({ name }) => (
+    name === "get_trelio_local_proposal_context"
+  ));
+  const renderTool = providerTools.find(({ name }) => name === "render_trelio_local_proposal");
+  assert.equal(contextTool.annotations.readOnlyHint, true);
+  assert.equal(contextTool._meta, undefined);
+  assert.equal(renderTool.annotations.readOnlyHint, false);
+  assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v8.html");
+  assert.equal(providerTools.some(({ name }) => name === "continue_trelio_local_proposal"), false);
   assert.equal(appOnlyProposalTools.length, 14);
   for (const tool of appOnlyProposalTools) {
     assert.deepEqual(tool._meta?.ui?.visibility, ["app"]);
@@ -1850,10 +1861,10 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
   assert.equal(currentAgain, current);
 });
 
-test("local proposal continuation returns a real MCP App result instead of JSON text only", () => {
+test("local proposal render returns a real MCP App result instead of JSON text only", () => {
   const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const result = buildLocalProposalRootResult({
+  const result = buildLocalProposalRenderResult({
     origin: "https://trelio.example",
     companySlug: "protected-company",
     kind: "comment",
@@ -1888,29 +1899,68 @@ test("local proposal continuation returns a real MCP App result instead of JSON 
     new RegExp(result._meta["trelio/taskProposalApp"].capabilityToken, "u"),
   );
 
-  const contextResult = buildLocalProposalRootResult({
-    companySlug: "protected-company",
-    kind: "status",
-    operation: "context",
-    result: {
-      provider: "local_company_context",
-      proposal: {
-        schemaVersion: 1,
-        task: { title: "Проверить результат" },
-        currentDraft: null,
+});
+
+test("local proposal context returns structured data without App metadata", async () => {
+  const calls = [];
+  const result = await handleToolCall(
+    "https://trelio.example",
+    "get_trelio_local_proposal_context",
+    {
+      companySlug: "protected-company",
+      kind: "status",
+      payload: { target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
+    },
+    {
+      proposalOperation: async (_origin, input) => {
+        calls.push(input);
+        return {
+          provider: "local_company_context",
+          proposal: {
+            schemaVersion: 1,
+            task: { title: "Проверить результат" },
+            currentDraft: null,
+          },
+        };
       },
     },
-  });
-  assert.equal(contextResult.structuredContent.provider, "local_company_context");
-  assert.equal(contextResult.structuredContent.localOperation, "context");
-  assert.equal(contextResult.structuredContent.blocks[0].type, "statusProposal");
+  );
+
+  assert.deepEqual(calls, [{
+    companySlug: "protected-company",
+    kind: "status",
+    payload: { target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
+    operation: "context",
+  }]);
+  assert.equal(result.structuredContent.task.title, "Проверить результат");
+  assert.equal(result._meta, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /ui:\/\/trelio|outputTemplate/u);
+});
+
+test("local proposal render rejects a forged context operation before dispatch", async () => {
+  let called = false;
+  await assert.rejects(
+    handleToolCall(
+      "https://trelio.example",
+      "render_trelio_local_proposal",
+      {
+        operation: "context",
+        companySlug: "protected-company",
+        kind: "status",
+        payload: { target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
+      },
+      { proposalOperation: async () => { called = true; } },
+    ),
+    (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
+  );
+  assert.equal(called, false);
 });
 
 test("local proposal App capability binds refresh and one final action to its exact draft", async () => {
   const origin = "https://capability-test.trelio.example";
   const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const root = buildLocalProposalRootResult({
+  const root = buildLocalProposalRenderResult({
     origin,
     companySlug: "protected-company",
     kind: "comment",
@@ -2007,7 +2057,7 @@ test("local proposal App capability binds refresh and one final action to its ex
 });
 
 test("local proposal App capability is all-or-none for a proposal bundle", () => {
-  const root = buildLocalProposalRootResult({
+  const root = buildLocalProposalRenderResult({
     origin: "https://capability-bundle-test.trelio.example",
     companySlug: "protected-company",
     kind: "bundle",
@@ -2401,10 +2451,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "1.19.6");
+  assert.equal(frames[0].result.serverInfo.version, "2.0.0");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /logical launcher/u);
   assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 26);
+  assert.equal(frames[1].result.tools.length, 27);
 });

@@ -3518,7 +3518,8 @@ const buildLocalTaskProposalProvider = (mirror, task) => ({
   automatic: true,
   provider: "local_company_context",
   server: "trelio-remote-skills",
-  tool: "continue_trelio_local_proposal",
+  contextTool: "get_trelio_local_proposal_context",
+  renderTool: "render_trelio_local_proposal",
   companySlug: mirror.company.slug,
   target: {
     projectSlug: task.projectSlug,
@@ -7848,25 +7849,48 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
   },
 };
 
-export const TRELIO_LOCAL_PROPOSAL_TOOL = {
-  name: "continue_trelio_local_proposal",
-  title: "Continue Trelio proposal",
-  description: "Continue the exact proposalProvider route.",
+const TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA = {
+  type: "string",
+  enum: ["comment", "status", "control_clear", "checklist"],
+};
+
+const TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA = {
+  type: "object",
+};
+
+export const TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL = {
+  name: "get_trelio_local_proposal_context",
+  description: "Headless proposal read.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["companySlug", "kind", "payload"],
+    properties: {
+      companySlug: { type: "string", minLength: 1, maxLength: 120 },
+      kind: TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA,
+      payload: TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA,
+    },
+  },
+  annotations: {
+    readOnlyHint: true,
+  },
+};
+
+export const TRELIO_LOCAL_PROPOSAL_RENDER_TOOL = {
+  name: "render_trelio_local_proposal",
+  description: "Render proposal.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["operation", "companySlug", "kind", "payload"],
     properties: {
-      operation: { type: "string", enum: ["context", "save", "action"] },
+      operation: { type: "string", enum: ["save", "action"] },
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
       kind: {
-        type: "string",
-        enum: ["comment", "status", "control_clear", "checklist", "bundle"],
+        ...TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA,
+        enum: [...TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA.enum, "bundle"],
       },
-      payload: {
-        type: "object",
-        description: "For context/save use proposalProvider.target or the current Run; actions use context fields.",
-      },
+      payload: TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA,
     },
   },
   annotations: {

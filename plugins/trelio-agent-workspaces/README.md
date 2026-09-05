@@ -72,8 +72,9 @@ accepted-история при этом сохраняется.
 
 Trelio сам возвращает для выбранной компании authoritative `contentProvider`.
 Обычная компания продолжает использовать native MCP. Для зашифрованной exact
-route ведёт к четырём компактным model-visible local tools: чтение/поиск,
-обычные действия, proposals и история Workspace. Агент не решает сам, какой
+route ведёт к пяти компактным model-visible local tools: чтение/поиск,
+обычные действия, headless proposal context, proposal render и история
+Workspace. Агент не решает сам, какой
 provider выбрать, а local host повторно проверяет live state. Служебные tools
 кнопок proposal видны только MCP App и не попадают в обычный контекст модели.
 
@@ -123,16 +124,19 @@ proposal flow. URL разбирается только как структурн
 выполняют сетевой переход по самой ссылке.
 
 Comment/status/control/checklist proposals используют тот же context → editable
-draft → отдельное publish/apply/dismiss решение. Плагин шифрует текст и причины
+draft → отдельное publish/apply/dismiss решение. Headless
+`get_trelio_local_proposal_context` не объявляет UI resource, поэтому служебное
+чтение вообще не создаёт карточку; только `render_trelio_local_proposal`
+прикрепляет App к готовому draft. Плагин шифрует текст и причины
 до HTTP, backend применяет прежние ACL/revisions/locks, а final action требует
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v5 resource metadata, а v4/v3
-остаются compatibility paths. Bundle использует sandboxed `srcdoc`-frames без
-`data:` frame permission. Native provider-handoff и служебный local `context` скрывают DOM
-и сворачиваются до валидного size `1×1` без пустого editor/card; защищённая review-карточка появляется
-только после `save` и вызывает только app-only продолжения.
+полноценный App result со `structuredContent` и exact v8 resource metadata, а
+v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
+Bundle использует sandboxed `srcdoc`-frames без `data:` frame permission;
+защищённая review-карточка появляется только после `save` и вызывает только
+app-only продолжения.
 
 Обычные mutation/read-tools сохраняют свои native имена, схемы, ACL,
 idempotency и CAS, но для encrypted company выполняются через один exact local

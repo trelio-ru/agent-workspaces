@@ -18,8 +18,8 @@ App results are not a bundle: a host may persist every server draft while only
 one result remains visible to the user.
 
 If an exact task has local `proposalProvider`, follow
-`local-company-context.md`: get contexts and send all ordered blocks in one
-local `kind=bundle`, `operation=save` call without the native renderer. Otherwise
+`local-company-context.md`: get headless contexts and send all ordered blocks in
+one local render call with `kind=bundle`, `operation=save`. Otherwise
 follow this route only if the renderer returns authoritative local
 `providerSelection`.
 Do not split them into singular local calls. This is still one bundle result;
