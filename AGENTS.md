@@ -105,6 +105,10 @@ provider-tag workflow или внутренние release playbooks в этот 
 - При изменении personal credential flow соблюдай
   [базовый контракт локальной настройки](docs/agent-skills-and-secrets.md#personal-local-setup):
   user-only browser-first ввод, reuse готового подключения и отдельный OS unlock.
+  Личные credentials/session требуют encrypted storage, fresh OS unlock и
+  независимой native аренды до 30 минут без продления. Браузерный flow headed
+  от первого запуска и переиспользует один process/context; API/SDK не требует
+  фиктивного браузера. Старые stores не считаются автоматически мигрированными.
   Markdown без trusted helper-а не обещает защищённую форму, а owner-only
   storage не называется encrypted без соответствующей реализации и проверок.
 

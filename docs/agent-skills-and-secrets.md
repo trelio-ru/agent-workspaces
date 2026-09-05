@@ -159,7 +159,7 @@ Descriptions, schemas и tool results внешнего MCP считаются un
 
 ## Browser-first credentials
 
-Базовый контракт новых и изменяемых personal credential flow одинаков для
+Базовый контракт любого personal credential/session flow одинаков для
 platform и company-private навыков на каждой заявленной OS, включая macOS и
 Windows: личные телефон/логин, пароль, PAT, TOTP seed или код пользователь
 вводит непосредственно на одноразовой локальной странице. OAuth, QR, passkey
@@ -185,6 +185,10 @@ stdout/stderr, argv, ambient env, Workspace или Git; агент/runtime не
 TOTP seed принимается лишь при реализованной поддержке; текущий код не
 сохраняется. Если достаточно reusable session, исходный пароль без
 provider-specific необходимости не хранится.
+Форма объясняет, что TOTP нужно заранее самостоятельно включить у provider-а,
+а seed не является текущим кодом. Наличие seed не разрешает подменять SMS/push:
+код генерируется лишь после однозначного TOTP challenge. При пустом seed
+локальный запрос кода появляется только по фактическому запросу provider-а.
 
 Локальная страница использует `http://127.0.0.1` со случайным портом:
 
@@ -204,23 +208,55 @@ value-free экран завершения с просьбой закрыть е
 
 Нативные OS dialogs не являются штатным путём. Terminal fallback разрешён
 только явным флагом в видимом TTY, никогда автоматически при ошибке браузера.
-Системная разблокировка уже сохранённого хранилища – отдельный шаг, если она
-предусмотрена его policy, а не повторный сбор данных входа.
+Системная разблокировка уже сохранённого хранилища – обязательный отдельный
+шаг перед новой рабочей сессией, а не повторный сбор данных входа.
 `autocomplete=off` – best-effort hint, не запрет password manager. Форма прямо
 предупреждает, что browser-копия не нужна и при предложении сохранения следует
 выбрать «Нет, спасибо».
 
-Reusable credentials/session хранятся вне Workspace/Git/plugin/package cache
+Reusable credentials/session обязательно хранятся зашифрованно, вне Workspace/Git/plugin/package cache
 в стабильном owner-only namespace `skill/company/member/connection`, без
 версии runtime в ключе. Навык должен описывать сохраняемые поля, реальную
 защиту каждой поддерживаемой OS, условия unlock/reuse/expiry и замену/удаление.
 Local-only и owner-only ACL сами по себе не означают encryption или защиту от
 процесса под тем же OS user. Нельзя обещать Keychain, DPAPI, Windows Hello либо
-encrypted container, если они не реализованы и не проверены. Если skill
-требует такой защиты, её отсутствие блокирует setup/read без plaintext
-fallback. Этот контракт сам по себе не мигрирует существующие хранилища.
+encrypted container, если они не реализованы и не проверены. Защита охватывает
+также cookies, tokens и авторизованный browser/SDK state: plaintext profile
+или session file недопустим. Нужен encrypted container либо in-memory context
+с AEAD snapshot, OS-protected key и отдельным подтверждением владельца.
+Отсутствие защиты блокирует setup/read без plaintext/silent-unlock fallback.
 
-Текущий персональный Remote MCP PAT сохраняется в owner-only JSON, а не в
+Браузерная процедура использует один headed browser от первого запуска до
+завершения; headless auth/probe перед fallback запрещён. Команды и размышления
+переиспользуют тот же process/context, без перехвата фокуса между шагами.
+Отдельная setup-вкладка допустима в этом же процессе. API/SDK flow не требует
+фиктивного браузера; штатные OAuth/QR/passkey handoff сохраняются.
+
+Локальный доступ к личному credential/session имеет абсолютный срок не больше
+30 минут от начала, включая setup, OS unlock, ожидание и сон. Команды,
+reconnect, новый Run или CLI не продлевают его. После результата доступ
+закрывается сразу; новая сессия требует нового системного действия владельца,
+не автоматического переоткрытия агентом. Независимый native supervisor с
+continuous clock завершает owned browser/worker/SDK client при expiry/crash/hang;
+JS-only таймер недостаточен. После wake expired command блокируется; точное
+исполнение кода во сне/при выключенной ОС не обещается. Company Agent Secrets
+сохраняют отдельный, возможно более короткий grant lifetime. Ciphertext может
+жить дольше аренды, а локальное закрытие не отзывает token у provider-а.
+
+Новые реализации проверяются на реальных macOS и Windows, включая AEAD,
+ACL, wrong identity/key, fresh unlock, reuse одной формы/PID и native
+crash/hang/expiry cleanup. Явно OS-specific skill может исключать другую OS,
+но не ослаблять на ней защиту. Код должен подтвердить гарантии тестами;
+документация и synthetic smoke не доказывают реальный provider login.
+
+Этот контракт сам по себе не мигрирует существующие хранилища и не меняет live
+release. Старый owner-only runtime считается не приведённым к контракту, а не
+разрешённым исключением. Новая версия credential flow требует реализации и
+проверенной миграции либо явной настройки пользователем; старые credentials
+нельзя автоматически читать/копировать/удалять, рабочая копия сохраняется до
+проверки новой.
+
+Ещё не приведённый к этому контракту персональный Remote MCP PAT сохраняется в owner-only JSON, а не в
 автоматически зашифрованном vault. Его namespace использует exact
 skill/company/member и `connection=remote-mcp`; fingerprint внутри записи
 связывает credential с декларацией. Он не передаётся Trelio. Удаление локальной
