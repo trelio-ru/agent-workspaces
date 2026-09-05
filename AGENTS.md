@@ -102,6 +102,11 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Local credentials, sessions, profiles и policy живут вне workspace, plugin
   cache и runtime package в стабильном `skill/company/member/connection`
   namespace.
+- При изменении personal credential flow соблюдай
+  [базовый контракт локальной настройки](docs/agent-skills-and-secrets.md#personal-local-setup):
+  user-only browser-first ввод, reuse готового подключения и отдельный OS unlock.
+  Markdown без trusted helper-а не обещает защищённую форму, а owner-only
+  storage не называется encrypted без соответствующей реализации и проверок.
 
 ## Работа с plugin-кодом
 

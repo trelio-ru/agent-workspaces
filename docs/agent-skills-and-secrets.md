@@ -155,25 +155,77 @@ Descriptions, schemas и tool results внешнего MCP считаются un
 запрещена для PAT-backed provider-ов, чтобы будущий tool не расширял доступ к
 личным данным без нового fingerprint и reconnect.
 
+<a id="personal-local-setup"></a>
+
 ## Browser-first credentials
 
-Личные credentials вводятся в защищённой одноразовой форме `127.0.0.1`:
+Базовый контракт новых и изменяемых personal credential flow одинаков для
+platform и company-private навыков на каждой заявленной OS, включая macOS и
+Windows: личные телефон/логин, пароль, PAT, TOTP seed или код пользователь
+вводит непосредственно на одноразовой локальной странице. OAuth, QR, passkey
+и вход на странице provider сохраняют собственный штатный handoff; навык без
+credentials не открывает лишнюю форму.
 
-- tokenized path и exact loopback Host;
+До настройки runtime проверяет сохранённое подключение безопасным
+`doctor`/auth probe. Новая команда, задача, Run или совместимое обновление
+навыка сами по себе не требуют повторного входа. Форма нужна при отсутствии
+данных, явной замене/сбросе либо доказанном reconnect/security-binding change.
+Timeout, DNS, 5xx или неясная проверка сессии не доказывают потерю авторизации.
+Отдельное device consent для нового `company_unverified` release сохраняется:
+разрешение запускать код не является повторным вводом credentials.
+
+Форму открывает объявленный trusted host или signed runtime, а не скрипт,
+написанный агентом по Markdown. Без такого helper-а навык сообщает о
+необходимой настройке и разрешённом ручном входе, не обещая защищённый сбор
+секретов. Агент не заполняет и не инспектирует credential-поля, их DOM/AX и
+screenshots. Значения не проходят через Trelio, chat, MCP, prompt, логи,
+stdout/stderr, argv, ambient env, Workspace или Git; агент/runtime не
+используют clipboard как secret transport. Результат настройки содержит
+только безопасный статус, без значений и setup URL/nonce.
+TOTP seed принимается лишь при реализованной поддержке; текущий код не
+сохраняется. Если достаточно reusable session, исходный пароль без
+provider-specific необходимости не хранится.
+
+Локальная страница использует `http://127.0.0.1` со случайным портом:
+
+- одноразовый nonce, exact loopback Host/port/socket и подтверждённая загрузка формы;
 - exact Origin либо строго ограниченный compatibility-путь для
-  null/absent Origin с Fetch Metadata и nonce;
-- bounded body/timeouts, CSP, no-store, no-referrer;
-- listener и keep-alive sockets закрываются после результата, отмены или
-  ошибки.
+  null/absent Origin с same-origin top-level Fetch Metadata и nonce;
+- bounded body/type/timeouts, CSP без framing/внешних ресурсов, no-store и
+  no-referrer, без внешней аналитики;
+- одна страница/listener на связанные поля и шаги; ожидание кода, исправление
+  ввода или размышление агента не требуют нового окна;
+- listener и keep-alive sockets закрываются после успеха, отмены, terminal
+  error или timeout; завершённый submit не применяется повторно.
+
+Если браузер не разрешает автоматически закрыть созданную вкладку, остаётся
+value-free экран завершения с просьбой закрыть её. Весь пользовательский
+браузер или рабочая provider session при cleanup формы не закрываются.
 
 Нативные OS dialogs не являются штатным путём. Terminal fallback разрешён
-только явным флагом в видимом TTY. `autocomplete=off` – best-effort hint, не
-запрет password manager. Форма прямо предупреждает, что browser-копия не нужна
-и при предложении сохранения следует выбрать «Нет, спасибо».
+только явным флагом в видимом TTY, никогда автоматически при ошибке браузера.
+Системная разблокировка уже сохранённого хранилища – отдельный шаг, если она
+предусмотрена его policy, а не повторный сбор данных входа.
+`autocomplete=off` – best-effort hint, не запрет password manager. Форма прямо
+предупреждает, что browser-копия не нужна и при предложении сохранения следует
+выбрать «Нет, спасибо».
 
-Персональный Remote MCP PAT хранится локально в приватном namespace exact
-skill/company/member/fingerprint и не передаётся Trelio. Удаление локальной
-копии не отзывает token у provider.
+Reusable credentials/session хранятся вне Workspace/Git/plugin/package cache
+в стабильном owner-only namespace `skill/company/member/connection`, без
+версии runtime в ключе. Навык должен описывать сохраняемые поля, реальную
+защиту каждой поддерживаемой OS, условия unlock/reuse/expiry и замену/удаление.
+Local-only и owner-only ACL сами по себе не означают encryption или защиту от
+процесса под тем же OS user. Нельзя обещать Keychain, DPAPI, Windows Hello либо
+encrypted container, если они не реализованы и не проверены. Если skill
+требует такой защиты, её отсутствие блокирует setup/read без plaintext
+fallback. Этот контракт сам по себе не мигрирует существующие хранилища.
+
+Текущий персональный Remote MCP PAT сохраняется в owner-only JSON, а не в
+автоматически зашифрованном vault. Его namespace использует exact
+skill/company/member и `connection=remote-mcp`; fingerprint внутри записи
+связывает credential с декларацией. Он не передаётся Trelio. Удаление локальной
+копии не отзывает token у provider; несовместимый endpoint/auth/fingerprint
+требует повторного подключения.
 
 ## Backend-managed integrations
 
