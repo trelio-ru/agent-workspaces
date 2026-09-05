@@ -27,12 +27,12 @@ task communication, handoff, submit, or final reporting.
    an already exact Run. One Run always writes one workspace; every supplied
    related workspace is pinned read-only.
 3. Do not add runtime fields to prepare. The approved hook injects proof; the
-   returned `open` command carries only server-authored runtime state. Execute
-   the command through this loaded plugin's logical launcher. On any hook or
-   version error, stop and read `setup-and-recovery.md` before recovery.
+   returned `bridge.actions.open` carries only server-authored runtime state.
+   Execute it unchanged, adding the current client project folder only as
+   `workingDirectory`. On hook/version error read `setup-and-recovery.md`.
 4. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
-   `deviceName`, then rerun the original bridge command. Do not show a code or
+   `deviceName`, then rerun the same open action. Do not show a code or
    request a separate chat confirmation. The MCP client's normal approval is
    the only possible user step. After exchange, briefly report that the device
    is connected and continue. Never pass the verifier through MCP/chat. The
@@ -44,7 +44,7 @@ task communication, handoff, submit, or final reporting.
    granted to the primary MCP connection; it never gains
    `mcp:agent-instructions:manage` or secret-metadata read. Do not start another
    OAuth flow or use `--legacy-oauth` during normal setup.
-5. Immediately after the exact bridge `open` succeeds for a task-scoped Run,
+5. Immediately after open succeeds for a task-scoped Run,
    perform the one-shot work-start procedure in `task-status-proposals.md`
    before the first substantive work action. It is non-blocking: render only
    when the server returns an eligible `workStartProposal`, then continue the
@@ -75,12 +75,12 @@ task communication, handoff, submit, or final reporting.
    results.
 6. Read `../context/index.json` and selected snapshots under
    `../context/related/<workspace-uuid>` as read-only pinned context. For
-   context selected after `open`, use
-   `trelio-workspace context attach --workspace <uuid>`; for an
-   MCP-attached workspace use `context sync`.
+   context selected after `open`, execute action `context_attach` with the exact
+   opened `workingDirectory` and related `workspaceId`; after MCP attach use
+   `context_sync`.
 7. Related context is pointer-first. Inspect an exact file before use.
    If it is the five-line `https://trelio.ru/spec/workspace-object/v1` pointer,
-   run `trelio-workspace context fetch --path <exact-path>` before reading it.
+   execute `context_fetch` with the exact opened directory and `path` before reading.
    Fetch only needed files; never bulk hydrate. Backend reauthorizes Run,
    dependency workspace, pinned head, and path for every fetch.
 
@@ -91,29 +91,30 @@ task communication, handoff, submit, or final reporting.
    representations in `derived/`. Large/binary writable files remain locally
    materialized; submit streams them to private object storage and stages exact
    Git pointers.
-2. Run relevant validation. After every coherent material file change, run
-   `trelio-workspace checkpoint --type draft --summary "<durable state and next
-   step>"`. The bridge validates and uploads the complete delta; this is what
+2. Run relevant validation. After every coherent material file change, execute
+   action `checkpoint` in the exact opened directory with `type=draft` and a
+   durable `summary`. The bridge validates and uploads the complete delta; this is what
    lets `prepare_agent_workspace_run` in a later agent continue the same work.
    Checkpoint before waiting, a turn/session boundary, context compaction or a
    handoff to another agent. Do not checkpoint a half-written file or create an
    empty checkpoint without a meaningful delta. A clean working tree after a
    successful draft checkpoint is normal: `finish` uses the saved candidate
    delta and must not manufacture another file edit solely to finalize the Run.
-3. Before a blocking question with meaningful local changes, run
-   `trelio-workspace pause --summary "<durable state>" --question "<exact user
-   decision>" --next-action "<after the answer>"`. It validates the delta,
+3. Before a blocking question with meaningful local changes, execute `pause`
+   in the exact opened directory with `summary`, `questions`, and `nextAction`.
+   It validates the delta,
    uploads the draft including external objects and records the blocker. Ask
    only after success. If the Run is still clean and the question is merely
    preparatory, ask directly without creating an empty Git draft.
 4. Long-running local work may use heartbeat, but never send a separate
    heartbeat immediately before finalization: `finish` owns it.
-5. Finalize once with `trelio-workspace finish --summary ... --evidence ...
-   --file ... --next-action ...`. The command computes and prints the complete
+5. Finalize once with action `finish` in the exact opened directory, passing
+   `summary`, `evidence`, `filePaths`, `questions`, `nextAction`, and when
+   required `taskOutcome`. It computes and prints the complete
    candidate changed-path manifest relative to the pinned base, including an
    already saved draft checkpoint, creates the handoff checkpoint, heartbeats,
    prepares the candidate and submits it. A truly empty Run still fails. For
-   task scope pass one `--task-outcome` from the options returned by
+   task scope pass one `taskOutcome` from the options returned by
    `prepare_agent_workspace_run`.
 6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
    compare-and-swap. Failures keep handoff/delta recoverable. Let the bridge's
@@ -138,7 +139,7 @@ task communication, handoff, submit, or final reporting.
   cancel, or create another Run. Tell the user that company balance blocks new
   storage, local files remain intact, and the current Run is preserved. After
   an authorized person replenishes the balance, repeat the exact same
-  `checkpoint`, `pause`, `finish`, or `submit` command. Do not convert this
+  `checkpoint`, `pause`, `finish`, or `submit` action. Do not convert this
   transport blocker into `waiting_for_human`: a human checkpoint is valid only
   after its draft was durably saved.
 - Cancel only when the user explicitly abandons/withdraws an open Run; call
@@ -146,12 +147,12 @@ task communication, handoff, submit, or final reporting.
   `providerSelection.tool=continue_trelio_local_workspace`, continue that exact
   `cancel_run` route instead; the host protects the reason locally. A temporary
   blocker or failed command is not cancellation.
-- A later `trelio-workspace open --workspace <uuid> --run <uuid>` can claim the
-  same waiting Run on another computer, materialize the server draft, and expose
+- A later exact `open` action for the same workspace and Run can
+  claim the waiting Run on another computer, materialize the server draft, and expose
   `run-checkpoint.json`. Chat history is not copied. A dirty/diverged older
   local tree is never overwritten; use a fresh directory or merge deliberately.
 - Normal `prepare_agent_workspace_run` also selects the latest own non-empty
-  server draft whose base is still current. Opening its returned command claims
+  server draft whose base is still current. Opening its returned action claims
   that Run and fences the older lease. Use `startNewRun=true` only when an
   independent concurrent branch is genuinely intended.
 - On `LEASE_EXPIRED` or stale fencing, never mutate with old identifiers. Claim
@@ -166,7 +167,11 @@ task communication, handoff, submit, or final reporting.
   operation. Accepted-Run diff/file reads use its matching history operations.
   Restore adds a descendant and rejects concurrency; never improvise encrypted
   Git/HTTP access.
-- Never delete Workspace roots manually. `trelio-workspace clean --dry-run`
-  lists only roots unused for 30 days, backend-terminal, locally clean and not
-  opening, plus cache bytes. `clean` deletes that exact local plan, never the
+- Never delete Workspace roots manually. Execute `clean` first with explicit
+  `dryRun=true`; it lists only roots unused for 30 days,
+  backend-terminal, locally clean and not opening, plus cache bytes. A later
+  explicit `dryRun=false` deletes that exact local plan, never the
   server revision. Backend outage is a no-op; active, unknown or dirty roots remain.
+
+If an older backend returns only a text command, read `setup-and-recovery.md`;
+do not execute it directly.

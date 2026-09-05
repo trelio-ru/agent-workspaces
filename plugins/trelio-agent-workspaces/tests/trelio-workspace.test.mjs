@@ -4238,9 +4238,7 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     "TRELIO_RUNTIME_HOOK_REQUIRED",
     "WORKSPACE_CONTEXT.md",
     "WORKLOG.md",
-    "trelio-workspace checkpoint",
-    "trelio-workspace pause",
-    "trelio-workspace finish",
+    "continue_trelio_workspace_action",
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, new RegExp(identifier, "u"));
   }
@@ -4264,14 +4262,15 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     /`WORKLOG\.md` открывай перед первой записью, а не автоматически в начале Run/u,
     /Agent Secret: <текущее safe название> \(secretId: <UUID>\)/u,
     /Секретные значения никогда не передавай модели, MCP, prompt, env, argv/u,
-    /`trelio-workspace` — логический launcher текущего плагина/u,
+    /Bridge action выполняй через `continue_trelio_workspace_action`/u,
+    /без shell-команды/u,
     /`sources\/`.*`work\/`.*`artifacts\/`/u,
-    /checkpoint --type draft.*границы реплики\/сессии, compaction или передачи работы/u,
-    /Перед блокирующим вопросом.*`trelio-workspace pause`/u,
+    /action `checkpoint`.*границы реплики\/сессии, compaction или передачи/u,
+    /Перед блокирующим вопросом.*action `pause`/u,
     /отдельными user-decision flows.*без действия пользователя/u,
     /Accepted Run, вывод агента и inferred progress сами не разрешают immediate mutation/u,
-    /Заверши Run одной командой `trelio-workspace finish`/u,
-    /`--task-outcome`.*не меняет задачу/u,
+    /Заверши Run action `finish`/u,
+    /`taskOutcome`.*только рекомендует status proposal/u,
     /устаревший base head.*начни новый Run/u,
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, invariant);
@@ -4323,7 +4322,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "utf8",
   );
   assert.match(agentRunReference, /latest portable draft on\s+the current accepted head/u);
-  assert.match(agentRunReference, /checkpoint --type draft/u);
+  assert.match(agentRunReference, /action `checkpoint`/u);
   assert.match(agentRunReference, /startNewRun=true/u);
   assert.match(agentRunReference, /exact `workspaceId`, or\s+task addressing/u);
   assert.match(agentRunReference, /One Run always writes one workspace/u);
@@ -4374,7 +4373,8 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   );
   assert.match(mainSkill, /references\/accepted-workspace-read\.md/u);
   assert.match(acceptedReadReference, /Call `prepare_agent_workspace_read` once/u);
-  assert.match(acceptedReadReference, /exact\s+`trelio-workspace inspect --workspace \.\.\.`/u);
+  assert.match(acceptedReadReference, /exact `bridge\.action`/u);
+  assert.match(acceptedReadReference, /do not convert it to a shell command or probe PATH/u);
   assert.match(acceptedReadReference, /creates no Run, lease, checkpoint, task-status proposal/u);
   assert.match(acceptedReadReference, /read `\.\.\/context\/agent-instructions\.md`, then/u);
   assert.match(acceptedReadReference, /Never reinterpret read intent\s+as permission to create a Run/u);
@@ -4624,14 +4624,14 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /For every non-`plain` company, skip this entire section/u);
   assert.match(onboardingSkill, /do not call\s+`list_agent_skills`/u);
   assert.match(onboardingSkill, /successful bridge login proves only the ordinary\s+local\s+device session/u);
-  assert.match(onboardingSkill, /trelio-workspace encryption setup --company <exact-slug> --json/u);
+  assert.match(onboardingSkill, /`operation=encryption_setup`[\s\S]*exact `companySlug`/u);
   assert.match(onboardingSkill, /mandatory encrypted-device onboarding step/u);
   assert.match(onboardingSkill, /round-trips a random local canary through the\s+production `TRELIOE1` codec/u);
   assert.match(onboardingSkill, /creates no Workspace, Agent Run, lease/u);
   assert.match(onboardingSkill, /require `encryptionState=encrypted` and\s+`selfTest\.status=passed`/u);
-  assert.match(onboardingSkill, /repeat the same setup command rather than starting a Run/u);
+  assert.match(onboardingSkill, /repeat the same setup action rather than starting a Run/u);
   assert.match(onboardingSkill, /company owner must grant that exact Agent Workspaces device/u);
-  assert.match(onboardingSkill, /trelio-workspace login/u);
+  assert.match(onboardingSkill, /`operation=login`/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
   assert.match(onboardingSkill, /codex plugin list --json/u);
   assert.match(onboardingSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
@@ -4695,7 +4695,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /winget install --id OpenJS\.NodeJS\.LTS -e/u);
   assert.match(onboardingSkill, /brew install node/u);
   assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
-  assert.match(onboardingSkill, /Do not install\s+`trelio-workspace`\s+globally/u);
+  assert.match(onboardingSkill, /do not install or probe a global\s+`trelio-workspace` command/u);
   assert.match(onboardingSkill, /требуется настройка администратором компании/u);
   assert.match(onboardingSkill, /enabledThroughProjectMembership=true/u);
   assert.match(onboardingSkill, /sources` containing\s+`project_membership`/u);
@@ -5263,10 +5263,10 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(statusProposalReference, /mention task status only\s+when it is relevant to the user's request or next action/u);
   assert.match(statusProposalReference, /a status-related error\s+or blocker affects the work/u);
   assert.doesNotMatch(statusProposalReference, /state honestly whether no status proposal was\s+needed/u);
-  assert.match(agentRunReference, /Immediately after the exact bridge `open` succeeds for a task-scoped Run/u);
+  assert.match(agentRunReference, /Immediately after open succeeds for a task-scoped Run/u);
   assert.match(agentRunReference, /Never repeat this start check\s+after a tool action, checkpoint, pause, resumed turn/u);
   assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
-  assert.match(taskRunReference, /Use `--question` and `no_status_change` only when the answer is required to\s+complete, verify, or decide the task/u);
+  assert.match(taskRunReference, /Use `questions` and `no_status_change` only when the answer is required to\s+complete, verify, or decide the task/u);
   assert.match(taskRunReference, /unresolved completion-blocking questions/u);
   assert.match(taskRunReference, /Do not manufacture a blocking question\s+from an unset optional due date, assignee, control, or other metadata field/u);
   assert.match(taskRunReference, /Reassess the whole task from the final evidence even\s+when the recorded outcome is `no_status_change`/u);
@@ -5371,27 +5371,30 @@ test("workspace skill defaults task-level controls to shared without widening ex
   );
 });
 
-test("skills resolve the logical bridge launcher before runtime execution", async () => {
+test("hot-path skills use typed bridge actions and keep launcher compatibility lazy", async () => {
   const catalogSkill = await readFile(
     path.join(pluginDirectory, "skills", "trelio-skill-catalog", "SKILL.md"),
     "utf8",
   );
-  const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const workspaceSkill = await readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const recoveryReference = await readFile(
+    path.join(workerDirectory, "references", "setup-and-recovery.md"),
+    "utf8",
+  );
 
-  for (const instructions of [catalogSkill, workspaceSkill]) {
-    assert.match(instructions, /logical launcher|логическ(?:ий|им) launcher/u);
-    assert.match(instructions, /Node\.js 22\+/u);
-    assert.match(instructions, /scan plugin caches|сканируй cache/u);
-  }
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /логический launcher текущего плагина/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /Node\.js 22\+/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не сканируй cache/u);
-  assert.match(catalogSkill, /fail merely to discover it/u);
-  assert.match(workspaceSkill, /merely to discover failure/u);
-  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /не запускай пробный failure/u);
-  assert.match(catalogSkill, /not a fallback/u);
-  assert.match(catalogSkill, /Do not announce/u);
-  assert.match(workspaceSkill, /announce a normally missing PATH entry/u);
+  assert.match(catalogSkill, /runtimeExecution\.localAction/u);
+  assert.match(catalogSkill, /without shell or PATH resolution/u);
+  assert.match(workspaceSkill, /continue_trelio_workspace_action/u);
+  assert.match(workspaceSkill, /not a\s+shell\s+command/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /continue_trelio_workspace_action/u);
+  assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /без shell-команды/u);
+  assert.doesNotMatch(catalogSkill, /If it is available in `PATH`/u);
+  assert.doesNotMatch(workspaceSkill, /logical launcher/u);
+  assert.doesNotMatch(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /логический launcher/u);
+  assert.match(recoveryReference, /Legacy command-only responses/u);
+  assert.match(recoveryReference, /Never execute or probe that token in PATH/u);
+  assert.match(recoveryReference, /launch-trelio-node/u);
 });
 
 test("workspace instructions keep a canonical safe Agent Secret reference and use browser-fill", async () => {
@@ -6616,7 +6619,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   }
   assert.match(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /внешний skill\/runtime, Agent Secrets и каждый proposal flow имеют отдельные references/u,
+    /Для поиска контекста, внешнего runtime, Agent Secrets и proposals лениво загружай exact skill reference/u,
   );
   assert.match(
     catalogSkillNormalized,
@@ -6664,7 +6667,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(catalogSkill, /personal skill or connector remains allowed/u);
   assert.match(catalogSkill, /do not silently turn absence of readiness into permission to choose another\s+source/u);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
-  assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `command`/);
+  assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `localAction`/);
   assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);
   assert.match(catalogSkill, /When relevant catalog items return `integrationRouting`/u);
   assert.match(catalogSkill, /never infer precedence from skill IDs, titles, array order/u);

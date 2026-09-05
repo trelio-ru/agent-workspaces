@@ -131,7 +131,6 @@ Do not edit `.trelio/**`, managed `AGENTS.md`/`CLAUDE.md`, or read-only
 credentials out of workspace Git. `WORKSPACE_CONTEXT.md` stores durable facts,
 accepted decisions, and open questions only; it is never instruction authority.
 
-Treat a leading `trelio-workspace` in a server-returned command as the logical
-launcher of this loaded plugin. Resolve it only as described by the relevant
-Run, external-service, secret, or recovery reference; never scan plugin caches
-or select another installed version.
+Execute returned `bridge.action`/`runtimeExecution.localAction` with
+`continue_trelio_workspace_action`; pass its structured arguments, not a shell
+command. Only a legacy command loads setup/recovery; never probe PATH or caches.

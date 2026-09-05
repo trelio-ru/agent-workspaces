@@ -112,6 +112,67 @@ const LOCAL_ACTION_MAX_RESPONSE_BYTES = 24 * 1024 * 1024;
 const LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES = 64 * 1024 * 1024;
 const LOCAL_ACTION_STREAM_UPLOAD_RETRY_DELAYS_MS = [250, 750, 1_500];
 const LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000];
+const TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION = 1;
+const TRELIO_WORKSPACE_ACTION_OPERATIONS = new Set([
+  "doctor",
+  "login",
+  "encryption_setup",
+  "inspect",
+  "open",
+  "status",
+  "heartbeat",
+  "context_sync",
+  "context_attach",
+  "context_fetch",
+  "clean",
+  "checkpoint",
+  "pause",
+  "finish",
+  "submit",
+  "skill_pack",
+  "skill_run",
+  "secret_exec",
+  "secret_browser_fill",
+  "secret_set_file",
+]);
+const TRELIO_WORKSPACE_ACTION_CWD_OPERATIONS = new Set([
+  "status",
+  "heartbeat",
+  "context_sync",
+  "context_attach",
+  "context_fetch",
+  "checkpoint",
+  "pause",
+  "finish",
+  "submit",
+  "secret_exec",
+  "secret_browser_fill",
+  "secret_set_file",
+]);
+const TRELIO_WORKSPACE_ACTION_CHECKPOINT_TYPES = new Set([
+  "research",
+  "analysis",
+  "draft",
+  "decision",
+  "artifact",
+  "blocker",
+  "handoff",
+]);
+const TRELIO_WORKSPACE_ACTION_TASK_OUTCOMES = new Set([
+  "work_completed",
+  "review_passed",
+  "direct_completion",
+  "no_status_change",
+]);
+const TRELIO_WORKSPACE_ACTION_INTERPRETERS = new Set([
+  "node",
+  "python",
+  "executable",
+]);
+const TRELIO_WORKSPACE_ACTION_SECRET_FORMATS = new Set(["fields-json"]);
+const TRELIO_WORKSPACE_ACTION_MAX_ARGUMENTS = 256;
+const TRELIO_WORKSPACE_ACTION_MAX_ARGUMENT_LENGTH = 16 * 1024;
+const TRELIO_WORKSPACE_ACTION_MAX_ARGV_BYTES = 256 * 1024;
 const MAX_LOCAL_WORKSPACE_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const MAX_LOCAL_WORKSPACE_HISTORY_PATCH_CHARS = 100_000;
 // The local action route intentionally accepts the ordinary native tool name,
@@ -6746,13 +6807,607 @@ const runLocalProcess = async (executable, argumentsList, { cwd, signal } = {}) 
   });
 };
 
+/**
+ * Insert the canonical origin before the argv separator. Commands such as
+ * `skill run` and `secret exec` deliberately pass everything after `--` to a
+ * child process, so appending `--origin` at the end would silently leak a
+ * bridge option into that child instead of configuring the bridge itself.
+ */
+export const buildWorkspaceBridgeProcessArguments = (origin, argumentsList) => {
+  const separatorIndex = argumentsList.indexOf("--");
+  const bridgeArguments = separatorIndex === -1
+    ? [...argumentsList, "--origin", origin]
+    : [
+        ...argumentsList.slice(0, separatorIndex),
+        "--origin",
+        origin,
+        "--",
+        ...argumentsList.slice(separatorIndex + 1),
+      ];
+  return [WORKSPACE_BRIDGE_ENTRYPOINT, ...bridgeArguments];
+};
+
 const runWorkspaceBridge = async (origin, argumentsList, options = {}) => (
   runLocalProcess(
     process.execPath,
-    [WORKSPACE_BRIDGE_ENTRYPOINT, ...argumentsList, "--origin", origin],
+    buildWorkspaceBridgeProcessArguments(origin, argumentsList),
     options,
   )
 );
+
+const normalizeWorkspaceActionParameters = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      "parameters must contain one structured Trelio Workspace action object.",
+    );
+  }
+  return value;
+};
+
+const assertWorkspaceActionKeys = (parameters, allowedKeys) => {
+  const unknownKey = Object.keys(parameters).find((key) => !allowedKeys.has(key));
+  if (unknownKey) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `parameters.${unknownKey} is not supported for this Trelio Workspace action.`,
+    );
+  }
+};
+
+const normalizeWorkspaceActionString = (
+  value,
+  fieldName,
+  {
+    required = true,
+    maximumLength = TRELIO_WORKSPACE_ACTION_MAX_ARGUMENT_LENGTH,
+    trim = true,
+    allowEmpty = false,
+  } = {},
+) => {
+  if (value === undefined && !required) return null;
+  if (typeof value !== "string" || value.includes("\0")) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must be one string without NUL bytes.`,
+    );
+  }
+  const normalized = trim ? value.trim() : value;
+  if ((!allowEmpty && !normalized) || normalized.length > maximumLength) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must ${allowEmpty ? "" : "not be empty and "}not exceed ${maximumLength} characters.`,
+    );
+  }
+  return normalized;
+};
+
+const normalizeWorkspaceActionBoolean = (value, fieldName, defaultValue = false) => {
+  if (value === undefined) return defaultValue;
+  if (typeof value !== "boolean") {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must be a boolean.`,
+    );
+  }
+  return value;
+};
+
+const normalizeWorkspaceActionStringArray = (
+  value,
+  fieldName,
+  { maximumItems = TRELIO_WORKSPACE_ACTION_MAX_ARGUMENTS, allowEmptyValues = false } = {},
+) => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must contain at most ${maximumItems} strings.`,
+    );
+  }
+  return value.map((item, index) => normalizeWorkspaceActionString(
+    item,
+    `${fieldName}[${index}]`,
+    { trim: !allowEmptyValues, allowEmpty: allowEmptyValues },
+  ));
+};
+
+const normalizeWorkspaceActionAbsolutePath = (value, fieldName, { required = true } = {}) => {
+  const rawPath = normalizeWorkspaceActionString(value, fieldName, {
+    required,
+    maximumLength: 8_192,
+  });
+  if (rawPath === null) return null;
+  if (!path.isAbsolute(rawPath)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must be an absolute local path.`,
+    );
+  }
+  return path.resolve(rawPath);
+};
+
+const appendWorkspaceActionOption = (argumentsList, name, value) => {
+  if (value === null || value === undefined || value === false) return;
+  argumentsList.push(`--${name}`);
+  if (value !== true) argumentsList.push(String(value));
+};
+
+const appendWorkspaceActionValues = (argumentsList, name, values) => {
+  for (const value of values) appendWorkspaceActionOption(argumentsList, name, value);
+};
+
+const normalizeWorkspaceActionUuid = (value, fieldName) => normalizeUuid(value, fieldName);
+
+const normalizeWorkspaceActionSkillId = (value, fieldName = "parameters.skillId") => {
+  const skillId = normalizeWorkspaceActionString(value, fieldName, { maximumLength: 128 });
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(skillId)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must contain one lowercase kebab-case skill id.`,
+    );
+  }
+  return skillId;
+};
+
+const normalizeWorkspaceActionRuntimeVersion = (value) => {
+  const runtimeVersion = normalizeWorkspaceActionString(
+    value,
+    "parameters.runtimeVersion",
+    { maximumLength: 64 },
+  );
+  if (!/^\d+\.\d+\.\d+$/u.test(runtimeVersion)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      "parameters.runtimeVersion must contain one stable semantic version.",
+    );
+  }
+  return runtimeVersion;
+};
+
+const normalizeWorkspaceActionHttpsUrl = (value, fieldName) => {
+  const rawUrl = normalizeWorkspaceActionString(value, fieldName, { maximumLength: 2_048 });
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    parsed = null;
+  }
+  if (!parsed || parsed.protocol !== "https:" || parsed.username || parsed.password) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${fieldName} must contain one HTTPS URL without embedded credentials.`,
+    );
+  }
+  return parsed.toString();
+};
+
+const buildWorkspaceCheckpointActionArguments = (operation, parameters) => {
+  const commonKeys = new Set([
+    "summary",
+    "evidence",
+    "filePaths",
+    "questions",
+    "nextAction",
+    "taskOutcome",
+    "message",
+  ]);
+  if (operation === "checkpoint") commonKeys.add("type");
+  assertWorkspaceActionKeys(parameters, commonKeys);
+
+  const argumentsList = [operation];
+  if (operation === "checkpoint") {
+    const checkpointType = normalizeWorkspaceActionString(
+      parameters.type,
+      "parameters.type",
+      { maximumLength: 32 },
+    );
+    if (!TRELIO_WORKSPACE_ACTION_CHECKPOINT_TYPES.has(checkpointType)) {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+        "parameters.type is not a supported checkpoint type.",
+      );
+    }
+    appendWorkspaceActionOption(argumentsList, "type", checkpointType);
+  }
+  appendWorkspaceActionOption(
+    argumentsList,
+    "summary",
+    normalizeWorkspaceActionString(parameters.summary, "parameters.summary"),
+  );
+  appendWorkspaceActionValues(
+    argumentsList,
+    "evidence",
+    normalizeWorkspaceActionStringArray(parameters.evidence, "parameters.evidence", {
+      maximumItems: 50,
+    }),
+  );
+  appendWorkspaceActionValues(
+    argumentsList,
+    "file",
+    normalizeWorkspaceActionStringArray(parameters.filePaths, "parameters.filePaths", {
+      maximumItems: 1_000,
+    }),
+  );
+  appendWorkspaceActionValues(
+    argumentsList,
+    "question",
+    normalizeWorkspaceActionStringArray(parameters.questions, "parameters.questions", {
+      maximumItems: 50,
+    }),
+  );
+  appendWorkspaceActionOption(
+    argumentsList,
+    "next-action",
+    normalizeWorkspaceActionString(parameters.nextAction, "parameters.nextAction", {
+      required: false,
+    }),
+  );
+  const taskOutcome = normalizeWorkspaceActionString(
+    parameters.taskOutcome,
+    "parameters.taskOutcome",
+    { required: false, maximumLength: 64 },
+  );
+  if (taskOutcome && !TRELIO_WORKSPACE_ACTION_TASK_OUTCOMES.has(taskOutcome)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      "parameters.taskOutcome is not a supported task outcome.",
+    );
+  }
+  appendWorkspaceActionOption(argumentsList, "task-outcome", taskOutcome);
+  appendWorkspaceActionOption(
+    argumentsList,
+    "message",
+    normalizeWorkspaceActionString(parameters.message, "parameters.message", { required: false }),
+  );
+  return argumentsList;
+};
+
+/**
+ * Convert a small typed action envelope into the exact bridge argv. The
+ * operation allowlist is intentionally closed and every parameter is mapped
+ * to a fixed option position. Model-visible values can therefore never choose
+ * an executable, add an undeclared bridge flag, or introduce shell syntax.
+ */
+export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
+  if (rawInput?.schemaVersion !== TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `schemaVersion must equal ${TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION}.`,
+    );
+  }
+  const operation = String(rawInput?.operation || "").trim();
+  if (!TRELIO_WORKSPACE_ACTION_OPERATIONS.has(operation)) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      "operation is not supported by this Trelio Workspace bridge dispatcher.",
+    );
+  }
+  const parameters = normalizeWorkspaceActionParameters(rawInput?.parameters);
+  const allowedEnvelopeKeys = new Set([
+    "schemaVersion",
+    "operation",
+    "parameters",
+    "workingDirectory",
+  ]);
+  const unknownEnvelopeKey = Object.keys(rawInput).find((key) => !allowedEnvelopeKeys.has(key));
+  if (unknownEnvelopeKey) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `${unknownEnvelopeKey} is not supported by the action envelope.`,
+    );
+  }
+  if (
+    rawInput.workingDirectory !== undefined
+    && operation !== "open"
+    && !TRELIO_WORKSPACE_ACTION_CWD_OPERATIONS.has(operation)
+  ) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `workingDirectory is not supported for operation ${operation}.`,
+    );
+  }
+
+  const requiredWorkingDirectory = TRELIO_WORKSPACE_ACTION_CWD_OPERATIONS.has(operation);
+  const workingDirectory = normalizeWorkspaceActionAbsolutePath(
+    rawInput.workingDirectory,
+    "workingDirectory",
+    { required: requiredWorkingDirectory },
+  );
+  let argumentsList;
+
+  if (operation === "doctor") {
+    assertWorkspaceActionKeys(parameters, new Set(["json"]));
+    argumentsList = ["doctor"];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "json",
+      normalizeWorkspaceActionBoolean(parameters.json, "parameters.json"),
+    );
+  } else if (operation === "login") {
+    assertWorkspaceActionKeys(parameters, new Set(["legacyOauth"]));
+    argumentsList = ["login"];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "legacy-oauth",
+      normalizeWorkspaceActionBoolean(parameters.legacyOauth, "parameters.legacyOauth"),
+    );
+  } else if (operation === "encryption_setup") {
+    assertWorkspaceActionKeys(parameters, new Set(["companySlug", "json"]));
+    argumentsList = ["encryption", "setup", "--company", normalizeCompanySlug(parameters.companySlug)];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "json",
+      normalizeWorkspaceActionBoolean(parameters.json, "parameters.json"),
+    );
+  } else if (operation === "inspect") {
+    assertWorkspaceActionKeys(parameters, new Set(["workspaceId"]));
+    argumentsList = [
+      "inspect",
+      "--workspace",
+      normalizeWorkspaceActionUuid(parameters.workspaceId, "parameters.workspaceId"),
+    ];
+  } else if (operation === "open") {
+    assertWorkspaceActionKeys(parameters, new Set(["workspaceId", "runId", "directory", "runtimeSessionId"]));
+    argumentsList = [
+      "open",
+      "--workspace",
+      normalizeWorkspaceActionUuid(parameters.workspaceId, "parameters.workspaceId"),
+    ];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "run",
+      parameters.runId === undefined
+        ? null
+        : normalizeWorkspaceActionUuid(parameters.runId, "parameters.runId"),
+    );
+    appendWorkspaceActionOption(
+      argumentsList,
+      "dir",
+      normalizeWorkspaceActionAbsolutePath(parameters.directory, "parameters.directory", {
+        required: false,
+      }),
+    );
+    appendWorkspaceActionOption(
+      argumentsList,
+      "runtime-session",
+      parameters.runtimeSessionId === undefined
+        ? null
+        : normalizeWorkspaceActionUuid(parameters.runtimeSessionId, "parameters.runtimeSessionId"),
+    );
+  } else if (operation === "status" || operation === "heartbeat") {
+    assertWorkspaceActionKeys(parameters, new Set());
+    argumentsList = [operation];
+  } else if (operation === "context_sync") {
+    assertWorkspaceActionKeys(parameters, new Set());
+    argumentsList = ["context", "sync"];
+  } else if (operation === "context_attach") {
+    assertWorkspaceActionKeys(parameters, new Set(["workspaceId"]));
+    argumentsList = [
+      "context",
+      "attach",
+      "--workspace",
+      normalizeWorkspaceActionUuid(parameters.workspaceId, "parameters.workspaceId"),
+    ];
+  } else if (operation === "context_fetch") {
+    assertWorkspaceActionKeys(parameters, new Set(["path"]));
+    argumentsList = [
+      "context",
+      "fetch",
+      "--path",
+      normalizeWorkspaceActionString(parameters.path, "parameters.path", {
+        maximumLength: 8_192,
+      }),
+    ];
+  } else if (operation === "clean") {
+    assertWorkspaceActionKeys(parameters, new Set(["dryRun"]));
+    if (typeof parameters.dryRun !== "boolean") {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+        "parameters.dryRun must explicitly choose preview or deletion.",
+      );
+    }
+    argumentsList = ["clean"];
+    appendWorkspaceActionOption(argumentsList, "dry-run", parameters.dryRun);
+  } else if (["checkpoint", "pause", "finish"].includes(operation)) {
+    argumentsList = buildWorkspaceCheckpointActionArguments(operation, parameters);
+  } else if (operation === "submit") {
+    assertWorkspaceActionKeys(parameters, new Set(["message"]));
+    argumentsList = ["submit"];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "message",
+      normalizeWorkspaceActionString(parameters.message, "parameters.message", { required: false }),
+    );
+  } else if (operation === "skill_pack") {
+    assertWorkspaceActionKeys(parameters, new Set([
+      "skillId",
+      "runtimeVersion",
+      "sourceDirectory",
+      "entrypointPath",
+      "interpreter",
+      "outputPath",
+      "capabilities",
+    ]));
+    const interpreter = normalizeWorkspaceActionString(
+      parameters.interpreter,
+      "parameters.interpreter",
+      { maximumLength: 32 },
+    );
+    if (!TRELIO_WORKSPACE_ACTION_INTERPRETERS.has(interpreter)) {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+        "parameters.interpreter is not supported.",
+      );
+    }
+    argumentsList = [
+      "skill",
+      "pack",
+      "--skill",
+      normalizeWorkspaceActionSkillId(parameters.skillId),
+      "--runtime-version",
+      normalizeWorkspaceActionRuntimeVersion(parameters.runtimeVersion),
+      "--source",
+      normalizeWorkspaceActionAbsolutePath(parameters.sourceDirectory, "parameters.sourceDirectory"),
+      "--entry",
+      normalizeWorkspaceActionString(parameters.entrypointPath, "parameters.entrypointPath", {
+        maximumLength: 2_048,
+      }),
+      "--interpreter",
+      interpreter,
+      "--output",
+      normalizeWorkspaceActionAbsolutePath(parameters.outputPath, "parameters.outputPath"),
+    ];
+    appendWorkspaceActionValues(
+      argumentsList,
+      "capability",
+      normalizeWorkspaceActionStringArray(parameters.capabilities, "parameters.capabilities", {
+        maximumItems: 32,
+      }),
+    );
+  } else if (operation === "skill_run") {
+    assertWorkspaceActionKeys(parameters, new Set([
+      "companyId",
+      "projectId",
+      "skillId",
+      "releaseId",
+      "runtimeSessionId",
+      "arguments",
+    ]));
+    argumentsList = [
+      "skill",
+      "run",
+      "--company",
+      normalizeWorkspaceActionUuid(parameters.companyId, "parameters.companyId"),
+    ];
+    appendWorkspaceActionOption(
+      argumentsList,
+      "project",
+      parameters.projectId === undefined
+        ? null
+        : normalizeWorkspaceActionUuid(parameters.projectId, "parameters.projectId"),
+    );
+    argumentsList.push(
+      "--skill",
+      normalizeWorkspaceActionSkillId(parameters.skillId),
+      "--release",
+      normalizeWorkspaceActionUuid(parameters.releaseId, "parameters.releaseId"),
+    );
+    appendWorkspaceActionOption(
+      argumentsList,
+      "runtime-session",
+      parameters.runtimeSessionId === undefined
+        ? null
+        : normalizeWorkspaceActionUuid(parameters.runtimeSessionId, "parameters.runtimeSessionId"),
+    );
+    argumentsList.push(
+      "--",
+      ...normalizeWorkspaceActionStringArray(parameters.arguments, "parameters.arguments", {
+        allowEmptyValues: true,
+      }),
+    );
+  } else if (operation === "secret_exec") {
+    assertWorkspaceActionKeys(parameters, new Set(["grantId", "executable", "arguments"]));
+    argumentsList = [
+      "secret",
+      "exec",
+      "--grant",
+      normalizeWorkspaceActionUuid(parameters.grantId, "parameters.grantId"),
+      "--",
+      normalizeWorkspaceActionString(parameters.executable, "parameters.executable", {
+        maximumLength: 1_024,
+        trim: false,
+      }),
+      ...normalizeWorkspaceActionStringArray(parameters.arguments, "parameters.arguments", {
+        allowEmptyValues: true,
+      }),
+    ];
+  } else if (operation === "secret_browser_fill") {
+    assertWorkspaceActionKeys(parameters, new Set(["grantId", "targetUrl"]));
+    argumentsList = [
+      "secret",
+      "browser-fill",
+      "--grant",
+      normalizeWorkspaceActionUuid(parameters.grantId, "parameters.grantId"),
+      "--target",
+      normalizeWorkspaceActionHttpsUrl(parameters.targetUrl, "parameters.targetUrl"),
+    ];
+  } else if (operation === "secret_set_file") {
+    assertWorkspaceActionKeys(parameters, new Set(["secretId", "filePath", "format"]));
+    argumentsList = [
+      "secret",
+      "set",
+      "--secret",
+      normalizeWorkspaceActionUuid(parameters.secretId, "parameters.secretId"),
+      "--file",
+      normalizeWorkspaceActionAbsolutePath(parameters.filePath, "parameters.filePath"),
+    ];
+    const format = normalizeWorkspaceActionString(parameters.format, "parameters.format", {
+      required: false,
+      maximumLength: 32,
+    });
+    if (format && !TRELIO_WORKSPACE_ACTION_SECRET_FORMATS.has(format)) {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+        "parameters.format is not supported for secret_set_file.",
+      );
+    }
+    appendWorkspaceActionOption(argumentsList, "format", format);
+  }
+
+  const argvBytes = argumentsList.reduce(
+    (total, value) => total + Buffer.byteLength(String(value), "utf8") + 1,
+    0,
+  );
+  if (argvBytes > TRELIO_WORKSPACE_ACTION_MAX_ARGV_BYTES) {
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+      `The encoded bridge arguments exceed ${TRELIO_WORKSPACE_ACTION_MAX_ARGV_BYTES} bytes.`,
+    );
+  }
+
+  return { operation, argumentsList, workingDirectory };
+};
+
+const truncateWorkspaceActionOutput = (value) => {
+  const output = String(value || "");
+  return output.length <= 64 * 1024
+    ? output
+    : `${output.slice(0, 64 * 1024)}\n[output truncated]`;
+};
+
+export const handleTrelioWorkspaceActionOperation = async (
+  origin,
+  rawInput,
+  { signal, runBridge = runWorkspaceBridge } = {},
+) => {
+  const invocation = buildTrelioWorkspaceActionInvocation(rawInput);
+  try {
+    const result = await runBridge(origin, invocation.argumentsList, {
+      ...(invocation.workingDirectory ? { cwd: invocation.workingDirectory } : {}),
+      signal,
+    });
+    return {
+      schemaVersion: TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION,
+      operation: invocation.operation,
+      stdout: truncateWorkspaceActionOutput(result.stdout),
+      ...(result.stderr ? { stderr: truncateWorkspaceActionOutput(result.stderr) } : {}),
+    };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const stderr = truncateWorkspaceActionOutput(error?.stderr).trim();
+    const stdout = truncateWorkspaceActionOutput(error?.stdout).trim();
+    throw new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_ACTION_FAILED",
+      stderr || "The Trelio Workspace bridge action failed.",
+      {
+        operation: invocation.operation,
+        ...(stdout ? { stdout } : {}),
+        ...(stderr ? { stderr } : {}),
+      },
+    );
+  }
+};
 
 const isHumanFacingLocalWorkspacePath = (filePath) => {
   const normalizedPath = String(filePath || "").replaceAll("\\", "/");
@@ -8156,6 +8811,29 @@ export const TRELIO_LOCAL_WORKSPACE_TOOL = {
     readOnlyHint: false,
     destructiveHint: true,
     openWorldHint: false,
+  },
+};
+
+export const TRELIO_WORKSPACE_ACTION_TOOL = {
+  name: "continue_trelio_workspace_action",
+  description: "Run one structured Trelio action through the bundled bridge.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["schemaVersion", "operation", "parameters"],
+    properties: {
+      schemaVersion: { type: "integer", const: TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION },
+      operation: { type: "string" },
+      parameters: { type: "object" },
+      workingDirectory: {
+        type: "string",
+      },
+    },
+  },
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: true,
+    openWorldHint: true,
   },
 };
 

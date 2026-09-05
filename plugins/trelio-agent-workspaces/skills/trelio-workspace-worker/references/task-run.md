@@ -11,7 +11,7 @@ checklist decision.
 
 ## Choose the handoff outcome
 
-Every task-scoped handoff must pass exactly one `--task-outcome` based on
+Every task-scoped handoff must pass exactly one `taskOutcome` based on
 the readiness of the whole task and semantic status kind, never only the scope
 of the latest instruction or a localized name/code. Outcome records a
 recommendation; accepted Run does not change task status:
@@ -28,18 +28,12 @@ recommendation; accepted Run does not change task status:
   with unresolved completion-blocking questions. This is the safe default
   whenever the direct request may be narrower than the full task.
 
-For example:
+For example, execute the returned `bridge.actions.finish` through
+`continue_trelio_workspace_action` with the exact opened `workingDirectory` and
+parameters `summary`, `evidence`, `filePaths`, `nextAction`, and
+`taskOutcome=work_completed`.
 
-```text
-trelio-workspace finish \
-  --summary "Подготовлен план монтажа с ответственными и контрольными точками." \
-  --evidence "Исходные требования сопоставлены с планом; критических технических препятствий не обнаружено." \
-  --file artifacts/montage-plan.md \
-  --next-action "Проверьте подготовленный план монтажа." \
-  --task-outcome work_completed
-```
-
-Use `--question` and `no_status_change` only when the answer is required to
+Use `questions` and `no_status_change` only when the answer is required to
 complete, verify, or decide the task. Do not manufacture a blocking question
 from an unset optional due date, assignee, control, or other metadata field.
 When the task requirements and transition policy are satisfied, choose the

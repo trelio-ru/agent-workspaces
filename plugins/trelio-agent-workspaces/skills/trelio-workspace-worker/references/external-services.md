@@ -49,16 +49,15 @@ or an integration-specific tool name.
 On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill once again before
 retrying; never force the stale release.
 
-## Resolve the logical launcher
+## Execute the typed local action
 
-Treat a leading `trelio-workspace` token in a returned
-`runtimeExecution.command` as the logical launcher of this loaded plugin:
+For a signed runtime call the exact server/tool from
+`runtimeExecution.localAction` with its returned arguments. Append only the
+skill arguments allowed by the current instruction to `parameters.arguments`;
+do not change identity, release, runtime-session, or another field. The local
+dispatcher selects this loaded plugin's bridge and Node executable without a
+shell or PATH lookup.
 
-1. If it is available in `PATH`, use the command unchanged.
-2. Otherwise replace only its first token with Node.js 22+ and this skill's
-   bundled `../../scripts/trelio-workspace.mjs` path. Preserve every other
-   token and appended argument exactly.
-
-Resolve the path relative to this loaded skill. Never scan plugin caches,
-select another installed version, announce a normally missing PATH entry, or
-run a command merely to discover failure.
+If an older response has only `runtimeExecution.command`, read
+`setup-and-recovery.md` and use its bounded legacy route. Do not probe PATH or
+scan plugin caches.

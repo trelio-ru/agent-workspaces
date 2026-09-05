@@ -1683,6 +1683,7 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     "get_trelio_local_proposal_context",
     "render_trelio_local_proposal",
     "continue_trelio_local_workspace",
+    "continue_trelio_workspace_action",
     "get_task_proposal_app_state",
     "perform_task_proposal_app_action",
     "get_task_comment_proposal_context",
@@ -1715,15 +1716,20 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     assert.equal(tool.inputSchema.additionalProperties, false);
     assert.match(tool.description, /exact Trelio settings URL/u);
   }
-  const providerTools = response.result.tools.slice(0, 5);
-  const appOnlyProposalTools = response.result.tools.slice(5, 19);
+  const providerTools = response.result.tools.slice(0, 6);
+  const appOnlyProposalTools = response.result.tools.slice(6, 20);
   const actionTool = providerTools.find(({ name }) => name === "continue_trelio_local_action");
+  const workspaceActionTool = providerTools.find(({ name }) => (
+    name === "continue_trelio_workspace_action"
+  ));
   const establishedProviderTools = providerTools.filter(({ name }) => (
     name !== "continue_trelio_local_action"
     && name !== "render_trelio_local_proposal"
+    && name !== "continue_trelio_workspace_action"
   ));
   assert.equal(Buffer.byteLength(JSON.stringify(establishedProviderTools), "utf8") <= 3_000, true);
   assert.equal(Buffer.byteLength(JSON.stringify(actionTool), "utf8") <= 900, true);
+  assert.equal(Buffer.byteLength(JSON.stringify(workspaceActionTool), "utf8") <= 900, true);
   assert.doesNotMatch(JSON.stringify(providerTools), /encrypt|e2ee|cipher|private key/iu);
   const contextTool = providerTools.find(({ name }) => (
     name === "get_trelio_local_proposal_context"
@@ -2161,7 +2167,7 @@ test("platform routing sends a provider-neutral signed skill through runtimeExec
     type: "runtimeExecution",
     skillId: "signed-inventory-runtime",
   });
-  assert.match(instructions, /Use only an exact `runtimeExecution` command/u);
+  assert.match(instructions, /Use only an exact `runtimeExecution\.localAction`/u);
 });
 
 test("platform routing sends a provider-neutral knowledge service through remoteMcpExecution", async () => {
@@ -2184,7 +2190,7 @@ test("platform routing sends a provider-neutral knowledge service through remote
     type: "remoteMcpExecution",
     skillId: "remote-knowledge",
   });
-  assert.match(instructions, /declared `trelio-remote-skills` tools with returned identity\/release/u);
+  assert.match(instructions, /declared Remote MCP tools with returned identity\/release/u);
 });
 
 test("platform routing discovers a runtime even without an integration-specific tool", async () => {
@@ -2453,8 +2459,8 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
   assert.equal(frames[0].result.serverInfo.version, "2.0.0");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
-  assert.match(frames[0].result.instructions, /logical launcher/u);
-  assert.match(frames[0].result.instructions, /announcing a normally absent PATH entry/u);
+  assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
+  assert.match(frames[0].result.instructions, /legacy responses without a structured action/iu);
   assert.match(frames[0].result.instructions, /primary workspace workflow/u);
-  assert.equal(frames[1].result.tools.length, 27);
+  assert.equal(frames[1].result.tools.length, 28);
 });

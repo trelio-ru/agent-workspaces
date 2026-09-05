@@ -380,28 +380,25 @@ or durable Windows PATH is used by absolute path immediately; do not require an
 app restart. Do not retry an installer whose result is ambiguous until
 doctor has checked whether Git is already ready.
 
-Run `trelio-workspace login` through the logical launcher of this installed
-plugin: use the platform `launch-trelio-node` script with this skill's bundled
-`../../scripts/trelio-workspace.mjs login`. Do not install `trelio-workspace`
-globally or treat its normally absent `PATH` entry as an error.
+Call local `continue_trelio_workspace_action` with `schemaVersion=1`,
+`operation=login`, and `parameters={legacyOauth:false}`. The dispatcher uses
+this loaded plugin's bundled bridge; do not install or probe a global
+`trelio-workspace` command.
 
 If login reports a one-time pairing request, immediately call
 `approve_agent_workspace_bridge_pairing` with its exact `pairingId` and
-`deviceName`, then repeat the same login command. Never show a pairing code or
+`deviceName`, then repeat the same login action. Never show a pairing code or
 verifier. Do not open a company workspace, start a work run, or create and
 cancel a disposable result merely to test the connection.
 
 For exact `encrypted`, successful bridge login proves only the ordinary local
-device session. Immediately run this loaded plugin's bundled bridge through
-the same `launch-trelio-node` launcher with:
-
-```text
-trelio-workspace encryption setup --company <exact-slug> --json
-```
+device session. Immediately call the same local tool with
+`operation=encryption_setup` and parameters containing exact `companySlug` and
+`json=true`.
 
 This is the mandatory encrypted-device onboarding step. It may open a protected
 `127.0.0.1` form; the user enters the key only there, never in chat, MCP, argv,
-environment, stdin, clipboard, or a Workspace. The command creates or reuses
+environment, stdin, clipboard, or a Workspace. The action creates or reuses
 the local encryption/signing identity, registers its fingerprint, opens the
 exact company envelope, and round-trips a random local canary through the
 production `TRELIOE1` codec. It creates no Workspace, Agent Run, lease,
@@ -411,7 +408,7 @@ On `status=ready`, require `encryptionState=encrypted` and
 `selfTest.status=passed` before reporting encrypted Workspace access ready. On
 `access_pending`, show the returned fingerprint and settings URL and tell the
 user that the company owner must grant that exact Agent Workspaces device;
-after the grant, repeat the same setup command rather than starting a Run. On
+after the grant, repeat the same setup action rather than starting a Run. On
 `status=not_required`, the state changed to `plain`: repeat `list_companies` and
 the ordinary instruction/catalog route before completion. Any transitional,
 unknown, envelope, scope, or self-test error blocks encrypted content work

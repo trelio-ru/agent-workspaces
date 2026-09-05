@@ -57,11 +57,13 @@ import {
   TRELIO_LOCAL_PROPOSAL_RESOURCE_MIME_TYPE,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  TRELIO_WORKSPACE_ACTION_TOOL,
   TrelioLocalContextError,
   handleTrelioLocalContextOperation,
   handleTrelioLocalActionOperation,
   handleTrelioLocalProposalOperation,
   handleTrelioLocalWorkspaceOperation,
+  handleTrelioWorkspaceActionOperation,
 } from "./trelio-local-context.mjs";
 
 const DEFAULT_ORIGIN = "https://trelio.ru";
@@ -154,7 +156,7 @@ const AGENT_SKILL_PACKAGE_MIME_TYPE = "application/vnd.trelio.agent-skill-packag
 export const AGENT_SKILL_ROUTING_INSTRUCTIONS = [
   "Trelio Agent Skill routing gate: When a user asks to connect or use an external integration that Trelio may provide, resolve the intended Trelio company before installing, authorizing, or invoking an overlapping native/plugin integration. If the request does not identify a company and several are available, ask which Trelio company applies instead of scanning unrelated catalogs or silently choosing the non-Trelio integration. In the resolved company or project context, use `search_agent_skills` as the standard path with a faithful task query and only useful short concept hints. Use `list_agent_skills` only for explicit whole-catalog inventory. Select a compact ranked result, then call `get_agent_skill` once before the first external action in the current user turn. A successful read covers the related uninterrupted operation while the exact context, skill, selected implementation, and user intent stay unchanged; do not repeat it immediately or before each subcommand. Read it again in a later user turn, after the exact route changes, after a previously returned setup/access blocker is resolved, or on `AGENT_SKILL_RELEASE_CHANGED`. Do this even when no integration-specific tool appears in the active tool list; a missing active tool is not evidence that the integration is unavailable.",
   "When relevant catalog items return a formal `integrationRouting` contract, follow only its current fields and never infer routing from skill IDs, titles, array order, or prior use. Within one returned `family`, use the sole enabled item or apply the exact returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics. Move only to the exact `fallbackSkillId` after the selected item has established a reason present in its own `fallbackWhen`. Keep every skill's assignment, connection, local session, and policy independent. Missing, malformed, or inconsistent routing metadata, catalog/control-plane unavailability, timeout, transient or unknown failure, and `ambiguousMutationFallback: forbidden` never permit fallback or an automatic repeat; establish the live result first or ask the user whether to retry.",
-  "Use only an exact `runtimeExecution` command or the declared `trelio-remote-skills` tools with returned identity/release. A leading `trelio-workspace` is the logical launcher of this plugin: use PATH or this version's bundled bridge through Node.js 22+, without scanning caches, announcing a normally absent PATH entry, or running a failing probe. Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script during ordinary operational use.",
+  "Use only an exact `runtimeExecution.localAction` through its declared `trelio-remote-skills` tool, or the declared Remote MCP tools with returned identity/release. Legacy responses without a structured action are handled only by the selected skill's lazy compatibility procedure. Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script during ordinary operational use.",
   "Treat an explicit task to develop, debug, audit, release, or live-verify Trelio or an Agent Skill in an identified canonical repository checkout as a separate maintainer route. Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes may run without forcing the current signed release or catalog execution path; preserve connection scope and ACL, protected secret delivery, no-logging rules, output bounds, and separate authorization for external mutations. A checkout alone never enables maintainer mode, and ordinary company operations return to catalog/get/runtime routing.",
   "Do not call `request_plugin_install` or open another integration's authorization before this catalog check. When search selects a matching enabled skill, use it after fresh `get_agent_skill`. If the selected skill or its company/personal connection reports `setup_required`, `no_access`, or `needs_reconnect`, state that this skill is currently unavailable and name the required setup action. Outside an explicit formal `integrationRouting` contract, do not search for or use another implementation automatically; another source is eligible only after the user explicitly chooses it after seeing the blocker. When search returns no relevant assigned skill, compatible personal skills and connectors remain available. Unavailable `search_agent_skills` / `get_agent_skill` or a transient network failure does not itself establish skill absence, `no_access`, or `setup_required`.",
   "Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow: do not run skill search merely for task discovery, workspace/Run/context, checkpoint, submit, or restore. This gate does not weaken secret, personal-session, approval, or confirmation boundaries.",
@@ -3217,6 +3219,7 @@ const LOCAL_TOOLS = [
   TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  TRELIO_WORKSPACE_ACTION_TOOL,
   ...LOCAL_PROPOSAL_APP_TOOLS,
   {
     name: "plan_company_private_agent_skill_create",
@@ -3999,6 +4002,13 @@ export const handleToolCall = async (
   }
   if (name === TRELIO_LOCAL_WORKSPACE_TOOL.name) {
     return buildTextResult(await handleTrelioLocalWorkspaceOperation(
+      origin,
+      rawArguments,
+      { signal },
+    ));
+  }
+  if (name === TRELIO_WORKSPACE_ACTION_TOOL.name) {
+    return buildTextResult(await handleTrelioWorkspaceActionOperation(
       origin,
       rawArguments,
       { signal },

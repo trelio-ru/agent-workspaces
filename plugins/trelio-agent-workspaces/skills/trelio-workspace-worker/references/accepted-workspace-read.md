@@ -10,11 +10,11 @@ answering from already accepted Workspace materials without changing them.
    working-folder binding does not prove accepted materials exist.
 2. Call `prepare_agent_workspace_read` once with exact `workspaceId`, `taskId`,
    or canonical task URL coordinates. It rechecks read ACL and returns the
-   current accepted head plus exact
-   `trelio-workspace inspect --workspace ...`. If no accepted materials exist,
+   current accepted head plus exact `bridge.action`. If no accepted materials exist,
    report that fact; do not call `ensure_agent_workspace`,
    `prepare_agent_workspace_run`, or `start_agent_workspace_run` to create them.
-3. Execute the returned command through this loaded plugin's logical launcher.
+3. Call the action's exact `server` and `tool` once with its unchanged
+   `arguments`; do not convert it to a shell command or probe PATH.
    It creates no Run, lease, checkpoint, task-status proposal, or Trelio mutation.
    For company E2EE it downloads pinned ciphertext and decrypts it only inside
    private bridge state. A tracked symlink, gitlink, or other non-regular file
@@ -32,3 +32,6 @@ A later request for durable changes is a new writable intent: read the Run
 references and call `prepare_agent_workspace_run`. Never reinterpret read intent
 as permission to create a Run or ask the user to open Trelio and start one
 manually.
+
+If an older backend returns only `bridge.command`, do not execute it directly;
+read `setup-and-recovery.md` and use its bounded legacy compatibility route.

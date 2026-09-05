@@ -285,7 +285,8 @@ runtime Codex, даже если команда `node` отсутствует в
 Trelio. Установка через штатный package manager предлагается только когда ни
 bundled, ни системного совместимого Node действительно нет; без явного
 подтверждения пользователя системное ПО не устанавливается. Глобальная команда
-`trelio-workspace` не требуется: плагин использует свой bundled script.
+`trelio-workspace` не требуется: typed local action dispatcher использует exact
+Node executable и bundled script loaded plugin без shell/PATH lookup.
 
 Agent Workspaces поэтому запускается на desktop macOS/Windows/Linux, а не в
 мобильном браузере. Сам web-интерфейс зашифрованной компании поддерживает
@@ -369,8 +370,8 @@ OAuth каждый пользователь подтверждает лично.
 ## Чтение принятого Workspace без Run
 
 Для чистого чтения воркспейса агент вызывает
-`prepare_agent_workspace_read` и запускает возвращённую команду
-`trelio-workspace inspect --workspace ...`. Bridge materialize-ит exact
+`prepare_agent_workspace_read` и передаёт возвращённый typed `bridge.action`
+локальному `continue_trelio_workspace_action`. Bridge materialize-ит exact
 accepted head и текущие instruction/profile snapshots в private read-only
 каталоге. В encrypted-компании bundle скачивается как `TRELIOE1` и
 расшифровывается локально. Операция не создаёт Run, lease, checkpoint, status

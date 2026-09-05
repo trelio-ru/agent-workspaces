@@ -41,10 +41,13 @@ Let the user use Trelio's protected browser form when practical. When the
 value already exists in a trusted local producer/file, an active Run may send
 it straight to the bridge without model-visible transport:
 
-- one field: `PRODUCER | trelio-workspace secret set --secret UUID` or
-  `trelio-workspace secret set --secret UUID --file PATH`;
-- several fields: send one JSON object with exact string/null field values and
-  mandatory `--format fields-json` through stdin or the file form.
+- for a file, call `continue_trelio_workspace_action` with
+  `operation=secret_set_file`, the exact opened `workingDirectory`, and only
+  `secretId`, absolute `filePath`, and optional `format=fields-json`;
+- for a producer/stdin value, read `setup-and-recovery.md` and use its bounded
+  process-only secret-input route. Never put producer output in an MCP call;
+- for several fields, the file/producer contains one JSON object with exact
+  string/null values and explicit `fields-json` format.
 
 Without the format flag, JSON-looking bytes remain one scalar value for
 compatibility. Never split one logical multi-field credential into separate
@@ -84,8 +87,10 @@ merely to make the chat exception available.
 
 When an authorized executable needs a value, call
 `prepare_agent_secret_checkout` for the exact current Run, executable, and
-field set, then execute the single returned
-`trelio-workspace secret exec --grant ... -- COMMAND`. The bridge consumes the
+field set, then execute the single returned `bridge.action` through its exact
+local server/tool and opened `workingDirectory`. Append only the intended
+child arguments to `parameters.arguments`; never change its executable or grant.
+The bridge consumes the
 grant through the authorized stdin, scoped env, or private temporary-file mode.
 In an encrypted company the server returns only the ACL-gated ciphertext; the
 bridge validates its company/scope/secret/version binding, decrypts it in
@@ -119,8 +124,8 @@ Run and ordered `steps`:
 - give every step an exact HTTPS URL and every field a precise CSS selector for
   one visible supported top-level `input` or `textarea`.
 
-Execute exactly one returned
-`trelio-workspace secret browser-fill --grant ... --target ...` command. The
+Execute exactly one returned `bridge.action` through its declared local
+server/tool and exact opened `workingDirectory`. The
 bridge opens one dedicated window/tab/profile, decrypts E2EE values locally
 when needed, and fills automatically only the fields bound by the grant. Never
 create separate grants for login and password, ask the user to focus a field,
@@ -166,8 +171,5 @@ safe reference in `WORKSPACE_CONTEXT.md`:
 checkout grant, setup URL, runtime arguments, or merely discovered but unused
 secrets.
 
-Treat a leading `trelio-workspace` in returned secret commands as the logical
-launcher of this loaded plugin. Use PATH when available; otherwise replace
-only the first token with Node.js 22+ and this skill's bundled
-`../../scripts/trelio-workspace.mjs`, preserving every other token. Never scan
-plugin caches or run a command merely to discover failure.
+If an older backend returns only a secret command, use the bounded legacy route
+in `setup-and-recovery.md`. Never probe PATH or scan plugin caches.

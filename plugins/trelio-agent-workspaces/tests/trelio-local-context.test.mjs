@@ -19,13 +19,17 @@ import {
   TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  TRELIO_WORKSPACE_ACTION_TOOL,
   buildEncryptedRestoreHandoffArguments,
   buildLocalTaskAttachmentStreamRequest,
   buildLocalMarkdownDocument,
+  buildTrelioWorkspaceActionInvocation,
+  buildWorkspaceBridgeProcessArguments,
   fetchMirrorResult,
   findPreparedEncryptedRestoreRun,
   getWorkspaceFileFromMirror,
   handleNativeLocalContextRead,
+  handleTrelioWorkspaceActionOperation,
   hydrateChangedCompanyMirrorRecords,
   isLocalTaskSectionRevisionConflict,
   listCompanyContextMirror,
@@ -60,6 +64,172 @@ import {
 } from "../scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
+
+const actionWorkspaceId = "11111111-1111-4111-8111-111111111111";
+const actionRunId = "22222222-2222-4222-8222-222222222222";
+const actionReleaseId = "33333333-3333-4333-8333-333333333333";
+const actionGrantId = "44444444-4444-4444-8444-444444444444";
+const actionSecretId = "55555555-5555-4555-8555-555555555555";
+const actionWorkingDirectory = path.resolve(os.tmpdir(), "trelio-action-workspace");
+
+test("typed Workspace dispatcher covers every public bridge operation without shell input", () => {
+  const actions = [
+    ["doctor", { json: true }],
+    ["login", { legacyOauth: false }],
+    ["encryption_setup", { companySlug: "acme", json: true }],
+    ["inspect", { workspaceId: actionWorkspaceId }],
+    ["open", { workspaceId: actionWorkspaceId, runId: actionRunId }],
+    ["status", {}, actionWorkingDirectory],
+    ["heartbeat", {}, actionWorkingDirectory],
+    ["context_sync", {}, actionWorkingDirectory],
+    ["context_attach", { workspaceId: actionWorkspaceId }, actionWorkingDirectory],
+    ["context_fetch", { path: "../context/related/source.md" }, actionWorkingDirectory],
+    ["clean", { dryRun: true }],
+    ["checkpoint", { type: "draft", summary: "Сохранить завершённую часть" }, actionWorkingDirectory],
+    ["pause", {
+      summary: "Сохранить результат перед решением",
+      questions: ["Какой вариант выбрать?"],
+      nextAction: "Продолжить после ответа",
+    }, actionWorkingDirectory],
+    ["finish", {
+      summary: "Подготовлен и проверен итоговый материал",
+      evidence: ["Проверка прошла"],
+      filePaths: ["artifacts/result.md"],
+      nextAction: "Проверить результат",
+      taskOutcome: "work_completed",
+    }, actionWorkingDirectory],
+    ["submit", { message: "Сохранить результат" }, actionWorkingDirectory],
+    ["skill_pack", {
+      skillId: "example-skill",
+      runtimeVersion: "1.2.3",
+      sourceDirectory: path.resolve(os.tmpdir(), "skill-source"),
+      entrypointPath: "main.mjs",
+      interpreter: "node",
+      outputPath: path.resolve(os.tmpdir(), "example.skillpkg"),
+      capabilities: ["network"],
+    }],
+    ["skill_run", {
+      companyId: actionWorkspaceId,
+      skillId: "example-skill",
+      releaseId: actionReleaseId,
+      arguments: ["search", "--query", "exact phrase"],
+    }],
+    ["secret_exec", {
+      grantId: actionGrantId,
+      executable: "/usr/bin/example",
+      arguments: ["--mode", "safe"],
+    }, actionWorkingDirectory],
+    ["secret_browser_fill", {
+      grantId: actionGrantId,
+      targetUrl: "https://example.com/login",
+    }, actionWorkingDirectory],
+    ["secret_set_file", {
+      secretId: actionSecretId,
+      filePath: path.resolve(os.tmpdir(), "secret-value.json"),
+      format: "fields-json",
+    }, actionWorkingDirectory],
+  ];
+
+  for (const [operation, parameters, workingDirectory] of actions) {
+    const invocation = buildTrelioWorkspaceActionInvocation({
+      schemaVersion: 1,
+      operation,
+      parameters,
+      ...(workingDirectory ? { workingDirectory } : {}),
+    });
+    assert.equal(invocation.operation, operation);
+    assert.equal(invocation.argumentsList.includes("trelio-workspace"), false);
+    assert.equal(invocation.argumentsList.some((value) => value.includes("\0")), false);
+    assert.equal(invocation.workingDirectory, workingDirectory ?? null);
+  }
+});
+
+test("typed Workspace dispatcher rejects undeclared flags and implicit destructive cleanup", () => {
+  assert.throws(
+    () => buildTrelioWorkspaceActionInvocation({
+      schemaVersion: 1,
+      operation: "inspect",
+      parameters: { workspaceId: actionWorkspaceId, shell: "sh" },
+    }),
+    (error) => error?.code === "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+  );
+  assert.throws(
+    () => buildTrelioWorkspaceActionInvocation({
+      schemaVersion: 1,
+      operation: "clean",
+      parameters: {},
+    }),
+    (error) => error?.code === "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+  );
+  assert.throws(
+    () => buildTrelioWorkspaceActionInvocation({
+      schemaVersion: 1,
+      operation: "checkpoint",
+      parameters: { type: "draft", summary: "Готово" },
+      workingDirectory: "relative/workspace",
+    }),
+    (error) => error?.code === "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+  );
+  assert.throws(
+    () => buildTrelioWorkspaceActionInvocation({
+      schemaVersion: 1,
+      operation: "secret_exec",
+      parameters: {
+        grantId: actionGrantId,
+        executable: "/usr/bin/example",
+        arguments: [],
+      },
+    }),
+    (error) => error?.code === "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+  );
+});
+
+test("bridge origin stays before child argv and the local handler uses the exact Node bridge route", async () => {
+  const processArguments = buildWorkspaceBridgeProcessArguments(
+    "https://trelio.example",
+    ["secret", "exec", "--grant", actionGrantId, "--", "/usr/bin/example", "--flag"],
+  );
+  const separatorIndex = processArguments.indexOf("--");
+  assert.deepEqual(
+    processArguments.slice(separatorIndex - 2, separatorIndex + 3),
+    ["--origin", "https://trelio.example", "--", "/usr/bin/example", "--flag"],
+  );
+
+  let captured = null;
+  const result = await handleTrelioWorkspaceActionOperation(
+    "https://trelio.example",
+    {
+      schemaVersion: 1,
+      operation: "checkpoint",
+      parameters: { type: "draft", summary: "Сохранить завершённую часть" },
+      workingDirectory: actionWorkingDirectory,
+    },
+    {
+      runBridge: async (origin, argumentsList, options) => {
+        captured = { origin, argumentsList, options };
+        return { stdout: "Checkpoint сохранён\n", stderr: "" };
+      },
+    },
+  );
+  assert.deepEqual(captured, {
+    origin: "https://trelio.example",
+    argumentsList: [
+      "checkpoint",
+      "--type",
+      "draft",
+      "--summary",
+      "Сохранить завершённую часть",
+    ],
+    options: { cwd: actionWorkingDirectory, signal: undefined },
+  });
+  assert.deepEqual(result, {
+    schemaVersion: 1,
+    operation: "checkpoint",
+    stdout: "Checkpoint сохранён\n",
+  });
+  assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.name, "continue_trelio_workspace_action");
+  assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.inputSchema.additionalProperties, false);
+});
 
 test("encrypted local rule publications enforce company/project UTF-8 limits before encryption", () => {
   assert.deepEqual(

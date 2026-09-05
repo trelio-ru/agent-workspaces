@@ -8,6 +8,7 @@ import {
   TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
   TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
+  TRELIO_WORKSPACE_ACTION_TOOL,
 } from "./trelio-local-context.mjs";
 
 export const PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION = 1;
@@ -44,7 +45,9 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   taskRunWithProposalBundleBytes: 55_000,
   requiredTaskRunPluginLayerBytes: 61_000,
   taskRunWithProposalBundlePluginLayerBytes: 64_000,
-  localProviderToolSchemasBytes: 3_500,
+  // The added schema is a compact typed dispatcher; it replaces launcher
+  // resolution prose in every operational Run and signed-runtime prompt.
+  localProviderToolSchemasBytes: 3_800,
   plainCompanyTaskRunPluginLayerBytes: 64_000,
   encryptedCompanyTaskRunPluginLayerBytes: 73_000,
 });
@@ -102,6 +105,7 @@ export const buildPluginContextBudgetReport = async () => {
       TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL,
       TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
       TRELIO_LOCAL_WORKSPACE_TOOL,
+      TRELIO_WORKSPACE_ACTION_TOOL,
     ])),
   };
   const runtimeAgents = {
@@ -146,7 +150,7 @@ export const buildPluginContextBudgetReport = async () => {
         runtimeAgents,
         taskRunWithProposalBundle,
       ]),
-      // Ordinary companies see only four compact provider-neutral schemas. The
+      // Ordinary companies see only five compact provider-neutral schemas. The
       // complete protected-provider manual remains absent from their skill
       // path and therefore cannot consume their task context window.
       plainCompanyTaskRunPluginLayer: sumMeasurements([

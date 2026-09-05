@@ -105,6 +105,25 @@ in a fresh owner process.
 Do not claim readiness because skill text is visible. Confirm it with a
 successful low-risk MCP read such as `get_my_context` or `get_task`.
 
+## Legacy command-only responses
+
+Use this route only when an older Trelio response has no `bridge.action` or
+`runtimeExecution.localAction` and returns a server-authored command whose first
+token is exactly `trelio-workspace`. Never execute or probe that token in PATH.
+Resolve this loaded plugin's exact `scripts/launch-trelio-node` (or sibling
+`.cmd` on native Windows) and `scripts/trelio-workspace.mjs`, then pass the
+unchanged validated trailing argv to those two bundled paths. Do not `eval` the
+text, scan plugin caches, select another installed version, or accept an
+unknown operation/flag. Prefer returned `argv`/`argvPrefix` over parsing text
+when present.
+
+This compatibility route is valid only for the public bridge operations
+documented by the loaded bridge. Runtime and secret child arguments stay after
+their existing `--`. For `secret set` from a trusted producer, pipe bytes
+directly into this bundled process; never place them in MCP arguments, argv,
+chat, or a temporary Workspace file. A launcher failure is reportable only
+after the exact bundled route fails; absence of a global command is normal.
+
 ## Missing or unusable local Git
 
 Git is a local bridge prerequisite, not proof about Trelio OAuth, MCP ACL, or
@@ -182,8 +201,8 @@ failure, it proves that Hooks are enabled; never replace it with the
    without an update notice.
 4. If the plugin updated but the current task cannot reload safely, ask only
    for a new task and preserve any Run directory. There execute the same
-   original call or `trelio-workspace open --workspace <uuid> --run <uuid>`
-   command.
+   original structured action, or this section's legacy route when the saved
+   response predates typed actions.
 5. Require a full Codex restart only if the new task still reports the old
    version or lacks MCP tools. If automatic update failed, show the exact
    fallback command returned by the bridge and keep the order: current task,
