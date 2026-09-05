@@ -6671,6 +6671,13 @@ export const handleTrelioLocalActionOperation = async (
       "arguments must contain the exact native MCP input object.",
     );
   }
+  if (nativeTool === "save_known_agent_secret") {
+    // Secrets never enter the generic mirror, content-marker uploader or
+    // native-provider fallback. Both company modes use one memory-only local
+    // primitive; its atomic server path retains the native runtime proof.
+    const { handleKnownAgentSecretChatSave } = await import("./trelio-secret-chat.mjs");
+    return handleKnownAgentSecretChatSave(origin, rawInput, { signal });
+  }
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   const hasLocalFilePath = rawInput.localFilePath !== undefined;
   if (hasLocalFilePath && nativeTool !== "upload_attachment") {
@@ -8840,7 +8847,8 @@ export const TRELIO_WORKSPACE_ACTION_TOOL = {
 export const TRELIO_LOCAL_ACTION_TOOL = {
   name: "continue_trelio_local_action",
   title: "Continue a Trelio local action route",
-  description: "Continue one Trelio local action. For upload_attachment, pass absolute localFilePath and omit dataBase64, sizeBytes and sha256; the bridge streams the file.",
+  description: "Continue one Trelio action locally. upload_attachment: pass localFilePath, omit bytes/size/hash. save_known_agent_secret: follow the Agent Secrets reference.",
+  _meta: { "trelio/sensitiveInput": true },
   inputSchema: {
     type: "object",
     additionalProperties: false,

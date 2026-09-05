@@ -4162,9 +4162,14 @@ test("release CI pins Node 22 and avoids the parent test-runner IPC", async () =
     workflowSource.indexOf("node-tests:"),
     workflowSource.indexOf("windows-acl:"),
   );
-  assert.equal([
-    ...genericJobSource.matchAll(/node plugins\/trelio-agent-workspaces\/tests\/[^\s]+\.test\.mjs/gu),
-  ].length, 9);
+  const directTests = [
+    ...genericJobSource.matchAll(/node plugins\/trelio-agent-workspaces\/tests\/([^\s]+\.test\.mjs)/gu),
+  ].map((match) => match[1]).sort();
+  // Check the actual host suite rather than a stale fixed count: a new
+  // security test must also be registered in CI, exactly once.
+  const hostTests = (await readdir(path.join(pluginDirectory, "tests")))
+    .filter((name) => name.endsWith(".test.mjs")).sort();
+  assert.deepEqual(directTests, hostTests);
   assert.doesNotMatch(genericJobSource, /node --test/u);
 });
 
@@ -4874,7 +4879,9 @@ test("workspace skill derives Agent Secret protection from company encryption", 
   assert.match(workspaceSkill, /merely sharing it, asking\s+to sign in, or asking to use it is not storage consent/u);
   assert.match(workspaceSkill, /`userExplicitlyRequestedPersistentStorage=true`/u);
   assert.match(workspaceSkill, /original plaintext remains in the chat and may remain\s+in the AI client's tool history/u);
-  assert.match(workspaceSkill, /This MCP path cannot save an encrypted-company\s+secret because MCP has no company key/u);
+  assert.match(workspaceSkill, /nativeTool=save_known_agent_secret` for both plain and encrypted companies/u);
+  assert.match(workspaceSkill, /do not ask for another confirmation or manual re-entry/u);
+  assert.match(workspaceSkill, /locally encrypts E2EE metadata and values before one\s+atomic server write/u);
   assert.match(workspaceSkill, /Never ask for a new value\s+merely to make the chat exception available/u);
 });
 

@@ -271,6 +271,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
   Любой credential не попадает в model-visible output, argv, ambient
   environment, workspace, comments, checkpoints, handoff или logs.
+- Уже присланные chat values сохраняются только через local
+  `continue_trelio_local_action`/`save_known_agent_secret` после прямой storage
+  просьбы, company opt-in, manage/create ACL и active Run. В обоих режимах это
+  полный bundle; E2EE metadata/value шифруются в памяти до atomic publication.
+  Secret input не проходит generic content uploader, mirror или shell/file.
+  Схема и recovery описаны в
+  `plugins/trelio-agent-workspaces/skills/trelio-workspace-worker/references/agent-secrets.md`.
 - Для зашифрованной компании bridge получает ключ шифрования только через
   одноразовую loopback-форму `127.0.0.1`, создаёт отдельную device identity и
   сохраняет её wrapped private bundle вместе с локальным unlock key только в

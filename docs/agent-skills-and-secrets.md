@@ -275,25 +275,36 @@ Trelio пытается очистить неизменённый clipboard, н�
 Нельзя просить secret в чате, помещать его в argv, shell variable, workspace,
 MCP output, комментарий, checkpoint или handoff, заменять executable на
 shell/logger/`env`/`cat` либо сохранять plaintext в локальном bridge config.
-Карточка создаётся без значения, а значение вводится в защищённой Trelio форме
-или подаётся из существующего доверенного producer/file напрямую в bridge.
+Значение вводится в защищённой Trelio форме или подаётся из существующего
+доверенного producer/file напрямую в bridge; для уже присланного в чат значения
+действует отдельный opt-in ниже.
 
 Перед созданием агент вызывает `list_agent_secrets` для exact scope, чтобы
 исключить дубликат, и читает `allowAgentSaveChatSecrets`. Storage mode не
 передаётся и вопрос о выборе хранения не задаётся. MCP placeholder доступен
-только обычной компании; в encrypted-компании карточку создаёт пользователь в
+только обычной компании; вне local chat-save в encrypted-компании карточку создаёт пользователь в
 защищённом browser UI, где локально шифруются также name, description и labels.
 
 `allowAgentSaveChatSecrets` по умолчанию выключен и не является общим
 разрешением. Когда он равен `true`, пользователь уже прислал точное значение в
-текущем диалоге и отдельно попросил сохранить именно его, агент может вызвать
-`save_known_agent_secret` только для существующего `trelio`-секрета обычной
-компании с `manage` и active Run. Нужны exact `expectedCurrentVersion`,
-стабильный `clientRequestId` и literal
-`userExplicitlyRequestedPersistentStorage=true`. Plaintext уже остаётся в чате
-и может остаться в tool history, но не возвращается в response/audit. Для
-`company_e2ee` этот MCP-путь закрыт: у MCP нет ключа компании; используется
-защищённая форма или bridge из существующего локального источника.
+текущем диалоге и прямо попросил сохранить именно его, агент использует локальный
+`continue_trelio_local_action` с `nativeTool=save_known_agent_secret` в обоих
+типах компаний. Нужны `manage` существующей карточки либо право создания в exact
+scope, active Run, exact `expectedCurrentVersion`, стабильный `clientRequestId`
+и literal `userExplicitlyRequestedPersistentStorage=true`. Просьба сохранить
+вместе с данными достаточна; повторного подтверждения или ручного ввода нет.
+
+Аргументы содержат `secretId` либо `newSecret` (scope, name, description,
+template, fields) и ровно одно из `value`/`values`. Новая карточка имеет CAS 0.
+Plugin выполняет value-free preflight; для E2EE шифрует и подписывает metadata
+и values в памяти. Карточка, ciphertext, версия, audit и replay-result
+сохраняются атомарно. В обоих режимах передаётся полный bundle; пропущенные
+optional fields удаляются. Повтор с тем же request ID не создаёт дубль.
+Plaintext остаётся в исходном чате и может остаться в tool history, но не
+возвращается в response/audit и не копируется в shell, файл или mirror.
+Прямой remote `save_known_agent_secret` остаётся legacy plain-only путём;
+новая инструкция выбирает локальный facade. При недоступном opt-in или
+устройстве используется штатная настройка доступа либо защищённая форма.
 
 `secret set` сначала проверяет версию plugin и получает value-free write
 context, затем читает stdin/file. Однополевый ввод без format сохраняется одной

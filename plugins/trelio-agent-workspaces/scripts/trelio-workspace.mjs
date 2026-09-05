@@ -3224,7 +3224,7 @@ const deletePendingPairing = async (origin) => {
   await writePendingPairings(pairings);
 };
 
-class BridgePairingRequiredError extends Error {
+export class BridgePairingRequiredError extends Error {
   constructor(pairing) {
     super([
       "TRELIO_BRIDGE_PAIRING_REQUIRED",
@@ -10903,7 +10903,7 @@ export const canOmitAgentWorkspaceHandoffFiles = ({
   && clientMetadataSource === "local_encrypted_restore"
 );
 
-const buildAgentEncryptedPayloadSignatureRecord = (payload) => ({
+export const buildAgentEncryptedPayloadSignatureRecord = (payload) => ({
   suite: payload.suite,
   scopeId: payload.scopeId,
   scopeEpoch: payload.scopeEpoch,
@@ -12806,7 +12806,7 @@ const fetchAgentSecretWriteContext = async ({
   };
 };
 
-const buildCompleteAgentSecretValues = ({ valuePayload, context }) => {
+export const buildCompleteAgentSecretValues = ({ valuePayload, context }) => {
   const fields = context.fields;
   const allowedKeys = new Set(fields.map((field) => field.key));
   const values = Object.create(null);

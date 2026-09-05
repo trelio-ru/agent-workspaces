@@ -31,7 +31,8 @@ Before creating a record, call `list_agent_secrets` for the exact target scope
 to detect an existing card and read `allowAgentSaveChatSecrets`. Do not ask the
 user to choose a storage mode and do not pass one to
 `create_agent_secret_placeholder`. MCP placeholder creation is available only
-for a plain company. In an encrypted company the user creates the card in
+for a plain company. Unless the already-shared chat flow below applies, in an
+encrypted company the user creates the card in
 Trelio's protected browser UI, where its name, description, field labels, and
 eventual value are encrypted locally.
 
@@ -64,23 +65,53 @@ Secret values to its private config or Workspace.
 
 ## Already-shared chat values
 
-Use `save_known_agent_secret` only when every condition below is true:
+Use local `trelio-remote-skills.continue_trelio_local_action` with
+`nativeTool=save_known_agent_secret` for both plain and encrypted companies,
+only when every condition below is true:
 
 - `allowAgentSaveChatSecrets=true` for the exact company;
 - the exact value was already supplied in the current conversation and the
-  user separately asked to save that value durably; merely sharing it, asking
+  user directly asked to save that value durably; merely sharing it, asking
   to sign in, or asking to use it is not storage consent;
-- the target is an existing plain-company `trelio` secret with `manage` and an
-  applicable Agent Run is active;
+- the target is an existing secret with `manage` or a new card in an exact
+  scope where the user can create secrets, and an applicable Agent Run is active;
 - the call supplies exact `expectedCurrentVersion`, a stable
   `clientRequestId`, and literal
   `userExplicitlyRequestedPersistentStorage=true`.
 
-Tell the user that the original plaintext remains in the chat and may remain
-in the AI client's tool history. Send it only in that one sensitive tool input;
-never echo or copy it elsewhere. This MCP path cannot save an encrypted-company
-secret because MCP has no company key. Use the protected browser form or
-`secret set` from an existing local source instead. Never ask for a new value
+The user's request to save, including a request accompanying the value, is
+sufficient: do not ask for another confirmation or manual re-entry. Tell the
+user that the original plaintext remains in the chat and may remain
+in the AI client's tool history. Send it only in the local sensitive tool input;
+never echo or copy it elsewhere.
+
+Pass the exact `companySlug`, `nativeTool`, and an `arguments` object with:
+
+- `secretId` for an existing card, or `newSecret` containing
+  `scopeType`, `scopeId`, `name`, optional `publicDescription` and
+  `templateType`, and `fields` with exact `key/label/type/required`;
+- `runId`, exact `expectedCurrentVersion` (zero for creation), stable
+  `clientRequestId`, and `userExplicitlyRequestedPersistentStorage=true`;
+- exactly one of `value` (one field) or `values` (named string/null fields).
+
+This local flow replaces the whole bundle in both modes: include all required
+fields; omitted, empty, or null optional fields are cleared. The plugin performs
+a value-free preflight and locally encrypts E2EE metadata and values before one
+atomic server write. Never author internal `localWrite`, use a generic payload
+uploader, or turn chat values into shell/stdin/file/clipboard transport.
+
+The loaded local tool must advertise `save_known_agent_secret`. An older
+generic local-action tool is not this capability: update the plugin through
+the normal compatibility flow or use the protected form.
+
+On an uncertain result, read current safe metadata and retry the exact input
+with the same request ID; never invent a new ID to bypass a conflict. Revoked
+policy/ACL, stale version, expired Run, and pending device access stop the save.
+Follow the normal pairing/device setup route when needed; never request a
+company key through chat. Use the protected browser form if company opt-in or
+the local capability is unavailable. Legacy direct remote
+`save_known_agent_secret` accepts only existing plain-company values and is
+not the default flow. Never ask for a new value
 merely to make the chat exception available.
 
 ## Executable checkout

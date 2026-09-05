@@ -1730,6 +1730,7 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.equal(Buffer.byteLength(JSON.stringify(establishedProviderTools), "utf8") <= 3_000, true);
   assert.equal(Buffer.byteLength(JSON.stringify(actionTool), "utf8") <= 900, true);
   assert.equal(Buffer.byteLength(JSON.stringify(workspaceActionTool), "utf8") <= 900, true);
+  assert.equal(actionTool._meta?.["trelio/sensitiveInput"], true);
   assert.doesNotMatch(JSON.stringify(providerTools), /encrypt|e2ee|cipher|private key/iu);
   const contextTool = providerTools.find(({ name }) => (
     name === "get_trelio_local_proposal_context"

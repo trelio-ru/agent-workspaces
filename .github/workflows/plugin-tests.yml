@@ -85,6 +85,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-secret-chat.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 
   windows-acl:
