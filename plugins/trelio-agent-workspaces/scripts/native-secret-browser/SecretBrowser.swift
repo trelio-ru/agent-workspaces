@@ -7,6 +7,28 @@ import ApplicationServices
 import Security
 import CryptoKit
 
+// A kernel lease serializes native fills across local client sessions. The OS
+// releases it even when a bridge/helper crashes; no stale PID-file takeover or
+// concurrent username/password setters are possible.
+final class NativeLease {
+    let descriptor: Int32
+    init() throws {
+        let directory = URL(fileURLWithPath: CommandLine.arguments[0])
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let file = directory.appendingPathComponent("active.lock").path
+        descriptor = Darwin.open(file, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw Stop.failed("adapter_error") }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_uid == getuid(),
+              (metadata.st_mode & 0o077) == 0, (metadata.st_mode & S_IFMT) == S_IFREG,
+              flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            Darwin.close(descriptor)
+            throw Stop.failed("browser_unavailable")
+        }
+    }
+    deinit { Darwin.close(descriptor) }
+}
+
 enum Stop: Error {
     case failed(String)
     case unavailable(String)
@@ -107,6 +129,7 @@ func walk(_ root: AXUIElement, stopAtWebArea: Bool = false) throws -> [AXUIEleme
 }
 
 final class Session {
+    let lease: NativeLease
     let application: NSRunningApplication
     let appElement: AXUIElement
     let steps: [Step]
@@ -169,6 +192,7 @@ final class Session {
         return (fields, button)
     }
     init(_ request: Request) throws {
+        lease = try NativeLease()
         guard AXIsProcessTrusted() else { throw Stop.unavailable("access_required") }
         let bundle: String
         let team: String
@@ -282,6 +306,7 @@ final class Session {
                 }
             }
         }
+        withExtendedLifetime(lease) {}
     }
 }
 

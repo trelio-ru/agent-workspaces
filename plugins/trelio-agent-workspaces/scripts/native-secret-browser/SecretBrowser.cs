@@ -10,6 +10,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -20,6 +21,19 @@ internal sealed class Stop : Exception {
     internal readonly string Status;
     internal readonly string Reason;
     internal Stop(string reason, bool unavailable = false) { Reason = reason; Status = unavailable ? "unavailable" : "failed"; }
+}
+internal sealed class NativeLease : IDisposable {
+    private readonly Mutex mutex;
+    internal NativeLease() {
+        // Local\ + SID restricts contention to this user's desktop session.
+        // An abandoned mutex already belongs to this thread after WaitOne
+        // throws, so a dead helper cannot leave a permanent filesystem lock.
+        mutex = new Mutex(false, @"Local\TrelioSecretBrowser-" + WindowsIdentity.GetCurrent().User.Value);
+        bool acquired;
+        try { acquired = mutex.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
+        if (!acquired) { mutex.Dispose(); throw new Stop("browser_unavailable"); }
+    }
+    public void Dispose() { mutex.ReleaseMutex(); mutex.Dispose(); }
 }
 public sealed class Field {
     public string fieldKey { get; set; }
@@ -98,6 +112,7 @@ internal static class Signature {
 }
 
 internal sealed class Session {
+    private readonly NativeLease lease;
     private readonly Process process;
     private readonly DateTime startedAt;
     private readonly AutomationElement window;
@@ -194,6 +209,7 @@ internal sealed class Session {
         return result;
     }
     internal Session(Request request) {
+        lease = new NativeLease();
         if (request.clientFamily != "codex" && request.clientFamily != "claude-code") throw new Stop("client_unsupported", true);
         if (request.steps == null || request.steps.Length == 0 || request.steps.Length > 10
             || request.steps.Any(step => step.fields == null || step.fields.Length == 0 || step.fields.Length > 50))
@@ -298,6 +314,7 @@ internal sealed class Session {
                 ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
             }
         }
+        GC.KeepAlive(lease);
     }
 }
 internal static class Program {

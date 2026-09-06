@@ -45,6 +45,21 @@ internal static class Harness {
     static object Call(string name, params object[] args) { return sessionType.GetMethod(name, Static).Invoke(null, args); }
     static void Set(object instance, string name, object value) { sessionType.GetField(name, Hidden).SetValue(instance, value); }
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
+    static IDisposable Lease() { return (IDisposable)Activator.CreateInstance(typeof(Step).Assembly.GetType("NativeLease"), true); }
+    static string ProbeLease() {
+        using (var child = Process.Start(new ProcessStartInfo {
+            FileName = typeof(Step).Assembly.Location, UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardInput = true, RedirectStandardOutput = true,
+        })) {
+            // Unknown client cannot inspect any app, even when the lease is
+            // available. The busy/available distinction tests only the mutex.
+            child.StandardInput.WriteLine("{\"command\":\"prepare\",\"clientFamily\":\"other\"}");
+            child.StandardInput.Flush();
+            string result = child.StandardOutput.ReadLine();
+            Check(child.WaitForExit(10000), "lease probe timeout");
+            return result;
+        }
+    }
     static string Reason(Exception error) {
         while (error is TargetInvocationException && error.InnerException != null) error = error.InnerException;
         var reason = error.GetType().GetField("Reason", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -79,6 +94,10 @@ internal static class Harness {
     }
     [MTAThread]
     static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--hold-native-lease") {
+            using (Lease()) { Console.WriteLine("held"); Console.Out.Flush(); Thread.Sleep(Timeout.Infinite); }
+            return 0;
+        }
         var ready = new ManualResetEvent(false);
         Exception uiError = null;
         var thread = new Thread(() => {
@@ -147,6 +166,16 @@ internal static class Harness {
             }));
             try { Fill(session); throw new Exception("repeated fill was accepted"); }
             catch (Exception error) { Check(Reason(error) == "adapter_error", "session must be one-use"); }
+            using (Lease()) Check(ProbeLease().Contains("browser_unavailable"), "parallel helper acquired an owned lease");
+            using (var holder = Process.Start(new ProcessStartInfo {
+                FileName = Assembly.GetExecutingAssembly().Location, Arguments = "--hold-native-lease",
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+            })) {
+                Check(holder.StandardOutput.ReadLine() == "held", "lease holder did not start");
+                Check(ProbeLease().Contains("browser_unavailable"), "parallel helper ignored the lease");
+                holder.Kill(); holder.WaitForExit();
+            }
+            Check(ProbeLease().Contains("client_unsupported"), "crashed helper left a stale lease");
             Console.WriteLine("Windows UIA: exact document, readonly, ambiguity, focus-independent setters, explicit submit and one-use passed.");
             return 0;
         } catch (Exception error) {

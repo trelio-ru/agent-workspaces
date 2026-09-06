@@ -75,7 +75,7 @@ for (const platform of ["darwin", "win32"]) for (const clientFamily of ["codex",
     await assert.rejects(session.fill({ secretValues: values }));
     assert.equal(f.requests.length, 2);
     assert.equal(f.chromeCalls, 0);
-    session.close();
+    await session.close();
     assert.ok(f.closed);
   });
 }
@@ -109,6 +109,8 @@ test("embedded-only forbids fallback; explicit Chrome does not inspect other app
   assert.equal((await prepareSecretBrowserSession({ ...g.args, mode: "chrome" })).surface, "chrome");
   assert.equal(g.builds, 0);
 });
+
+
 test("lost native reply after a setter never calls Chrome or repeats the write", async () => {
   const f = fixture();
   let calls = 0;
@@ -203,10 +205,14 @@ test("Windows UIA core fills a real synthetic document without keyboard focus an
     const exec = promisify(execFile);
     await exec(path.join(framework, "csc.exe"), [
       "/nologo", "/target:exe", "/out:" + output, "/reference:" + executable,
-      ...["UIAutomationClient", "UIAutomationTypes", "WindowsBase", "PresentationCore", "PresentationFramework"]
+      "/reference:System.Xaml.dll",
+      ...["UIAutomationClient", "UIAutomationTypes", "UIAutomationProvider", "WindowsBase", "PresentationCore", "PresentationFramework"]
         .map((name) => "/reference:" + path.join(framework, "WPF", name + ".dll")),
       fileURLToPath(new URL("./fixtures/native-secret-browser-windows.cs", import.meta.url)),
-    ], { timeout: 30_000 });
+    ], { timeout: 30_000 }).catch((error) => {
+      // This compiler only sees a synthetic fixture, never a real secret.
+      throw new Error("Windows fixture compiler: " + (error.stdout || error.stderr || error.message));
+    });
     const result = await exec(output, [], { timeout: 30_000 });
     assert.match(result.stdout, /Windows UIA:.*passed/);
     assert.doesNotMatch(result.stdout + result.stderr, /synthetic-native-user|synthetic-native-password/);
