@@ -53,10 +53,16 @@ internal static class Harness {
         })) {
             // Unknown client cannot inspect any app, even when the lease is
             // available. The busy/available distinction tests only the mutex.
-            child.StandardInput.WriteLine("{\"command\":\"prepare\",\"clientFamily\":\"other\"}");
-            child.StandardInput.Flush();
+            // Match the shipping Node pipe byte-for-byte. Framework's
+            // StandardInput StreamWriter can prepend the console encoding's
+            // UTF-8 BOM on Windows runners, which is not part of this JSONL
+            // protocol and would fail parsing before the lease is consulted.
+            byte[] request = new UTF8Encoding(false).GetBytes("{\"command\":\"prepare\",\"clientFamily\":\"other\"}\n");
+            child.StandardInput.BaseStream.Write(request, 0, request.Length);
+            child.StandardInput.BaseStream.Flush();
             string result = child.StandardOutput.ReadLine();
             Check(child.WaitForExit(10000), "lease probe timeout");
+            Check(result != null && !result.Contains("adapter_error"), "lease probe protocol rejected: adapter_error");
             return result;
         }
     }
