@@ -98,7 +98,9 @@ internal static class Signature {
                 string product = FileVersionInfo.GetVersionInfo(file).ProductName ?? "";
                 return family == "codex"
                     ? new[] { "OpenAI OpCo, LLC", "OpenAI, L.L.C.", "OpenAI" }.Contains(publisher)
-                        && new[] { "Codex", "OpenAI Codex" }.Contains(product)
+                        // Codex is also shipped as the unified ChatGPT app;
+                        // the Authenticode publisher check still applies.
+                        && new[] { "Codex", "OpenAI Codex", "ChatGPT" }.Contains(product)
                     : new[] { "Anthropic PBC", "Anthropic, PBC" }.Contains(publisher) && product == "Claude";
             }
         } catch { return false; }

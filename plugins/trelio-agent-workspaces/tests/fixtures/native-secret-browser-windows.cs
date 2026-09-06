@@ -110,6 +110,12 @@ internal static class Harness {
     }
     [MTAThread]
     static int Main(string[] args) {
+        // Process.StandardInput initializes an AutoFlush StreamWriter from
+        // Console.InputEncoding on .NET Framework. Set a BOM-free encoding
+        // before creating children: even accessing its BaseStream can already
+        // emit the writer's preamble under a UTF-8 Windows console.
+        Console.InputEncoding = new UTF8Encoding(false);
+        Console.OutputEncoding = new UTF8Encoding(false);
         if (args.Length == 1 && args[0] == "--probe-native-session") {
             try {
                 Activator.CreateInstance(typeof(Step).Assembly.GetType("Session"), Hidden, null,
