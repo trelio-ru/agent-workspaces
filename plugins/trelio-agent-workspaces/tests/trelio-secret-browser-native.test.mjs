@@ -184,6 +184,15 @@ test("native helper compiles locally, caches exact bytes and rejects an unprepar
     // selecting or inspecting Codex, Claude or any other application.
     assert.deepEqual(await channel.request({ command: "fill", values }), { status: "failed", reasonCode: "adapter_error" });
     await channel.close();
+    if (process.platform === "win32") {
+      // Exercise the constructor and its native lease without selecting an
+      // application: this family is rejected before any process/UI discovery.
+      channel = openNativeSecretBrowserChannel({ executable });
+      assert.deepEqual(await channel.request({ command: "prepare", clientFamily: "other" }), {
+        status: "unavailable", reasonCode: "client_unsupported",
+      });
+      await channel.close();
+    }
     await fs.appendFile(executable, "modified");
     await assert.rejects(buildNativeSecretBrowserHelper({ directory, ensurePrivateDirectory }), /изменён/);
   } finally {

@@ -62,7 +62,17 @@ internal static class Harness {
             child.StandardInput.BaseStream.Flush();
             string result = child.StandardOutput.ReadLine();
             Check(child.WaitForExit(10000), "lease probe timeout");
-            Check(result != null && !result.Contains("adapter_error"), "lease probe protocol rejected: adapter_error");
+            if (result == null || result.Contains("adapter_error")) {
+                using (var diagnostic = Process.Start(new ProcessStartInfo {
+                    FileName = Assembly.GetExecutingAssembly().Location, Arguments = "--probe-native-session",
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+                })) {
+                    string reason = diagnostic.StandardOutput.ReadLine();
+                    Check(diagnostic.WaitForExit(10000), "lease diagnostic timeout");
+                    // Only an exception type/native fixed reason is returned.
+                    throw new Exception("lease probe protocol rejected; constructor: " + reason);
+                }
+            }
             return result;
         }
     }
@@ -100,6 +110,14 @@ internal static class Harness {
     }
     [MTAThread]
     static int Main(string[] args) {
+        if (args.Length == 1 && args[0] == "--probe-native-session") {
+            try {
+                Activator.CreateInstance(typeof(Step).Assembly.GetType("Session"), Hidden, null,
+                    new object[] { new Request { command = "prepare", clientFamily = "other" } }, null);
+                Console.WriteLine("unexpected_acceptance");
+            } catch (Exception error) { Console.WriteLine(Reason(error)); }
+            return 0;
+        }
         if (args.Length == 1 && args[0] == "--hold-native-lease") {
             using (Lease()) { Console.WriteLine("held"); Console.Out.Flush(); Thread.Sleep(Timeout.Infinite); }
             return 0;
