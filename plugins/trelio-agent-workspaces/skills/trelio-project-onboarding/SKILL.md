@@ -1,6 +1,6 @@
 ---
 name: trelio-project-onboarding
-description: Set up Trelio Agent Workspaces in one durable non-Git local context folder in Codex or Claude Code, create or safely extend its AGENTS.md company/project binding and Claude Code import, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block or CLAUDE.md import, or when the user wants to configure the Trelio skills available to them.
+description: Set up Trelio Agent Workspaces in one durable local context folder in Codex or Claude Code, preserve an incidental host Git shell with workspace isolation, create or safely extend its AGENTS.md company/project binding and Claude Code import, verify client-specific OAuth and local bridge prerequisites/pairing on macOS or Windows, discover the live Trelio skill catalog when remote content is available, and route encrypted companies to the local bridge without exposing credentials. Use after installing or authorizing the Trelio plugin, when the user asks to connect or configure Trelio in a working folder, when a folder needs its Trelio AGENTS.md block or CLAUDE.md import, or when the user wants to configure the Trelio skills available to them.
 ---
 
 # Trelio Working-Folder Onboarding
@@ -49,8 +49,9 @@ current task.
      the user launched `claude`. Do not substitute another shell directory after
      the session started.
    The folder may be empty. It is intentionally an ordinary non-Git context
-   folder. The standalone Git prerequisite checked later belongs to the local
-   bridge and its managed temporary or Run repositories, not to this binding.
+   folder, with the narrowly verified host-shell exception below. The standalone
+   Git prerequisite checked later belongs to the local bridge and its managed
+   temporary or Run repositories, not to this binding.
 2. Treat the selected folder itself as the binding root. Never use a Git root to
    choose or expand it, climb above the client-selected root, or redirect the
    binding to home, a temporary directory, plugin cache, client-internal
@@ -66,12 +67,12 @@ current task.
    new session.
 4. Before Trelio discovery, OAuth, prerequisite installation, or an instruction
    file write, classify Git with read-only checks on the selected folder and its
-   parents. Continue without cleanup only when the selected folder is not inside
+   parents. Accept an ordinary folder when it is not inside
    a Git worktree and is not itself a bare repository or Git directory. Never
    use Git presence, a repository name, or a remote URL as a Trelio
    company/project selector.
-5. Automatically detach an incidental host-created Git shell only when every
-   condition below is proven:
+5. Accept an incidental host-created Git shell without changing `.git` only
+   when every condition below is proven:
    - the selected folder is the exact repository top level and its `.git` is a
      real ordinary directory, not a symlink, gitfile, submodule, or linked
      worktree, and no ancestor owns another Git worktree containing this folder;
@@ -83,8 +84,12 @@ current task.
    - there are no loose or packed refs except the verified Codex turn-diff
      tree snapshots described below; a `refs/codex/` prefix alone is not proof;
    - outside `.git`, the folder is empty or contains only regular root
-     `AGENTS.md`, `AGENTS.override.md`, and/or `CLAUDE.md` files. Any other entry
-     makes the repository ambiguous rather than disposable.
+     `AGENTS.md`, `AGENTS.override.md`, `CLAUDE.md`, and/or `.gitignore` files.
+     A returning binding may also contain an ordinary `workspaces/` directory
+     only when a complete managed Trelio instruction block already exists and
+     the root ignore verification below already succeeds. Do not inspect or
+     modify workspace contents to classify the host shell. Other entries make
+     the repository ambiguous.
 
    Codex can retain turn-diff trees even before the first commit. Classify all
    loose and packed refs with `git for-each-ref` (include `refname`, `objectname`,
@@ -99,35 +104,24 @@ current task.
    is a positive decimal timestamp, and `uuid` is a canonical UUID. Require
    every ref to be non-symbolic and point directly to a `tree` object, never a
    commit, tag, or blob. Inspect each distinct tree with `git ls-tree -z`: it
-   must be empty or contain only regular root instruction-file blobs named
+   must be empty or contain only regular root instruction or `.gitignore` blobs named
    above, with no directory, symlink, submodule, or other historical file.
    Also inspect object types with `git cat-file --batch-all-objects --batch-check`
-   to exclude commit and tag objects, including unreachable history. A failed,
+   to exclude commit and tag objects, including unreachable history. Check every
+   enumerated tree, including unreachable trees, against the same root-file
+   allowlist. Every blob must belong to one of those eligible trees; an orphan
+   blob with no proven instruction/ignore path is ambiguous. A failed,
    incomplete, or warning-producing inspection is ambiguous, not an empty
    result. Other namespaces, including `refs/codex/snapshots` and
    `refs/codex/handoff`, remain blocked even if their names look technical.
 
-   Recheck the full classification immediately before the rename; if the host
-   has added refs, classify them again rather than deleting them or proceeding
-   on the earlier result. The snapshot exception does not relax any other
-   condition above.
-
-   Make this cleanup recoverable: atomically rename the exact `.git` directory,
-   without following links or overwriting a target, to a unique root-level
-   `.git.trelio-detached-<UTC-timestamp>` backup. Use a filename-safe timestamp
-   without colons or slashes, including on Windows. Never use `rm` or discard the
-   metadata. Recheck that the selected folder is no longer a Git worktree and
-   continue onboarding without an intermediate question or cleanup notice.
-   Include the exact backup path and restore rename once in the final setup
-   result. This deterministic cleanup is part of folder onboarding and does not
-   need a separate confirmation.
-   If the rename fails or client approval rejects it, preserve `.git` and
-   report the exact blocker. Do not switch to deletion, ask the user to delete
-   `.git` manually, or retry a rejected action through another tool.
-   For Windows `Access is denied`, follow the working-folder checks in
-   [diagnostics](../trelio-diagnostics/SKILL.md) before attributing the failure
-   to permissions or proposing a repair. Approval of the rename does not prove
-   that Windows permits it.
+   Keep `.git` and its metadata in place. Never rename or delete `.git`, change
+   its ACL or attributes, edit Git config/hooks/refs, or ask the user to do so
+   for onboarding. Host-created Git can be protected even when ordinary folder
+   writes are allowed. An earlier cleanup rejection is not itself a setup
+   blocker when this read-only classification succeeds; do not retry that action.
+   Before content work or writing the binding, complete **Isolate the host
+   shell** below. Preserving a shell without that verification is not readiness.
 6. For every existing or ambiguous repository—including any parent worktree,
    any commit or remote, a `.git` gitfile, or a no-commit repository that fails
    one strict condition above—do not alter Git and stop before Trelio calls or an
@@ -264,6 +258,8 @@ current task.
 4. Bind a project slug only when the user wants this whole working folder
    restricted to one Trelio project. A company-wide folder must not
    silently acquire a project restriction.
+   For a verified host shell, now complete **Isolate the host shell**, after
+   exact company resolution and before any company-content read or local binding.
 5. For `plain` or `encrypted`, call `get_agent_instructions` for the resolved
    company and optional project before substantive work. The logical method
    does not change with transport:
@@ -281,6 +277,47 @@ current task.
    encrypted content work with the exact state and required company-settings
    action. Never create a Run or use plaintext fallback to probe through a
    transitional state.
+
+## Isolate the host shell
+
+This step applies only to the verified incidental Git shell. Ordinary non-Git
+folders need no Git repair. Recheck the full shell classification immediately
+before the write; new host refs must pass the same checks. Never treat a failed
+or incomplete read as permission to continue.
+
+The bridge creates private Run metadata, context and working files below the
+binding root's `workspaces/`. Exclude that entire directory from the parent
+repository before it receives any data; a nested Workspace's own `.git` does
+not protect sibling `context/` or `.trelio-run.json` files from parent snapshots.
+Read the root `.gitignore` without following links and reject a non-regular
+target. Preserve unrelated rules. Append this exact managed block after all
+other rules, or replace only its existing complete block and move it to the
+end; incomplete or duplicate markers are ambiguous and stop the write:
+
+```gitignore
+# trelio-agent-workspaces:ignore:start
+/workspaces/
+# trelio-agent-workspaces:ignore:end
+```
+
+Create the file when absent, using UTF-8 without a BOM. This reversible local
+isolation does not need a separate confirmation. Do not write inside `.git` or
+stage/commit anything. Read back the file, then verify from the exact binding
+root with read-only `git check-ignore --no-index --verbose -- workspaces/
+workspaces/.trelio-onboarding-probe`. These are hypothetical paths: do not create
+a Workspace, Run, probe file or private content to test ignoring. Both results
+must identify the root `.gitignore` and the positive `/workspaces/` rule; an exit
+code alone, a negated pattern or a global exclude does not establish isolation.
+Also require `git ls-files --stage -z -- workspaces` to be empty: ignoring never
+removes already indexed content. Recheck the refs/trees so an intervening host
+snapshot with workspace content cannot pass as an empty shell.
+
+If every check succeeds, continue onboarding in the same folder without an
+intermediate cleanup question. If writing or verifying the ignore fails, stop
+before content work and report that exact blocker. Do not retry removal, change
+rights, silently relocate the binding, or claim that Git was detached. If old
+snapshots already contain workspace data, preserve them and report the
+contamination; adding an ignore rule does not remove historical copies.
 
 ## Create or extend the local instruction file
 
@@ -316,6 +353,8 @@ display name and slug:
 Папка привязана к компании «Компания» (`company-slug`). Это контекст работы, а не привязка Git-репозитория.
 
 Не создавай рабочие материалы, `tmp/` или `output/` в корне этой папки. Для задачи или именованного воркспейса сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в `workspaces/<workspace-id>/`; внутри `workspace/` лежат редактируемые файлы, а `context/` и `.trelio-run.json` остаются служебными.
+
+Если в корне осталась служебная `.git` клиента, сохраняй её и корневое исключение `/workspaces/` в `.gitignore`. Не выполняй Git add/commit/push из корня и не добавляй туда remote. Git-операции Trelio относятся только к выданному bridge воркспейсу.
 
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
@@ -536,8 +575,8 @@ catalog readiness was not queried in this onboarding.
 Summarize:
 
 1. the working folder and its bound company and optional Trelio project;
-2. that the folder is not a Git worktree and, if an incidental empty shell was
-   detached, its exact backup path and restore rename;
+2. whether the folder is non-Git or a verified host shell was preserved with
+   `workspaces/` excluded from parent Git; never call a preserved shell non-Git;
 3. whether the local component is connected;
 4. each offered skill as ready, awaiting personal setup, or
    `требуется настройка администратором компании`;
@@ -556,5 +595,5 @@ future tasks or Claude sessions opened in this folder will use the binding
 automatically and that a new task/session is required for the instruction files
 to become active. The current onboarding process may still finish connection
 checks because this skill already carries the explicit setup scope. Do not
-describe the instruction files as uncommitted or suggest committing them: the
-binding folder is non-Git by contract.
+describe the instruction files as uncommitted or suggest committing them:
+the binding is a control-plane folder, including when host Git remains present.

@@ -35,16 +35,28 @@ Never treat success or failure in one layer as proof about another.
 
 ## Working-folder Git rename failures
 
-For onboarding `.git` cleanup, inspect the exact selected folder before
-plugin/OAuth repairs. Distinguish a client approval rejection such as
+For a previous onboarding `.git` cleanup failure, inspect the exact selected
+folder before plugin/OAuth repairs. Distinguish a client approval rejection such as
 `blocked by policy` from a command that ran and returned Windows
 `Access is denied`. Neither proves that Git is missing or Trelio login failed.
 Check whether `.git` and the proposed backup actually exist before any retry;
 never report a backup as created solely because the rename was requested.
 
-On the affected Windows device, read the actual command identity with
-`whoami /user` and `whoami /groups`, and inspect the selected root and its
-exact `.git` with `Get-Item -Force -LiteralPath` and `Get-Acl -LiteralPath`.
+Do not repeat cleanup, including a rename with `-Force`. Use the read-only
+host-shell classification and **Isolate the host shell** procedure in
+[onboarding](../trelio-project-onboarding/SKILL.md). A proven incidental shell
+stays in place; the agent writes and verifies only the root `.gitignore`
+exclusion for all `workspaces/` content before continuing in the same folder.
+This does not perform the rejected Git mutation. A claim that Trelio is already
+configured does not prove isolation: verify the managed binding, ignore rule
+and current refs/trees before content work. Existing snapshots containing
+workspace files remain a blocker even after an ignore rule is added.
+
+Only if a necessary read or `.gitignore` write still fails on the affected
+Windows device, read the actual command identity with
+`whoami /user` and `whoami /groups`, and inspect the selected root and exact
+failed target (`.gitignore` for an ignore write, `.git` for metadata reads)
+with `Get-Item -Force -LiteralPath` and `Get-Acl -LiteralPath`.
 Compare the relevant attributes, links, owner and access entries with that
 identity and the host-reported sandbox mode. An unrelated deny entry, the
 presence of OneDrive in the path, or the UI's Full access label alone does not
@@ -54,10 +66,11 @@ Windows filesystem denial; a screenshot alone cannot verify effective rights.
 Preserve Git metadata. Do not reset ACLs, take ownership, disable protections,
 kill processes, or change sandbox settings as an automatic onboarding repair.
 Do not retry a client-rejected action through another executable or tool.
-Report one evidence-backed host/OS recovery; when none is established, require
-an explicitly selected separate non-Git folder and keep the current folder
-unchanged. Do not silently relocate the binding or promise that Explorer will
-succeed where the command failed.
+Report one evidence-backed host/OS recovery for that necessary operation; when
+none is established, require an explicitly selected separate non-Git folder
+and preserve existing files. Do not silently relocate the binding or promise
+that Explorer will succeed where the command failed. A rename refusal alone
+does not justify another user action after shell isolation has succeeded.
 
 ## Run the local diagnostic
 

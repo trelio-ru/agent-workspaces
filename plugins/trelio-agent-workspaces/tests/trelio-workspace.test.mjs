@@ -4457,6 +4457,104 @@ test("Claude OAuth recovery keeps the plugin-qualified MCP server name", async (
   }
 });
 
+test("onboarding host-shell isolation excludes private siblings and survives parent Git snapshots", async () => {
+  const onboardingSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    "utf8",
+  );
+  const ignoreBlock = onboardingSkill.match(/```gitignore\n([\s\S]*?)\n```/u)?.[1];
+  assert.ok(ignoreBlock, "exercise the actual ignore block agents are instructed to write");
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-host-shell-"));
+  const root = path.join(temporaryDirectory, "Print Trelio");
+  const relativeContext = `workspaces/${companyWorkspaceId}/context/company.md`;
+  const relativeMetadata = `workspaces/${companyWorkspaceId}/.trelio-run.json`;
+  const workspace = path.join(root, "workspaces", companyWorkspaceId, "workspace");
+  const gitEnvironment = { ...process.env };
+  // The fixture must not borrow the invoking checkout's Git directory/index,
+  // user hooks or excludes. No network, real identity or company data is used.
+  for (const name of Object.keys(gitEnvironment)) {
+    if (name.startsWith("GIT_")) delete gitEnvironment[name];
+  }
+  Object.assign(gitEnvironment, {
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_SYSTEM: os.devNull,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+  });
+  const git = (args, env = {}) => execFileAsync("git", args, {
+    cwd: root,
+    env: { ...gitEnvironment, ...env },
+    encoding: "utf8",
+  });
+  const metadataDigest = async () => {
+    const hash = createHash("sha256");
+    const visit = async (directory, prefix = "") => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        const relativePath = `${prefix}${entry.name}`;
+        const filePath = path.join(directory, entry.name);
+        hash.update(relativePath);
+        if (entry.isDirectory()) await visit(filePath, `${relativePath}/`);
+        else hash.update(await readFile(filePath));
+      }
+    };
+    await visit(path.join(root, ".git"));
+    return hash.digest("hex");
+  };
+
+  try {
+    await mkdir(path.dirname(path.join(root, relativeContext)), { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await git(["init", "--initial-branch=main"]);
+    await git(["-C", workspace, "init", "--initial-branch=main"]);
+    await writeFile(path.join(root, "AGENTS.md"), "# Synthetic binding\n");
+    await writeFile(path.join(root, relativeContext), "Synthetic private context\n");
+    await writeFile(path.join(root, relativeMetadata), '{"fixture":true}\n');
+    await writeFile(path.join(workspace, "result.txt"), "Synthetic work product\n");
+    // Existing user rules remain intact. The managed rule must come last:
+    // otherwise this negation would re-expose sibling context and Run metadata.
+    const existingRules = "# User rules\n!/workspaces/\n";
+    await writeFile(path.join(root, ".gitignore"), existingRules);
+    assert.match((await git(["ls-files", "--others", "--exclude-standard"])).stdout,
+      /context\/company\.md/u);
+    const beforeIsolation = await metadataDigest();
+    await writeFile(path.join(root, ".gitignore"), `${existingRules}${ignoreBlock}\n`);
+    assert.ok((await readFile(path.join(root, ".gitignore"), "utf8")).startsWith(existingRules));
+
+    const probes = ["workspaces/", "workspaces/.trelio-onboarding-probe", relativeContext, relativeMetadata];
+    const ignored = (await git(["check-ignore", "--no-index", "--verbose", "--", ...probes])).stdout;
+    const lines = ignored.trimEnd().split(/\r?\n/u);
+    assert.equal(lines.length, probes.length);
+    for (const line of lines) assert.match(line, /^\.gitignore:\d+:\/workspaces\/\t/u);
+    assert.equal((await git(["ls-files", "--stage", "-z", "--", "workspaces"])).stdout, "");
+    assert.doesNotMatch((await git(["ls-files", "--others", "--exclude-standard"])).stdout,
+      /workspaces\//u);
+    assert.equal(await metadataDigest(), beforeIsolation,
+      "writing and verifying root isolation must not mutate protected host Git metadata");
+
+    // Codex builds tree snapshots with a temporary index. Model that effect
+    // with real Git, including an unborn nested repo: ignoring only its .git
+    // would miss context/ and .trelio-run.json beside workspace/.
+    const snapshotEnvironment = { GIT_INDEX_FILE: path.join(temporaryDirectory, "snapshot-index") };
+    await git(["add", "--all", "--"], snapshotEnvironment);
+    const tree = (await git(["write-tree"], snapshotEnvironment)).stdout.trim();
+    const snapshotPaths = (await git(["ls-tree", "-r", "--name-only", tree])).stdout.trim().split(/\r?\n/u);
+    assert.deepEqual(snapshotPaths, [".gitignore", "AGENTS.md"]);
+    assert.equal((await git(["ls-files", "--stage", "-z"])).stdout, "",
+      "host snapshots must not be mistaken for real staged user content");
+
+    // A positive ignore result is insufficient once content was force-added.
+    // The onboarding contract therefore also rejects the real index, and it
+    // independently inspects old snapshot trees before calling the shell safe.
+    await git(["add", "--force", "--", relativeContext]);
+    assert.notEqual((await git(["ls-files", "--stage", "-z", "--", "workspaces"])).stdout, "");
+    assert.match((await git(["check-ignore", "--no-index", "--verbose", "--", relativeContext])).stdout,
+      /^\.gitignore:\d+:\/workspaces\/\t/u);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
 test("plugin exposes folder-first onboarding before ordinary task work", async () => {
   const codexManifest = JSON.parse(await readFile(
     path.join(pluginDirectory, ".codex-plugin", "plugin.json"),
@@ -4528,14 +4626,19 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   );
   assert.match(
     onboardingSkill,
-    /contains only regular root\s+`AGENTS\.md`, `AGENTS\.override\.md`, and\/or `CLAUDE\.md`/u,
+    /contains only regular root\s+`AGENTS\.md`, `AGENTS\.override\.md`, `CLAUDE\.md`, and\/or `\.gitignore`/u,
   );
-  assert.match(onboardingSkill, /atomically rename the exact `\.git` directory/u);
-  assert.match(onboardingSkill, /`\.git\.trelio-detached-<UTC-timestamp>`/u);
-  assert.match(onboardingSkill, /Never use `rm` or discard the\s+metadata/u);
+  assert.match(onboardingSkill, /Never rename or delete `\.git`/u);
+  assert.match(onboardingSkill, /without changing `\.git`/u);
+  assert.match(onboardingSkillNormalized, /after exact company resolution and before any company-content read or local binding/u);
+  assert.match(onboardingSkillNormalized, /Both results must identify the root `\.gitignore` and the positive `\/workspaces\/` rule/u);
+  assert.match(onboardingSkillNormalized, /git ls-files --stage -z -- workspaces/u);
+  assert.match(onboardingSkillNormalized, /Recheck the refs\/trees/u);
+  assert.match(onboardingSkillNormalized, /adding an ignore rule does not remove historical copies/u);
   // Turn-diff refs retain trees even with unborn HEAD. The folder gate must
-  // distinguish that metadata from history, while keeping cleanup recoverable
-  // and avoiding another user checkpoint for the verified empty-shell case.
+  // distinguish that metadata from history. Preserving host metadata avoids
+  // protected-directory writes; the separate ignore gate must run before
+  // private context or Run metadata can appear below the binding root.
   assert.match(
     onboardingSkillNormalized,
     /no loose or packed refs except the verified Codex turn-diff tree snapshots/u,
@@ -4581,6 +4684,8 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
 Папка привязана к компании «Компания» (\`company-slug\`). Это контекст работы, а не привязка Git-репозитория.
 
 Не создавай рабочие материалы, \`tmp/\` или \`output/\` в корне этой папки. Для задачи или именованного воркспейса сначала открой Agent Run и работай только в пути, который вернул bridge. Новый Workspace bridge размещает в \`workspaces/<workspace-id>/\`; внутри \`workspace/\` лежат редактируемые файлы, а \`context/\` и \`.trelio-run.json\` остаются служебными.
+
+Если в корне осталась служебная \`.git\` клиента, сохраняй её и корневое исключение \`/workspaces/\` в \`.gitignore\`. Не выполняй Git add/commit/push из корня и не добавляй туда remote. Git-операции Trelio относятся только к выданному bridge воркспейсу.
 
 Каждое сообщение обрабатывай в контексте Trelio. Уже загруженные в текущей сессии правила и данные используй повторно, пока тема, объект и требования к актуальности не изменились.
 
