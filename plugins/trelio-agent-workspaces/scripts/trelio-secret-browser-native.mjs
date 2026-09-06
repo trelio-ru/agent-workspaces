@@ -144,7 +144,7 @@ export const buildNativeSecretBrowserHelper = async ({
   if (!["darwin", "win32"].includes(platform)) throw new EmbeddedBrowserUnavailable("platform_unsupported");
   const sourceName = platform === "darwin" ? "SecretBrowser.swift" : "SecretBrowser.cs";
   const sourceBytes = await fs.readFile(path.join(SOURCE_DIRECTORY, sourceName));
-  const digest = createHash("sha256").update(sourceBytes).update(platform + process.arch + "-v1").digest("hex");
+  const digest = createHash("sha256").update(sourceBytes).update(platform + process.arch + "-v2").digest("hex");
   await ensurePrivateDirectory(directory);
   const buildDirectory = path.join(directory, digest);
   await ensurePrivateDirectory(buildDirectory);
@@ -166,8 +166,13 @@ export const buildNativeSecretBrowserHelper = async ({
   const lock = path.join(buildDirectory, "build.lock");
   try { await fs.mkdir(lock, { mode: 0o700 }); }
   catch { throw new EmbeddedBrowserUnavailable("helper_unavailable"); }
-  const temporary = path.join(buildDirectory, randomUUID() + (platform === "win32" ? ".exe" : ""));
+  // csc derives AssemblyName from the output basename. Keep it stable while
+  // building atomically in a private temporary directory; renaming a UUID.exe
+  // would leave a different internal assembly identity in the final helper.
+  const temporaryDirectory = path.join(buildDirectory, "build-" + randomUUID());
+  const temporary = path.join(temporaryDirectory, path.basename(executable));
   try {
+    await ensurePrivateDirectory(temporaryDirectory);
     const env = safeNativeEnvironment(platform);
     const sourceFile = path.join(SOURCE_DIRECTORY, sourceName);
     if (platform === "darwin") {
@@ -189,7 +194,7 @@ export const buildNativeSecretBrowserHelper = async ({
     await fs.writeFile(manifest, JSON.stringify({ source: digest, binary }) + "\n", { mode: 0o600, flag: "wx" });
     return executable;
   } finally {
-    await fs.rm(temporary, { force: true });
+    await fs.rm(temporaryDirectory, { recursive: true, force: true });
     await fs.rm(lock, { recursive: true, force: true });
   }
 };

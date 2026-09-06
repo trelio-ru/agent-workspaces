@@ -354,7 +354,9 @@ bundle, не отдаёт ciphertext/value и не расходует grant.
 проверяются Authenticode publisher/product, процесс, UIA Document URL и
 `AutomationId`, запись идёт через `ValuePattern.SetValue`. Поддерживаются
 простые `#id` и `[id="..."]`; составные CSS selectors не аппроксимируются.
-Объект документа, окно и поля проверяются заново перед каждой записью; вложенные
+Системная блокировка исключает параллельные native fills и освобождается при
+выходе/crash helper. Объект документа, контейнер вкладки и поля проверяются
+заново перед каждой записью; вложенные
 web documents/iframes не допускаются. Focus, clipboard, universal browser
 literal-text action, secret в argv/env/stdout и чтение значения поля запрещены.
 
