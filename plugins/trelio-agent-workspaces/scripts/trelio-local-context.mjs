@@ -7330,7 +7330,7 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
       }),
     ];
   } else if (operation === "secret_browser_fill") {
-    assertWorkspaceActionKeys(parameters, new Set(["grantId", "targetUrl"]));
+    assertWorkspaceActionKeys(parameters, new Set(["grantId", "targetUrl", "browser"]));
     argumentsList = [
       "secret",
       "browser-fill",
@@ -7339,6 +7339,12 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
       "--target",
       normalizeWorkspaceActionHttpsUrl(parameters.targetUrl, "parameters.targetUrl"),
     ];
+    if (parameters.browser !== undefined) {
+      if (!["auto", "embedded", "chrome"].includes(parameters.browser)) {
+        throw new TrelioLocalContextError("TRELIO_WORKSPACE_ACTION_INVALID_INPUT", "Browser must be auto, embedded or chrome.");
+      }
+      argumentsList.push("--browser", parameters.browser);
+    }
   } else if (operation === "secret_set_file") {
     assertWorkspaceActionKeys(parameters, new Set(["secretId", "filePath", "format"]));
     argumentsList = [

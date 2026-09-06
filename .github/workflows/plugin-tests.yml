@@ -86,6 +86,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-secret-chat.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 
   windows-acl:
@@ -117,6 +118,12 @@ jobs:
         run: >-
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
+
+      # Compile the shipped UIA helper with the system compiler, exercise
+      # value-free protocol rejection, then use a disposable WPF document to
+      # prove direct setters, exact URL/id binding and no focus redirection.
+      - name: Run Windows embedded browser transport regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
 
       # Execute the exact commandWindows definition through both cmd.exe and
       # Windows PowerShell with Node removed from PATH. This protects hosts that

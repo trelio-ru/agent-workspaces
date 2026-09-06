@@ -6160,13 +6160,27 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
   const outcomes = [];
   const encryptionRequestPlanes = [];
   const consumedGrantIds = new Set();
+  const contextGrantIds = new Set();
+  const browserBinding = (grant) => ({
+    grantId: grant.id, runId, secretVersion: 1, clientFamily: null,
+    fieldKeys: ["username", "password"],
+    executable: "trelio-workspace", deliveryMode: "browser",
+    targetOrigin: new URL(targetUrl).origin,
+    targetUrlSha256: createHash("sha256").update(targetUrl).digest("hex"),
+    browserFieldSelector: grant.selector,
+    browserSteps: [{
+      targetOrigin: new URL(targetUrl).origin,
+      targetUrlSha256: createHash("sha256").update(targetUrl).digest("hex"),
+      fields: [{ fieldKey: "username", selector: "#username" }, { fieldKey: "password", selector: grant.selector }],
+    }],
+  });
 
   const handleRequest = async (request, response, plane) => {
     try {
       // Run-bound Secret operations follow the same selected transport as the
-      // encrypted Workspace. Only the four bridge endpoints are published on
+      // encrypted Workspace. Only the five bridge endpoints are published on
       // that host; browser/card/ACL APIs remain outside this narrow boundary.
-      const isSecretBridgePath = /^\/api\/agent-secrets\/(?:secrets\/[0-9a-f-]{36}\/(?:bridge-write-context|value-from-bridge)|checkout-grants\/[0-9a-f-]{36}\/(?:consume|browser-fill-outcome))(?:\?|$)/u.test(request.url);
+      const isSecretBridgePath = /^\/api\/agent-secrets\/(?:secrets\/[0-9a-f-]{36}\/(?:bridge-write-context|value-from-bridge)|checkout-grants\/[0-9a-f-]{36}\/(?:consume|browser-fill-context|browser-fill-outcome))(?:\?|$)/u.test(request.url);
       if (plane === "encrypted" && !request.url?.startsWith("/api/agent-workspaces/") && !isSecretBridgePath) {
         response.statusCode = 404;
         response.setHeader("content-type", "text/html");
@@ -6241,6 +6255,20 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
         response.end(JSON.stringify({ status: "active" }));
         return;
       }
+      const contextGrant = browserGrants.find((grant) => (
+        request.url === `/api/agent-secrets/checkout-grants/${grant.id}/browser-fill-context?runId=${runId}`
+      ));
+      if (request.method === "GET" && contextGrant) {
+        assert.equal(consumedGrantIds.has(contextGrant.id), false, "native selection precedes consume");
+        contextGrantIds.add(contextGrant.id);
+        // One grant models an older server without the value-free endpoint.
+        // Its normal consume still authorizes Chrome; there is no host retry.
+        if (contextGrant.selector === "#throws") {
+          response.statusCode = 404;
+          response.end(JSON.stringify({ error: "Not found" }));
+        } else response.end(JSON.stringify(browserBinding(contextGrant)));
+        return;
+      }
       const browserGrant = browserGrants.find((grant) => (
         request.url === `/api/agent-secrets/checkout-grants/${grant.id}/consume`
       ));
@@ -6273,11 +6301,7 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
           values: writeBody.values,
           encryptedPayload: writeBody.encryptedPayloads[0],
           ...(browserGrant ? {
-            executable: "trelio-workspace",
-            deliveryMode: "browser",
-            targetOrigin: new URL(targetUrl).origin,
-            targetUrlSha256: createHash("sha256").update(targetUrl).digest("hex"),
-            browserFieldSelector: browserGrant.selector,
+            ...browserBinding(browserGrant),
           } : {
             executable: process.execPath,
             deliveryMode: "env",
@@ -6337,6 +6361,8 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
     // inspect a real browser, while checkout, E2EE opening and audit stay real.
     const browserModuleUrl = pathToFileURL(path.join(pluginDirectory, "scripts", "trelio-secret-browser.mjs")).href;
     const browserFixtureSource = `
+      export { normalizeSecretBrowserTarget, normalizeSecretBrowserFieldSelector }
+        from ${JSON.stringify(browserModuleUrl + "?unmocked")};
       export class SecretBrowserFillError extends Error {
         constructor(message, reasonCode) { super(message); this.reasonCode = reasonCode; }
       }
@@ -6501,6 +6527,7 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
       }
     }
     assert.equal(consumeCount, 4);
+    assert.equal(contextGrantIds.size, 3);
     assert.equal(outcomes.length, 3);
     assert.ok(encryptionRequestPlanes.length >= 10, "each operation must still open its company scope");
     assert.ifError(serverError);

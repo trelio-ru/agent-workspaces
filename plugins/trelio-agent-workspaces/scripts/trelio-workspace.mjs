@@ -28,8 +28,12 @@ import {
 } from "./trelio-git.mjs";
 import {
   SecretBrowserFillError,
-  runSecretBrowserFill,
 } from "./trelio-secret-browser.mjs";
+import {
+  assertBrowserFillBindingUnchanged,
+  normalizeSecretBrowserMode,
+  prepareSecretBrowserSession,
+} from "./trelio-secret-browser-native.mjs";
 import {
   COMPANY_ENCRYPTION_SUITE,
   buildAgentDeviceRegistrationRecord,
@@ -13332,95 +13336,132 @@ const executeSecretBrowserFill = async (options, positional) => withRun(async ({
     throw new Error("Текущая папка не содержит активный Trelio Agent Run.");
   }
 
-  // Plaintext появляется только в памяти bridge после atomic consume. Target
-  // URL не доверяется: helper повторно сравнит его с закреплённым origin.
-  const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ runId: metadata.runId }),
-  });
-  const payload = await response.json();
-  if (
-    payload.runId !== metadata.runId
-    || payload.deliveryMode !== "browser"
-    || payload.executable !== "trelio-workspace"
-    || typeof payload.targetOrigin !== "string"
-    || !/^[0-9a-f]{64}$/u.test(payload.targetUrlSha256 || "")
-    || (
-      (!Array.isArray(payload.browserSteps) || payload.browserSteps.length === 0)
-      && (typeof payload.browserFieldSelector !== "string" || !payload.browserFieldSelector)
-    )
-  ) {
-    throw new Error("Trelio вернул некорректный browser-fill grant.");
+  const browserMode = normalizeSecretBrowserMode(options.browser);
+  let browserContext = null;
+  if (browserMode !== "chrome") {
+    // GET не содержит value/ciphertext, не claim-ит grant и безопасен для
+    // bounded transport retry. Старый backend может не иметь этого маршрута;
+    // только его 404 допускает прежний Chrome flow с обычным atomic consume.
+    // 401/403, 5xx и неясный transport не являются разрешением на downgrade.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const contextResponse = await request(workspaceOrigin, token,
+          `/api/agent-secrets/checkout-grants/${grantId}/browser-fill-context?runId=${metadata.runId}`);
+        browserContext = await contextResponse.json();
+        if (browserContext.grantId !== grantId || browserContext.runId !== metadata.runId) {
+          throw new SecretBrowserFillError("Browser context принадлежит другому grant или Run.");
+        }
+        break;
+      } catch (error) {
+        if (browserMode === "auto" && error instanceof TrelioApiError && error.statusCode === 404) break;
+        if (!isRetryableBrowserOutcomeError(error) || attempt === 3) throw error;
+        await wait(250 * attempt);
+      }
+    }
   }
-
-  process.stdout.write(`Автоматически подставляю Agent Secret на ${payload.targetOrigin}.\n`);
-
-  let localResult = null;
-  let outcomeReported = false;
+  const browserSession = await prepareSecretBrowserSession({
+    context: browserContext,
+    targetUrl,
+    mode: browserMode,
+    directory: path.join(SECRET_BROWSER_DIRECTORY, "native"),
+    ensurePrivateDirectory,
+  });
   try {
-    const secretValues = await resolveCheckoutSecretValues(payload, companyEncryption);
-    const result = await runSecretBrowserFill({
-      secretValues,
-      targetUrl,
-      targetOrigin: payload.targetOrigin,
-      targetUrlSha256: payload.targetUrlSha256,
-      fieldSelector: payload.browserFieldSelector,
-      browserSteps: payload.browserSteps,
-      profileDirectory: SECRET_BROWSER_PROFILE_DIRECTORY,
-      ensurePrivateDirectory,
+    // Plaintext появляется только в памяти bridge после atomic consume. Target
+    // URL не доверяется: helper повторно сравнит его с закреплённым origin.
+    const response = await request(workspaceOrigin, token, `/api/agent-secrets/checkout-grants/${grantId}/consume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ runId: metadata.runId }),
     });
-    localResult = result;
+    const payload = await response.json();
+    if (
+      payload.runId !== metadata.runId
+      || payload.deliveryMode !== "browser"
+      || payload.executable !== "trelio-workspace"
+      || typeof payload.targetOrigin !== "string"
+      || !/^[0-9a-f]{64}$/u.test(payload.targetUrlSha256 || "")
+      || (
+        (!Array.isArray(payload.browserSteps) || payload.browserSteps.length === 0)
+        && (typeof payload.browserFieldSelector !== "string" || !payload.browserFieldSelector)
+      )
+    ) {
+      throw new Error("Trelio вернул некорректный browser-fill grant.");
+    }
 
-    await reportSecretBrowserFillOutcome({
-      origin: workspaceOrigin,
-      token,
-      grantId,
-      runId: metadata.runId,
-      outcome: result.outcome,
-      reasonCode: result.reasonCode,
-    });
-    outcomeReported = true;
-    if (result.outcome !== "succeeded") {
-      throw new SecretBrowserFillError(
-        "Trelio Secret Browser не выполнил автоматическую подстановку значения.",
-        result.reasonCode || "adapter_error",
-      );
-    }
-    process.stdout.write("Секрет автоматически вставлен в exact поле; plaintext агенту не возвращался.\n");
-  } catch (error) {
-    // Локальный результат уже мог наступить, а потерялся только ответ audit
-    // endpoint. В таком случае нельзя записывать противоречивый outcome.
-    if (localResult && !outcomeReported) {
-      throw new Error(
-        "Browser fill завершился локально, но безопасный audit outcome не удалось подтвердить после трёх попыток. Не повторяйте операцию автоматически.",
-        { cause: error },
-      );
-    }
-    if (localResult && outcomeReported) throw error;
-    const reasonCode = error instanceof SecretBrowserFillError
-      ? error.reasonCode
-      : "adapter_error";
-    let outcomeError = null;
+    process.stdout.write(`Автоматически подставляю Agent Secret на ${payload.targetOrigin}; browser=${browserSession.surface}${browserSession.fallbackReason ? ", fallback=" + browserSession.fallbackReason : ""}.\n`);
+
+    let localResult = null;
+    let outcomeReported = false;
     try {
+      if (browserContext) assertBrowserFillBindingUnchanged(browserContext, payload);
+      const secretValues = await resolveCheckoutSecretValues(payload, companyEncryption);
+      const result = await browserSession.fill({
+        secretValues,
+        targetUrl,
+        targetOrigin: payload.targetOrigin,
+        targetUrlSha256: payload.targetUrlSha256,
+        fieldSelector: payload.browserFieldSelector,
+        browserSteps: payload.browserSteps,
+        profileDirectory: SECRET_BROWSER_PROFILE_DIRECTORY,
+        ensurePrivateDirectory,
+      });
+      localResult = result;
+
       await reportSecretBrowserFillOutcome({
         origin: workspaceOrigin,
         token,
         grantId,
         runId: metadata.runId,
-        outcome: "failed",
-        reasonCode,
+        outcome: result.outcome,
+        reasonCode: result.reasonCode,
       });
-    } catch (reportError) {
-      outcomeError = reportError;
+      outcomeReported = true;
+      if (result.outcome !== "succeeded") {
+        throw new SecretBrowserFillError(
+          "Trelio Secret Browser не выполнил автоматическую подстановку значения.",
+          result.reasonCode || "adapter_error",
+        );
+      }
+      process.stdout.write("Секрет автоматически вставлен в exact поле; plaintext агенту не возвращался.\n");
+    } catch (error) {
+      // Локальный результат уже мог наступить, а потерялся только ответ audit
+      // endpoint. В таком случае нельзя записывать противоречивый outcome.
+      if (localResult && !outcomeReported) {
+        throw new Error(
+          "Browser fill завершился локально, но безопасный audit outcome не удалось подтвердить после трёх попыток. Не повторяйте операцию автоматически.",
+          { cause: error },
+        );
+      }
+      if (localResult && outcomeReported) throw error;
+      const reasonCode = error instanceof SecretBrowserFillError
+        ? error.reasonCode
+        : "adapter_error";
+      let outcomeError = null;
+      try {
+        await reportSecretBrowserFillOutcome({
+          origin: workspaceOrigin,
+          token,
+          grantId,
+          runId: metadata.runId,
+          outcome: "failed",
+          reasonCode,
+        });
+      } catch (reportError) {
+        outcomeError = reportError;
+      }
+      if (outcomeError) {
+        throw new Error(
+          "Browser fill завершился ошибкой, а безопасный audit outcome не удалось подтвердить после трёх попыток.",
+          { cause: new AggregateError([error, outcomeError]) },
+        );
+      }
+      throw error;
     }
-    if (outcomeError) {
-      throw new Error(
-        "Browser fill завершился ошибкой, а безопасный audit outcome не удалось подтвердить после трёх попыток.",
-        { cause: new AggregateError([error, outcomeError]) },
-      );
-    }
-    throw error;
+  } finally {
+    // Даже потерянный consume response закрывает prepared native handle. Нельзя
+    // повторять checkout: сервер уже мог потратить одноразовый grant.
+    await browserSession.close();
   }
 });
 

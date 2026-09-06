@@ -336,24 +336,61 @@ browser-fill outcome идут через E2EE data plane; для plain company �
 а не browser reveal, карточки и управление доступом. Отсутствующий маршрут
 требует серверного исправления; bridge не повторяет выдачу на другом host.
 
-Для browser-полей используется отдельный
-`prepare_agent_secret_browser_fill`: grant закрепляется за exact Run, bundled
-`trelio-workspace` и ordered steps. Каждый step содержит exact HTTPS URL и
-несколько `fieldKey -> CSS-selector`; логин и пароль одной страницы обязательно
-передаются одним step. Возвращённая единственная команда открывает одно
-окно/вкладку постоянного локального профиля Trelio Secret Browser. Trusted
-adapter работает через локальный DevTools transport и isolated world,
-повторно сверяет exact URL/origin и записывает значение без MCP, argv, stdout
-или clipboard. В E2EE-компании ciphertext открывается в памяти bridge.
-Cross-origin iframe, отсутствующее, неоднозначное, hidden или read-only поле и
-переход на незакреплённый URL завершают сеанс без fallback-окна и повторной
-выдачи значения.
+`prepare_agent_secret_browser_fill` закрепляет exact Run, версию, поля и
+ordered `steps` с HTTPS origin/hash полного URL и `fieldKey -> CSS selector`.
+Логин и пароль одной страницы входят в один step. Необязательный
+`submitSelector` разрешает нажатие exact кнопки после полей; для автономного
+перехода между native steps он обязателен. Path/query не сохраняются в БД/audit.
 
-До нового checkout/fill runtime использует content-free auth probe выбранного
-сервиса, если он предусмотрен. Подтверждённая авторизованная сессия продолжает
-работу без чтения Agent Secret. Dedicated profile сохраняет provider
-cookies/session между запусками; его подготовка не очищает данные входа.
-Неясный probe не считается доказанным logout.
+По умолчанию `browser=auto`: агент штатным разрешённым browser tool открывает
+страницу во встроенном браузере Codex или Claude Code и изучает пустую форму.
+Bridge получает value-free `GET /checkout-grants/:grantId/browser-fill-context`
+на выбранном `workspaceOrigin`, повторяет ACL, версию, срок, active Run/lease и
+выбирает приложение по pinned hook observation Run. GET не загружает secret
+bundle, не отдаёт ciphertext/value и не расходует grant.
+
+На macOS helper проверяет Apple code signature, bundle id и team приложения,
+разрешает exact `AXWebArea`/`AXDOMIdentifier` и пишет через AX setter. На Windows
+проверяются Authenticode publisher/product, процесс, UIA Document URL и
+`AutomationId`, запись идёт через `ValuePattern.SetValue`. Поддерживаются
+простые `#id` и `[id="..."]`; составные CSS selectors не аппроксимируются.
+Объект документа, окно и поля проверяются заново перед каждой записью; вложенные
+web documents/iframes не допускаются. Focus, clipboard, universal browser
+literal-text action, secret в argv/env/stdout и чтение значения поля запрещены.
+
+Native helper собирается из bundled source системным компилятором в отдельном
+owner-only bridge cache с проверкой source/binary SHA-256. macOS требует
+Command Line Tools (`/usr/bin/swiftc`) и выданное пользователем системное
+Accessibility-разрешение; Windows – системный .NET Framework 4 с WPF/UIA.
+Установщик/компилятор не скачивается, elevation и автоматической выдачи
+Accessibility permission нет. Правила browser tool, site approvals и запреты
+клиента продолжают действовать: native helper нельзя использовать для их обхода.
+
+Chrome fallback выбирается только до consume, если нет native platform/client,
+компилятора, разрешения Accessibility, доступного приложения/accessibility tree
+либо поддержки selector/перехода между steps. Старый backend с 404 на новом GET
+использует прежний Chrome flow на том же host; обычный consume всё равно
+проверяет grant. `browser=embedded` запрещает fallback, `browser=chrome` явно
+выбирает системный browser. Ошибка подписи, другой URL, missing/ambiguous/
+hidden/read-only field, 401/403 или исчерпанные transport retries останавливают
+операцию. Никакого fallback после выдачи значения, partial fill или потерянного
+ответа consume нет.
+
+После native preflight consume заново проверяет живые права и атомарно расходует
+grant. Bridge сравнивает весь полученный binding с preflight, локально открывает
+E2EE payload при необходимости и один раз передаёт values по anonymous stdin
+подготовленному helper. Helper имеет ограниченный срок жизни и возвращает
+только status/reason. Chrome использует один persistent Trelio profile и
+изолированный DevTools controller с теми же exact URL/field/submit bindings.
+Профиль хранит cookies/session; подготовка не очищает их.
+
+Успех означает заполнение/запрошенное нажатие, а не доказанный вход. До checkout
+используется content-free auth probe, если он есть. После заполнения агент не
+делает snapshot/DOM read полей: нажимает заранее определённую кнопку либо
+дожидается явного submit, затем проверяет только authenticated state. Уже
+авторизованная сессия не требует нового Agent Secret. Значения остаются в
+авторизованной странице, которую контролирует сайт/браузер; защиты от другого
+процесса того же OS user или browser telemetry этот transport не обещает.
 
 Для ручного входа пользователь сам работает в выбранной browser-поверхности.
 Агент не вводит, не читает и не инспектирует credential, а после возврата

@@ -147,24 +147,49 @@ session state; do not clear it to force another login. An unavailable or
 ambiguous probe is not proof of logout and does not authorize reading fields.
 
 Never pass a named secret field to a literal-text Browser/Chrome/Computer Use
-action. Call `prepare_agent_secret_browser_fill` once with the exact current
-Run and ordered `steps`:
+action. First open the exact login page in the client's built-in browser using
+its ordinary allowed browser tool, inspect only the empty form, and identify
+fields plus the login/next button before requesting the grant. A host/tool/site
+denial is binding: the native helper must never bypass it.
 
-- put every field on one page, such as username and password, in one step;
-- use another step only for a later page, such as TOTP;
-- give every step an exact HTTPS URL and every field a precise CSS selector for
-  one visible supported top-level `input` or `textarea`.
+Call `prepare_agent_secret_browser_fill` with the current Run and ordered steps:
+
+- put username and password on the same page in one step;
+- use exact HTTPS URLs and one visible supported top-level field per selector;
+- prefer simple `#id` or `[id="..."]` selectors for native AX/UIA; do not guess ids;
+- an optional `submitSelector` grants that exact button after filling the step;
+  native multi-page login requires it on every non-final step.
 
 Execute exactly one returned `bridge.action` through its declared local
-server/tool and exact opened `workingDirectory`. The
-bridge opens one dedicated window/tab/profile, decrypts E2EE values locally
-when needed, and fills automatically only the fields bound by the grant. Never
-create separate grants for login and password, ask the user to focus a field,
-use the clipboard, read a
-value back, or transfer it to a universal browser tool. If a selector is
-missing, ambiguous, hidden, disabled, unsupported, cross-origin, or the page
-leaves its bound URL/origin, stop the whole session without a fallback window
-or value retry.
+server/tool and exact opened `workingDirectory`. Default `browser=auto` prepares
+the already-open embedded Codex/Claude Code browser on macOS/Windows before
+one-use consume; it fills automatically through direct native element setters.
+E2EE values are decrypted only in bridge memory. No value enters tool arguments,
+clipboard, argv, ambient environment, output or field read-back.
+
+Chrome is an automatic fallback only before checkout when native platform,
+client, compiler, Accessibility permission, application/tree or selector/step
+support is unavailable. A 404 from an older backend's value-free context route
+uses the existing Chrome consume flow on the same host. `browser=embedded`
+requires the embedded surface; `browser=chrome` explicitly chooses Chrome.
+Wrong app identity/URL, missing, ambiguous, hidden or read-only fields and
+transport/auth failures stop the operation. After consume or partial fill,
+never switch browser, request another grant or retry the value blindly.
+
+macOS needs the system Swift compiler (Command Line Tools) and user-granted
+Accessibility access; Windows needs the system .NET Framework WPF/UIA runtime.
+The bridge builds its helper privately without downloads, elevation or granting
+permissions. Missing prerequisites produce a safe fallback reason; they do not
+justify changing OS permissions automatically.
+
+A successful result means filled fields/explicit submit, not proven login.
+Do not snapshot or inspect filled fields. If no final submitSelector was given,
+click the button identified before filling, then inspect only non-sensitive
+authentication state. Keep the selected browser session/profile across steps.
+Never create separate grants for login and password on the same page or ask the
+user to focus a field. Native session values are intentionally delivered to the
+authorized website; this is not protection against browser telemetry or another
+process running as the same OS user.
 
 A user-controlled login is a separate safe handoff. When the user explicitly
 prefers it or dedicated fill reports `browser_unavailable`, offer one visible

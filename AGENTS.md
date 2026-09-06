@@ -293,7 +293,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
   Любой credential не попадает в model-visible output, argv, ambient
   environment, workspace, comments, checkpoints, handoff или logs.
-- Run-bound Agent Secret write context, запись значения, consume и browser
+- Browser fill использует встроенный браузер по умолчанию; generic AX/UIA
+  helper готовится до consume, Chrome допустим только как pre-delivery fallback.
+  После выдачи значения браузер не меняется и secret повторно не отправляется.
+  Native helpers, prerequisites, exact app/URL/field binding и ограничения
+  описаны в [Agent Secrets](docs/agent-skills-and-secrets.md#agent-secrets).
+  Не обходить host/site policy, Accessibility permission и запреты UI tools.
+- Run-bound Agent Secret write context, browser-fill context, запись значения, consume и browser
   outcome используют тот же `workspaceOrigin`, что и Workspace: для encrypted
   company – выбранный E2EE data plane, для plain – canonical origin. Отсутствие
   узкого API route на сервере нельзя обходить переносом ciphertext на основной

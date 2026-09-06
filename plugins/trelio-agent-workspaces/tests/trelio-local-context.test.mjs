@@ -72,6 +72,19 @@ const actionGrantId = "44444444-4444-4444-8444-444444444444";
 const actionSecretId = "55555555-5555-4555-8555-555555555555";
 const actionWorkingDirectory = path.resolve(os.tmpdir(), "trelio-action-workspace");
 
+test("browser choice stays an enum in the typed Workspace action", () => {
+  const invoke = (browser) => buildTrelioWorkspaceActionInvocation({
+    schemaVersion: 1, operation: "secret_browser_fill", workingDirectory: actionWorkingDirectory,
+    parameters: { grantId: actionGrantId, targetUrl: "https://example.test/login", browser },
+  });
+  for (const browser of ["auto", "embedded", "chrome"]) {
+    assert.deepEqual(invoke(browser).argumentsList.slice(-2), ["--browser", browser]);
+  }
+  for (const browser of ["/arbitrary/executable", ["chrome"], "--help", null]) {
+    assert.throws(() => invoke(browser));
+  }
+});
+
 test("typed Workspace dispatcher covers every public bridge operation without shell input", () => {
   const actions = [
     ["doctor", { json: true }],
