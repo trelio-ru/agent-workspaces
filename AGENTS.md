@@ -116,6 +116,16 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 - При изменении `plugins/trelio-agent-workspaces/**` полностью прочитай
   соответствующий `SKILL.md` и только относящиеся к сценарию references.
+- Working-folder onboarding без отдельного вопроса recoverable-переименовывает
+  только проверенную пустую Git-оболочку. Exact Codex turn-diff refs допустимы
+  лишь как прямые tree snapshots без пользовательской истории и других файлов
+  по [onboarding-контракту](plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md);
+  общий `refs/codex/` не является allowlist. Backup/restore сообщаются один раз
+  в итоге настройки.
+- Windows `Access is denied` при rename `.git` не доказывает причину ACL и не
+  является `blocked by policy`. Diagnostics read-only проверяет exact identity,
+  attributes, root/`.git` ACL и host sandbox; автоматический reset прав,
+  удаление либо обход client rejection запрещены.
 - Working-folder onboarding разрешает company scope только по exact slug из
   live `list_companies`, по единственному exact display-name match либо при
   единственной доступной компании без явного selector. Имя/путь папки,

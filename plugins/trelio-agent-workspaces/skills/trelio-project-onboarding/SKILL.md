@@ -75,21 +75,59 @@ current task.
    - the selected folder is the exact repository top level and its `.git` is a
      real ordinary directory, not a symlink, gitfile, submodule, or linked
      worktree, and no ancestor owns another Git worktree containing this folder;
-   - `HEAD` is unborn, and the repository has no commits, remotes, local or
-     packed refs, tracked or staged paths, submodules, additional worktrees,
-     in-progress operation, non-sample hooks, alternates, or repository-local
+   - `HEAD` is unborn, and the repository has no commits (including dangling
+     or reflog-only commits), remotes, tracked or staged paths, submodules,
+     additional worktrees, in-progress operation, non-sample hooks, alternates,
+     or repository-local
      configuration beyond ordinary fresh `git init` metadata;
+   - there are no loose or packed refs except the verified Codex turn-diff
+     tree snapshots described below; a `refs/codex/` prefix alone is not proof;
    - outside `.git`, the folder is empty or contains only regular root
      `AGENTS.md`, `AGENTS.override.md`, and/or `CLAUDE.md` files. Any other entry
      makes the repository ambiguous rather than disposable.
 
+   Codex can retain turn-diff trees even before the first commit. Classify all
+   loose and packed refs with `git for-each-ref` (include `refname`, `objectname`,
+   `objecttype`, and `symref`), rather than treating any ref as user history.
+   Only these complete ref shapes are eligible:
+
+   - `refs/codex/turn-diffs/checkpoints/<sha256>/<sha256>/<milliseconds>/<uuid>`;
+   - `refs/codex/turn-diffs/captures/<milliseconds>/<uuid>/base` or the same
+     shape ending in `/head`.
+
+   Each `sha256` is exactly 64 lowercase hexadecimal characters, `milliseconds`
+   is a positive decimal timestamp, and `uuid` is a canonical UUID. Require
+   every ref to be non-symbolic and point directly to a `tree` object, never a
+   commit, tag, or blob. Inspect each distinct tree with `git ls-tree -z`: it
+   must be empty or contain only regular root instruction-file blobs named
+   above, with no directory, symlink, submodule, or other historical file.
+   Also inspect object types with `git cat-file --batch-all-objects --batch-check`
+   to exclude commit and tag objects, including unreachable history. A failed,
+   incomplete, or warning-producing inspection is ambiguous, not an empty
+   result. Other namespaces, including `refs/codex/snapshots` and
+   `refs/codex/handoff`, remain blocked even if their names look technical.
+
+   Recheck the full classification immediately before the rename; if the host
+   has added refs, classify them again rather than deleting them or proceeding
+   on the earlier result. The snapshot exception does not relax any other
+   condition above.
+
    Make this cleanup recoverable: atomically rename the exact `.git` directory,
    without following links or overwriting a target, to a unique root-level
-   `.git.trelio-detached-<UTC-timestamp>` backup. Never use `rm` or discard the
-   metadata. Recheck that the selected folder is no longer a Git worktree, then
-   immediately tell the user that the empty Git shell was detached and give the
-   exact backup path and restore rename. This deterministic cleanup is part of
-   folder onboarding and does not need a separate confirmation.
+   `.git.trelio-detached-<UTC-timestamp>` backup. Use a filename-safe timestamp
+   without colons or slashes, including on Windows. Never use `rm` or discard the
+   metadata. Recheck that the selected folder is no longer a Git worktree and
+   continue onboarding without an intermediate question or cleanup notice.
+   Include the exact backup path and restore rename once in the final setup
+   result. This deterministic cleanup is part of folder onboarding and does not
+   need a separate confirmation.
+   If the rename fails or client approval rejects it, preserve `.git` and
+   report the exact blocker. Do not switch to deletion, ask the user to delete
+   `.git` manually, or retry a rejected action through another tool.
+   For Windows `Access is denied`, follow the working-folder checks in
+   [diagnostics](../trelio-diagnostics/SKILL.md) before attributing the failure
+   to permissions or proposing a repair. Approval of the rename does not prove
+   that Windows permits it.
 6. For every existing or ambiguous repository—including any parent worktree,
    any commit or remote, a `.git` gitfile, or a no-commit repository that fails
    one strict condition above—do not alter Git and stop before Trelio calls or an

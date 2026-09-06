@@ -33,6 +33,32 @@ Report these as independent checks:
 
 Never treat success or failure in one layer as proof about another.
 
+## Working-folder Git rename failures
+
+For onboarding `.git` cleanup, inspect the exact selected folder before
+plugin/OAuth repairs. Distinguish a client approval rejection such as
+`blocked by policy` from a command that ran and returned Windows
+`Access is denied`. Neither proves that Git is missing or Trelio login failed.
+Check whether `.git` and the proposed backup actually exist before any retry;
+never report a backup as created solely because the rename was requested.
+
+On the affected Windows device, read the actual command identity with
+`whoami /user` and `whoami /groups`, and inspect the selected root and its
+exact `.git` with `Get-Item -Force -LiteralPath` and `Get-Acl -LiteralPath`.
+Compare the relevant attributes, links, owner and access entries with that
+identity and the host-reported sandbox mode. An unrelated deny entry, the
+presence of OneDrive in the path, or the UI's Full access label alone does not
+establish the cause. If those reads do not prove the cause, report an unresolved
+Windows filesystem denial; a screenshot alone cannot verify effective rights.
+
+Preserve Git metadata. Do not reset ACLs, take ownership, disable protections,
+kill processes, or change sandbox settings as an automatic onboarding repair.
+Do not retry a client-rejected action through another executable or tool.
+Report one evidence-backed host/OS recovery; when none is established, require
+an explicitly selected separate non-Git folder and keep the current folder
+unchanged. Do not silently relocate the binding or promise that Explorer will
+succeed where the command failed.
+
 ## Run the local diagnostic
 
 Resolve the actual host from host-owned context. Do not infer Claude Code only

@@ -4524,7 +4524,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /`HEAD` is unborn/u);
   assert.match(
     onboardingSkill,
-    /no commits, remotes, local or\s+packed refs, tracked or staged paths/u,
+    /no commits \(including dangling\s+or reflog-only commits\), remotes, tracked or staged paths/u,
   );
   assert.match(
     onboardingSkill,
@@ -4533,7 +4533,14 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /atomically rename the exact `\.git` directory/u);
   assert.match(onboardingSkill, /`\.git\.trelio-detached-<UTC-timestamp>`/u);
   assert.match(onboardingSkill, /Never use `rm` or discard the\s+metadata/u);
-  assert.match(onboardingSkill, /does not need a separate confirmation/u);
+  // Turn-diff refs retain trees even with unborn HEAD. The folder gate must
+  // distinguish that metadata from history, while keeping cleanup recoverable
+  // and avoiding another user checkpoint for the verified empty-shell case.
+  assert.match(
+    onboardingSkillNormalized,
+    /no loose or packed refs except the verified Codex turn-diff tree snapshots/u,
+  );
+  assert.match(onboardingSkillNormalized, /does not need a separate confirmation/u);
   assert.match(
     onboardingSkill,
     /do not alter Git and stop before Trelio calls or an\s+instruction-file write/u,
