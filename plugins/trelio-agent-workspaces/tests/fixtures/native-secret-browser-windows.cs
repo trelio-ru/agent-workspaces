@@ -158,6 +158,12 @@ internal static class Harness {
             window.Dispatcher.Invoke(new Action(() => { panel.Children.Remove(duplicate); window.UpdateLayout(); }));
             var session = Prepared();
             Fill(session);
+            // InvokePattern is explicitly asynchronous. A successful dispatch
+            // can return before the provider processes its queued click; wait
+            // for the observable effect instead of assuming synchronous UI.
+            var submitClock = Stopwatch.StartNew();
+            while (submitClock.Elapsed.TotalSeconds < 5
+                && (int)window.Dispatcher.Invoke(new Func<int>(() => submitted)) == 0) Thread.Sleep(25);
             window.Dispatcher.Invoke(new Action(() => {
                 Check(username.Text == "synthetic-native-user", "username setter failed");
                 Check(password.Text == "synthetic-native-password", "password setter failed");
