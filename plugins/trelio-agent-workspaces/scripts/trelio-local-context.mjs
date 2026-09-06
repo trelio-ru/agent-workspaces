@@ -1991,9 +1991,14 @@ const protectLocalActionUpload = async ({
 
 export const buildLocalTaskAttachmentStreamRequest = async ({
   rawArguments,
+  nativeTool = "upload_attachment",
   staging,
   companyEncryption = null,
 }) => {
+  if (!["upload_attachment", "upload_knowledge_base_attachment"].includes(nativeTool)) {
+    throw new TrelioLocalContextError("LOCAL_ACTION_INVALID_UPLOAD_TARGET", "Unsupported attachment owner.");
+  }
+  const isKnowledgeBase = nativeTool === "upload_knowledge_base_attachment";
   if (rawArguments?.asInlineImage) {
     throw new TrelioLocalContextError(
       "LOCAL_ACTION_STREAM_IMAGE_UNSUPPORTED",
@@ -2019,8 +2024,9 @@ export const buildLocalTaskAttachmentStreamRequest = async ({
   // that a misplaced path, base64 body or future local-only field never leaks.
   const baseArguments = {
     companySlug: argumentCompanySlug,
-    projectSlug: rawArguments?.projectSlug,
-    taskNumber: rawArguments?.taskNumber,
+    ...(isKnowledgeBase
+      ? { pageSlug: normalizeBoundedString(rawArguments?.pageSlug, "pageSlug", 120) }
+      : { projectSlug: rawArguments?.projectSlug, taskNumber: rawArguments?.taskNumber }),
     clientRequestId: stableRequestId,
   };
 
@@ -2051,7 +2057,7 @@ export const buildLocalTaskAttachmentStreamRequest = async ({
 
   const entityId = deriveLocalActionEntityId(
     companyEncryption,
-    `upload_attachment\0${stableRequestId}\0file`,
+    `${nativeTool}\0${stableRequestId}\0file`,
   );
   const values = {
     original_name: originalName,
@@ -2070,7 +2076,7 @@ export const buildLocalTaskAttachmentStreamRequest = async ({
   // family and unlinkable across otherwise identical uploads.
   const encryptedSourceFingerprint = crypto
     .createHmac("sha256", Buffer.from(privateScalar, "base64url"))
-    .update("trelio:encrypted-task-attachment-source:v1\0")
+    .update(isKnowledgeBase ? "trelio:encrypted-knowledge-attachment-source:v1\0" : "trelio:encrypted-task-attachment-source:v1\0")
     .update(stableRequestId)
     .update("\0")
     .update(originalName)
@@ -2090,7 +2096,7 @@ export const buildLocalTaskAttachmentStreamRequest = async ({
       companyId: companyEncryption.runtime.company.id,
       scopeId: companyEncryption.runtime.scope.id,
       scopeEpoch: companyEncryption.runtime.scope.epoch,
-      entityType: "file.task_attachments",
+      entityType: isKnowledgeBase ? "file.company_page_attachments" : "file.task_attachments",
       entityId,
       entityRevision: 1,
     },
@@ -2114,7 +2120,7 @@ export const buildLocalTaskAttachmentStreamRequest = async ({
     companyEncryption,
     entityId,
     values,
-    source: { kind: "mcp_local_action_upload", nativeTool: "upload_attachment" },
+    source: { kind: "mcp_local_action_upload", nativeTool },
   });
   return {
     value: {
@@ -2239,6 +2245,7 @@ export const prepareLocalTaskAttachmentUploadSession = async ({
     token,
     companySlug,
     clientRequestId,
+    nativeTool: actionRequest.nativeTool,
     signal,
     retryDelaysMs,
   });
@@ -2249,6 +2256,7 @@ export const resolveLocalTaskAttachmentUploadSession = async ({
   token,
   companySlug,
   clientRequestId,
+  nativeTool = "upload_attachment",
   signal,
   retryDelaysMs = LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS,
 }) => {
@@ -2257,7 +2265,13 @@ export const resolveLocalTaskAttachmentUploadSession = async ({
     "clientRequestId",
     255,
   );
+  if (!["upload_attachment", "upload_knowledge_base_attachment"].includes(nativeTool)) {
+    throw new TrelioLocalContextError("LOCAL_ACTION_INVALID_UPLOAD_TARGET", "Unsupported attachment owner.");
+  }
   const query = new URLSearchParams({ clientRequestId: normalizedRequestId });
+  // Old task recovery URLs remain byte-for-byte compatible. The extra target
+  // selects a separate idempotency namespace and knowledge-base OAuth scope.
+  if (nativeTool !== "upload_attachment") query.set("nativeTool", nativeTool);
   const pathname = `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}`
     + `/task-attachment-uploads/resolve?${query.toString()}`;
 
@@ -6537,6 +6551,7 @@ const canonicalizeLocalActionProjectSlugs = (value, mirror) => {
 const handleLocalTaskAttachmentStreamOperation = async ({
   origin,
   companySlug,
+  nativeTool,
   rawInput,
   arguments: rawArguments,
   provider,
@@ -6556,6 +6571,7 @@ const handleLocalTaskAttachmentStreamOperation = async ({
   try {
     const protectedRequest = await buildLocalTaskAttachmentStreamRequest({
       rawArguments,
+      nativeTool,
       staging,
       companyEncryption: provider.companyEncryption ?? null,
     });
@@ -6571,7 +6587,7 @@ const handleLocalTaskAttachmentStreamOperation = async ({
     }
 
     const actionRequest = {
-      nativeTool: "upload_attachment",
+      nativeTool,
       arguments: protectedRequest.value,
       ...(rawInput.runtimeSessionProof
         ? { runtimeSessionProof: rawInput.runtimeSessionProof }
@@ -6612,6 +6628,7 @@ const handleLocalTaskAttachmentStreamOperation = async ({
           token: provider.token,
           companySlug,
           clientRequestId: protectedRequest.value.clientRequestId,
+          nativeTool,
           signal,
         });
         if (parseLocalTaskAttachmentUploadSession(recoveryResult, {
@@ -6680,10 +6697,10 @@ export const handleTrelioLocalActionOperation = async (
   }
   const provider = await resolveLocalCompanyProvider({ origin, companySlug, signal });
   const hasLocalFilePath = rawInput.localFilePath !== undefined;
-  if (hasLocalFilePath && nativeTool !== "upload_attachment") {
+  if (hasLocalFilePath && !["upload_attachment", "upload_knowledge_base_attachment"].includes(nativeTool)) {
     throw new TrelioLocalContextError(
       "LOCAL_ACTION_INVALID_UPLOAD_PATH",
-      "localFilePath is supported only for upload_attachment.",
+      "localFilePath supports task and knowledge-base attachment uploads only.",
     );
   }
   if (provider.nativeProvider && !hasLocalFilePath) return {
@@ -6694,6 +6711,7 @@ export const handleTrelioLocalActionOperation = async (
     return handleLocalTaskAttachmentStreamOperation({
       origin,
       companySlug,
+      nativeTool,
       rawInput,
       arguments: rawInput.arguments,
       provider,
@@ -6715,6 +6733,7 @@ export const handleTrelioLocalActionOperation = async (
     return handleLocalTaskAttachmentStreamOperation({
       origin,
       companySlug,
+      nativeTool,
       rawInput,
       arguments: canonicalArguments,
       provider,
@@ -8853,7 +8872,7 @@ export const TRELIO_WORKSPACE_ACTION_TOOL = {
 export const TRELIO_LOCAL_ACTION_TOOL = {
   name: "continue_trelio_local_action",
   title: "Continue a Trelio local action route",
-  description: "Continue one Trelio action locally. upload_attachment: pass localFilePath, omit bytes/size/hash. save_known_agent_secret: follow the Agent Secrets reference.",
+  description: "Continue one Trelio action locally. Task/knowledge-base upload: pass localFilePath, omit bytes/size/hash. save_known_agent_secret: follow the Agent Secrets reference.",
   _meta: { "trelio/sensitiveInput": true },
   inputSchema: {
     type: "object",

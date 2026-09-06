@@ -327,6 +327,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   bridge и считать доступ готовым только после открытого owner envelope и
   локального `TRELIOE1` self-test; transitional state блокирует content work.
   Успешный `login` сам по себе не доказывает encryption readiness.
+- Shared local-file upload обслуживает задачи и страницы базы знаний. Exact
+  `nativeTool` выбирает owner locator, encryption AAD и recovery namespace;
+  local path остаётся в local tool, bytes не входят в model context; task ABI сохраняется.
+  Право `mcp:tasks:update` не заменяет `mcp:knowledge-base:write` и page manage ACL.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
   bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанную
   browser-проекцию: её clear index содержит только UUID, ciphertext ranges и

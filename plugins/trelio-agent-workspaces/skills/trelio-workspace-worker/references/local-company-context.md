@@ -151,9 +151,11 @@ mutation.
 
 ## Continue ordinary actions
 
-Pass native arguments once. For `upload_attachment`, use absolute
+Pass native arguments once. For `upload_attachment` or `upload_knowledge_base_attachment`, use absolute
 `localFilePath` only for an exact user-selected or agent-created file; omit
-base64/size/hash. The host privately streams it, encrypting if needed. On
+base64/size/hash. Page uploads use exact `pageSlug`, require company owner/admin,
+and preserve the current article. Insert the returned file URL with the ordinary
+revision-checked page update. The host privately streams it, encrypting if needed. On
 ambiguity reread attachments before reusing the key. Archived rows require
 exact include flags.
 
