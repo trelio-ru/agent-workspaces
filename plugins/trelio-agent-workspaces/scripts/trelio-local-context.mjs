@@ -213,6 +213,7 @@ const localCompanyMirrorObservedMutation = new Map();
 const mirrorSearchIndexCache = new WeakMap();
 const execFileAsync = promisify(execFile);
 const WORKSPACE_BRIDGE_ENTRYPOINT = fileURLToPath(new URL("./trelio-workspace.mjs", import.meta.url));
+const WORKSPACE_BRIDGE_PLUGIN_DIRECTORY = path.dirname(path.dirname(WORKSPACE_BRIDGE_ENTRYPOINT));
 
 const cacheDecryptedMirror = (sessionKey, mirror) => {
   const entry = {
@@ -6853,13 +6854,54 @@ export const buildWorkspaceBridgeProcessArguments = (origin, argumentsList) => {
   return [WORKSPACE_BRIDGE_ENTRYPOINT, ...bridgeArguments];
 };
 
-const runWorkspaceBridge = async (origin, argumentsList, options = {}) => (
-  runLocalProcess(
-    process.execPath,
-    buildWorkspaceBridgeProcessArguments(origin, argumentsList),
-    options,
-  )
-);
+const assertWorkspaceBridgeFilesAvailable = async () => {
+  let available;
+  try {
+    const plugin = await fs.stat(WORKSPACE_BRIDGE_PLUGIN_DIRECTORY);
+    const entrypoint = await fs.stat(WORKSPACE_BRIDGE_ENTRYPOINT);
+    available = plugin.isDirectory() && entrypoint.isFile();
+  } catch (error) {
+    // Only missing paths prove that this loaded version is no longer usable.
+    // Permissions and other filesystem failures must keep their own meaning.
+    if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+    available = false;
+  }
+  if (!available) {
+    throw new TrelioLocalContextError(
+      "TRELIO_PLUGIN_RESTART_REQUIRED",
+      "The loaded Trelio plugin files are no longer available. Fully restart Codex or Claude Code to load the installed plugin, then retry the action.",
+      { requiredAction: "restart_client", reason: "loaded_plugin_unavailable" },
+    );
+  }
+};
+
+const runWorkspaceBridge = async (origin, argumentsList, options = {}) => {
+  options.signal?.throwIfAborted();
+  await assertWorkspaceBridgeFilesAvailable();
+  try {
+    return await runLocalProcess(
+      process.execPath,
+      buildWorkspaceBridgeProcessArguments(origin, argumentsList),
+      {
+        ...options,
+        // A plugin update can unlink the long-lived MCP host's cwd while the
+        // loaded module and its exact installed path remain usable. Give every
+        // bridge child an explicit cwd instead of inheriting that stale inode.
+        // Run-bound actions retain their validated workspace directory; never
+        // chdir the shared host or discover a replacement plugin/Node version.
+        cwd: options.cwd ?? WORKSPACE_BRIDGE_PLUGIN_DIRECTORY,
+      },
+    );
+  } catch (error) {
+    // The updater may remove the plugin after preflight. ENOENT from execFile
+    // means spawning failed: recheck the same files, without replaying anything.
+    // If they still exist, preserve the failure (e.g. a missing explicit cwd).
+    if (!options.signal?.aborted && error?.code === "ENOENT") {
+      await assertWorkspaceBridgeFilesAvailable();
+    }
+    throw error;
+  }
+};
 
 const normalizeWorkspaceActionParameters = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -7427,6 +7469,11 @@ export const handleTrelioWorkspaceActionOperation = async (
     };
   } catch (error) {
     if (signal?.aborted) throw error;
+    // Preserve the recovery code for MCP clients; a generic action error would
+    // hide that this host must reload its plugin before any retry can succeed.
+    if (error instanceof TrelioLocalContextError && error.code === "TRELIO_PLUGIN_RESTART_REQUIRED") {
+      throw error;
+    }
     const stderr = truncateWorkspaceActionOutput(error?.stderr).trim();
     const stdout = truncateWorkspaceActionOutput(error?.stdout).trim();
     throw new TrelioLocalContextError(

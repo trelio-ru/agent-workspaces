@@ -209,6 +209,15 @@ Later behavior-only fixes in the runtime script do not require another
   before OAuth still has no `list_companies` or other remote tools: do not
   reauthorize. End that stale session, launch a new `claude` session from the
   same exact working folder, and retry the original request there.
+- `TRELIO_PLUGIN_RESTART_REQUIRED` with `reason: loaded_plugin_unavailable`
+  means the running local host has lost its exact plugin files, typically
+  during an update. Fully restart the owning Codex or Claude Code process to
+  load the installed plugin, then retry one low-risk read. A new task within
+  the same owner process may retain the stale host. Do not loop the failed
+  action, reset OAuth, reinstall Node, or search caches for another version.
+  An older plugin's `uv_cwd` / `process.cwd` ENOENT needs the same recovery only
+  after confirming that the host's working directory was removed; an ordinary
+  missing file or explicit Workspace directory is a different failure.
 - Only `trelio-remote-skills` fails: inspect its exact client-owned command. In
   Codex, `codex mcp list --json` must show `./scripts/launch-trelio-node` with a
   plugin-root `cwd`; a still-loaded bare `node` command needs the normal plugin

@@ -286,6 +286,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   запускается только после записи MCP `initialize` response и никогда не входит
   в handshake/output queue: медленный или конкурентный cache snapshot не должен
   расходовать ограниченное startup-время локального server.
+- Запуск bridge из долгоживущего local facade использует explicit child `cwd`
+  по [контракту runtime](docs/agent-workspace-runtime.md#запуск-локального-bridge).
+  Нельзя менять `cwd` общего host-процесса, выбирать другую plugin-version либо
+  скрывать требование restart после удаления файлов загруженного плагина.
 - Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
   только exact executable через scoped one-use delivery. Стабильный
   installation-managed API key/client secret может повторно использоваться
