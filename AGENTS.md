@@ -175,11 +175,6 @@ provider-tag workflow или внутренние release playbooks в этот 
   контрольную точку задачи; `personal` допустим только для явно частной проверки.
   Update сохраняет текущую visibility без прямой команды изменить аудиторию, а
   недоступный по ACL `shared` нельзя молча заменять скрытым `personal`.
-- После содержательной task-работы, включая частичный результат и действия
-  без Run, обязательна независимая оценка дедлайна и видимых контролей до
-  proposals и финального ответа по
-  [task-date-review](plugins/trelio-agent-workspaces/skills/trelio-workspace-worker/references/task-date-review.md).
-  Оценка не разрешает автоматическую mutation и не подменяет status/checklist review.
 - Structured `MCP_SEARCH_TIMEOUT` является подтверждённым backend-ом
   превышением бюджета read-only поиска, а не transport 504. Bundled discovery
   и diagnostics не применяют к нему три одинаковых network retry: допустим один
