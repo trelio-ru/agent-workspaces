@@ -348,12 +348,24 @@ Bridge получает value-free `GET /checkout-grants/:grantId/browser-fill-c
 на выбранном `workspaceOrigin`, повторяет ACL, версию, срок, active Run/lease и
 выбирает приложение по pinned hook observation Run. GET не загружает secret
 bundle, не отдаёт ciphertext/value и не расходует grant.
+Hook identity сохраняется и при отключённой model policy, если MCP получил
+валидный proof. Без неё `client_unsupported` указывает на неподтверждённый client
+Run, а не на отсутствие встроенного браузера у приложения. Диагностика и штатное
+возобновление Run со свежим proof предшествуют новому grant; включать ограничения
+модели ради browser-fill или вручную создавать runtime metadata нельзя.
 
 На macOS helper проверяет Apple code signature, bundle id и team приложения,
 разрешает exact `AXWebArea`/`AXDOMIdentifier` и пишет через AX setter. На Windows
 проверяются Authenticode publisher/product, процесс, UIA Document URL и
 `AutomationId`, запись идёт через `ValuePattern.SetValue`. Поддерживаются
-простые `#id` и `[id="..."]`; составные CSS selectors не аппроксимируются.
+простые `#id` и `[id="..."]` для полей и `submitSelector`; составные CSS selectors
+не аппроксимируются. Если только финальная кнопка не имеет поддерживаемого id,
+агент готовит последний step без `submitSelector` и выбирает `browser=embedded`.
+После успешного fill он штатным browser tool нажимает заранее определённую кнопку
+в той же вкладке без snapshot/чтения заполненных полей. `auto` для такого плана
+не используется: fallback мог бы заполнить другую вкладку Chrome. Промежуточный
+native step требует поддерживаемый `submitSelector`; неподдерживаемые поля или
+промежуточная кнопка требуют явно выбранного Chrome ещё до выдачи значения.
 Системная блокировка исключает параллельные native fills и освобождается при
 выходе/crash helper. Объект документа, контейнер вкладки и поля проверяются
 заново перед каждой записью; вложенные

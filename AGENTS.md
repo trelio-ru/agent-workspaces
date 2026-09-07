@@ -299,6 +299,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   environment, workspace, comments, checkpoints, handoff или logs.
 - Browser fill использует встроенный браузер по умолчанию; generic AX/UIA
   helper готовится до consume, Chrome допустим только как pre-delivery fallback.
+  Native id binding относится к полям и кнопкам; финальная кнопка без id требует
+  embedded fill без submit и штатного клика в той же вкладке без чтения полей.
   После выдачи значения браузер не меняется и secret повторно не отправляется.
   Native helpers, prerequisites, exact app/URL/field binding и ограничения
   описаны в [Agent Secrets](docs/agent-skills-and-secrets.md#agent-secrets).

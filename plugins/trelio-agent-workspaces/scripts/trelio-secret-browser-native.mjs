@@ -26,8 +26,16 @@ const NATIVE_UNAVAILABLE = new Set([
 
 export class EmbeddedBrowserUnavailable extends SecretBrowserFillError {
   constructor(nativeReason) {
-    super("Встроенный browser transport недоступен: " + nativeReason + ".", "browser_unavailable");
-    this.nativeReason = NATIVE_UNAVAILABLE.has(nativeReason) ? nativeReason : "helper_unavailable";
+    const reason = NATIVE_UNAVAILABLE.has(nativeReason) ? nativeReason : "helper_unavailable";
+    // These value-free explanations distinguish missing Run provenance from
+    // an unsupported browser. Never copy native diagnostics, URLs or DOM data.
+    const hint = reason === "client_unsupported"
+      ? " В Agent Run нет поддерживаемого hook-verified клиента Codex/Claude Code; проверьте runtime identity Run."
+      : reason === "selector_unsupported"
+        ? " Native поля и submitSelector требуют точный id. Для финальной кнопки без id подготовьте заполнение без submitSelector с browser=embedded, затем нажмите заранее найденную кнопку штатным browser tool без чтения полей."
+        : "";
+    super("Встроенный browser transport недоступен: " + reason + "." + hint, "browser_unavailable");
+    this.nativeReason = reason;
   }
 }
 

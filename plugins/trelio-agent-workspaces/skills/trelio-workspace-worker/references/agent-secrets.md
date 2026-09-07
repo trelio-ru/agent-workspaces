@@ -156,9 +156,17 @@ Call `prepare_agent_secret_browser_fill` with the current Run and ordered steps:
 
 - put username and password on the same page in one step;
 - use exact HTTPS URLs and one visible supported top-level field per selector;
-- prefer simple `#id` or `[id="..."]` selectors for native AX/UIA; do not guess ids;
-- an optional `submitSelector` grants that exact button after filling the step;
-  native multi-page login requires it on every non-final step.
+- native AX/UIA requires exact `#id` or `[id="..."]` selectors for both fields
+  and any `submitSelector`; do not guess or assign ids;
+- when the final login button has no supported id (for example, only
+  `button[type="submit"]` identifies it), omit the final `submitSelector` and
+  use `browser=embedded`. After successful fill, click the button identified
+  from the empty form in that same tab with the ordinary browser tool, without
+  a snapshot or field read. Embedded-only mode keeps this separate click bound
+  to the prepared tab instead of silently filling a different Chrome profile;
+- non-final native steps require a supported `submitSelector`. If a field or
+  intermediate button has no supported id, choose the declared Chrome flow
+  before delivery; do not weaken selectors or split a same-page credential.
 
 Execute exactly one returned `bridge.action` through its declared local
 server/tool and exact opened `workingDirectory`. Default `browser=auto` prepares
@@ -175,6 +183,13 @@ requires the embedded surface; `browser=chrome` explicitly chooses Chrome.
 Wrong app identity/URL, missing, ambiguous, hidden or read-only fields and
 transport/auth failures stop the operation. After consume or partial fill,
 never switch browser, request another grant or retry the value blindly.
+
+`client_unsupported` means the Run has no supported hook-verified client
+identity; it does not prove that the installed app lacks a built-in browser.
+Use the diagnostics route and preserve the exact reason. Do not enable model
+restrictions as a workaround or author runtime metadata/proofs. With a fixed
+backend, resume/reopen the Run through the returned action and a fresh approved
+hook proof before preparing a new fill; old grants are not repaired in place.
 
 macOS needs the system Swift compiler (Command Line Tools) and user-granted
 Accessibility access; Windows needs the system .NET Framework WPF/UIA runtime.

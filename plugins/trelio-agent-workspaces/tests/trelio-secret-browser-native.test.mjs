@@ -110,6 +110,49 @@ test("embedded-only forbids fallback; explicit Chrome does not inspect other app
   assert.equal(g.builds, 0);
 });
 
+test("a final button without an id uses one embedded field-only fill and no native submit", async () => {
+  const f = fixture();
+  // The caller identified a non-id login button on the empty page and retains
+  // it for its ordinary browser click. It must not send that selector to AX/UIA
+  // or let auto switch the value delivery to a different browser profile.
+  delete f.args.context.browserSteps[0].submitSelector;
+  const session = await prepareSecretBrowserSession({ ...f.args, mode: "embedded" });
+  assert.equal(session.surface, "embedded");
+  assert.equal(f.requests[0].steps[0].fields.length, 2);
+  assert.equal(Object.hasOwn(f.requests[0].steps[0], "submitId"), false);
+  assert.deepEqual(await session.fill({ secretValues: values }), { outcome: "succeeded" });
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(f.requests[1].values, values);
+  assert.equal(f.chromeCalls, 0);
+  await session.close();
+
+  const unavailable = fixture({ status: "unavailable", reasonCode: "access_required" });
+  delete unavailable.args.context.browserSteps[0].submitSelector;
+  await assert.rejects(prepareSecretBrowserSession({ ...unavailable.args, mode: "embedded" }), EmbeddedBrowserUnavailable);
+  assert.equal(unavailable.chromeCalls, 0);
+  assert.equal(unavailable.requests.length, 1, "no value delivery when this same-tab plan cannot be prepared");
+});
+
+test("missing Run client identity and unsupported submit remain distinct pre-delivery failures", async () => {
+  for (const [clientFamily, reason] of [[null, "client_unsupported"], ["codex", "selector_unsupported"]]) {
+    const f = fixture();
+    f.args.context.clientFamily = clientFamily;
+    f.args.context.browserSteps[0].submitSelector = 'button[type="submit"]';
+    await assert.rejects(prepareSecretBrowserSession({ ...f.args, mode: "embedded" }),
+      (error) => error instanceof EmbeddedBrowserUnavailable && error.nativeReason === reason);
+    assert.equal(f.builds, 0);
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.chromeCalls, 0);
+  }
+});
+
+test("native capability errors expose only allowlisted reason codes", () => {
+  const error = new EmbeddedBrowserUnavailable("CANARY-private-helper-diagnostic");
+  assert.equal(error.nativeReason, "helper_unavailable");
+  assert.equal(error.reasonCode, "browser_unavailable");
+  assert.doesNotMatch(error.message, /CANARY/u);
+});
+
 
 test("lost native reply after a setter never calls Chrome or repeats the write", async () => {
   const f = fixture();
