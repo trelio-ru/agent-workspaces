@@ -129,8 +129,10 @@ same server-side ACL, advisory locks, optimistic state revisions, public-comment
 snapshot hashes, and idempotent apply/dismiss/publication behavior as native
 Trelio.
 
-The v8 App puts a one-hour, revision-bound opaque capability in model-hidden
-metadata. Saved v5 cards retain their old app tools.
+The v8 App uses a three-hour, revision-bound capability in model-hidden metadata.
+A successful decision closes only that card's writes; live state reads retain
+provider/ACL checks until the original expiry, without renewal. Reopened cards
+show their completed state. Saved v5 cards keep their old app tools.
 
 When one response needs two or more cards and native
 `render_task_proposals` or compatibility `render_task_comment_proposals`

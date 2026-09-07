@@ -3485,6 +3485,7 @@ const createLocalProposalAppCapability = (origin, structuredContent) => {
       kind: route.kind,
       revision: route.revision,
       target: route.target,
+      actionConsumed: false,
     });
   });
   if (hasUnboundReadyDraft || targets.size === 0) return null;
@@ -3669,7 +3670,7 @@ const handleGenericLocalProposalAppToolCall = async (
 ) => {
   const capabilityToken = rawArguments?.capabilityToken;
   const proposalId = rawArguments?.proposalId;
-  const { capability, target } = readLocalProposalAppCapabilityTarget(
+  const { target } = readLocalProposalAppCapabilityTarget(
     origin,
     capabilityToken,
     proposalId,
@@ -3687,6 +3688,17 @@ const handleGenericLocalProposalAppToolCall = async (
       companySlug: target.companySlug,
       kind: target.kind,
     });
+  }
+
+  // Host восстанавливает карточку из неизменяемого render-result вместе с тем
+  // же token. Завершённое решение закрывает только запись: live context выше
+  // нужен до исходного TTL, чтобы показать уже опубликованный/отклонённый
+  // результат. Это чтение по-прежнему проходит provider и серверный ACL.
+  if (target.actionConsumed) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+      "This protected proposal card was already completed. Refresh the card to read its current state.",
+    );
   }
 
   const decision = rawArguments?.decision;
@@ -3761,12 +3773,11 @@ const handleGenericLocalProposalAppToolCall = async (
     operation: "action",
     payload: actionPayload,
   }, { signal });
-  // One successful human decision consumes only its exact target. A bundle's
-  // sibling cards retain their independent authority until used or expired.
-  capability.targets.delete(target.proposalId);
-  if (capability.targets.size === 0) {
-    localProposalAppCapabilityByToken.delete(capabilityToken);
-  }
+  // Сохраняем только существующий exact route и отметку расходования права
+  // записи, без кеширования ответа или продления TTL. Удаление target/token
+  // здесь делало успешную публикацию неотличимой от истёкшей карточки при
+  // возврате в чат. Соседние карточки bundle сохраняют свои права независимо.
+  target.actionConsumed = true;
   return buildLocalProposalChildResult({
     result,
     companySlug: target.companySlug,

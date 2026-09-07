@@ -1989,21 +1989,25 @@ test("local proposal App capability binds refresh and one delayed final action t
   });
   const capabilityToken = root._meta["trelio/taskProposalApp"].capabilityToken;
   const calls = [];
+  let published = false;
   const proposalOperation = async (_origin, input) => {
     calls.push(input);
-    return input.operation === "context"
-      ? {
-          proposal: {
-            schemaVersion: 3,
-            currentDraft: {
-              proposalId,
-              revision: 7,
-              bodyText: "Готовый комментарий",
-              contextRequest: { runId },
-            },
+    if (input.operation === "context") {
+      return {
+        proposal: {
+          schemaVersion: 3,
+          currentDraft: published ? null : {
+            proposalId,
+            revision: 7,
+            bodyText: "Готовый комментарий",
+            contextRequest: { runId },
           },
-        }
-      : { proposal: { schemaVersion: 3, comment: { id: "published-comment" } } };
+          lastPublished: published ? { proposalId, commentId: "published-comment" } : null,
+        },
+      };
+    }
+    published = true;
+    return { proposal: { schemaVersion: 3, comment: { id: "published-comment" } } };
   };
 
   await assert.rejects(
@@ -2058,14 +2062,234 @@ test("local proposal App capability binds refresh and one delayed final action t
       },
     },
   ]);
+  // При возврате в чат host восстанавливает исходный draft и тот же hidden
+  // token. Повторное чтение должно увидеть реальную публикацию на сервере,
+  // хотя право на ещё одно решение уже израсходовано.
+  const restored = await handleToolCall(origin, "get_task_proposal_app_state", {
+    capabilityToken,
+    proposalId,
+  }, { proposalOperation });
+  assert.equal(restored.structuredContent.currentDraft, null);
+  assert.deepEqual(restored.structuredContent.lastPublished, {
+    proposalId,
+    commentId: "published-comment",
+    localCompanySlug: "protected-company",
+  });
   await assert.rejects(
     handleToolCall(origin, "perform_task_proposal_app_action", {
       capabilityToken,
       proposalId,
       decision: "dismiss",
     }, { proposalOperation }),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+  );
+  assert.deepEqual(calls.map((input) => input.operation), ["context", "action", "context"]);
+});
+
+test("local proposal App completed cards retain live reads until the original expiry", async (t) => {
+  const issuedAtMs = Date.now();
+  let nowMs = issuedAtMs;
+  t.mock.method(Date, "now", () => nowMs);
+  for (const kind of ["comment", "status", "control_clear", "checklist"]) {
+    for (const decision of ["apply", "dismiss"]) {
+      await t.test(`${kind}: ${decision}`, async () => {
+        nowMs = issuedAtMs;
+        const origin = `https://${kind.replaceAll("_", "-")}-${decision}.trelio.example`;
+        const proposalId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        const target = { projectSlug: "test-project", taskNumber: 42 };
+        const root = buildLocalProposalRenderResult({
+          origin,
+          companySlug: "protected-company",
+          kind,
+          operation: "save",
+          result: {
+            proposal: { currentDraft: { proposalId, revision: 2, contextRequest: target } },
+          },
+        });
+        const { capabilityToken, expiresAt } = root._meta["trelio/taskProposalApp"];
+        const argumentsForCard = { capabilityToken, proposalId };
+        const completionField = decision === "dismiss"
+          ? "lastDismissed"
+          : kind === "comment" ? "lastPublished" : "lastApplied";
+        const calls = [];
+        let readError = null;
+        const proposalOperation = async (_origin, input) => {
+          calls.push(input);
+          if (input.operation === "context") {
+            // Даже завершённая карточка заново проходит provider/ACL. Нельзя
+            // подменять серверное чтение закешированным успешным ответом.
+            if (readError) throw readError;
+            return {
+              proposal: {
+                schemaVersion: 4,
+                currentDraft: null,
+                [completionField]: { proposalId },
+              },
+            };
+          }
+          return {
+            proposal: {
+              schemaVersion: 4,
+              [decision === "dismiss" ? "dismissed" : "applied"]: true,
+            },
+          };
+        };
+        const applyFields = {
+          comment: { bodyText: "Проверенный результат", attachmentIds: [] },
+          status: { targetStatusCode: "done" },
+          control_clear: { controlIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"] },
+          checklist: { itemIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"] },
+        };
+        const actionArguments = {
+          ...argumentsForCard,
+          decision,
+          ...(decision === "apply" ? applyFields[kind] : {}),
+        };
+        await handleToolCall(origin, "perform_task_proposal_app_action", actionArguments, {
+          proposalOperation,
+        });
+
+        for (const elapsedMs of [1, 3 * 60 * 60 * 1_000 - 1]) {
+          nowMs = issuedAtMs + elapsedMs;
+          const state = await handleToolCall(origin, "get_task_proposal_app_state", argumentsForCard, {
+            proposalOperation,
+          });
+          assert.equal(state.structuredContent.currentDraft, null);
+          assert.equal(state.structuredContent[completionField].proposalId, proposalId);
+        }
+        for (const rejectedDecision of ["apply", "dismiss"]) {
+          await assert.rejects(
+            handleToolCall(origin, "perform_task_proposal_app_action", {
+              ...argumentsForCard,
+              decision: rejectedDecision,
+              ...(rejectedDecision === "apply" ? applyFields[kind] : {}),
+            }, { proposalOperation }),
+            (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+          );
+        }
+        readError = Object.assign(new Error("Task access revoked"), { code: "FORBIDDEN" });
+        await assert.rejects(
+          handleToolCall(origin, "get_task_proposal_app_state", argumentsForCard, { proposalOperation }),
+          (error) => error === readError,
+        );
+        assert.deepEqual(calls.map((input) => input.operation), [
+          "action", "context", "context", "context",
+        ]);
+        for (const input of calls.filter((call) => call.operation === "context")) {
+          assert.deepEqual(input, {
+            companySlug: "protected-company", kind, operation: "context", payload: { target },
+          });
+        }
+        assert.equal(calls[0].payload.expectedRevision, 2);
+
+        nowMs = Date.parse(expiresAt);
+        const callCount = calls.length;
+        for (const name of ["get_task_proposal_app_state", "perform_task_proposal_app_action"]) {
+          await assert.rejects(
+            handleToolCall(origin, name, actionArguments, { proposalOperation }),
+            (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+          );
+        }
+        assert.equal(calls.length, callCount);
+      });
+    }
+  }
+});
+
+test("local proposal App bundle keeps completed reads and independent sibling decisions", async () => {
+  const origin = "https://completed-bundle.trelio.example";
+  const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const cards = [
+    { type: "commentProposal", kind: "comment", proposalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+    { type: "statusProposal", kind: "status", proposalId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
+  ];
+  const root = buildLocalProposalRenderResult({
+    origin,
+    companySlug: "protected-company",
+    kind: "bundle",
+    operation: "save",
+    result: {
+      proposalBundle: {
+        kind: "taskProposalBlocks",
+        blocks: cards.map((card) => ({
+          type: card.type,
+          itemId: card.kind,
+          status: "ready",
+          proposal: {
+            currentDraft: { proposalId: card.proposalId, revision: 1, contextRequest: { runId } },
+          },
+        })),
+      },
+    },
+  });
+  const { capabilityToken } = root._meta["trelio/taskProposalApp"];
+  const completed = new Set();
+  const calls = [];
+  const providerError = new Error("Temporary provider failure before the decision");
+  let actionError = providerError;
+  const proposalOperation = async (_origin, input) => {
+    calls.push(input);
+    const card = cards.find((item) => item.kind === input.kind);
+    if (input.operation === "action") {
+      if (actionError) throw actionError;
+      completed.add(card.proposalId);
+      return { proposal: { dismissed: true } };
+    }
+    return {
+      proposal: {
+        currentDraft: completed.has(card.proposalId) ? null : { proposalId: card.proposalId },
+        lastDismissed: completed.has(card.proposalId) ? { proposalId: card.proposalId } : null,
+      },
+    };
+  };
+  const read = (proposalId, readOrigin = origin) => handleToolCall(readOrigin, "get_task_proposal_app_state", {
+    capabilityToken, proposalId,
+  }, { proposalOperation });
+  const dismiss = (proposalId) => handleToolCall(origin, "perform_task_proposal_app_action", {
+    capabilityToken, proposalId, decision: "dismiss",
+  }, { proposalOperation });
+
+  // Неуспешное решение не закрывает карточку. Перед повтором читаем live state,
+  // чтобы отличить подтверждённую ошибку от уже выполненной mutation.
+  await assert.rejects(dismiss(cards[0].proposalId), (error) => error === providerError);
+  assert.equal(
+    (await read(cards[0].proposalId)).structuredContent.currentDraft.proposalId,
+    cards[0].proposalId,
+  );
+  actionError = null;
+  await dismiss(cards[0].proposalId);
+  assert.equal(
+    (await read(cards[0].proposalId)).structuredContent.lastDismissed.proposalId,
+    cards[0].proposalId,
+  );
+  assert.equal(
+    (await read(cards[1].proposalId)).structuredContent.currentDraft.proposalId,
+    cards[1].proposalId,
+  );
+  await dismiss(cards[1].proposalId);
+
+  // Расходование последнего write-права bundle не удаляет read-маршруты.
+  for (const card of cards) {
+    assert.equal((await read(card.proposalId)).structuredContent.lastDismissed.proposalId, card.proposalId);
+    await assert.rejects(
+      dismiss(card.proposalId),
+      (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+    );
+  }
+  assert.deepEqual(
+    calls.filter((input) => input.operation === "action").map((input) => input.kind),
+    ["comment", "comment", "status"],
+  );
+  const callCount = calls.length;
+  await assert.rejects(
+    read(cards[0].proposalId, "https://other-origin.trelio.example"),
     (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
   );
+  await assert.rejects(
+    read("dddddddd-dddd-4ddd-8ddd-dddddddddddd"),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+  );
+  assert.equal(calls.length, callCount);
 });
 
 test("local proposal App capability expires at three hours without renewal on refresh", async (t) => {
