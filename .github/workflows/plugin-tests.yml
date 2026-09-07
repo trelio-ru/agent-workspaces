@@ -86,6 +86,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-runtime-session-timeout.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-secret-chat.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
@@ -139,6 +140,11 @@ jobs:
           node --test
           --test-name-pattern="configured platform hook launcher"
           plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
+
+      # Include actual private ACL work in the hook's configured wall-clock
+      # budget. Cover both slow success and internal cancellation with cleanup.
+      - name: Run Windows hook timeout regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-runtime-session-timeout.test.mjs
 
       # A cache snapshot can be slow on Windows and must not consume Codex's
       # bounded local-MCP startup window before the initialize response exists.

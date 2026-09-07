@@ -14,6 +14,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs";
+import {
+  RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS,
+  RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
+  RUNTIME_STATE_LOCK_WAIT_MILLISECONDS,
+} from "./trelio-runtime-session-limits.mjs";
 
 const DISCOVERY_TOOLS = new Set([
   "list_knowledge_base_pages", "list_contacts", "list_registries",
@@ -49,9 +54,6 @@ const LOCAL_ACTION_HOST_TOOL_PATTERNS = [
   /^mcp__plugin_trelio-agent-workspaces_trelio-remote-skills__continue_trelio_local_action$/iu,
   /^(?:mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$/iu,
 ];
-const RUNTIME_STATE_LOCK_WAIT_MILLISECONDS = 5_000;
-const RUNTIME_STATE_LOCK_STALE_MILLISECONDS = 15_000;
-const RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS = 11_000;
 const RUNTIME_END_TIMEOUT_MILLISECONDS = 1_500;
 let workspaceBridgeModulePromise;
 

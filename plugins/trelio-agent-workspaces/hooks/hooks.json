@@ -22,7 +22,7 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs\"",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAHIAdQBuAHQAaQBtAGUALQBzAGUAcwBzAGkAbwBuAC4AbQBqAHMAJwApADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }

@@ -255,6 +255,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   lifecycle-улучшения вноси в `trelio-runtime-session.mjs`; definition меняй
   только при реальной несовместимости host contract, потому что новый hash
   требует повторного review пользователя.
+- Внешний `PreToolUse.timeout` равен 30 секундам и включает Windows cold
+  start, private ACL, ожидание lock и сохранение state; внутренние 11 секунд
+  регистрации не являются полным бюджетом hook. Lock считается устаревшим
+  только после 45 секунд, позже внешнего лимита; runtime и doctor используют
+  общие константы. Проверяй медленный запуск, штатный abort с удалением lock и
+  защиту ещё живого lock на Windows, macOS и Linux.
 - Bundled doctor диагностирует только exact загруженный plugin и выводит
   value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
   ID или private key и не объявляет Hooks включёнными: client approval остаётся
@@ -268,11 +274,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed сигналом отсутствующего
   proof, но сам по себе не доказывает, что Hooks выключены. При уже
   подтверждённом trust агент не повторяет enable-инструкцию: он проверяет exact
-  matcher и хронологию plugin/trust относительно owning App Server. Для Codex
+  matcher, dispatch и хронологию plugin/trust относительно owning App Server.
+  Подтверждённый `hook/started` направляет диагностику к завершению и timeout
+  hook, а не к restart по версии core. При отсутствии dispatch у Codex
   core/App Server до `0.154.0-alpha.2`, не перечитывающего config после
-  установки, требуется полностью завершить все процессы Codex/ChatGPT, открыть
-  приложение заново и проверить один protected read в новой задаче; закрытие
-  окна или новая задача в прежнем owner-процессе restart-ом не считаются.
+  установки, owner старше plugin/trust требует полностью завершить все
+  процессы Codex/ChatGPT, открыть приложение заново и проверить один protected
+  read в новой задаче; закрытие окна или новая задача в прежнем owner-процессе
+  restart-ом не считаются.
 - Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

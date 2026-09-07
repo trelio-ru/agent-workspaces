@@ -233,6 +233,18 @@ MCP и hooks используют один Node-resolution contract даже п�
 desktop-процесса. Любое изменение `hooks.json` может потребовать один новый
 client review; дальнейшие behavior-only исправления скрипта definition не
 меняют.
+
+Внешний `PreToolUse.timeout` равен 30 секундам: он включает запуск shell и
+Node.js, проверки private ACL, до 5 секунд ожидания другой регистрации,
+внутренний registration timeout 11 секунд и сохранение state. Внутренний
+таймаут начинается позже запуска процесса и сам по себе не ограничивает
+полную длительность hook. При штатном отказе hook удаляет свой lock; после
+принудительного завершения оставшийся lock автоматически удаляется
+следующим вызовом, когда его возраст превышает 45 секунд. Этот порог больше
+внешнего лимита, чтобы параллельный вызов не удалил ещё живую блокировку.
+Изменённый timeout входит в definition и требует нового пользовательского
+review после обновления плагина.
+
 Параллельные первые protected calls разделяют одну регистрацию, а SessionEnd
 сначала удаляет локальный private key и только затем делает bounded best-effort
 server cleanup.
@@ -245,8 +257,10 @@ Agent Run закрепляет snapshot и hook-observed runtime; exact open com
 owning client process не загрузил или не запустил. Protected work
 останавливается. Если review текущей definition не подтверждён, пользователь
 включает/разрешает её в настройках плагина или `/hooks`; при подтверждённом
-trust повторять эту инструкцию нельзя. Тогда проверяются exact matcher и
-хронология установки/записи trust относительно owning App Server. Codex
+trust повторять эту инструкцию нельзя. Тогда проверяются exact matcher,
+наличие `PreToolUse` для этого вызова и хронология установки/записи trust
+относительно owning App Server. Только при отсутствии dispatch применяется
+проверка устаревшей конфигурации: Codex
 core/App Server до `0.154.0-alpha.2` не перечитывает user config после локальной
 установки plugin: если owner старше изменения либо хронология неизвестна, нужно
 полностью завершить все процессы Codex/ChatGPT, открыть приложение заново,
@@ -256,7 +270,13 @@ core/App Server до `0.154.0-alpha.2` не перечитывает user config
 hook-dispatch failure; сохраняются canonical tool, hook events, runtime counts
 и exact server response. Ошибка активного `PreToolUse` доказывает, что hook
 запущен: её structured code и причина сохраняются, а неизвестный внутренний
-отказ получает отдельный `TRELIO_RUNTIME_HOOK_FAILED`.
+отказ получает отдельный `TRELIO_RUNTIME_HOOK_FAILED`. Если `hook/started`
+подтверждён для exact вызова, версия core и хронология trust сами по себе не
+обосновывают restart. Проверяются завершение, stderr/exit code и длительность
+hook относительно внешнего timeout. Завершение ровно на лимите с оставшимся
+lock и без state указывает на вероятное принудительное завершение; без
+явного `timed_out` или полного completion payload нельзя объявлять его
+доказанным либо придумывать exit code.
 
 При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
 `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` Codex сначала проверяет

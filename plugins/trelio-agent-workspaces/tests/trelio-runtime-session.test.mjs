@@ -194,7 +194,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
           type: "command",
           command: expectedRuntimeHookCommand,
           commandWindows: expectedRuntimeHookCommandWindows,
-          timeout: 15,
+          timeout: 30,
         }],
       }],
       SessionEnd: [{

@@ -21,6 +21,10 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
+  PRE_TOOL_USE_TIMEOUT_SECONDS,
+  RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
+} from "./trelio-runtime-session-limits.mjs";
+import {
   GIT_DISABLED_GLOBAL_CONFIG_PATH,
   GIT_DISABLED_HOOKS_PATH,
   GitPrerequisiteError,
@@ -284,7 +288,6 @@ const CODEX_OFFICIAL_MARKETPLACE_SOURCE =
   "https://github.com/trelio-ru/agent-workspaces.git";
 const MINIMUM_NODE_MAJOR_VERSION = 22;
 const RUNTIME_SESSION_DIAGNOSTIC_LIMIT = 256;
-const RUNTIME_SESSION_LOCK_STALE_MILLISECONDS = 15_000;
 const EXPECTED_RUNTIME_HOOK_COMMAND =
   '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
 // Codex executes a Windows hook through the shell selected for the local
@@ -319,7 +322,7 @@ const EXPECTED_RUNTIME_HOOK_CONTRACT = Object.freeze({
     type: "command",
     command: EXPECTED_RUNTIME_HOOK_COMMAND,
     commandWindows: EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS,
-    timeout: 15,
+    timeout: PRE_TOOL_USE_TIMEOUT_SECONDS,
   }),
   SessionEnd: Object.freeze({
     matcher: "*",
@@ -916,7 +919,7 @@ export const inspectLocalRuntimeSessions = async ({
   await Promise.all(lockEntries.map(async (entry) => {
     try {
       const metadata = await fs.stat(path.join(runtimeDirectory, entry.name));
-      if (nowMilliseconds - metadata.mtimeMs > RUNTIME_SESSION_LOCK_STALE_MILLISECONDS) {
+      if (nowMilliseconds - metadata.mtimeMs > RUNTIME_STATE_LOCK_STALE_MILLISECONDS) {
         staleRegistrationLockCount += 1;
       }
     } catch {
