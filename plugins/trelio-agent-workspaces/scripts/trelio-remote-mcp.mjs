@@ -96,7 +96,10 @@ const COMPANY_SKILL_PLAN_TTL_MS = 30 * 60 * 1000;
 const COMPANY_SKILL_MANAGEMENT_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
 const LOCAL_PROPOSAL_APP_MAX_BYTES = 4 * 1024 * 1024;
 const LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES = 2_048;
-const LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS = 60 * 60 * 1_000;
+// Match the backend's bounded review window so a card remains usable after a
+// break. Refresh never renews this deadline; live provider/ACL/CAS checks still
+// gate each action, and the process-local capability does not survive restart.
+const LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS = 3 * 60 * 60 * 1_000;
 const LOCAL_PROPOSAL_BLOCK_TYPE_BY_KIND = new Map([
   ["comment", "commentProposal"],
   ["status", "statusProposal"],

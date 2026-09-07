@@ -387,7 +387,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   comparison с фактически сохранённым hydrated comment.
   Local proposal ABI разделён: `get_trelio_local_proposal_context` – headless
   read без UI metadata; только `render_trelio_local_proposal` монтирует v8 App
-  после `save`. App-only aliases скрыты от модели, а v5/v4/v3 сохраняются для
+  после `save`. Hidden App capability действует 3 часа от render без продления
+  при reconcile, хранится только в памяти процесса и теряется при его restart;
+  каждое действие сохраняет live provider/ACL/CAS проверки.
+  App-only aliases скрыты от модели, а v5/v4/v3 сохраняются для
   старых карточек. Bundle использует sandboxed `srcdoc` без `data:` frame CSP.
 - Чистое чтение уже принятого Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без

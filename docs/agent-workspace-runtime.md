@@ -290,7 +290,11 @@ context/render-flow.
 Агент использует их сразу и не вызывает native proposal tool как отдельный
 preflight. Для plain company поля нет, поэтому обычный one-call
 `propose_task_comment` и его model context не меняются. Local proposal App v8
-выдаёт capability только в hidden metadata; generic app-only state/action tools
+выдаёт capability только в hidden metadata на 3 часа от подготовки карточки.
+Обновление состояния не продлевает срок, а права, актуальность proposal и
+provider/E2EE границы проверяются при каждом действии. Capability хранится только
+в памяти локального MCP-процесса: после истечения срока или перезапуска процесса
+агенту нужно подготовить карточку заново. Generic app-only state/action tools
 не попадают в model context, а v5 kind-specific tools остаются resource-level
 совместимостью уже сохранённых карточек.
 

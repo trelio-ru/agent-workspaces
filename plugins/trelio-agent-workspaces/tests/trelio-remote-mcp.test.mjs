@@ -1963,7 +1963,9 @@ test("local proposal render rejects a forged context operation before dispatch",
   assert.equal(called, false);
 });
 
-test("local proposal App capability binds refresh and one final action to its exact draft", async () => {
+test("local proposal App capability binds refresh and one delayed final action to its exact draft", async (t) => {
+  let nowMs = Date.now();
+  t.mock.method(Date, "now", () => nowMs);
   const origin = "https://capability-test.trelio.example";
   const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -2024,6 +2026,9 @@ test("local proposal App capability binds refresh and one final action to its ex
     }, { proposalOperation }),
     (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
   );
+  // Human review can resume after the original one-hour window; a valid
+  // delayed decision must still dispatch exactly once with the bound revision.
+  nowMs += 2 * 60 * 60 * 1_000;
   await handleToolCall(origin, "perform_task_proposal_app_action", {
     capabilityToken,
     proposalId,
@@ -2061,6 +2066,64 @@ test("local proposal App capability binds refresh and one final action to its ex
     }, { proposalOperation }),
     (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
   );
+});
+
+test("local proposal App capability expires at three hours without renewal on refresh", async (t) => {
+  const issuedAtMs = Date.now();
+  let nowMs = issuedAtMs;
+  t.mock.method(Date, "now", () => nowMs);
+  const origin = "https://capability-expiry-test.trelio.example";
+  const proposalId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const proposal = {
+    schemaVersion: 3,
+    currentDraft: {
+      proposalId,
+      revision: 1,
+      bodyText: "Комментарий после проверки",
+      contextRequest: { runId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
+    },
+  };
+  const root = buildLocalProposalRenderResult({
+    origin,
+    companySlug: "protected-company",
+    kind: "comment",
+    operation: "save",
+    result: { provider: "local_company_context", proposal },
+  });
+  const { capabilityToken, expiresAt } = root._meta["trelio/taskProposalApp"];
+  assert.equal(Date.parse(expiresAt), issuedAtMs + 3 * 60 * 60 * 1_000);
+  const calls = [];
+  const proposalOperation = async (_origin, input) => {
+    calls.push(input.operation);
+    return { proposal };
+  };
+
+  for (const elapsedMs of [2 * 60 * 60 * 1_000, 3 * 60 * 60 * 1_000 - 1]) {
+    nowMs = issuedAtMs + elapsedMs;
+    await handleToolCall(origin, "get_task_proposal_app_state", {
+      capabilityToken,
+      proposalId,
+    }, { proposalOperation });
+  }
+
+  // A refresh just before expiry must not extend either read or action access.
+  // Check the provider spy as well: expired cards must fail before dispatch.
+  for (const elapsedMs of [3 * 60 * 60 * 1_000, 3 * 60 * 60 * 1_000 + 1]) {
+    nowMs = issuedAtMs + elapsedMs;
+    for (const name of ["get_task_proposal_app_state", "perform_task_proposal_app_action"]) {
+      await assert.rejects(
+        handleToolCall(origin, name, {
+          capabilityToken,
+          proposalId,
+          ...(name === "perform_task_proposal_app_action" ? { decision: "dismiss" } : {}),
+        }, {
+          proposalOperation,
+        }),
+        (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+      );
+    }
+  }
+  assert.deepEqual(calls, ["context", "context"]);
 });
 
 test("local proposal App capability is all-or-none for a proposal bundle", () => {
