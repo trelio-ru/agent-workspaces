@@ -32,7 +32,11 @@ Classify every user addition independently before acting. Read every matching
 reference below completely before its first related tool call. If the scenario
 changes during the task, pause and read the newly relevant reference. An active
 maintainer, external-service, or Run route does not absorb a later request.
-References are additive; do not read unrelated files speculatively.
+References are additive; do not read unrelated files speculatively. Reuse a
+fully read SKILL/reference while that exact version and complete text remain in
+the current context, including later turns; reload after compaction, lost text,
+a changed version or a newly relevant scenario. Reuse matching fresh
+proposalContexts for each reference's context read.
 
 - **MCP/plugin/OAuth/Git/Node/version recovery, or any runtime hook error:**
   read [`references/setup-and-recovery.md`](references/setup-and-recovery.md).

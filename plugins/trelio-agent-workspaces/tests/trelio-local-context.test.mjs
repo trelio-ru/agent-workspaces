@@ -2431,3 +2431,29 @@ test("changed mirror records are hydrated in bounded mirror-wide batches", async
   assert.deepEqual(hydrated[1], { id: "changed-0", hydrated: true });
   assert.deepEqual(hydrated.at(-1), { id: "changed-500", hydrated: true });
 });
+
+
+test("encrypted same-context task reads reuse complete authority and reload changed/lost layers", () => {
+  const fixture = structuredClone(mirror);
+  fixture.instructions.company = { compiledMarkdown: "Полное проверенное правило. ".repeat(1_000),
+    company: { revisionId: "company-r1", version: 1 } };
+  const target = { companySlug: "acme", projectSlug: "mobile", taskNumber: 17 };
+  const cold = handleNativeLocalContextRead(fixture, "get_task", target);
+  const warm = handleNativeLocalContextRead(fixture, "get_task", {
+    ...target, ...cold.effectiveInstructions.nextReadArguments,
+  });
+  assert.deepEqual(warm.effectiveInstructions.layers, []);
+  assert.deepEqual(warm.effectiveInstructions.reusedLayerKeys,
+    cold.tasks[0].instructionScope.orderedLayerKeys);
+  assert.ok(Buffer.byteLength(JSON.stringify(warm)) < Buffer.byteLength(JSON.stringify(cold)) / 4);
+  fixture.instructions.company.company = { revisionId: "company-r2", version: 2 };
+  fixture.instructions.company.compiledMarkdown = "Новое полное правило.";
+  const changed = handleNativeLocalContextRead(fixture, "get_task", {
+    ...target, ...warm.effectiveInstructions.nextReadArguments,
+  });
+  assert.equal(changed.effectiveInstructions.layers.length, 1);
+  assert.deepEqual(changed.effectiveInstructions.reusedLayerKeys, []);
+  assert.equal(changed.effectiveInstructions.layers[0].markdown, "Новое полное правило.\n");
+  const afterCompaction = handleNativeLocalContextRead(fixture, "get_task", target);
+  assert.deepEqual(afterCompaction.effectiveInstructions.layers, changed.effectiveInstructions.layers);
+});

@@ -30,20 +30,15 @@ task communication, handoff, submit, or final reporting.
    returned `bridge.actions.open` carries only server-authored runtime state.
    Execute it unchanged, adding the current client project folder only as
    `workingDirectory`. On hook/version error read `setup-and-recovery.md`.
-4. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, immediately call
+4. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, call
    `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
-   `deviceName`, then rerun the same open action. Do not show a code or
-   request a separate chat confirmation. The MCP client's normal approval is
-   the only possible user step. After exchange, briefly report that the device
-   is connected and continue. Never pass the verifier through MCP/chat. The
-   narrow device-session is stored only in private local `credentials.json`,
-   not prompts, stdout, workspace, or macOS Keychain. Unsafe owner/ACL/mode/type
-   or symlink state fails closed. Persistence failure triggers self-revoke; if
-   cleanup fails, report it rather than silently retry. The session carries
-   only workspace transport plus secret write/checkout capabilities already
-   granted to the primary MCP connection; it never gains
-   `mcp:agent-instructions:manage` or secret-metadata read. Do not start another
-   OAuth flow or use `--legacy-oauth` during normal setup.
+   `deviceName`, then rerun the same open action. The MCP client's normal
+   approval is the only possible user step; do not request another chat
+   confirmation or expose the verifier. After exchange, briefly report that the device
+   is connected and continue.
+   Read `setup-and-recovery.md` for pairing/storage failures; never start a
+   second OAuth flow, use `--legacy-oauth`, or broaden the narrow device scope.
+   It never gains `mcp:agent-instructions:manage` or secret-metadata read.
 5. Immediately after open succeeds for a task-scoped Run,
    perform the one-shot work-start procedure in `task-status-proposals.md`
    before the first substantive work action. It is non-blocking: render only
@@ -73,16 +68,14 @@ task communication, handoff, submit, or final reporting.
    the form `Agent Secret: <name> (secretId: <UUID>) — <purpose>`. Never store
    value, version, grant, setup URL, runtime arguments, or unused discovery
    results.
-6. Read `../context/index.json` and selected snapshots under
-   `../context/related/<workspace-uuid>` as read-only pinned context. For
-   context selected after `open`, execute action `context_attach` with the exact
-   opened `workingDirectory` and related `workspaceId`; after MCP attach use
-   `context_sync`.
-7. Related context is pointer-first. Inspect an exact file before use.
-   If it is the five-line `https://trelio.ru/spec/workspace-object/v1` pointer,
-   execute `context_fetch` with the exact opened directory and `path` before reading.
-   Fetch only needed files; never bulk hydrate. Backend reauthorizes Run,
-   dependency workspace, pinned head, and path for every fetch.
+6. Read `../context/index.json` and needed snapshots under
+   `../context/related/<workspace-uuid>` as pinned read-only context. To add
+   context after open, execute `context_attach` with the opened directory and
+   exact related `workspaceId`; after MCP attach use `context_sync`.
+7. Related context is pointer-first. Inspect selected files; for a five-line
+   `https://trelio.ru/spec/workspace-object/v1` pointer execute `context_fetch`
+   with the opened directory and exact `path` before reading. Never bulk hydrate.
+   Every fetch reauthorizes Run, dependency workspace, pinned head and path.
 
 ## Execute, checkpoint, and submit
 
@@ -90,11 +83,15 @@ task communication, handoff, submit, or final reporting.
    intermediates in `work/`, final materials in `artifacts/`, and extracted
    representations in `derived/`. Large/binary writable files remain locally
    materialized; submit streams them to private object storage and stages exact
-   Git pointers.
-2. Run relevant validation. After every coherent material file change, execute
-   action `checkpoint` in the exact opened directory with `type=draft` and a
-   durable `summary`. The bridge validates and uploads the complete delta; this is what
-   lets `prepare_agent_workspace_run` in a later agent continue the same work.
+   Git pointers. For a short update, edit existing canonical material and one
+   concise required worklog entry. Create source/intermediate/result files only
+   for distinct useful content; unchanged facts do not need narrative copies.
+2. Run relevant validation. Save each coherent material change before further
+   work using action `checkpoint` with `type=draft`, the exact opened directory and a
+   durable `summary`. If immediately finishing that same delta, call `finish`
+   directly: its handoff checkpoint and submit replace a separate draft
+   checkpoint. Do not perform both for one immediate finalization. A saved draft
+   remains necessary for continuation by `prepare_agent_workspace_run`.
    Checkpoint before waiting, a turn/session boundary, context compaction or a
    handoff to another agent. Do not checkpoint a half-written file or create an
    empty checkpoint without a meaningful delta. A clean working tree after a
@@ -172,6 +169,3 @@ task communication, handoff, submit, or final reporting.
   backend-terminal, locally clean and not opening, plus cache bytes. A later
   explicit `dryRun=false` deletes that exact local plan, never the
   server revision. Backend outage is a no-op; active, unknown or dirty roots remain.
-
-If an older backend returns only a text command, read `setup-and-recovery.md`;
-do not execute it directly.

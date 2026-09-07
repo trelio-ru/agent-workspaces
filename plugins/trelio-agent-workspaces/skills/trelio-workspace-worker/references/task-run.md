@@ -1,13 +1,8 @@
 # Task-scoped Run
 
-Read this file completely whenever the writable Agent Workspace Run is scoped
-to a task. It supplements `agent-run.md` and governs handoff, status outcome,
-submit behavior, and reporting. The main skill separately requires
-`task-comment-proposals.md` for the human update and
-`task-status-proposals.md` for both the one-shot work-start decision after open
-and the separate whole-task status decision after acceptance. It also requires
-`task-checklist-proposals.md` for the independent post-acceptance item-by-item
-checklist decision.
+Read this file completely for a writable task-scoped Run. It supplements
+`agent-run.md` with whole-task outcome and reporting. The main skill also routes
+comment, status and checklist decisions to their dedicated references.
 
 ## Choose the handoff outcome
 
@@ -48,26 +43,27 @@ and stores the semantic status recommendation without mutating the task.
 Consecutive accepted Runs by the same user are grouped within the company
 calendar day, while individual Run details remain available.
 
-After acceptance, follow the separately routed task-comment proposal procedure
-before final reporting. Reassess the whole task from the final evidence even
-when the recorded outcome is `no_status_change`; it is a recommendation, not a
-gate. If and only if the whole task is ready, follow
-`task-status-proposals.md` and prepare an independent status proposal before
-asking any optional follow-up question.
-Separately follow `task-checklist-proposals.md`: reread the live checklist and
-prepare only the completion-state transitions directly supported by the
-accepted result. Partial work may propose exact satisfied items even though it
-produces no completion status proposal. If no item transition is supported,
-render no checklist card and continue silently.
-Before any proposal write, inventory all interactive cards required in the
-same response, including any inferred control-clear or checklist proposal. When two or more
-cards are needed, read `task-proposal-bundles.md` and return all of them through
-one `render_task_proposals` call; never issue the singular comment/status/control/checklist
-App calls sequentially. Partial work produces no status proposal. The accepted
-workspace result remains valid even when any proposal is blocked by missing
-scope or permissions.
+After acceptance, call `get_task_review_context` once for the exact task or Run,
+selecting only needed `proposalKinds` (include `comment` for the required human
+update). It returns fresh core/deadline, visible controls, complete checklist and
+selected proposal contexts. Use shared top-level controls/checklists with their
+proposal state; reuse these snapshots for the matching procedures instead of
+repeating `get_task`, sections or singular context reads. A relevant intervening
+change or conflict requires a fresh read. If the backend selects a local action,
+follow that exact route; do not substitute the mirror or remote plaintext.
 
-Report outcome first, then say that accepted Run left task status unchanged and
-whether a separate status proposal is awaiting a decision or was applied.
-Include important validation, saved materials, open questions, and next action.
-Do not ask for a separate workspace acceptance step after successful submit.
+Follow `task-comment-proposals.md` for the human update.
+Reassess the whole task from the final evidence even
+when the recorded outcome is `no_status_change`; it is a recommendation.
+Only a ready whole task gets the independent status proposal, before any
+optional question. Partial work produces no status proposal.
+
+Apply `task-checklist-proposals.md` to the fresh checklist. Partial work may propose exact satisfied items; unsupported transitions produce no card.
+Before any proposal write inventory all cards. For two or more, follow
+`task-proposal-bundles.md` and call `render_task_proposals` once, retaining
+independent decisions. Missing proposal scope/permissions do not invalidate the
+accepted Workspace result.
+
+Report outcome, validation, saved materials, open questions and next action;
+state the actual task status and any pending decision. Accepted Run does not
+change status. Do not ask for separate Workspace acceptance after success.

@@ -4252,7 +4252,6 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     /Не записывай в Git секреты, cookies, токены, локальные сессии, зависимости или кэши/u,
     /Не изменяй `AGENTS\.md`, `CLAUDE\.md`, `\.trelio\/\*\*` и read-only `\.\.\/context\/\*\*`/u,
     /Новый Run записывает ровно в один воркспейс/u,
-    /Один Run никогда не меняет несколько воркспейсов/u,
     /exact diff.*только после явного подтверждения/u,
     /Approved hook сам подставляет одноразовый runtimeSessionProof/u,
     /TRELIO_RUNTIME_HOOK_REQUIRED.*отсутствие proof, а не выключенные Hooks/u,
@@ -4348,7 +4347,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /Current `get_task` and `get_tasks` return `schemaVersion: 3`/u);
   assert.match(scopeReference, /Text `content` is only a summary/u);
   assert.match(scopeReference, /one structured `task`; Text `content` is only a summary/u);
-  assert.match(scopeReference, /Resolve every key in\s+the item's `instructionScope\.orderedLayerKeys`/u);
+  assert.match(scopeReference, /Resolve the item's `instructionScope\.orderedLayerKeys` against that union/u);
   assert.match(scopeReference, /Never apply a company,\s+project, or personal layer to a task that does not reference it/u);
   assert.match(scopeReference, /inspect `task\.deferredSections`/u);
   assert.match(scopeReference, /Call `get_task_sections`\s+once/u);
@@ -6907,7 +6906,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   }
   assert.match(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
-    /Для поиска контекста, внешнего runtime, Agent Secrets и proposals лениво загружай exact skill reference/u,
+    /Для внешних сервисов, Agent Secrets, поиска контекста и task proposals загружай только соответствующий reference/u,
   );
   assert.match(
     catalogSkillNormalized,
@@ -6948,7 +6947,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
   assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
   assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
-  assert.match(workerSkill, /Do not start another\s+OAuth flow/);
+  assert.match(workerSkill, /never start a\s+second OAuth flow/);
   assert.match(catalogSkill, /For an ordinary task, call `search_agent_skills` once/u);
   assert.match(catalogSkill, /Use `list_agent_skills` only when the user explicitly asks for the whole catalog/u);
   assert.match(catalogSkill, /Do not call `request_plugin_install`/u);

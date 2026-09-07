@@ -10,15 +10,9 @@ companies or projects. Keep exact company boundaries, but never narrow
 Workspace discovery to one project when a workspace may be explicitly linked
 to several projects. Ask only when ambiguity remains after read-only discovery.
 
-Discovery calls are intentionally available without runtime admission. Exact
-content reads selected from discovery are protected: the approved client hook
-injects a fresh one-use `runtimeSessionProof`. Never add or copy that field. If
-Trelio itself reports that the hook is unavailable, stop before reading content
-and follow the explicit `TRELIO_RUNTIME_HOOK_REQUIRED` recovery steps. That
-server response proves missing proof, not disabled trust; when current approval
-is already confirmed, diagnose the owning client process instead of repeating
-the enable instruction. An active `PreToolUse` failure preserves its separate
-exact code and reason; never reclassify it as missing Hooks.
+Discovery needs no runtime admission; exact content reads do. Follow the main
+skill's approved-hook boundary and `setup-and-recovery.md` on an actual error.
+Never author a proof, infer disabled trust from missing proof, or bypass the gate.
 
 ## Resolve the work item
 
@@ -92,13 +86,21 @@ For every item in `tasks[]` independently:
 
 1. Require `instructionScope.status=loaded` before substantive work. On
    `requires_scope`, complete the standard consent flow for that exact scope.
-2. Index `effectiveInstructions.layers` by unique `key`. Resolve every key in
-   the item's `instructionScope.orderedLayerKeys`; a missing key or conflicting duplicate
-   is an invalid response and stops work.
+2. Index `effectiveInstructions.layers` by unique `key`, plus only the complete
+   immutable layers still in this model context named by `reusedLayerKeys`.
+   Resolve the item's `instructionScope.orderedLayerKeys` against that union;
+   conflicting duplicates stop work. If reused bytes were lost, repeat the read
+   without those known keys before interpreting the task.
 3. Apply only the resolved layers, in returned order. Never apply a company,
    project, or personal layer to a task that does not reference it.
 4. Keep `effectiveRevisionKey` when a later step must verify that the effective
    order did not change.
+
+On the next exact read, pass `effectiveInstructions.nextReadArguments` (or the
+distinct keys from returned layers plus reusedLayerKeys on an older response)
+only for complete layers still in this context. The server returns changed
+layers in full and preserves per-task order. After compaction, lost text or
+uncertainty omit the affected keys; never persist a key-only cache as authority.
 
 Then inspect `task.deferredSections`. Call `get_task_sections` once with the same
 locator and only the needed subset; do not repeat `get_task` or request all

@@ -108,6 +108,22 @@ Run. Schema v1/v2 не поддерживаются: совместимая па
 использовать schema v3 и `get_task_sections`, а version
 mismatch завершается обновлением вместо fallback к монолитному payload.
 
+На повторном exact read агент передаёт `nextReadArguments.knownInstructionLayerKeys`
+только пока полные неизменные layers ещё в model context. `reusedLayerKeys`
+разрешаются через эти bytes вместе с новыми layers ответа; изменённые правила
+сервер возвращает целиком. После compaction или потери текста known keys
+опускаются. SKILL/references той же версии также не перечитываются без потери
+контекста или смены сценария. История правил запрашивается отдельно через
+`get_agent_instructions(includeHistory=true)`.
+
+После результата `get_task_review_context` объединяет свежие core/дедлайн,
+видимые controls/checklists и только выбранные `proposalKinds`. Общие коллекции
+не дублируются внутри proposal contexts; optimistic revisions и authoring
+snapshots сохраняются. В encrypted компании выполняется server-selected
+`continue_trelio_local_action` с локальной hydration прежних защищённых полей.
+Повторять эти же singular reads перед render не нужно; конфликт требует fresh
+read. Каждая карточка по-прежнему имеет отдельное решение пользователя.
+
 ACL воркспейса – union primary owner и явных project/task links. Exact read
 проекта или задачи даёт read воркспейса, exact edit – write/Run; project
 observer остаётся read-only. Каждый активный участник компании читает
@@ -235,8 +251,11 @@ Control paths не раскрываются, а backend не получает fi
 2. Bridge открывает локальный Git root и защищённые runtime control files.
 3. Агент читает `agent-instructions.md`, `user-profile.md`, optional
    `run-checkpoint.json`, затем `WORKSPACE_CONTEXT.md` и `WORKLOG.md`.
-4. Дополнительный checkpoint создаётся только для реально полезной точки
-   продолжения. Dirty blocker сохраняется одной `trelio-workspace pause`; чистый
+4. Завершённая дельта сохраняется до дальнейшей работы, ожидания, compaction,
+   передачи и границы хода. Если она сразу завершается, достаточно `finish`:
+   он уже создаёт handoff checkpoint; отдельный draft перед ним не нужен.
+   Короткое уточнение обновляет канонический материал и краткий worklog,
+   без дополнительных файлов с повтором тех же фактов. Dirty blocker сохраняется одной `trelio-workspace pause`; чистый
    подготовительный вопрос не создаёт пустой draft.
 5. Агент завершает работу одной `trelio-workspace finish`: bridge проверяет и
    печатает changed paths, создаёт handoff с итогом, evidence, материалами,

@@ -4104,6 +4104,7 @@ const buildLocalExactTaskRead = (mirror, rawLocators, knownInstructionLayerKeys 
         authority: "Resolve each task's instructionScope.orderedLayerKeys against this response and same-context reusedLayerKeys before interpreting or acting on that task. Inside a prepared Run, its pinned instructions remain authoritative.",
         layers: [...layersByKey.values()].filter((layer) => !knownKeys.has(layer.key)),
         reusedLayerKeys,
+        nextReadArguments: { knownInstructionLayerKeys: [...layersByKey.keys()] },
       }
     : {
         schemaVersion: 3,

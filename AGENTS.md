@@ -167,6 +167,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   нельзя переносить на непривязанную задачу. Schema v1/v2 больше не являются
   поддерживаемым task-read ABI: их получение означает version mismatch и
   требует обновления плагина/backend, а не client-side fallback.
+  `nextReadArguments` используется только для полных layers ещё в контексте;
+  refs разрешаются через новые layers и same-context `reusedLayerKeys`.
+  После потери bytes или compaction ключи опускаются. Post-result
+  `get_task_review_context` заменяет повтор core/sections/proposal-context reads,
+  сохраняя ACL и независимые решения карточек; контракт –
+  [workspace runtime](docs/agent-workspace-runtime.md).
   Manual comments в encrypted mirror являются полным search subset, но не
   полным discussion history: без authoritative `commentsPagination.total`
   compact `deferredSections.comments.itemCount` обязан быть `null`, а не длиной

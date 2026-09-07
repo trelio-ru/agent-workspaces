@@ -1,9 +1,6 @@
 # Task proposal bundles
 
-Read this file completely before one assistant response prepares two or more
-interactive task proposal cards. It governs comment, whole-task status,
-control-clear, and checklist proposals, whether the cards belong to different tasks, use
-different kinds, or repeat one kind.
+Read this file completely before returning 2+ task proposal cards.
 
 ## Return one host result
 
@@ -13,19 +10,19 @@ and call `render_task_proposals` exactly once. Do not call
 `propose_task_comment`, `render_task_comment_proposal`,
 `render_task_comment_proposals`, `render_task_status_proposal`, or
 `render_task_control_clear_proposal`, or `render_task_checklist_proposal` in
-that response. Several standalone MCP
-App results are not a bundle: a host may persist every server draft while only
-one result remains visible to the user.
+that response: a host may display only the last standalone App result.
 
-If an exact task has local `proposalProvider`, follow
-`local-company-context.md`: get headless contexts and send all ordered blocks in
-one local render call with `kind=bundle`, `operation=save`. Otherwise
-follow this route only if the renderer returns authoritative local
-`providerSelection`.
-Do not split them into singular local calls. This is still one bundle result;
-each card keeps its own later human decision.
+With local `proposalProvider` or server-selected `providerSelection`, follow
+`local-company-context.md`. Reuse an already successful combined review; send
+all ordered blocks in one local render with `kind=bundle`, `operation=save`.
+Otherwise obtain the needed headless contexts. Each card retains its own later
+human decision; never split a bundle into singular render calls.
 
-Read the matching fresh context separately for every exact target:
+For a post-result review, prefer one `get_task_review_context` per exact target
+with only the needed `proposalKinds`. Its `proposalContexts` and shared top-level
+controls/checklists satisfy the matching fresh-context reads below. Preserve the
+returned per-kind revision/snapshot fields and do not reread each singular tool.
+For a standalone proposal or unsupported combined read, use:
 
 - `get_task_comment_proposal_context` for each `commentProposal` block;
 - `get_task_status_proposal_context` for each `statusProposal` block;
@@ -41,9 +38,8 @@ cards of the same kind for the same target.
 
 ## Preserve card independence
 
-Pass blocks in the intended display order. Optional `text` blocks may explain
-groups or transitions; keep the whole result within 64 blocks and 20 proposal
-cards. Combine adjacent prose instead of spending blocks on fragments.
+Keep display order, at most 64 blocks and 20 cards; combine adjacent prose in
+optional `text` blocks.
 
 A domain, ACL, conflict, or stale-state error may fail one prepared block while
 sibling cards remain usable. Do not hide successful cards because one block
