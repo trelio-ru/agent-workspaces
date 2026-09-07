@@ -7,7 +7,8 @@ submit behavior, and reporting. The main skill separately requires
 `task-status-proposals.md` for both the one-shot work-start decision after open
 and the separate whole-task status decision after acceptance. It also requires
 `task-checklist-proposals.md` for the independent post-acceptance item-by-item
-checklist decision.
+checklist decision. Read `task-date-review.md` for the independent deadline
+and control assessment after substantive work.
 
 ## Choose the handoff outcome
 
@@ -59,7 +60,12 @@ prepare only the completion-state transitions directly supported by the
 accepted result. Partial work may propose exact satisfied items even though it
 produces no completion status proposal. If no item transition is supported,
 render no checklist card and continue silently.
-Before any proposal write, inventory all interactive cards required in the
+Before any proposal write, follow `task-date-review.md`: read the current
+deadline and visible controls and assess each against the result and remaining
+work, even for partial completion. A handled control needs its own clear
+proposal; a deadline concern needs a separate scheduling decision, not an
+automatic date change. Neither replaces the comment, status or checklist review.
+Inventory all interactive cards required in the
 same response, including any inferred control-clear or checklist proposal. When two or more
 cards are needed, read `task-proposal-bundles.md` and return all of them through
 one `render_task_proposals` call; never issue the singular comment/status/control/checklist

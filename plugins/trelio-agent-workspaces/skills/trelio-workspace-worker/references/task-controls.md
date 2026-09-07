@@ -2,6 +2,8 @@
 
 Read this file completely before creating, updating, changing visibility of,
 or clearing a task control.
+For the mandatory post-result assessment, first read `task-date-review.md`;
+do not wait for an explicit request to inspect controls after substantive work.
 
 Schema-v3 `get_task` keeps controls deferred. Read
 `get_task_sections.sections.controls` for the exact task; it contains all
@@ -10,7 +12,7 @@ controls. Do not look for a schema-v2 inline controls array: plugin `1.14.2`
 requires the schema-v3 section contract.
 These date-only controls are repeatable check points, not extra deadlines.
 
-1. Use `create_task_control`, `update_task_control`, or `clear_task_control`
+1. Use `create_task_control` or `update_task_control`
    only when the request, task, or pinned rule calls for a concrete future
    check. Do not manufacture one because an Agent Workspace Run exists.
 2. For a new control, choose `shared` by default when the check records an
@@ -35,6 +37,9 @@ These date-only controls are repeatable check points, not extra deadlines.
    enter shared comments or notifications.
 7. Do not clear a control because the Run completed or task status changed.
    Clear only the exact handled check or when the user explicitly asks.
+
+Use `clear_task_control` only for an exact immediate user command, with
+`userExplicitlyRequestedImmediateControlClear=true`.
 
 When clearing one or more controls is an inferred recommendation rather than
 an exact immediate command, first call

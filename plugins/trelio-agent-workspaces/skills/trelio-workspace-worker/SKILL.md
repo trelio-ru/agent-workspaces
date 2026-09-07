@@ -6,7 +6,7 @@ description: >-
   Workspace read/review, a meeting transcript, task/workspace work, an editable task-comment proposal or reply with or without an Agent
   Run, when the user asks to change a task status or prepare a separate editable status
   proposal, the one-shot start-of-work decision for a task Run,
-  checklist completion-state review or a separate checklist proposal, controls,
+  checklist completion-state review or a separate checklist proposal, deadlines, controls,
   rules, or an in-workflow blocker. Use the dedicated trelio-diagnostics skill for a standalone plugin,
   hook, MCP, OAuth, Git, Node, pairing, version, or setup health check.
 ---
@@ -56,6 +56,11 @@ References are additive; do not read unrelated files speculatively.
   scope reference when either side is not already exact.
 - **Task control create/update/visibility/clear:** read
   [`references/task-controls.md`](references/task-controls.md).
+- **Deadline/control assessment or substantive task result, including partial
+  work, an accepted Run, sent reply or scheduled check:** read
+  [`references/task-date-review.md`](references/task-date-review.md).
+  Evaluate both dates before the first proposal write, optional question or
+  final response, independently from comment, status and checklist decisions.
 - **Editable task-comment proposal or reply, including the required human
   update after an accepted task Run:** read
   [`references/task-comment-proposals.md`](references/task-comment-proposals.md).
@@ -83,7 +88,8 @@ References are additive; do not read unrelated files speculatively.
   [`references/task-run.md`](references/task-run.md) before handoff, outcome,
   submit, or final reporting. The status reference governs both the one-shot
   start decision and later completion decision; the checklist reference
-  governs post-acceptance item reassessment.
+  governs post-acceptance item reassessment; the date-review reference governs
+  the separate deadline and control assessment.
 - **OCR or vision output stored in a workspace:** read
   [`references/ocr-and-vision.md`](references/ocr-and-vision.md).
 - **Connected service, external system, assigned Agent Skill, Remote MCP, or

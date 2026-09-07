@@ -4307,6 +4307,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "accepted-workspace-read.md",
     "workspace-transfer.md",
     "task-controls.md",
+    "task-date-review.md",
     "task-comment-proposals.md",
     "task-status-proposals.md",
     "task-checklist-proposals.md",
@@ -5426,6 +5427,36 @@ test("workspace skill proposes checklist progress without applying inferred stat
   assert.match(taskRunReference, /Partial work may propose exact satisfied items/u);
   assert.match(bundleReference, /get_task_checklist_proposal_context/u);
   assert.match(bundleReference, /checklist\/item snapshots/u);
+});
+
+test("workspace skill requires date assessment before proposals without authorizing date mutations", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const read = (file) => readFile(path.join(workerDirectory, file), "utf8");
+  const [router, taskRun, review] = await Promise.all([
+    read("SKILL.md"),
+    read("references/task-run.md"),
+    read("references/task-date-review.md"),
+  ]);
+
+  // Routing and lifecycle must both reach the procedure: a lazy control-only
+  // reference was previously skipped when a sent reply completed the check.
+  assert.match(router, /substantive task result, including partial/u);
+  assert.match(router, /references\/task-date-review\.md/u);
+  assert.match(taskRun, /Before any proposal write, follow `task-date-review.md`/u);
+  for (const invariant of [
+    /partial results,\s+accepted task Runs, sent replies and scheduled checks/u,
+    /get_task_sections/u,
+    /unloaded or denied section is unknown/u,
+    /even when\s+the task remains in progress/u,
+    /An unmet, still useful check stays active/u,
+    /do not roll a performed check forward/iu,
+    /Only an exact user command or decision on the clear proposal/u,
+    /there is no deadline proposal\s+card/iu,
+    /general request to finish work is insufficient/u,
+    /missingTaskDueDateMode/u,
+    /do not\s+invent a new deadline or withhold completion/u,
+    /request only\s+to read, quote or discuss/u,
+  ]) assert.match(review, invariant);
 });
 
 test("workspace skill keeps meeting storage private and distribution explicitly staged", async () => {

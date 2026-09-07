@@ -107,6 +107,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- Перед блокирующим вопросом с полезными изменениями выполни action `pause` с exact папкой, `summary`, `questions` и `nextAction`; подготовительный вопрос не требует draft.",
   "- Комментарий, статус, checklist и control задачи являются отдельными user-decision flows. Перед каждым загрузи его exact reference, перечитай live proposal context и не публикуй, не применяй и не отклоняй proposal без действия пользователя в MCP App либо его явной команды. Accepted Run, вывод агента и inferred progress сами не разрешают immediate mutation.",
   "- Заверши Run action `finish` из exact папки с результатом, evidence, файлами, вопросами и `nextAction`. Для task scope оцени всю задачу и передай returned `taskOutcome`; он только рекомендует status proposal.",
+  "- После содержательной работы по задаче, включая частичный результат, до proposals и финального ответа выполни task-date-review.md: оцени текущие дедлайн и видимые контроли независимо от статуса и checklist. Проверка не разрешает менять даты или снимать контроли без соответствующего решения.",
   "- Сначала сообщай человеку итог и требуемое решение, не SHA/UUID/Run status. Candidate отправляй только через bridge. Если Trelio отклонил устаревший base head, начни новый Run и перенеси изменения осознанно; не переписывай protected refs и не обходи conflict guard.",
   "",
 ].join("\n");

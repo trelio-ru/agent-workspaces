@@ -17,7 +17,7 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDirectory, "..");
 
 // Это не список всех reference-файлов plugin. Он описывает именно обычный
-// task-scoped Run: discovery, lifecycle и три обязательных post-acceptance
+// task-scoped Run: discovery, lifecycle и независимые post-acceptance
 // решения. Отдельный bundle-reference добавляется во второй сценарий, потому
 // что он нужен только когда в одном ответе действительно появляются 2+ cards.
 export const TASK_RUN_REQUIRED_SKILL_PATHS = [
@@ -28,6 +28,7 @@ export const TASK_RUN_REQUIRED_SKILL_PATHS = [
   "skills/trelio-workspace-worker/references/task-status-proposals.md",
   "skills/trelio-workspace-worker/references/task-comment-proposals.md",
   "skills/trelio-workspace-worker/references/task-checklist-proposals.md",
+  "skills/trelio-workspace-worker/references/task-date-review.md",
 ];
 
 export const TASK_RUN_PROPOSAL_BUNDLE_PATH =
@@ -38,18 +39,19 @@ export const LOCAL_COMPANY_CONTEXT_PATH =
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
   workerSkillBytes: 9_000,
-  // Durable task–workspace sharing is a required discovery decision for ordinary
-  // task Runs, so its bounded policy belongs in scope-and-context rather than a
-  // conditionally unread reference. Keep only the exact 1 KiB ceiling increase.
-  requiredTaskRunSkillsBytes: 52_000,
-  taskRunWithProposalBundleBytes: 55_000,
-  requiredTaskRunPluginLayerBytes: 61_000,
-  taskRunWithProposalBundlePluginLayerBytes: 64_000,
+  // Обязательная оценка дат добавляет отдельный bounded reference и короткие
+  // lifecycle/router anchors. Измеряем его в каждом task Run, чтобы новый
+  // обязательный read не оказался скрыт за прежним control-only lazy path.
+  // Подробный mutation/proposal reference остаётся условным.
+  requiredTaskRunSkillsBytes: 57_000,
+  taskRunWithProposalBundleBytes: 60_000,
+  requiredTaskRunPluginLayerBytes: 66_000,
+  taskRunWithProposalBundlePluginLayerBytes: 69_000,
   // The added schema is a compact typed dispatcher; it replaces launcher
   // resolution prose in every operational Run and signed-runtime prompt.
   localProviderToolSchemasBytes: 3_800,
-  plainCompanyTaskRunPluginLayerBytes: 64_000,
-  encryptedCompanyTaskRunPluginLayerBytes: 73_000,
+  plainCompanyTaskRunPluginLayerBytes: 69_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 78_000,
 });
 
 export const measureContextText = (text) => {
