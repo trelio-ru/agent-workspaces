@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "tools": {
+    "continue_trelio_local_context": {
+      "modelVisible": true,
+      "baselineBytes": 1254,
+      "maxBytes": 1408,
+      "baselineTokens": 322,
+      "maxTokens": 368
+    },
+    "continue_trelio_local_action": {
+      "modelVisible": true,
+      "baselineBytes": 825,
+      "maxBytes": 960,
+      "baselineTokens": 204,
+      "maxTokens": 240
+    },
+    "get_trelio_local_proposal_context": {
+      "modelVisible": true,
+      "baselineBytes": 411,
+      "maxBytes": 512,
+      "baselineTokens": 94,
+      "maxTokens": 128
+    },
+    "render_trelio_local_proposal": {
+      "modelVisible": true,
+      "baselineBytes": 682,
+      "maxBytes": 832,
+      "baselineTokens": 163,
+      "maxTokens": 192
+    },
+    "continue_trelio_local_workspace": {
+      "modelVisible": true,
+      "baselineBytes": 846,
+      "maxBytes": 960,
+      "baselineTokens": 210,
+      "maxTokens": 240
+    },
+    "continue_trelio_workspace_action": {
+      "modelVisible": true,
+      "baselineBytes": 474,
+      "maxBytes": 576,
+      "baselineTokens": 101,
+      "maxTokens": 128
+    },
+    "get_task_proposal_app_state": {
+      "modelVisible": false,
+      "baselineBytes": 646,
+      "maxBytes": 768,
+      "baselineTokens": 153,
+      "maxTokens": 192
+    },
+    "perform_task_proposal_app_action": {
+      "modelVisible": false,
+      "baselineBytes": 1137,
+      "maxBytes": 1280,
+      "baselineTokens": 285,
+      "maxTokens": 320
+    },
+    "get_task_comment_proposal_context": {
+      "modelVisible": false,
+      "baselineBytes": 708,
+      "maxBytes": 832,
+      "baselineTokens": 165,
+      "maxTokens": 192
+    },
+    "publish_task_comment_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 748,
+      "maxBytes": 896,
+      "baselineTokens": 169,
+      "maxTokens": 208
+    },
+    "dismiss_task_comment_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 571,
+      "maxBytes": 704,
+      "baselineTokens": 122,
+      "maxTokens": 160
+    },
+    "get_task_status_proposal_context": {
+      "modelVisible": false,
+      "baselineBytes": 706,
+      "maxBytes": 832,
+      "baselineTokens": 165,
+      "maxTokens": 192
+    },
+    "apply_task_status_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 651,
+      "maxBytes": 768,
+      "baselineTokens": 144,
+      "maxTokens": 176
+    },
+    "dismiss_task_status_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 569,
+      "maxBytes": 704,
+      "baselineTokens": 122,
+      "maxTokens": 160
+    },
+    "get_task_control_clear_proposal_context": {
+      "modelVisible": false,
+      "baselineBytes": 714,
+      "maxBytes": 832,
+      "baselineTokens": 166,
+      "maxTokens": 192
+    },
+    "apply_task_control_clear_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 685,
+      "maxBytes": 832,
+      "baselineTokens": 154,
+      "maxTokens": 192
+    },
+    "dismiss_task_control_clear_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 577,
+      "maxBytes": 704,
+      "baselineTokens": 123,
+      "maxTokens": 160
+    },
+    "get_task_checklist_proposal_context": {
+      "modelVisible": false,
+      "baselineBytes": 712,
+      "maxBytes": 832,
+      "baselineTokens": 166,
+      "maxTokens": 192
+    },
+    "apply_task_checklist_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 677,
+      "maxBytes": 832,
+      "baselineTokens": 154,
+      "maxTokens": 192
+    },
+    "dismiss_task_checklist_proposal": {
+      "modelVisible": false,
+      "baselineBytes": 575,
+      "maxBytes": 704,
+      "baselineTokens": 123,
+      "maxTokens": 160
+    },
+    "plan_company_private_agent_skill_create": {
+      "modelVisible": true,
+      "baselineBytes": 2171,
+      "maxBytes": 2368,
+      "baselineTokens": 514,
+      "maxTokens": 560
+    },
+    "create_company_private_agent_skill": {
+      "modelVisible": true,
+      "baselineBytes": 773,
+      "maxBytes": 896,
+      "baselineTokens": 167,
+      "maxTokens": 192
+    },
+    "plan_company_private_agent_skill_release": {
+      "modelVisible": true,
+      "baselineBytes": 1967,
+      "maxBytes": 2176,
+      "baselineTokens": 476,
+      "maxTokens": 528
+    },
+    "publish_company_private_agent_skill_release": {
+      "modelVisible": true,
+      "baselineBytes": 789,
+      "maxBytes": 896,
+      "baselineTokens": 169,
+      "maxTokens": 208
+    },
+    "connect_remote_agent_skill": {
+      "modelVisible": true,
+      "baselineBytes": 672,
+      "maxBytes": 832,
+      "baselineTokens": 153,
+      "maxTokens": 192
+    },
+    "doctor_remote_agent_skill": {
+      "modelVisible": true,
+      "baselineBytes": 936,
+      "maxBytes": 1088,
+      "baselineTokens": 194,
+      "maxTokens": 224
+    },
+    "call_remote_agent_skill_tool": {
+      "modelVisible": true,
+      "baselineBytes": 753,
+      "maxBytes": 896,
+      "baselineTokens": 178,
+      "maxTokens": 208
+    },
+    "forget_remote_agent_skill_credential": {
+      "modelVisible": true,
+      "baselineBytes": 657,
+      "maxBytes": 768,
+      "baselineTokens": 147,
+      "maxTokens": 176
+    }
+  }
+}

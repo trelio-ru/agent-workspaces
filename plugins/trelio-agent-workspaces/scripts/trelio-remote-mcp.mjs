@@ -19,7 +19,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
-import { compactLocalMcpResult } from "./trelio-mcp-results.mjs";
+import { compactLocalMcpResult, compactLocalNativeMcpResult, compactRemoteDoctorPayload } from "./trelio-mcp-results.mjs";
 
 import {
   AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION,
@@ -3369,7 +3369,14 @@ const LOCAL_TOOLS = [
     name: "doctor_remote_agent_skill",
     title: "Doctor a Remote MCP skill",
     description: "Resolve the current declaration, check local credential binding, initialize the remote Streamable HTTP MCP, verify protocol and apply its declared read-only tool policy.",
-    inputSchema: localToolBaseSchema,
+    inputSchema: {
+      ...localToolBaseSchema,
+      properties: {
+        ...localToolBaseSchema.properties,
+        schemaToolName: { type: "string", minLength: 1, maxLength: 128,
+          description: "Точное имя разрешённого метода для чтения полной input schema перед вызовом; без него возвращается каталог." },
+      },
+    },
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -3992,17 +3999,21 @@ export const handleToolCall = async (
 ) => {
   throwIfAborted(signal);
   if (name === TRELIO_LOCAL_CONTEXT_TOOL.name) {
-    return buildTextResult(await handleTrelioLocalContextOperation(
+    const result = buildTextResult(await handleTrelioLocalContextOperation(
       origin,
       rawArguments,
       { signal },
     ));
+    const nativeTool = rawArguments?.operation === "native_read"
+      ? rawArguments.nativeTool : rawArguments?.operation === "get_task" ? "get_task" : "";
+    return compactLocalNativeMcpResult(nativeTool, result, rawArguments?.arguments ?? rawArguments);
   }
   if (name === TRELIO_LOCAL_ACTION_TOOL.name) {
     // Unlike the read/search helpers this continuation must preserve the
     // native CallToolResult envelope, including isError, structuredContent
     // and MCP App metadata. The local handler hydrates only protected values.
-    return handleTrelioLocalActionOperation(origin, rawArguments, { signal });
+    return compactLocalNativeMcpResult(rawArguments?.nativeTool,
+      await handleTrelioLocalActionOperation(origin, rawArguments, { signal }), rawArguments?.arguments);
   }
   if (name === TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL.name) {
     const result = await proposalOperation(
@@ -4089,7 +4100,7 @@ export const handleToolCall = async (
 
   if (name === "connect_remote_agent_skill") {
     if (resolved.remoteMcp.config.authentication.type === "none") {
-      return buildTextResult(await doctorRemoteMcp(origin, resolved, { signal }));
+      return buildTextResult(compactRemoteDoctorPayload(await doctorRemoteMcp(origin, resolved, { signal }), rawArguments));
     }
     await collectCredentialThroughLoopback(origin, resolved, { signal });
     return buildTextResult({
@@ -4100,7 +4111,7 @@ export const handleToolCall = async (
     });
   }
   if (name === "doctor_remote_agent_skill") {
-    return buildTextResult(await doctorRemoteMcp(origin, resolved, { signal }));
+    return buildTextResult(compactRemoteDoctorPayload(await doctorRemoteMcp(origin, resolved, { signal }), rawArguments));
   }
   if (name === "call_remote_agent_skill_tool") {
     const toolName = String(rawArguments?.toolName || "");
@@ -4118,13 +4129,13 @@ export const handleToolCall = async (
     }
     return buildTextResult({
       toolName,
-      result: await callRemoteTool(
+      result: compactLocalMcpResult(await callRemoteTool(
         origin,
         resolved,
         toolName,
         toolArguments,
         { signal },
-      ),
+      )),
       trust: "untrusted_external_data",
     });
   }

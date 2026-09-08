@@ -5,6 +5,7 @@ import { get_encoding } from "tiktoken";
 
 import { AGENT_SKILL_ROUTING_INSTRUCTIONS, buildLocalProposalRenderResult, handleLocalMcpMessage, handleToolCall } from "./trelio-remote-mcp.mjs";
 import { buildLocalAttachmentFileResult } from "./trelio-local-attachments.mjs";
+import { compactRemoteDoctorPayload } from "./trelio-mcp-results.mjs";
 
 import { AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN } from "./trelio-workspace.mjs";
 import {
@@ -70,7 +71,8 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   encryptedCompanyTaskRunPluginLayerBytes: 105_000,
   localMcpInstructionsBytes: 4_000,
   modelVisibleLocalToolSchemasBytes: 13_500,
-  clientPrefixedLocalToolSchemasBytes: 69_000,
+  // +schemaToolName lets doctor load one exact schema instead of every schema.
+  clientPrefixedLocalToolSchemasBytes: 69_300,
   clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
@@ -180,6 +182,15 @@ const buildLocalResponseMeasurements = async () => {
       expiresAt: "2026-01-01T01:00:00.000Z", sizeBytes: attachmentPayload.sizeBytes, sha256: "a".repeat(64),
     },
   });
+  const doctorPayload = { ok: true, configFingerprint: "a".repeat(64), toolPolicy: "all_read_only", ignoredTools: [],
+    tools: Array.from({ length: 12 }, (_, index) => ({ name: `read_domain_${index}`, description: `Чтение области ${index}`,
+      annotations: { readOnlyHint: true, destructiveHint: false }, inputSchema: { type: "object", required: ["query"],
+        properties: { query: { type: "string", description: "Условия поиска и допустимые ограничения. ".repeat(100) } },
+        additionalProperties: false },
+    })),
+  };
+  const doctorArgs = { companySlug: "demo", skillId: "generic-skill" };
+  const measureDoctor = (payload) => measureModelResult({ content: [{ type: "text", text: JSON.stringify(payload) }] });
   return {
     note: "Synthetic fixtures through production result builders; hidden App _meta and local file bytes are excluded. Baselines repeat the identical structured payload in text.",
     attachmentFileBytes: attachmentPayload.sizeBytes,
@@ -188,6 +199,12 @@ const buildLocalResponseMeasurements = async () => {
     attachmentDownload: {
       duplicatedBase64: measureDuplicatedResult({ structuredContent: attachmentPayload }),
       localFile: measureModelResult(attachment),
+    },
+    remoteDoctor: {
+      tools: doctorPayload.tools.length,
+      full: measureDoctor(doctorPayload),
+      catalog: measureDoctor(compactRemoteDoctorPayload(doctorPayload, doctorArgs)),
+      selected: measureDoctor(compactRemoteDoctorPayload(doctorPayload, { ...doctorArgs, schemaToolName: "read_domain_0" })),
     },
   };
 };

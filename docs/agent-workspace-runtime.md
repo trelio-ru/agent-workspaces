@@ -133,6 +133,12 @@ primary project. Registry/contact/meeting связи semantic и сами дос
 расширяют. Company workspace требует конкретной причины и явного подтверждения
 широкой видимости.
 
+## Компактные ответы агента
+
+Компактные native/local DTO, exact `deferredData` reads, сохранение заметок
+и pinned Run snapshots описаны в [контракте ответов MCP](agent-mcp-responses.md).
+Проекция выполняется после hydration и не меняет App state либо ошибки.
+
 ## Локальные вложения
 
 Task attachment с доступным локальным файлом не кодируется в base64 для MCP.

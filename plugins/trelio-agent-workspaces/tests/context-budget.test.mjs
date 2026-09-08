@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { handleLocalMcpMessage } from "../scripts/trelio-remote-mcp.mjs";
 
 import {
   CONTEXT_TOKENIZER,
@@ -26,6 +28,20 @@ test("offline o200k counts Russian, Latin and literal special markers independen
   assert.equal(sumMeasurements(parts).tokensO200kBase, 2);
   assert.equal(measureContextText("ab").tokensO200kBase, 1);
   assert.equal(sumMeasurements([]).tokensO200kBase, 0);
+});
+
+test("every local method has an individual schema budget, including App-only methods", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/local-tool-schema-budget.json", import.meta.url), "utf8"));
+  const response = await handleLocalMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const tools = response.result.tools;
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), Object.keys(fixture.tools).sort(), "New tools require explicit per-method budgets");
+  for (const tool of tools) {
+    const budget = fixture.tools[tool.name];
+    const actual = measureContextText(JSON.stringify(tool));
+    assert.equal(isModelVisibleLocalTool(tool), budget.modelVisible, tool.name);
+    assert.ok(actual.bytesUtf8 <= budget.maxBytes, `${tool.name}: ${actual.bytesUtf8} bytes exceeds ${budget.maxBytes}`);
+    assert.ok(actual.tokensO200kBase <= budget.maxTokens, `${tool.name}: ${actual.tokensO200kBase} tokens exceeds ${budget.maxTokens}`);
+  }
 });
 
 test("typical task Run plugin context stays inside explicit regression ceilings", async () => {
@@ -142,6 +158,12 @@ test("local initialize, visible schemas and actual compact results have regressi
     assert.ok(output.compact.tokensO200kBase < output.duplicated.tokensO200kBase * 0.55, name);
   }
   const attachment = report.localResponses.attachmentDownload;
+  const doctor = report.localResponses.remoteDoctor;
+  assert.equal(doctor.tools, 12);
+  assert.ok(doctor.catalog.tokensO200kBase < 1200);
+  assert.ok(doctor.selected.tokensO200kBase < 2200);
+  assert.ok(doctor.catalog.tokensO200kBase < doctor.full.tokensO200kBase * 0.15);
+  assert.ok(doctor.selected.tokensO200kBase < doctor.full.tokensO200kBase * 0.25);
   assert.equal(report.localResponses.attachmentFileBytes, 1024 * 1024);
   assert.ok(attachment.duplicatedBase64.bytesUtf8 > 2_700_000);
   assert.ok(attachment.localFile.bytesUtf8 <= PLUGIN_CONTEXT_BUDGET_LIMITS.representativeLocalAttachmentResultBytes);

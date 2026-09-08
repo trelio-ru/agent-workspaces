@@ -166,6 +166,13 @@ Descriptions, schemas и tool results внешнего MCP считаются un
 запрещена для PAT-backed provider-ов, чтобы будущий tool не расширял доступ к
 личным данным без нового fingerprint и reconnect.
 
+Doctor выдаёт назначения/annotations допустимых tools и ignored policy
+mismatches без всех input schemas. Перед вызовом выбранного tool агент читает
+его полную схему тем же doctor с `schemaToolName`; `schemaSelection` содержит
+точный scope и результат выбора. No-auth connect отдаёт компактный каталог.
+Полный paginated discovery и проверка policy на host сохраняются; compact
+выдача описана в [контракте ответов](agent-mcp-responses.md).
+
 <a id="personal-local-setup"></a>
 
 ## Browser-first credentials

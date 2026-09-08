@@ -495,6 +495,12 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Проверки и релизы
 
+- Изменение model-visible результата требует проверки
+  [контракта MCP-проекции](docs/agent-mcp-responses.md): одинаковая семантика
+  native/local после hydration, рабочий exact read отложенных данных и
+  сохранение ошибок, human decisions, meaningful notes и pinned snapshots.
+  Сгенерированный `trelio-agent-response-projection.mjs` вручную не редактируется.
+
 - Постоянный model-visible слой типового task-scoped Run измеряется командой
   `npm run report:context-budget`; JSON для объединённого backend-отчёта
   возвращает `npm run --silent report:context-budget -- --json`. Перед отчётом
