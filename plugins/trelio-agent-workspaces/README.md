@@ -524,3 +524,26 @@ Keychain/DPAPI-хранилище.
 - [Agent Workspace Runtime](../../docs/agent-workspace-runtime.md)
 - [Навыки, подключения и Agent Secrets](../../docs/agent-skills-and-secrets.md)
 - [История релизов](https://github.com/trelio-ru/agent-workspaces/releases)
+
+## Повторное использование Agent Skill
+
+Один успешный `get_agent_skill` покрывает связанные пользовательские ходы одной
+сессии до 12 часов, пока полный текст и exact execution declaration остаются в
+контексте и неизменны company/project, skill, implementation и intent.
+Перечитать нужно при новой сессии, потере полного текста/compaction, истечении
+12 часов (`instructionsValidUntil` при наличии), смене route/context, снятии
+setup/access blocker либо один раз при `AGENT_SKILL_RELEASE_CHANGED`. Повтор
+перед каждой подкомандой или обычным bootstrap/doctor/probe не нужен.
+
+Trusted host может переиспользовать положительный допуск к exact release до
+12 часов без sliding renewal. Отзыв ACL/assignment, connection, release или
+изменение runtime policy применяются при следующем live admission; права других
+операций Trelio не кэшируются. Runtime snapshot связан с private bridge token,
+runtime session, origin, company/project/skill/release и версией host, защищён
+HMAC, хранится owner-only и используется лишь при наличии проверенного package.
+Remote MCP snapshot живёт только в памяти текущего stdio server. Нельзя менять
+запись, переносить допуск или продлевать TTL. Package signature и file hashes,
+Remote MCP initialize/tool policy и provider-side authorization проверяются при
+каждом исполнении. Без session binding, при E2EE declaration/connection marker,
+утрате package либо истечении TTL выполняется live resolve; ошибки не разрешают
+stale fallback. Новая публикация не наследует consent прежнего exact release.

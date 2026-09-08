@@ -4047,7 +4047,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.0.7");
+  assert.equal(BRIDGE_VERSION, "2.0.8");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -6896,18 +6896,18 @@ test("workspace worker gates external services but not native Trelio work", asyn
 
   assert.match(workerSkill, /Read this file completely before using a connected service/u);
   assert.match(workerSkill, /`search_agent_skills` with the\s+task and compact concept hints/u);
-  assert.match(workerSkill, /Reserve\s+`list_agent_skills` for explicit\s+catalog inventory/u);
+  assert.match(workerSkill, /reserve\s+`list_agent_skills` for explicit\s+(?:catalog )?inventory/iu);
   for (const instruction of [
     workerSkillNormalized,
     catalogSkillNormalized,
   ]) {
     assert.match(
       instruction,
-      /(?:call|вызови) `get_agent_skill` (?:once|один раз)/u,
+      /(?:Load|call|вызови) `get_agent_skill` (?:once|один раз)/u,
     );
     assert.match(
       instruction,
-      /(?:do not repeat|не повторяй)[^.]+(?:before each|перед каждым) subcommand/iu,
+      /(?:do not reread|do not repeat|не повторяй)[^.]+(?:before each|перед каждым) subcommand/iu,
     );
     assert.match(instruction, /AGENT_SKILL_RELEASE_CHANGED/u);
   }
@@ -6917,11 +6917,11 @@ test("workspace worker gates external services but not native Trelio work", asyn
   );
   assert.match(
     catalogSkillNormalized,
-    /successful response already satisfies the fresh-read requirement/u,
+    /Reuse its complete instructions and exact execution declaration across user turns for up to 12 hours/u,
   );
   assert.match(
     catalogSkillNormalized,
-    /Do not repeat `get_agent_skill` immediately/u,
+    /Do not reread before each subcommand/u,
   );
   assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
   assert.match(workerSkill, /do not bypass a usable route/u);
@@ -6962,7 +6962,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(catalogSkill, /do not silently turn absence of readiness into permission to choose another\s+source/u);
   assert.match(catalogSkill, /project-scoped response already contains the additive union/);
   assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `localAction`/);
-  assert.match(catalogSkill, /bridge may cache verified package bytes by digest/);
+  assert.match(catalogSkill, /The host still verifies package signatures and file hashes on every execution/);
   assert.match(catalogSkill, /When relevant catalog items return `integrationRouting`/u);
   assert.match(catalogSkill, /never infer precedence from skill IDs, titles, array order/u);
   assert.match(catalogSkill, /exact\s+returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
@@ -7439,8 +7439,9 @@ test("skill host ignores a PATH python hijack and runs Python entrypoints in iso
   }
 });
 
-test("skill host resolves on every run, verifies signed package, caches it and repairs tampering", {
-  timeout: 15_000,
+for (const boundSession of [false, true]) {
+test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves legacy calls"}, verifies packages and repairs tampering`, {
+  timeout: 25_000,
 }, async () => {
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-skill-runtime-test-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
@@ -7451,7 +7452,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
   const companyId = "99999999-9999-4999-8999-999999999999";
   const memberId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const connectionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const runtimeArgv = [
+  const runtimeArgv = boundSession ? ["--runtime-session", "dddddddd-dddd-4ddd-8ddd-dddddddddddd"] : [
     "--runtime-client",
     "codex",
     "--runtime-model",
@@ -7531,7 +7532,8 @@ test("skill host resolves on every run, verifies signed package, caches it and r
       ) {
         const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
         assert.equal(body.companyId, companyId);
-        assert.deepEqual(body.runtimeAttestation, {
+        if (boundSession) assert.equal(body.runtimeSessionId, runtimeArgv[1]);
+        else assert.deepEqual(body.runtimeAttestation, {
           schemaVersion: 1,
           clientFamily: "codex",
           modelId: "gpt-5.6-sol",
@@ -7762,7 +7764,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
     const expectedRuntimeOutput = `runtime:--message,hello:${releaseId}:${memberId}:${connectionId}:{"schemaVersion":1,"baseUrl":"https://example.test/"}:project=none:grants=false,false,false`;
     assert.match(firstRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.match(secondRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-    assert.equal(resolveCount, 2, "every invocation must resolve the current release");
+    assert.equal(resolveCount, boundSession ? 1 : 2, "only exact bound sessions may reuse admission");
     assert.equal(packageDownloadCount, 1, "second invocation must use verified cache");
 
     for (const deliveryMode of ["env", "file", "stdin"]) {
@@ -7803,7 +7805,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
 
     const repairedRun = await runSkill();
     assert.match(repairedRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-    assert.equal(resolveCount, 7);
+    assert.equal(resolveCount, boundSession ? 2 : 7, "damaged package bytes require live reauthorization");
     assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
     assert.ifError(serverError);
   } finally {
@@ -7811,6 +7813,7 @@ test("skill host resolves on every run, verifies signed package, caches it and r
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 });
+}
 
 test("bridge pairs once through MCP approval and reuses the narrow local device session", {
   timeout: 15_000,

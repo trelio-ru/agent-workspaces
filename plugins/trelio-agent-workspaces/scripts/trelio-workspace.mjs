@@ -60,8 +60,18 @@ import {
   wrapAndRememberAgentEncryptionDevice,
 } from "./trelio-company-encryption.mjs";
 
+import {
+  SKILL_ADMISSION_MAX_BYTES,
+  SKILL_ADMISSION_MAX_ENTRIES,
+  SKILL_ADMISSION_TTL_MS,
+  canCacheSkillAdmission,
+  openSkillAdmission,
+  sealSkillAdmission,
+  skillAdmissionKey,
+} from "./trelio-skill-admission.mjs";
+
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "2.0.7";
+export const BRIDGE_VERSION = "2.0.8";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -1862,6 +1872,41 @@ export const writePrivateJsonFile = async (filePath, value) => {
   } finally {
     await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
   }
+};
+
+const SKILL_ADMISSION_DIRECTORY = path.join(CONFIG_DIRECTORY, "skill-admissions");
+
+const readRuntimeSkillAdmission = async (key, token) => {
+  if (!key) return null; // Legacy runtime commands have no trusted session binding.
+  const file = path.join(SKILL_ADMISSION_DIRECTORY, `${key}.json`);
+  let entry;
+  try {
+    entry = await readPrivateJsonFile(file, { maximumBytes: SKILL_ADMISSION_MAX_BYTES });
+  } catch (error) {
+    if (error instanceof SyntaxError || error.code === "ENOENT") return null;
+    throw error; // Unsafe owner/mode/symlink is not an authorization cache miss.
+  }
+  return openSkillAdmission({ entry, key, token });
+};
+
+const saveRuntimeSkillAdmission = async (key, token, resolution, verifiedAt) => {
+  if (!key || !canCacheSkillAdmission(resolution)) return;
+  const entry = sealSkillAdmission({ key, token, resolution, now: verifiedAt });
+  if (!entry) return;
+  await ensurePrivateDirectory(SKILL_ADMISSION_DIRECTORY);
+  // Admission metadata is small and bounded independently of package retention.
+  // Removing an old entry only causes fresh authorization; it never extends TTL.
+  const files = [];
+  for (const item of await fs.readdir(SKILL_ADMISSION_DIRECTORY, { withFileTypes: true })) {
+    if (!item.isFile() || !/^[0-9a-f]{64}\.json$/u.test(item.name)) continue;
+    const file = path.join(SKILL_ADMISSION_DIRECTORY, item.name);
+    const stat = await fs.lstat(file);
+    if (Date.now() - stat.mtimeMs >= SKILL_ADMISSION_TTL_MS) await fs.rm(file, { force: true });
+    else files.push({ file, modifiedAt: stat.mtimeMs });
+  }
+  files.sort((a, b) => a.modifiedAt - b.modifiedAt);
+  while (files.length >= SKILL_ADMISSION_MAX_ENTRIES) await fs.rm(files.shift().file, { force: true });
+  await writePrivateJsonFile(path.join(SKILL_ADMISSION_DIRECTORY, `${key}.json`), entry);
 };
 
 const normalizeAgentRulesSnapshot = (rawSnapshot, { requireMarkdown = true } = {}) => {
@@ -6813,7 +6858,7 @@ const skillCommand = async (
   origin,
   options,
   positional,
-  { grantedEnvironment = {}, grantedStdin = null } = {},
+  { grantedEnvironment = {}, grantedStdin = null, refreshAdmission = false } = {},
 ) => {
   const skillSubcommand = positional[0];
 
@@ -6863,22 +6908,26 @@ const skillCommand = async (
 
   const token = await requireToken(origin);
   await ensureBridgeCompatibility(origin, token);
-  await assertOrdinaryRuntimePolicyForCompany({
-    origin,
-    token,
-    companyId,
-    runtimeSessionId,
-    runtimeAttestation,
-  });
-  const response = await resolveAgentSkillRuntimeWithDeviceConsent({
-    origin,
-    token,
-    companyId,
-    projectId,
-    skillId,
-    releaseId,
-  });
-  let rawResolution = await response.json();
+  const admissionKey = skillAdmissionKey({ origin, token,
+    sessionId: runtimeSessionId, kind: "runtime", companyId, projectId,
+    skillId, releaseId, hostVersion: BRIDGE_VERSION });
+  const cachedAdmission = refreshAdmission ? null
+    : await readRuntimeSkillAdmission(admissionKey, token);
+  const admissionCheckedAt = Date.now();
+  let rawResolution = cachedAdmission;
+  if (!rawResolution) {
+    // A positive admission covers at most twelve hours of this exact session.
+    // Expiry never falls back to stale access when Trelio is unavailable.
+    await assertOrdinaryRuntimePolicyForCompany({
+      origin, token, companyId, runtimeSessionId, runtimeAttestation,
+    });
+    const response = await resolveAgentSkillRuntimeWithDeviceConsent({
+      origin, token, companyId, projectId, skillId, releaseId,
+    });
+    rawResolution = await response.json();
+  }
+  // Retain only the original wire representation, before any E2EE hydration.
+  const admissionResolution = structuredClone(rawResolution);
   const hydratedRuntime = await hydrateEncryptedAgentSkillRuntimeResolution({
     rawResolution,
     origin,
@@ -6903,9 +6952,8 @@ const skillCommand = async (
     throw new Error("Trelio runtime resolution не совпадает с get_agent_skill.");
   }
 
-  // Даже cache hit начинается с live resolve. Так агент не должен сам
-  // отслеживать обновления, а expected release закрывает гонку между чтением
-  // инструкции и запуском runtime.
+  // Every invocation still validates package signature, version and file hashes.
+  // Only server admission may be reused; cache bytes alone never grant execution.
   const artifactForCache = {
     ...resolution.artifact,
   };
@@ -6954,6 +7002,14 @@ const skillCommand = async (
     }
   }
 
+  // A cached admission is useful only with the already verified local package.
+  // Missing/corrupted bytes force a complete live admission before downloading;
+  // recursion cannot repeat because refreshAdmission bypasses this snapshot.
+  if (cachedAdmission && !cachedDirectory) {
+    return skillCommand(origin, options, positional, {
+      grantedEnvironment, grantedStdin, refreshAdmission: true,
+    });
+  }
   let runtimeDirectory;
 
   if (cachedDirectory) {
@@ -6969,6 +7025,9 @@ const skillCommand = async (
     runtimeDirectory = materialized.runtimeDirectory;
   }
 
+  if (!cachedAdmission) {
+    await saveRuntimeSkillAdmission(admissionKey, token, admissionResolution, admissionCheckedAt);
+  }
   await runMaterializedAgentSkill({
     artifact: artifactForCache,
     runtimeDirectory,

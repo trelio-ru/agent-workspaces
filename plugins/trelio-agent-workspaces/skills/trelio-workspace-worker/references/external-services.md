@@ -7,16 +7,9 @@ discovery, and Agent Workspace control-plane work do not use this gate.
 ## Select the current skill
 
 1. In the exact company/project context, call `search_agent_skills` with the
-   task and compact concept hints. Choose a ranked result, then call
-   `get_agent_skill` once before the first external action in the current user
-   turn.
-2. That successful read covers the related uninterrupted operation while the
-   exact context, skill, implementation, and user intent stay unchanged. Do
-   not repeat it immediately or before each subcommand.
-3. Read it again in a later user turn, after the exact route changes, after a
-   returned setup/access blocker is resolved, or once on
-   `AGENT_SKILL_RELEASE_CHANGED`. Reserve `list_agent_skills` for explicit
-   catalog inventory.
+   task and compact concept hints; reserve `list_agent_skills` for explicit inventory.
+2. Load `get_agent_skill` once before the first external action in this session. Reuse its complete instructions and exact execution declaration across user turns for up to 12 hours while company/project, skill, implementation and intent stay unchanged. Reload after a new session, lost or compacted full text, 12 hours, route/context change, a resolved setup/access blocker, or once on `AGENT_SKILL_RELEASE_CHANGED`. Do not reread before each subcommand. The trusted host owns the bounded admission cache; never edit it or extend its expiry.
+3. The host may reuse an exact admission for at most 12 hours without sliding renewal. Revocation takes effect at refresh; package verification and Remote MCP tool policy remain mandatory.
 4. Use the selected skill's exact `runtimeExecution` or
    `remoteMcpExecution`; do not bypass a usable route with browser automation,
    Computer Use, direct HTTP, another MCP, or an improvised script.

@@ -80,6 +80,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-mcp-results.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
@@ -109,6 +110,9 @@ jobs:
       # The broader bridge suite contains POSIX-specific fixtures. This job is
       # intentionally narrow: it exercises the command transport and the real
       # Windows PowerShell Set-Acl/Get-Acl path that the other runners skip.
+      - name: Run admission cache boundary regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
+
       - name: Run Windows ACL regressions
         run: >-
           node --test

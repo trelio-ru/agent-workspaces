@@ -45,7 +45,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "2.0.7");
+  }), "2.0.8");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -2407,8 +2407,8 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
     /Ask when several companies remain possible/u,
     /Use search_agent_skills; list_agent_skills is only for explicit inventory/u,
     /get_agent_skill before its first external action/u,
-    /Reuse that read for uninterrupted operations in the same turn\/context\/skill\/implementation\/intent/u,
-    /reload next user turn, after a route change, resolved setup\/access blocker, or AGENT_SKILL_RELEASE_CHANGED/u,
+    /Reuse the full read across turns for up to 12 hours with unchanged session\/context\/skill\/implementation\/intent/u,
+    /reload on a new session, lost\/compacted text, expiry, route change, resolved blocker or AGENT_SKILL_RELEASE_CHANGED/u,
     /Missing active tools do not prove skill absence/u,
     /runtimeExecution\.localAction or declared Remote MCP tools with returned identity\/release/u,
     /formal integrationRouting, including primary\/fallback roles and exact allowed fallback reasons/u,
@@ -2738,10 +2738,89 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "2.0.7");
+  assert.equal(frames[0].result.serverInfo.version, "2.0.8");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /legacy responses without a structured action/iu);
   assert.match(frames[0].result.instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
   assert.equal(frames[1].result.tools.length, 28);
+});
+
+test("Remote MCP admission expires absolutely and never caches protected wire declarations", { timeout: 15000 }, async () => {
+  // A separate host process owns both the private credential fixture and the
+  // session cache. Mock only HTTP; exercise real admission and normalization.
+  const program = `
+    import assert from "node:assert/strict";
+    import os from "node:os";
+    import fs from "node:fs/promises";
+    import path from "node:path";
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const fixture = JSON.parse(Buffer.concat(chunks).toString());
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-remote-admission-"));
+    os.homedir = () => directory;
+    process.env.LOCALAPPDATA = directory;
+    process.env.TRELIO_WORKSPACE_DISABLE_KEYCHAIN = "1";
+    try {
+      const host = await import(fixture.moduleUrl);
+      const bridge = await import(fixture.bridgeUrl);
+      const origin = "https://admission.trelio.example";
+      await bridge.writePrivateJsonFile(path.join(bridge.resolveWorkspaceBridgeConfigDirectory(), "credentials.json"), {
+        [origin]: { accessToken: "synthetic-admission-token" },
+      });
+      let now = Date.now();
+      Date.now = () => now;
+      let resolutions = 0;
+      let denied = false;
+      let protectedWire = false;
+      globalThis.fetch = async (url, options) => {
+        const endpoint = new URL(String(url)).pathname;
+        if (endpoint.endsWith("bridge-compatibility")) return Response.json({ supported: true, minimumVersion: "2.0.0" });
+        assert.equal(endpoint, "/api/agent-skills/remote-mcp/resolve");
+        resolutions++;
+        if (denied) return Response.json({ message: "Access revoked" }, { status: 403 });
+        const input = JSON.parse(options.body);
+        return Response.json({ ...fixture.resolution, releaseId: input.expectedReleaseId,
+          ...(protectedWire ? { encryptedLabel: "~e1:protected-fixture" } : {}),
+        });
+      };
+      const input = { ...fixture.resolution.localIdentity, releaseId: fixture.resolution.releaseId };
+      const resolve = () => host.resolveRemoteMcpDeclaration(origin, input);
+      await resolve();
+      await resolve();
+      assert.equal(resolutions, 1);
+      now += 12 * 3600000 - 1;
+      await resolve();
+      assert.equal(resolutions, 1);
+      now++;
+      await resolve();
+      assert.equal(resolutions, 2, "exact twelve-hour boundary must reauthorize");
+      now += 12 * 3600000;
+      denied = true;
+      await assert.rejects(resolve, /Access revoked/);
+      await assert.rejects(resolve, /Access revoked/);
+      assert.equal(resolutions, 4, "expired access must not be restored after a denial");
+      denied = false;
+      protectedWire = true;
+      await resolve();
+      await resolve();
+      assert.equal(resolutions, 6, "protected wire data must stay uncached even when normalization drops fields");
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", program], { stdio: ["pipe", "pipe", "pipe"] });
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  const completed = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  child.stdin.end(JSON.stringify({
+    moduleUrl: new URL("../scripts/trelio-remote-mcp.mjs", import.meta.url).href,
+    bridgeUrl: new URL("../scripts/trelio-workspace.mjs", import.meta.url).href,
+    resolution: resolvedRemoteKnowledge,
+  }));
+  assert.equal(await completed, 0, output);
 });

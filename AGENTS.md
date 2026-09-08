@@ -149,14 +149,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   общего primitive, который нельзя безопасно доставить независимым runtime.
 - Provider API/DOM, provider-команда, parser, dependency, instruction или тест
   одного provider не являются основанием менять plugin.
-- Generic routing обязан считать один успешный `get_agent_skill` свежим для
-  связанной непрерывной последовательности текущего пользовательского хода с
-  теми же company/project, skill, implementation и intent. Нельзя требовать
-  повтор перед каждым runtime/Remote MCP subcommand: host всё равно делает
-  live resolve каждого действия. Новое чтение требуется в следующем
-  пользовательском ходе, после смены exact route, после снятия ранее
-  возвращённого setup/access blocker либо один раз на
-  `AGENT_SKILL_RELEASE_CHANGED`.
+- Полный `get_agent_skill` и exact action переиспользуются между связанными
+  ходами одной сессии до 12 часов. Перечитать при compaction/утрате полного
+  текста, expiry, смене контекста, снятии blocker либо RELEASE_CHANGED.
+  Host владеет отдельным non-sliding admission cache; его bindings, задержка
+  отзыва и исключения заданы в
+  [README](plugins/trelio-agent-workspaces/README.md#повторное-использование-agent-skill).
+  Подпись/package integrity, provider policy и E2EE fence сохраняются.
 - Один известный exact task читается через `get_task`, а 2-20 distinct exact
   targets – одним `get_tasks`; последовательные `get_task` для уже известного
   набора запрещены. Task-read schema v3 хранит уникальные Markdown-слои один
@@ -411,7 +410,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   exact accepted head и текущие instruction/profile snapshots в private
   read-only state; агент не просит пользователя вручную запускать Run только
   ради чтения и не превращает inspection-каталог в writable workspace.
-- Signed runtime запускается только после authenticated exact-release resolve,
+- Signed runtime запускается после authenticated exact-release admission либо
+  его допустимого 12-часового snapshot по контракту выше,
   проверки signature/package/files/paths и с host-authored allowlist окружения.
   Если обычный глобальный package получает company connection config как E2EE
   marker, bridge гидратирует его только для exact `platform_verified`

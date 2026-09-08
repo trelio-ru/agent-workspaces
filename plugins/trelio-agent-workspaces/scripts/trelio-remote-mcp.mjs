@@ -4,7 +4,7 @@
  * Universal local host for declarative company Remote MCP skills.
  *
  * The process exposes a small static MCP facade to Codex. Every operation
- * resolves the immutable declaration from Trelio again, while personal PAT
+ * uses a session-bound admission for at most twelve hours, while personal PAT
  * bytes stay in a private local file and are sent only to the exact validated
  * HTTPS endpoint. Remote content is always returned as untrusted tool data.
  */
@@ -66,6 +66,19 @@ import {
   handleTrelioLocalWorkspaceOperation,
   handleTrelioWorkspaceActionOperation,
 } from "./trelio-local-context.mjs";
+
+import {
+  SKILL_ADMISSION_MAX_ENTRIES,
+  canCacheSkillAdmission,
+  openSkillAdmission,
+  sealSkillAdmission,
+  skillAdmissionKey,
+} from "./trelio-skill-admission.mjs";
+
+// One stdio server belongs to one client session. Remote declarations stay in
+// memory only and disappear when that client restarts; PAT bytes are excluded.
+const remoteAdmissionSessionId = crypto.randomUUID();
+const remoteAdmissions = new Map();
 
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const REMOTE_MCP_EXACT_CONFIG_SCHEMA_VERSION = 1;
@@ -159,9 +172,9 @@ const AGENT_SKILL_PACKAGE_MIME_TYPE = "application/vnd.trelio.agent-skill-packag
  */
 export const AGENT_SKILL_ROUTING_INSTRUCTIONS = [
   "Native Trelio task/Workspace/Run actions need no skill catalog query. Follow only server-selected providerSelection; never infer the local route.",
-  "For an external integration, resolve the intended Trelio company before installing, authorizing, or invoking another connector. Ask when several companies remain possible. Use search_agent_skills; list_agent_skills is only for explicit inventory. Load an exact enabled skill with get_agent_skill before its first external action. Reuse that read for uninterrupted operations in the same turn/context/skill/implementation/intent; reload next user turn, after a route change, resolved setup/access blocker, or AGENT_SKILL_RELEASE_CHANGED. Missing active tools do not prove skill absence.",
+  "For an external integration, resolve the intended Trelio company before installing, authorizing, or invoking another connector. Ask when several companies remain possible. Use search_agent_skills; list_agent_skills is only for explicit inventory. Load an exact enabled skill with get_agent_skill before its first external action. Reuse the full read across turns for up to 12 hours with unchanged session/context/skill/implementation/intent; reload on a new session, lost/compacted text, expiry, route change, resolved blocker or AGENT_SKILL_RELEASE_CHANGED. Never extend host admission. Missing active tools do not prove skill absence.",
   "Execute only the selected skill's declared runtimeExecution.localAction or declared Remote MCP tools with returned identity/release. For legacy responses without a structured action, follow the selected skill's compatibility procedure. Follow its formal integrationRouting, including primary/fallback roles and exact allowed fallback reasons; never infer these from IDs or order. Missing or invalid routing never permits fallback; keep each skill's assignment, connection and session independent. setup_required, no_access or needs_reconnect require explaining the blocker and setup action. Another implementation needs the user's explicit choice after that explanation, unless the formal routing permits it. If search finds no relevant assigned skill, use compatible personal connectors. Transient/control-plane failures never prove absence or authorize fallback; establish an ambiguous mutation's live result before any retry. Never bypass a usable skill via browser, HTTP, another MCP or script, or request_plugin_install before catalog resolution.",
-  "An explicit development/debug/audit/release task in an identified canonical repository permits maintainer tools and bounded read-only probes. A checkout alone is insufficient. Preserve scope/ACL, secret delivery, no-logging, output bounds and external-mutation authority; ordinary company work returns to catalog routing. Never weaken secret, personal-session or independent human-decision boundaries. Detailed operational procedures are in the selected skill and the worker's external-services.md reference.",
+  "An explicit development/debug/audit/release task in an identified canonical repository permits maintainer tools and bounded read-only probes. A checkout alone is insufficient. Preserve scope/ACL, secret delivery, no-logging, output bounds and external-mutation authority; ordinary company work returns to catalog routing. Never weaken secret, personal-session or independent human-decision boundaries. Details: selected skill and external-services.md reference.",
 ].join("\n\n");
 
 const FORBIDDEN_HEADERS = new Set([
@@ -603,12 +616,17 @@ const normalizeToolInput = (rawInput) => {
   };
 };
 
-const resolveRemoteMcpDeclaration = async (
+export const resolveRemoteMcpDeclaration = async (
   origin,
   rawInput,
   { signal } = {},
 ) => {
   const input = normalizeToolInput(rawInput);
+  let admissionKey;
+  let admissionToken;
+  let admissionHit = false;
+  let admissionCacheable = false;
+  const admissionCheckedAt = Date.now();
   const resolved = await runWithAbortDeadline({
     signal,
     timeoutMs: TRELIO_RESOLVE_TIMEOUT_MS,
@@ -627,6 +645,17 @@ const resolveRemoteMcpDeclaration = async (
       await ensureBridgeCompatibility(origin, token, {
         signal: operationSignal,
       });
+      admissionToken = token;
+      admissionKey = skillAdmissionKey({ origin, token,
+        sessionId: remoteAdmissionSessionId, kind: "remote_mcp",
+        ...input, hostVersion: BRIDGE_VERSION });
+      const cached = openSkillAdmission({ key: admissionKey, token,
+        entry: remoteAdmissions.get(admissionKey) });
+      if (cached) {
+        admissionHit = true;
+        return validateResolvedRemoteMcp(cached);
+      }
+      remoteAdmissions.delete(admissionKey);
       const response = await request(
         origin,
         token,
@@ -644,6 +673,9 @@ const resolveRemoteMcpDeclaration = async (
         },
       );
       const rawResolution = await response.json();
+      // Decide before hydration/normalization: these may remove the wire marker.
+      // A decrypted company declaration must never enter the admission cache.
+      admissionCacheable = canCacheSkillAdmission(rawResolution);
       if (rawResolution?.remoteMcp?.contentProtection !== "company_e2ee_v1") {
         return validateResolvedRemoteMcp(rawResolution);
       }
@@ -704,6 +736,17 @@ const resolveRemoteMcpDeclaration = async (
     );
   }
 
+  throwIfAborted(signal);
+  if (!admissionHit && admissionCacheable) {
+    const entry = sealSkillAdmission({ key: admissionKey, token: admissionToken,
+      resolution: resolved, now: admissionCheckedAt });
+    if (entry) {
+      while (remoteAdmissions.size >= SKILL_ADMISSION_MAX_ENTRIES) {
+        remoteAdmissions.delete(remoteAdmissions.keys().next().value);
+      }
+      remoteAdmissions.set(admissionKey, entry);
+    }
+  }
   return resolved;
 };
 
