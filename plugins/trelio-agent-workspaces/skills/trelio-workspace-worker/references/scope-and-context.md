@@ -160,28 +160,12 @@ material coordinates; every read reapplies ACL. Use
 `prepare_agent_workspace_read` with `workspaceId`, or with task addressing for
 the canonical task workspace, before local read-only materialization.
 
-### Persist task and project relations
+### Decide whether a durable relation is needed
 
-- A task–workspace link is durable and exposes the whole accepted workspace to
-  current and future task readers. Task readers get read; task editors get
-  write/Run without relation-management authority. After exact reads, call
-  `link_workspace_task` without a ceremonial confirmation only when one durable
-  match has at least two stable independent identifiers and the whole workspace
-  suits the task audience. Report what was linked, why, and the resulting
-  access. Add no comment or notification unless separately asked.
-- Multiple candidates, one identifier, temporary relevance, or unclear
-  whole-workspace disclosure require a question. A weak hit is ignored; a
-  partial fit uses narrower pinned context for one Run.
-- Use `link_workspace_project` when the same durable material genuinely belongs
-  in several projects. Project readers then gain read access and project
-  editors gain write/Run access. The primary project and governing rules stay
-  unchanged. Use `unlink_workspace_project` only for a secondary project; move
-  the primary owner through the guarded transfer flow first.
-- `unlink_workspace_task` and `unlink_workspace_project` remove only the exact
-  relation. They never delete either object or rewrite Git history.
-
-When ordinary tasks need a direct task-to-task connection, prefer
-`create_task_relation`. Describe `relationType` in precise human language and
-set `isDirectional` only when order matters. Use a work case only when several
-tasks genuinely represent one shared subject, with a stable unique
-`clientRequestId`.
+After exact reads, a durable task/workspace match with two independent stable
+identifiers, no competing target and whole-workspace suitability for the task
+audience should be linked without ceremonial confirmation. Before the mutation,
+read [workspace-relations.md](workspace-relations.md); it defines the exact tools,
+access disclosure, ambiguous/partial matches, unlinking and task/work-case routes.
+A relation exposes the whole workspace to present and future task readers, and
+allows task editors to write/Run; relation-management authority is separate.

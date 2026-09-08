@@ -448,6 +448,21 @@ provider-tag workflow или внутренние release playbooks в этот 
 но не содержит внутренних production credentials, publication commands,
 закрытых source paths или maintainer playbooks.
 
+## Локальные скачанные вложения
+
+- Server-selected encrypted `download_attachment` расшифровывает только уже
+  разрешённый ACL-read и возвращает `delivery=local-file`, path, имя/MIME,
+  размер/SHA-256 и срок очистки; plaintext bytes/base64 не входят в MCP.
+- Копия до 24 MiB живёт в отдельном `attachment-downloads` внутри private bridge
+  config, вне Git и encrypted mirror. Каталог/файл принадлежат только текущему
+  пользователю: POSIX `0700/0600`, Windows exact private DACL. Исходное имя файла
+  не становится path; symlink, oversized, abort и crypto/write failure не имеют
+  fallback. RAM-буферы обнуляются, незавершённая копия удаляется.
+- Через час работающий host удаляет снимок; после выхода процесса просроченные
+  lease-каталоги удаляются при следующем локальном скачивании. Это локальная
+  копия пользователя, не remotely revocable storage. Долговечные материалы
+  сохраняются отдельно только в разрешённый Workspace.
+
 ## Проверки и релизы
 
 - Постоянный model-visible слой типового task-scoped Run измеряется командой
@@ -457,14 +472,19 @@ provider-tag workflow или внутренние release playbooks в этот 
   сравнительной эвристикой. `context-budget.test.mjs` фиксирует regression
   ceilings отдельно для runtime `AGENTS.md`, worker `SKILL.md`, обязательных
   task Run references, варианта с proposal bundle, compact provider-neutral
-  schemas и отдельных plain/encrypted company scenarios. Lazy
+  schemas и отдельных plain/encrypted company scenarios. Дополнительно отчёт
+  измеряет local `initialize`, все model-visible local schemas и их вариант с
+  повтором initialize в каждом description, exact local action обычного Run,
+  реальные builders proposal-ответов и fixture скачивания 1 MiB. App-only tools
+  и hidden capabilities не считаются model context. Binary bytes остаются в
+  локальном файле, а успешный JSON не дублируется в `content` и `structuredContent`.
   `local-company-context.md` запрещено включать в plain required path. Эти потолки не являются
   целевыми размерами: осознанное увеличение требует объяснения, а оптимизация
   должна уменьшать фактический отчёт без удаления security-инвариантов.
   Runtime `AGENTS.md` хранит только неизменяемое safety/lifecycle-ядро, а
   `trelio-workspace-worker/SKILL.md` остаётся коротким router. Процедуры setup
-  и recovery, внешних сервисов и Agent Secrets находятся в отдельных
-  references и не добавляются в `TASK_RUN_REQUIRED_SKILL_PATHS`: агент обязан
+  и recovery Run, изменений durable relations, внешних сервисов и Agent Secrets
+  находятся в отдельных references и не добавляются в `TASK_RUN_REQUIRED_SKILL_PATHS`: агент обязан
   загружать их полностью только при соответствующем сценарии.
 - Для изменённого bundled skill запусти его tests, `validate-skill` при наличии
   и `skill-creator/scripts/quick_validate.py`.

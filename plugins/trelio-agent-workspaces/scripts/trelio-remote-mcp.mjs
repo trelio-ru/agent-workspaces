@@ -19,6 +19,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
+import { compactLocalMcpResult } from "./trelio-mcp-results.mjs";
 
 import {
   AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION,
@@ -157,13 +158,10 @@ const AGENT_SKILL_PACKAGE_MIME_TYPE = "application/vnd.trelio.agent-skill-packag
  * deciding which tool family should handle the request.
  */
 export const AGENT_SKILL_ROUTING_INSTRUCTIONS = [
-  "Trelio Agent Skill routing gate: When a user asks to connect or use an external integration that Trelio may provide, resolve the intended Trelio company before installing, authorizing, or invoking an overlapping native/plugin integration. If the request does not identify a company and several are available, ask which Trelio company applies instead of scanning unrelated catalogs or silently choosing the non-Trelio integration. In the resolved company or project context, use `search_agent_skills` as the standard path with a faithful task query and only useful short concept hints. Use `list_agent_skills` only for explicit whole-catalog inventory. Select a compact ranked result, then call `get_agent_skill` once before the first external action in the current user turn. A successful read covers the related uninterrupted operation while the exact context, skill, selected implementation, and user intent stay unchanged; do not repeat it immediately or before each subcommand. Read it again in a later user turn, after the exact route changes, after a previously returned setup/access blocker is resolved, or on `AGENT_SKILL_RELEASE_CHANGED`. Do this even when no integration-specific tool appears in the active tool list; a missing active tool is not evidence that the integration is unavailable.",
-  "When relevant catalog items return a formal `integrationRouting` contract, follow only its current fields and never infer routing from skill IDs, titles, array order, or prior use. Within one returned `family`, use the sole enabled item or apply the exact returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics. Move only to the exact `fallbackSkillId` after the selected item has established a reason present in its own `fallbackWhen`. Keep every skill's assignment, connection, local session, and policy independent. Missing, malformed, or inconsistent routing metadata, catalog/control-plane unavailability, timeout, transient or unknown failure, and `ambiguousMutationFallback: forbidden` never permit fallback or an automatic repeat; establish the live result first or ask the user whether to retry.",
-  "Use only an exact `runtimeExecution.localAction` through its declared `trelio-remote-skills` tool, or the declared Remote MCP tools with returned identity/release. Legacy responses without a structured action are handled only by the selected skill's lazy compatibility procedure. Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script during ordinary operational use.",
-  "Treat an explicit task to develop, debug, audit, release, or live-verify Trelio or an Agent Skill in an identified canonical repository checkout as a separate maintainer route. Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes may run without forcing the current signed release or catalog execution path; preserve connection scope and ACL, protected secret delivery, no-logging rules, output bounds, and separate authorization for external mutations. A checkout alone never enables maintainer mode, and ordinary company operations return to catalog/get/runtime routing.",
-  "Do not call `request_plugin_install` or open another integration's authorization before this catalog check. When search selects a matching enabled skill, use it after fresh `get_agent_skill`. If the selected skill or its company/personal connection reports `setup_required`, `no_access`, or `needs_reconnect`, state that this skill is currently unavailable and name the required setup action. Outside an explicit formal `integrationRouting` contract, do not search for or use another implementation automatically; another source is eligible only after the user explicitly chooses it after seeing the blocker. When search returns no relevant assigned skill, compatible personal skills and connectors remain available. Unavailable `search_agent_skills` / `get_agent_skill` or a transient network failure does not itself establish skill absence, `no_access`, or `setup_required`.",
-  "Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow: do not run skill search merely for task discovery, workspace/Run/context, checkpoint, submit, or restore. This gate does not weaken secret, personal-session, approval, or confirmation boundaries.",
-  "When native Trelio returns an exact providerSelection route, follow that server and tool once. Provider selection is runtime-authoritative, not an agent choice; never call the local route merely because a native call looks inconvenient.",
+  "Native Trelio task/Workspace/Run actions need no skill catalog query. Follow only server-selected providerSelection; never infer the local route.",
+  "For an external integration, resolve the intended Trelio company before installing, authorizing, or invoking another connector. Ask when several companies remain possible. Use search_agent_skills; list_agent_skills is only for explicit inventory. Load an exact enabled skill with get_agent_skill before its first external action. Reuse that read for uninterrupted operations in the same turn/context/skill/implementation/intent; reload next user turn, after a route change, resolved setup/access blocker, or AGENT_SKILL_RELEASE_CHANGED. Missing active tools do not prove skill absence.",
+  "Execute only the selected skill's declared runtimeExecution.localAction or declared Remote MCP tools with returned identity/release. For legacy responses without a structured action, follow the selected skill's compatibility procedure. Follow its formal integrationRouting, including primary/fallback roles and exact allowed fallback reasons; never infer these from IDs or order. Missing or invalid routing never permits fallback; keep each skill's assignment, connection and session independent. setup_required, no_access or needs_reconnect require explaining the blocker and setup action. Another implementation needs the user's explicit choice after that explanation, unless the formal routing permits it. No relevant assigned skill allows compatible personal connectors. Transient/control-plane failures never prove absence or authorize fallback; establish an ambiguous mutation's live result before any retry. Never bypass a usable skill via browser, HTTP, another MCP or script, or request_plugin_install before catalog resolution.",
+  "An explicit development/debug/audit/release task in an identified canonical repository permits maintainer tools and bounded read-only probes. A checkout alone is insufficient. Preserve scope/ACL, secret delivery, no-logging, output bounds and external-mutation authority; ordinary company work returns to catalog routing. Never weaken secret, personal-session or independent human-decision boundaries. Detailed operational procedures are in the selected skill and the worker's external-services.md reference.",
 ].join("\n\n");
 
 const FORBIDDEN_HEADERS = new Set([
@@ -3604,7 +3602,7 @@ export const buildLocalProposalRenderResult = ({
     operation,
   });
   const capability = createLocalProposalAppCapability(origin, structuredContent);
-  return {
+  return compactLocalMcpResult({
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
     _meta: {
@@ -3620,7 +3618,7 @@ export const buildLocalProposalRenderResult = ({
           }
         : {}),
     },
-  };
+  });
 };
 
 const buildLocalProposalChildResult = ({ result, companySlug, kind }) => {
@@ -3631,10 +3629,10 @@ const buildLocalProposalChildResult = ({ result, companySlug, kind }) => {
     );
   }
   const structuredContent = localizeProposalPayload(result.proposal, companySlug, kind);
-  return {
+  return compactLocalMcpResult({
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-  };
+  });
 };
 
 const resolveLocalProposalContextCompany = (kind, rawArguments) => {
@@ -4195,12 +4193,12 @@ export const handleLocalMcpMessage = async (
       return {
         jsonrpc: "2.0",
         id: message.id,
-        result: await callTool(
+        result: compactLocalMcpResult(await callTool(
           origin,
           String(message.params?.name || ""),
           message.params?.arguments,
           { signal },
-        ),
+        )),
       };
     } catch (error) {
       return {

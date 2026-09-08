@@ -78,6 +78,8 @@ jobs:
       - name: Run generic plugin host Node tests
         run: |
           node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-mcp-results.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
@@ -120,6 +122,10 @@ jobs:
         run: >-
           node --test
           plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
+
+      # Exercise actual file DACL hardening, expiration and encrypted delivery.
+      - name: Run Windows private attachment delivery regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
 
       # The local facade must keep an explicit child cwd and return a typed
       # restart requirement when the loaded plugin disappears during an update.

@@ -4047,7 +4047,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.0.5");
+  assert.equal(BRIDGE_VERSION, "2.0.6");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4303,6 +4303,8 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "instruction-management.md",
     "meetings.md",
     "scope-and-context.md",
+    "workspace-relations.md",
+    "run-recovery.md",
     "accepted-workspace-read.md",
     "workspace-transfer.md",
     "task-controls.md",
@@ -4358,15 +4360,20 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(scopeReference, /plugin\/backend mismatch/u);
   assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and\s+`user-profile\.md` remain authoritative/u);
   assert.match(scopeReference, /Do not call\s+`get_agent_instructions` again after loaded instructions/u);
-  assert.match(scopeReference, /at least two stable independent identifiers/u);
-  assert.match(scopeReference, /call\s+`link_workspace_task` without a ceremonial confirmation/u);
-  assert.match(scopeReference, /whole accepted workspace to\s+current and future task readers/u);
-  assert.match(scopeReference, /task editors get\s+write\/Run/u);
-  assert.match(scopeReference, /Add no comment or notification unless separately asked/u);
-  assert.match(scopeReference, /unclear\s+whole-workspace disclosure require a question/u);
-  assert.match(scopeReference, /A weak hit is ignored/u);
-  assert.match(scopeReference, /`link_workspace_project`/u);
-  assert.match(scopeReference, /primary project and governing rules stay\s+unchanged/u);
+  const relationsReference = await readFile(
+    path.join(workerDirectory, "references", "workspace-relations.md"), "utf8",
+  );
+  assert.match(scopeReference, /workspace-relations\.md/u);
+  assert.match(agentRunReference, /run-recovery\.md/u);
+  assert.match(relationsReference, /at least two stable independent identifiers/u);
+  assert.match(relationsReference, /call\s+`link_workspace_task` without a ceremonial confirmation/u);
+  assert.match(relationsReference, /whole accepted workspace to\s+current and future task readers/u);
+  assert.match(relationsReference, /task editors get\s+write\/Run/u);
+  assert.match(relationsReference, /Add no comment or notification unless separately asked/u);
+  assert.match(relationsReference, /unclear\s+whole-workspace disclosure require a question/u);
+  assert.match(relationsReference, /A weak hit is ignored/u);
+  assert.match(relationsReference, /`link_workspace_project`/u);
+  assert.match(relationsReference, /primary project and governing rules stay\s+unchanged/u);
   assert.match(scopeReference, /Workspace access is the union/u);
   assert.match(scopeReference, /project member or moderator may write and run/u);
   assert.match(scopeReference, /Relation-derived access never grants link management/u);

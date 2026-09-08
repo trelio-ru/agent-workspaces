@@ -53,6 +53,10 @@ import {
   compareContextSearchCandidates,
   normalizeContextSearchText,
 } from "./trelio-context-search-ranking.mjs";
+import {
+  buildLocalAttachmentFileResult,
+  materializeLocalAttachment,
+} from "./trelio-local-attachments.mjs";
 
 // Version 4 replaces the previous split metadata projection with first-class workspace
 // metadata and gives accepted Workspace files their own unambiguous result-id
@@ -2622,15 +2626,19 @@ const readBoundedLocalActionDownload = async (url, signal) => {
   return bytes;
 };
 
-const openLocalActionAttachmentResult = async ({
+export const openLocalActionAttachmentResult = async ({
   result,
   companyEncryption,
   signal,
+  materialize = materializeLocalAttachment,
 }) => {
   if (result?.isError || !result?.structuredContent) return result;
   const payload = result.structuredContent;
   let ciphertext;
   if (payload.delivery === "inline-base64" && typeof payload.dataBase64 === "string") {
+    if (payload.dataBase64.length > 4 * Math.ceil(LOCAL_ACTION_MAX_RESPONSE_BYTES / 3)) {
+      throw new TrelioLocalContextError("LOCAL_ACTION_DOWNLOAD_TOO_LARGE", "Encrypted attachment exceeds the local download limit.");
+    }
     ciphertext = Buffer.from(payload.dataBase64, "base64");
   } else if (payload.delivery === "signed-url" && typeof payload.downloadUrl === "string") {
     ciphertext = await readBoundedLocalActionDownload(payload.downloadUrl, signal);
@@ -2645,21 +2653,11 @@ const openLocalActionAttachmentResult = async ({
       scopePrivateJwk: companyEncryption.scopePrivateEncryptionKey.privateJwk,
       maximumPlaintextBytes: LOCAL_ACTION_MAX_RESPONSE_BYTES,
     });
-    const structuredContent = {
-      ...payload,
-      originalName: opened.originalName,
-      mimeType: opened.mimeType,
-      sizeBytes: opened.plaintextSizeBytes,
-      delivery: "inline-base64",
-      dataBase64: opened.bytes.toString("base64"),
-    };
-    delete structuredContent.downloadUrl;
-    delete structuredContent.expiresInSeconds;
-    return {
-      ...result,
-      structuredContent,
-      content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-    };
+    // This remains a local continuation of the same ACL-checked download.
+    // Decrypted binary bytes must never expand either model-visible field.
+    // A failed private write propagates without a base64/plaintext fallback.
+    const file = await materialize({ bytes: opened.bytes, originalName: opened.originalName, signal });
+    return buildLocalAttachmentFileResult({ result, opened, file });
   } finally {
     ciphertext.fill(0);
     opened?.bytes.fill(0);

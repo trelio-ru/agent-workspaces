@@ -161,6 +161,16 @@ revision-checked page update. The host privately streams it, encrypting if neede
 ambiguity reread attachments before reusing the key. Archived rows require
 exact include flags.
 
+For encrypted `download_attachment`, read the returned `delivery=local-file`
+path and metadata from `structuredContent`; inspect only the needed file content.
+The host makes an owner-private copy (up to 24 MiB), separate from mirror/Git,
+with size/SHA-256 and `expiresAt`. Cleanup runs after one hour while the host is
+alive, otherwise at the next local download. Save durable material only in an
+authorized Workspace. Do not encode or return the downloaded bytes through MCP.
+Successful local results keep complete data in `structuredContent` once; text
+`content` is a short pointer. Hidden App metadata and each human decision remain
+independent.
+
 ## Fail closed
 
 Let the bridge own local unlock and materialization. Never request an encryption

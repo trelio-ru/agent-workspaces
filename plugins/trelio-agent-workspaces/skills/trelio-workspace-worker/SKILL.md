@@ -47,6 +47,8 @@ proposalContexts for each reference's context read.
 - **Task, workspace, project/company binding, writable scope, related context,
   task relation, or work case discovery:** read
   [`references/scope-and-context.md`](references/scope-and-context.md).
+- **Create/remove workspace links, project relations, task relations or work cases:**
+  also read [`references/workspace-relations.md`](references/workspace-relations.md).
 - **Native result selects local `providerSelection`, or an exact task returns
   local `proposalProvider`:**
   read [`references/local-company-context.md`](references/local-company-context.md)
@@ -83,6 +85,9 @@ proposalContexts for each reference's context read.
 - **Start/open/continue/checkpoint/submit/restore/cancel/concurrency of a Run:**
   read [`references/agent-run.md`](references/agent-run.md), plus the scope
   reference unless the exact workspace and Run are already known.
+- **Run/storage/lease/base-head failure, cross-device claim, restore, cancellation,
+  history or cleanup:** also read
+  [`references/run-recovery.md`](references/run-recovery.md).
 - **Writable task-scoped Run:** additionally read
   [`references/task-run.md`](references/task-run.md) before handoff, outcome,
   submit, or final reporting. The status reference governs both the one-shot

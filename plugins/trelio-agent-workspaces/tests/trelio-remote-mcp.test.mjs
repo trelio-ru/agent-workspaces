@@ -45,7 +45,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "2.0.5");
+  }), "2.0.6");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -1900,7 +1900,8 @@ test("local proposal render returns a real MCP App result instead of JSON text o
     "protected-company",
   );
   assert.equal(result.content[0].type, "text");
-  assert.match(result.content[0].text, /Готовый комментарий/u);
+  assert.equal(result.structuredContent.blocks[0].proposal.currentDraft.bodyText, "Готовый комментарий");
+  assert.doesNotMatch(result.content[0].text, /Готовый комментарий/u);
   assert.doesNotMatch(
     result.content[0].text,
     new RegExp(result._meta["trelio/taskProposalApp"].capabilityToken, "u"),
@@ -2399,43 +2400,35 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   const instructions = await readRoutingInstructionsFromInitialize();
 
   assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
-  assert.match(instructions, /resolve the intended Trelio company before installing, authorizing, or invoking/u);
-  assert.match(instructions, /use `search_agent_skills` as the standard path/u);
-  assert.match(instructions, /Use `list_agent_skills` only for explicit whole-catalog inventory/u);
-  assert.match(instructions, /Do not call `request_plugin_install`/u);
-  assert.match(instructions, /compatible personal skills and connectors remain available/u);
-  assert.match(
-    instructions,
-    /call `get_agent_skill` once before the first external action in the current user turn/u,
-  );
-  assert.match(
-    instructions,
-    /do not repeat it immediately or before each subcommand/u,
-  );
-  assert.match(
-    instructions,
-    /Read it again in a later user turn,[^\n]+`AGENT_SKILL_RELEASE_CHANGED`/u,
-  );
-  assert.match(instructions, /missing active tool is not evidence that the integration is unavailable/u);
-  assert.match(instructions, /Never bypass a matching usable skill through a browser, Computer Use, direct HTTP, another MCP server, or a local script/u);
-  assert.match(instructions, /separate maintainer route/u);
-  assert.match(instructions, /Repository-owned development tools, unpublished runtime code, and narrow bounded read-only probes/u);
-  assert.match(instructions, /A checkout alone never enables maintainer mode/u);
-  assert.match(instructions, /state that this skill is currently unavailable and name the required setup action/u);
-  assert.match(instructions, /reports `setup_required`, `no_access`, or `needs_reconnect`/u);
-  assert.match(instructions, /do not search for or use another implementation automatically/u);
-  assert.match(instructions, /formal `integrationRouting` contract/u);
-  assert.match(instructions, /never infer routing from skill IDs, titles, array order, or prior use/u);
-  assert.match(instructions, /exact returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
-  assert.match(instructions, /exact `fallbackSkillId`/u);
-  assert.match(instructions, /its own `fallbackWhen`/u);
-  assert.match(instructions, /`ambiguousMutationFallback: forbidden` never permit fallback or an automatic repeat/u);
-  assert.match(instructions, /only after the user explicitly chooses it after seeing the blocker/u);
-  assert.match(instructions, /transient network failure does not itself establish skill absence, `no_access`, or `setup_required`/u);
-  assert.match(instructions, /Native Trelio MCP and bundled Agent Workspace operations are the primary workspace workflow/u);
-  assert.match(instructions, /do not run skill search merely for task discovery, workspace\/Run\/context, checkpoint, submit, or restore/u);
-  assert.match(instructions, /does not weaken secret, personal-session, approval, or confirmation boundaries/u);
-  assert.match(instructions, /Provider selection is runtime-authoritative, not an agent choice/u);
+  for (const invariant of [
+    /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u,
+    /Follow only server-selected providerSelection; never infer the local route/u,
+    /resolve the intended Trelio company before installing, authorizing, or invoking/u,
+    /Ask when several companies remain possible/u,
+    /Use search_agent_skills; list_agent_skills is only for explicit inventory/u,
+    /get_agent_skill before its first external action/u,
+    /Reuse that read for uninterrupted operations in the same turn\/context\/skill\/implementation\/intent/u,
+    /reload next user turn, after a route change, resolved setup\/access blocker, or AGENT_SKILL_RELEASE_CHANGED/u,
+    /Missing active tools do not prove skill absence/u,
+    /runtimeExecution\.localAction or declared Remote MCP tools with returned identity\/release/u,
+    /formal integrationRouting, including primary\/fallback roles and exact allowed fallback reasons/u,
+    /never infer these from IDs or order/u,
+    /Missing or invalid routing never permits fallback/u,
+    /each skill's assignment, connection and session independent/u,
+    /setup_required, no_access or needs_reconnect require explaining the blocker and setup action/u,
+    /user's explicit choice after that explanation, unless the formal routing permits it/u,
+    /No relevant assigned skill allows compatible personal connectors/u,
+    /Transient\/control-plane failures never prove absence or authorize fallback/u,
+    /establish an ambiguous mutation's live result before any retry/u,
+    /Never bypass a usable skill via browser, HTTP, another MCP or script/u,
+    /request_plugin_install before catalog resolution/u,
+    /explicit development\/debug\/audit\/release task in an identified canonical repository/u,
+    /A checkout alone is insufficient/u,
+    /Preserve scope\/ACL, secret delivery, no-logging, output bounds and external-mutation authority/u,
+    /ordinary company work returns to catalog routing/u,
+    /Never weaken secret, personal-session or independent human-decision boundaries/u,
+    /external-services\.md reference/u,
+  ]) assert.match(instructions, invariant);
 });
 
 test("platform routing sends a provider-neutral signed skill through runtimeExecution", async () => {
@@ -2455,7 +2448,7 @@ test("platform routing sends a provider-neutral signed skill through runtimeExec
     type: "runtimeExecution",
     skillId: "signed-inventory-runtime",
   });
-  assert.match(instructions, /Use only an exact `runtimeExecution\.localAction`/u);
+  assert.match(instructions, /selected skill's declared runtimeExecution\.localAction/u);
 });
 
 test("platform routing sends a provider-neutral knowledge service through remoteMcpExecution", async () => {
@@ -2506,7 +2499,7 @@ test("platform routing discovers a runtime even without an integration-specific 
     type: "runtimeExecution",
     skillId: "team-messages-single",
   });
-  assert.match(instructions, /even when no integration-specific tool appears in the active tool list/u);
+  assert.match(instructions, /Missing active tools do not prove skill absence/u);
 });
 
 test("formal routing uses the returned primary skill regardless of catalog order", () => {
@@ -2650,7 +2643,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
     type: "remoteMcpExecution",
     skillId: "future-orbital-inventory",
   });
-  assert.match(instructions, /Select a compact ranked result/u);
+  assert.match(instructions, /Use search_agent_skills/u);
   assert.doesNotMatch(
     instructions,
     /signed-inventory-runtime|remote-knowledge|future-orbital-inventory/iu,
@@ -2668,9 +2661,9 @@ test("platform routing allows a named fallback when no relevant skill exists", a
     type: "fallback",
     reason: "no_relevant_skill",
   });
-  assert.match(instructions, /When search returns no relevant assigned skill/u);
-  assert.match(instructions, /compatible personal skills and connectors remain available/u);
-  assert.match(instructions, /primary workspace workflow/u);
+  assert.match(instructions, /No relevant assigned skill/u);
+  assert.match(instructions, /allows compatible personal connectors/u);
+  assert.match(instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
 });
 
 test("platform routing blocks on explicit no_access until the user chooses another source", async () => {
@@ -2691,8 +2684,8 @@ test("platform routing blocks on explicit no_access until the user chooses anoth
     type: "blocked",
     reason: "no_access",
   });
-  assert.match(instructions, /state that this skill is currently unavailable/u);
-  assert.match(instructions, /another source is eligible only after the user explicitly chooses it/u);
+  assert.match(instructions, /require explaining the blocker and setup action/u);
+  assert.match(instructions, /user's explicit choice after that explanation/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
@@ -2745,10 +2738,10 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "2.0.5");
+  assert.equal(frames[0].result.serverInfo.version, "2.0.6");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /legacy responses without a structured action/iu);
-  assert.match(frames[0].result.instructions, /primary workspace workflow/u);
+  assert.match(frames[0].result.instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
   assert.equal(frames[1].result.tools.length, 28);
 });

@@ -2,6 +2,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { AGENT_SKILL_ROUTING_INSTRUCTIONS, buildLocalProposalRenderResult, handleLocalMcpMessage, handleToolCall } from "./trelio-remote-mcp.mjs";
+import { buildLocalAttachmentFileResult } from "./trelio-local-attachments.mjs";
+
 import { AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN } from "./trelio-workspace.mjs";
 import {
   TRELIO_LOCAL_CONTEXT_TOOL,
@@ -38,18 +41,23 @@ export const LOCAL_COMPANY_CONTEXT_PATH =
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
   workerSkillBytes: 9_000,
-  // Durable task–workspace sharing is a required discovery decision for ordinary
-  // task Runs, so its bounded policy belongs in scope-and-context rather than a
-  // conditionally unread reference. Keep only the exact 1 KiB ceiling increase.
-  requiredTaskRunSkillsBytes: 52_000,
-  taskRunWithProposalBundleBytes: 55_000,
-  requiredTaskRunPluginLayerBytes: 61_000,
-  taskRunWithProposalBundlePluginLayerBytes: 64_000,
+  // The decision to consider durable sharing stays mandatory. Mutation and
+  // recovery procedures load only for their exact scenario.
+  requiredTaskRunSkillsBytes: 49_000,
+  taskRunWithProposalBundleBytes: 52_000,
+  requiredTaskRunPluginLayerBytes: 58_000,
+  taskRunWithProposalBundlePluginLayerBytes: 61_000,
   // The added schema is a compact typed dispatcher; it replaces launcher
   // resolution prose in every operational Run and signed-runtime prompt.
   localProviderToolSchemasBytes: 3_800,
   plainCompanyTaskRunPluginLayerBytes: 64_000,
   encryptedCompanyTaskRunPluginLayerBytes: 73_000,
+  localMcpInstructionsBytes: 2_300,
+  modelVisibleLocalToolSchemasBytes: 13_500,
+  clientPrefixedLocalToolSchemasBytes: 46_000,
+  clientPrefixedTaskRunLocalToolSchemasBytes: 3_000,
+  representativeLocalProposalResultBytes: 14_500,
+  representativeLocalAttachmentResultBytes: 1_400,
 });
 
 export const measureContextText = (text) => {
@@ -91,7 +99,67 @@ const readMeasuredFile = async (relativePath) => {
   };
 };
 
+// MCP App-only tools are callable by the App but are not model tool schemas.
+// Mixed ["model", "app"] visibility remains visible; private takes precedence.
+export const isModelVisibleLocalTool = (tool) => (
+  tool._meta?.["openai/visibility"] !== "private"
+  && (!Array.isArray(tool._meta?.ui?.visibility) || tool._meta.ui.visibility.includes("model"))
+);
+
+const measureModelResult = (result) => measureContextText(JSON.stringify({
+  structuredContent: result.structuredContent, content: result.content,
+}));
+const measureDuplicatedResult = (result) => measureModelResult({
+  structuredContent: result.structuredContent,
+  content: [{ type: "text", text: JSON.stringify(result.structuredContent) }],
+});
+
+const buildLocalResponseMeasurements = async () => {
+  // Fixed synthetic content makes versions comparable without reading company
+  // data, materializing files or minting hidden App capabilities.
+  const proposal = { schemaVersion: 3, currentDraft: {
+    proposalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", revision: 1,
+    bodyText: "Проверен итоговый материал задачи. ".repeat(200),
+    contextRequest: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+  } };
+  const result = { provider: "local_company_context", proposal };
+  const context = await handleToolCall("https://context-budget.invalid", "get_trelio_local_proposal_context", {
+    companySlug: "demo", kind: "comment", payload: { target: { runId: proposal.currentDraft.contextRequest.runId } },
+  }, { proposalOperation: async () => result });
+  const render = buildLocalProposalRenderResult({ result, companySlug: "demo", kind: "comment", operation: "save" });
+  const attachmentPayload = {
+    attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", originalName: "sample.pdf",
+    mimeType: "application/pdf", sizeBytes: 1024 * 1024,
+    delivery: "inline-base64", dataBase64: Buffer.alloc(1024 * 1024, 97).toString("base64"),
+  };
+  const attachment = buildLocalAttachmentFileResult({
+    result: { structuredContent: attachmentPayload }, opened: attachmentPayload,
+    file: {
+      localFilePath: "/private/trelio/attachment-downloads/download-ABC123/attachment.pdf",
+      expiresAt: "2026-01-01T01:00:00.000Z", sizeBytes: attachmentPayload.sizeBytes, sha256: "a".repeat(64),
+    },
+  });
+  return {
+    note: "Synthetic fixtures through production result builders; hidden App _meta and local file bytes are excluded. Baselines repeat the identical structured payload in text.",
+    attachmentFileBytes: attachmentPayload.sizeBytes,
+    proposalContext: { duplicated: measureDuplicatedResult(context), compact: measureModelResult(context) },
+    proposalRender: { duplicated: measureDuplicatedResult(render), compact: measureModelResult(render) },
+    attachmentDownload: {
+      duplicatedBase64: measureDuplicatedResult({ structuredContent: attachmentPayload }),
+      localFile: measureModelResult(attachment),
+    },
+  };
+};
+
 export const buildPluginContextBudgetReport = async () => {
+  const listed = await handleLocalMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+  const localTools = listed.result.tools.filter(isModelVisibleLocalTool);
+  const taskRunLocalTools = localTools.filter((tool) => tool.name === TRELIO_WORKSPACE_ACTION_TOOL.name);
+  if (taskRunLocalTools.length !== 1) throw new Error("Task Run local action descriptor is missing or hidden.");
+  const measureTools = (tools, prefixed = false) => measureContextText(JSON.stringify(
+    tools.map((tool) => prefixed ? { ...tool, description: `${AGENT_SKILL_ROUTING_INSTRUCTIONS}${tool.description ?? ""}` } : tool),
+  ));
+  const localResponses = await buildLocalResponseMeasurements();
   const requiredSkillFiles = await Promise.all(
     TASK_RUN_REQUIRED_SKILL_PATHS.map(readMeasuredFile),
   );
@@ -128,6 +196,10 @@ export const buildPluginContextBudgetReport = async () => {
       note: "Approximation only. UTF-8 bytes are the canonical regression metric.",
     },
     dimensions: {
+      localTools: listed.result.tools.length,
+      modelVisibleLocalTools: localTools.length,
+      appOnlyLocalTools: listed.result.tools.length - localTools.length,
+      taskRunLocalTools: taskRunLocalTools.length,
       requiredTaskRunSkillFiles: TASK_RUN_REQUIRED_SKILL_PATHS.length,
       proposalBundleSkillFiles: TASK_RUN_REQUIRED_SKILL_PATHS.length + 1,
     },
@@ -138,7 +210,13 @@ export const buildPluginContextBudgetReport = async () => {
       proposalBundleFile,
       localCompanyContextFile,
       localProviderToolSchemas,
+      localMcpInstructions: measureContextText(AGENT_SKILL_ROUTING_INSTRUCTIONS),
+      modelVisibleLocalToolSchemas: measureTools(localTools),
+      clientPrefixedLocalToolSchemas: measureTools(localTools, true),
+      taskRunLocalToolSchemas: measureTools(taskRunLocalTools),
+      clientPrefixedTaskRunLocalToolSchemas: measureTools(taskRunLocalTools, true),
     },
+    localResponses,
     scenarios: {
       requiredTaskRunSkills,
       taskRunWithProposalBundle,
@@ -150,9 +228,10 @@ export const buildPluginContextBudgetReport = async () => {
         runtimeAgents,
         taskRunWithProposalBundle,
       ]),
-      // Ordinary companies see only five compact provider-neutral schemas. The
-      // complete protected-provider manual remains absent from their skill
-      // path and therefore cannot consume their task context window.
+      // Historical five-schema subset retained for revision comparisons. It
+      // is not the complete local tools/list: the explicit local layers above
+      // cover all model-visible tools and client instruction prefixes. The
+      // encrypted manual remains conditional, never an ordinary Run input.
       plainCompanyTaskRunPluginLayer: sumMeasurements([
         runtimeAgents,
         requiredTaskRunSkills,
@@ -200,7 +279,19 @@ export const formatPluginContextBudgetReport = (report) => [
     "Encrypted-company task Run layer",
     report.scenarios.encryptedCompanyTaskRunPluginLayer,
   ),
+  formatMeasurement("Local initialize instructions", report.layers.localMcpInstructions),
+  formatMeasurement("All model-visible local schemas", report.layers.modelVisibleLocalToolSchemas),
+  formatMeasurement("Client · prefixed local schemas", report.layers.clientPrefixedLocalToolSchemas),
+  formatMeasurement("Task Run · prefixed local action", report.layers.clientPrefixedTaskRunLocalToolSchemas),
+  formatMeasurement("Proposal context · duplicated", report.localResponses.proposalContext.duplicated),
+  formatMeasurement("Proposal context · compact", report.localResponses.proposalContext.compact),
+  formatMeasurement("Proposal card · duplicated", report.localResponses.proposalRender.duplicated),
+  formatMeasurement("Proposal card · compact", report.localResponses.proposalRender.compact),
+  formatMeasurement("1 MiB attachment · duplicated base64", report.localResponses.attachmentDownload.duplicatedBase64),
+  formatMeasurement("1 MiB attachment · local file", report.localResponses.attachmentDownload.localFile),
   "",
+  "Local catalog excludes App-only tools. Prefixes describe a client serialization scenario, not every host.",
+  "Local file bytes and these optional result fixtures are not added to a normal task Run total.",
   "Token values are estimates: ceil(UTF-8 bytes / 4). Compare exact bytes in CI.",
 ].join("\n");
 

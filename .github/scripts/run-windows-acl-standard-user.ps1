@@ -36,6 +36,10 @@ if ($Child) {
     --test `
     "--test-name-pattern=Windows bridge applies" `
     $testFile
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  # Download snapshots use the same current-user private DACL helpers. Verify
+  # that actual file materialization also works without administrator rights.
+  & $nodePath (Join-Path $repositoryPath "plugins\trelio-agent-workspaces\tests\trelio-local-attachments.test.mjs")
   exit $LASTEXITCODE
 }
 

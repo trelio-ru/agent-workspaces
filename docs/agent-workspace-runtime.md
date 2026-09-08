@@ -147,6 +147,19 @@ owner-private snapshot, вычисляет размер/SHA-256, получае�
 reserved attachment ID, поэтому не создаёт дубликат. Inline-image transport
 остаётся отдельным bounded compatibility flow.
 
+Encrypted `download_attachment` по server-selected local route расшифровывает
+проверенный `TRELIOE1` в отдельный owner-private файл до 24 MiB и возвращает
+`delivery=local-file`, `localFilePath`, исходное имя/MIME, размер, SHA-256 и
+`expiresAt`. Агент читает только нужное содержимое по пути; bytes/base64 не
+попадают в MCP-ответ. Каталог `attachment-downloads` внутри private bridge
+config отделён от Workspace Git и encrypted mirror. Имя файла не определяет
+путь; каталог/файл используют POSIX `0700/0600` либо Windows private DACL.
+Crypto/write failure и abort завершаются без fallback, RAM обнуляется, partial
+file удаляется. Очистка назначена через час; после выхода MCP-процесса
+просроченная копия удаляется при следующем локальном скачивании. Долговечный
+материал сохраняется отдельно в разрешённый Workspace. Remote revoke не стирает
+уже скачанную локальную копию.
+
 ## Контекст и файлы
 
 У Run один writable Workspace. Только явно выбранные related workspaces
@@ -316,6 +329,10 @@ provider/E2EE границы проверяются при каждом дейс
 При возврате в чат она до исходного срока заново читает состояние с сервера и
 показывает завершённый результат; это работает и после завершения всех карточек
 одного bundle. Ответ не кешируется вместо проверки текущего доступа.
+Полный successful payload передаётся один раз в `structuredContent`; совпадающая
+JSON-копия в text `content` заменяется коротким указателем. Errors, независимый
+текст, смешанный media и hidden `_meta` остаются без изменений. Данные и
+отдельное действие пользователя каждой карточки сохраняются.
 Capability хранится только в памяти локального MCP-процесса: после истечения
 срока или перезапуска процесса незавершённую карточку нужно подготовить заново.
 Generic app-only state/action tools
@@ -367,3 +384,19 @@ backend outage делает auto-prune no-op. Настройка
 Object cache очищается по возрасту/LRU/лимиту, signed runtime packages – только
 целыми проверенными digest-каталогами. Очистка удаляет лишь локальную копию;
 accepted revision и история Run остаются на сервере Trelio.
+
+## Учёт контекста агента
+
+`npm run report:context-budget` измеряет UTF-8 bytes; оценка `bytes / 4` служит
+сравнению revisions и не является billing trace. Обязательный Run-layer отделён
+от условных recovery, relation mutations и encrypted provider instructions.
+Решение о подходящей durable связи остаётся в обязательном scope-reference;
+полный mutation-контракт загружается перед созданием/удалением связи.
+
+Local MCP отчёт включает initialize, все model-visible schemas без App-only
+инструментов, отдельную schema dispatcher-а обычного Run и client-сценарий с
+initialize в каждом tool description. Старый слой пяти provider schemas
+сохранён для сравнения и не называется полным локальным каталогом. Synthetic
+proposal/result builders и файл 1 MiB измеряются отдельно, без hidden App
+capabilities и без чтения данных компании. Эти условные ответы не прибавляются
+к каждому Run. Уменьшение bytes не заменяет проверки ACL, E2EE и human decisions.

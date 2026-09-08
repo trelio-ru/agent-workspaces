@@ -6,6 +6,7 @@ import {
   PLUGIN_CONTEXT_BUDGET_LIMITS,
   TASK_RUN_REQUIRED_SKILL_PATHS,
   buildPluginContextBudgetReport,
+  isModelVisibleLocalTool,
 } from "../scripts/report-context-budget.mjs";
 
 test("typical task Run plugin context stays inside explicit regression ceilings", async () => {
@@ -87,4 +88,37 @@ test("token estimate remains an explicit UTF-8 byte heuristic", async () => {
       Math.ceil(measurement.bytesUtf8 / 4),
     );
   }
+});
+
+
+test("local initialize, visible schemas and actual compact results have regression ceilings", async () => {
+  const report = await buildPluginContextBudgetReport();
+  for (const name of [
+    "localMcpInstructions", "modelVisibleLocalToolSchemas",
+    "clientPrefixedLocalToolSchemas", "clientPrefixedTaskRunLocalToolSchemas",
+  ]) assert.ok(report.layers[name].bytesUtf8 <= PLUGIN_CONTEXT_BUDGET_LIMITS[`${name}Bytes`], name);
+  assert.equal(report.dimensions.localTools, report.dimensions.modelVisibleLocalTools + report.dimensions.appOnlyLocalTools);
+  assert.ok(report.dimensions.appOnlyLocalTools > 0);
+  assert.equal(report.dimensions.taskRunLocalTools, 1);
+  assert.ok(report.layers.clientPrefixedLocalToolSchemas.bytesUtf8 > report.layers.modelVisibleLocalToolSchemas.bytesUtf8);
+  for (const name of ["proposalContext", "proposalRender"]) {
+    const output = report.localResponses[name];
+    assert.ok(output.compact.bytesUtf8 <= PLUGIN_CONTEXT_BUDGET_LIMITS.representativeLocalProposalResultBytes);
+    assert.ok(output.compact.bytesUtf8 < output.duplicated.bytesUtf8 * 0.55, name);
+  }
+  const attachment = report.localResponses.attachmentDownload;
+  assert.equal(report.localResponses.attachmentFileBytes, 1024 * 1024);
+  assert.ok(attachment.duplicatedBase64.bytesUtf8 > 2_700_000);
+  assert.ok(attachment.localFile.bytesUtf8 <= PLUGIN_CONTEXT_BUDGET_LIMITS.representativeLocalAttachmentResultBytes);
+  for (const conditional of ["run-recovery.md", "workspace-relations.md"]) {
+    assert.ok(!TASK_RUN_REQUIRED_SKILL_PATHS.some((file) => file.endsWith(conditional)));
+  }
+});
+
+test("local schema accounting excludes App-only tools but includes mixed visibility", () => {
+  assert.equal(isModelVisibleLocalTool({}), true);
+  assert.equal(isModelVisibleLocalTool({ _meta: { ui: { visibility: ["model", "app"] } } }), true);
+  assert.equal(isModelVisibleLocalTool({ _meta: { ui: { visibility: ["app"] } } }), false);
+  assert.equal(isModelVisibleLocalTool({ _meta: { "openai/visibility": "private" } }), false);
+  assert.equal(isModelVisibleLocalTool({ _meta: { "openai/visibility": "private", ui: { visibility: ["model"] } } }), false);
 });
