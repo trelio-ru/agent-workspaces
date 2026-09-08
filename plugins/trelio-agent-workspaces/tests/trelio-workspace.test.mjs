@@ -4748,7 +4748,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
   assert.match(
     onboardingSkillNormalized,
-    /До настройки каждого выбранного навыка один раз вызови `get_agent_skill`/u,
+    /Для каждого оставшегося навыка один раз вызови `get_agent_skill`/u,
   );
   assert.match(
     onboardingSkillNormalized,

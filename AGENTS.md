@@ -151,6 +151,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   repository name, соседние файлы и fuzzy similarity не являются company
   evidence. Недоступный explicit slug и несколько кандидатов блокируют
   `get_agent_instructions` и запись локальной привязки до выбора пользователя.
+- До итогового списка навыков onboarding автоматически выполняет объявленные
+  безопасные проверки подключений и показывает подтверждённое состояние каждого.
+  Границы проверки, setup и причины пропуска заданы в
+  [onboarding-контракте](plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md#offer-the-live-trelio-skills).
 - Управляемый onboarding-блок является единственным filesystem anchor для
   folder-local layout. Новый task или named Workspace создаётся в
   `<binding-root>/workspaces/<workspace-id>/`, агент работает только в выданном
