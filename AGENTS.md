@@ -487,9 +487,15 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 - Постоянный model-visible слой типового task-scoped Run измеряется командой
   `npm run report:context-budget`; JSON для объединённого backend-отчёта
-  возвращает `npm run --silent report:context-budget -- --json`. Канонические
-  метрики – UTF-8 bytes, а `estimatedTokensUtf8Div4` является только прозрачной
-  сравнительной эвристикой. `context-budget.test.mjs` фиксирует regression
+  возвращает `npm run --silent report:context-budget -- --json`. Перед отчётом
+  и тестами установи закреплённые devDependencies через `npm ci --ignore-scripts`.
+  Метрики – UTF-8 bytes и `tokensO200kBase`: точная токенизация обычного текста
+  офлайн-кодировкой `o200k_base` из `tiktoken@1.0.22`. Итоги складывают
+  независимо измеренные части без неизвестного framing клиента; это не billing
+  и не утверждение о кодировке текущей модели. Метаданные `tokenizer` задают
+  кодировку, пакет, aggregation и scope; backend принимает только совпадающий
+  контракт. Старое JSON-поле `estimatedTokensUtf8Div4` остаётся байтовой
+  эвристикой. `context-budget.test.mjs` фиксирует независимые byte/token regression
   ceilings отдельно для runtime `AGENTS.md`, worker `SKILL.md`, обязательных
   task Run references, варианта с proposal bundle, compact provider-neutral
   schemas и отдельных plain/encrypted company scenarios. Дополнительно отчёт
@@ -502,7 +508,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   целевыми размерами: осознанное увеличение требует объяснения, а оптимизация
   должна уменьшать фактический отчёт без удаления security-инвариантов.
   Runtime `AGENTS.md` хранит только неизменяемое safety/lifecycle-ядро, а
-  `trelio-workspace-worker/SKILL.md` остаётся коротким router. Процедуры setup
+  `trelio-workspace-worker/SKILL.md` остаётся коротким router. Подробная процедура
+  хранится в своём reference; router и lifecycle ссылаются на него без повторного
+  изложения. Это не отменяет полного чтения подходящих references. Процедуры setup
   и recovery Run, изменений durable relations, внешних сервисов и Agent Secrets
   находятся в отдельных references и не добавляются в `TASK_RUN_REQUIRED_SKILL_PATHS`: агент обязан
   загружать их полностью только при соответствующем сценарии.

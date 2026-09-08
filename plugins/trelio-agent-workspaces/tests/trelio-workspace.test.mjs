@@ -5307,7 +5307,7 @@ test("workspace skill routes direct proposals independently of maintainer work a
 
   assert.match(mainSkill, /предложения комментария или ответа с Agent Run либо без него/u);
   assert.match(mainSkill, /Редактируемое предложение комментария или ответа/u);
-  assert.match(mainSkill, /даже\s+при работе над исходниками или после compaction/u);
+  assert.match(mainSkill, /Работа над исходниками,\s+внешним сервисом или Run не поглощает позднюю отдельную просьбу, в том числе\s+после compaction/u);
   assert.match(proposalReference, /отдельная native-операция Trelio с Run или без него/u);
   assert.match(proposalReference, /поздний запрос при разработке исходников, после compaction/u);
   assert.match(proposalReference, /Сохрани её как ожидаемый результат и выполни до финального\s+ответа/u);
@@ -5380,7 +5380,7 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(mainSkill, /смены статуса\s+или отдельного предложения статуса/u);
   assert.match(mainSkill, /однократного решения о начале task Run/u);
   assert.match(mainSkill, /Всегда читай до открытия task Run/u);
-  assert.match(mainSkill, /отдельно\s+от обязательного комментария человеку/u);
+  assert.match(mainSkill, /оценка статуса независима от комментария/u);
   assert.match(statusProposalReference, /`work_started` – однократное неблокирующее предложение/u);
   assert.match(statusProposalReference, /возвращённый сервером semantic переход\s+`queue` → `active`/u);
   assert.match(statusProposalReference, /Ровно один раз вызови `get_task_status_proposal_context` с `runId`\s+текущего выполняемого task Run/u);
@@ -5410,13 +5410,14 @@ test("workspace skill offers work start once and keeps completion status separat
   assert.match(statusProposalReference, /статусная ошибка блокирует\s+работу/u);
   assert.doesNotMatch(statusProposalReference, /state honestly whether no status proposal was\s+needed/u);
   assert.match(agentRunReference, /Сразу после успешного open task-scoped Run/u);
-  assert.match(agentRunReference, /Не повторяй проверку после инструмента,\s+checkpoint, pause, нового хода/u);
+  // Router направляет к полной процедуре; её one-shot invariant проверен выше.
+  assert.match(agentRunReference, /однократную процедуру начала из `task-status-proposals\.md`/u);
+  assert.match(agentRunReference, /продолжай без ожидания решения/u);
   assert.match(taskRunReference, /Outcome – рекомендация; принятие Run не меняет статус/u);
   assert.match(taskRunReference, /`questions` и `no_status_change` нужны, только если ответ необходим для\s+выполнения, проверки или решения задачи/u);
   assert.match(taskRunReference, /незакрытые вопросы, блокирующие завершение/u);
-  assert.match(taskRunReference, /Не создавай блокирующий вопрос из\s+необязательного пустого срока, исполнителя, контроля или metadata/u);
-  assert.match(taskRunReference, /Заново оцени всю\s+задачу по итоговым доказательствам даже при записанном `no_status_change`/u);
-  assert.match(taskRunReference, /Частичная работа его не создаёт/u);
+  assert.match(taskRunReference, /task-status-proposals\.md#assess-completion-across-the-whole-task/u);
+  assert.match(taskRunReference, /повторная оценка всей задачи, включая ранее\s+записанный `no_status_change`, до необязательных вопросов/u);
   assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
 });
 
@@ -5438,7 +5439,7 @@ test("workspace skill proposes checklist progress without applying inferred stat
 
   assert.match(mainSkill, /проверки чек-листа или предложения его состояния/u);
   assert.match(mainSkill, /Просьба изменить чек-лист, вывод о прогрессе пунктов или принятый task Run/u);
-  assert.match(mainSkill, /После принятия оцени каждый пункт, даже если вся задача не готова/u);
+  assert.match(mainSkill, /references\/task-checklist-proposals\.md/u);
   assert.match(checklistReference, /После каждого содержательного принятого task Run вызови\s+`get_task_checklist_proposal_context`/u);
   assert.match(checklistReference, /Частичная работа может предложить выполненные ею точные пункты/u);
   assert.match(checklistReference, /пункты, состояние которых определяется связанной подзадачей/u);
@@ -5450,7 +5451,7 @@ test("workspace skill proposes checklist progress without applying inferred stat
   assert.match(checklistReference, /userExplicitlyRequestedImmediateChecklistStateChange=true/u);
   assert.match(checklistReference, /Устаревший пункт блокирует весь\s+выбранный batch/u);
   assert.match(checklistReference, /не копируются в комментарии, системные\s+события или уведомления/u);
-  assert.match(taskRunReference, /Частичная работа\s+может предложить точные выполненные пункты/u);
+  assert.match(taskRunReference, /task-checklist-proposals\.md` – оценка каждого пункта даже после частичной работы/u);
   assert.match(bundleReference, /get_task_checklist_proposal_context/u);
   assert.match(bundleReference, /checklist\/item snapshots/u);
 });

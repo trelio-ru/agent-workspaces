@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { get_encoding } from "tiktoken";
 
 import { AGENT_SKILL_ROUTING_INSTRUCTIONS, buildLocalProposalRenderResult, handleLocalMcpMessage, handleToolCall } from "./trelio-remote-mcp.mjs";
 import { buildLocalAttachmentFileResult } from "./trelio-local-attachments.mjs";
@@ -15,6 +16,18 @@ import {
 } from "./trelio-local-context.mjs";
 
 export const PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION = 1;
+
+// Словарь поставляется с закреплённой devDependency: отчёт работает офлайн,
+// без ключа API и без загрузки tokenizer-а в bridge/MCP runtime. Фиксированная
+// кодировка делает языки сравнимыми; соответствие текущей модели не предполагается.
+export const CONTEXT_TOKENIZER = Object.freeze({
+  encoding: "o200k_base",
+  package: "tiktoken@1.0.22",
+  aggregation: "sum-of-parts",
+  scope: "raw-text-without-model-framing",
+});
+const tokenEncoder = get_encoding(CONTEXT_TOKENIZER.encoding);
+process.once("exit", () => tokenEncoder.free());
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDirectory, "..");
@@ -41,26 +54,46 @@ export const LOCAL_COMPANY_CONTEXT_PATH =
 
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
-  workerSkillBytes: 14_500,
+  workerSkillBytes: 13_500,
   // Канонические правила русские: кириллица занимает два UTF-8 байта.
   // Пределы учитывают этот язык с небольшим запасом, без дублирования EN/RU.
   // Общая финальная проверка добавляет один reference (~5 KiB) к завершённому
   // Run и явно учитывается здесь. Recovery и local-provider остаются условными.
-  requiredTaskRunSkillsBytes: 78_000,
-  taskRunWithProposalBundleBytes: 83_000,
-  requiredTaskRunPluginLayerBytes: 87_000,
-  taskRunWithProposalBundlePluginLayerBytes: 92_000,
+  requiredTaskRunSkillsBytes: 76_000,
+  taskRunWithProposalBundleBytes: 81_000,
+  requiredTaskRunPluginLayerBytes: 85_000,
+  taskRunWithProposalBundlePluginLayerBytes: 90_000,
   // The added schema is a compact typed dispatcher; it replaces launcher
   // resolution prose in every operational Run and signed-runtime prompt.
   localProviderToolSchemasBytes: 3_800,
-  plainCompanyTaskRunPluginLayerBytes: 91_000,
-  encryptedCompanyTaskRunPluginLayerBytes: 107_000,
+  plainCompanyTaskRunPluginLayerBytes: 89_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 105_000,
   localMcpInstructionsBytes: 4_000,
   modelVisibleLocalToolSchemasBytes: 13_500,
   clientPrefixedLocalToolSchemasBytes: 69_000,
   clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
+});
+
+// Эти независимые потолки фиксируют токенизацию текущего русского текста.
+// Байтовый лимит не обнаружит, например, замену сжатого текста на дорогой base64.
+export const PLUGIN_CONTEXT_TOKEN_LIMITS = Object.freeze({
+  runtimeAgents: 1_550,
+  workerSkill: 2_200,
+  requiredTaskRunSkills: 12_250,
+  taskRunWithProposalBundle: 13_000,
+  requiredTaskRunPluginLayer: 13_750,
+  taskRunWithProposalBundlePluginLayer: 14_500,
+  plainCompanyTaskRunPluginLayer: 14_650,
+  encryptedCompanyTaskRunPluginLayer: 17_300,
+  localProviderToolSchemas: 950,
+  localMcpInstructions: 650,
+  modelVisibleLocalToolSchemas: 3_200,
+  clientPrefixedLocalToolSchemas: 11_800,
+  clientPrefixedTaskRunLocalToolSchemas: 750,
+  representativeLocalProposalResult: 1_650,
+  representativeLocalAttachmentResult: 200,
 });
 
 export const measureContextText = (text) => {
@@ -73,18 +106,23 @@ export const measureContextText = (text) => {
     // делает отчёт стабильным для emoji и русского текста.
     characters: Array.from(normalizedText).length,
     words: normalizedText.match(/\S+/gu)?.length ?? 0,
-    // Точного tokenizer-а в plugin нет намеренно. Эта прозрачная эвристика
-    // нужна только для сравнения revisions; bytes остаются канонической метрикой.
+    // Маркеры вроде <|endoftext|> здесь обычный текст документа, не служебные
+    // tokens протокола. Пустые allow/deny списки сохраняют именно этот смысл.
+    tokensO200kBase: tokenEncoder.encode(normalizedText, [], []).length,
+    // Старое поле остаётся для совместимости JSON; это эвристика, не tokenizer.
     estimatedTokensUtf8Div4: Math.ceil(bytesUtf8 / 4),
   };
 };
 
-const sumMeasurements = (measurements) => {
+export const sumMeasurements = (measurements) => {
+  // Суммируем независимо измеренные части, а не воображаемый объединённый prompt:
+  // разделители сообщений, скрытые инструкции и framing клиента здесь неизвестны.
   const total = measurements.reduce((sum, measurement) => ({
     bytesUtf8: sum.bytesUtf8 + measurement.bytesUtf8,
     characters: sum.characters + measurement.characters,
     words: sum.words + measurement.words,
-  }), { bytesUtf8: 0, characters: 0, words: 0 });
+    tokensO200kBase: sum.tokensO200kBase + measurement.tokensO200kBase,
+  }), { bytesUtf8: 0, characters: 0, words: 0, tokensO200kBase: 0 });
 
   return {
     ...total,
@@ -194,9 +232,10 @@ export const buildPluginContextBudgetReport = async () => {
   return {
     schemaVersion: PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION,
     kind: "trelio-agent-workspaces-plugin-context-budget",
+    tokenizer: CONTEXT_TOKENIZER,
     estimator: {
       name: "utf8-bytes-div-4",
-      note: "Approximation only. UTF-8 bytes are the canonical regression metric.",
+      note: "Legacy JSON heuristic only; tokensO200kBase uses the fixed offline tokenizer. Bytes and tokens have independent regression limits.",
     },
     dimensions: {
       localTools: listed.result.tools.length,
@@ -248,6 +287,7 @@ export const buildPluginContextBudgetReport = async () => {
       ]),
     },
     limits: PLUGIN_CONTEXT_BUDGET_LIMITS,
+    tokenLimits: PLUGIN_CONTEXT_TOKEN_LIMITS,
   };
 };
 
@@ -255,7 +295,7 @@ const formatNumber = (value) => new Intl.NumberFormat("ru-RU").format(value);
 
 const formatMeasurement = (label, measurement) => (
   `${label.padEnd(42)} ${formatNumber(measurement.bytesUtf8).padStart(10)} B  `
-  + `${formatNumber(measurement.estimatedTokensUtf8Div4).padStart(8)} est. tokens`
+  + `${formatNumber(measurement.tokensO200kBase).padStart(8)} tokens (o200k_base)`
 );
 
 export const formatPluginContextBudgetReport = (report) => [
@@ -295,7 +335,8 @@ export const formatPluginContextBudgetReport = (report) => [
   "",
   "Local catalog excludes App-only tools. Prefixes describe a client serialization scenario, not every host.",
   "Local file bytes and these optional result fixtures are not added to a normal task Run total.",
-  "Token values are estimates: ceil(UTF-8 bytes / 4). Compare exact bytes in CI.",
+  "Tokens: fixed o200k_base, ordinary text, sum of measured parts; not a model billing trace.",
+  "JSON retains the legacy estimatedTokensUtf8Div4 heuristic separately from tokensO200kBase.",
 ].join("\n");
 
 const isEntrypoint = process.argv[1]

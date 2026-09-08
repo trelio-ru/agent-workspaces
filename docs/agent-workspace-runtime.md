@@ -418,8 +418,17 @@ accepted revision и история Run остаются на сервере Tre
 
 ## Учёт контекста агента
 
-`npm run report:context-budget` измеряет UTF-8 bytes; оценка `bytes / 4` служит
-сравнению revisions и не является billing trace. Обязательный Run-layer отделён
+`npm ci --ignore-scripts` устанавливает закреплённый `tiktoken@1.0.22` только
+для отчётов/тестов; bridge и MCP runtime его не импортируют.
+`npm run report:context-budget` измеряет UTF-8 bytes и `tokensO200kBase`
+офлайн-кодировкой `o200k_base`. Русский и английский текст проходят один
+tokenizer; служебные маркеры в документах считаются обычным текстом.
+Итоги складывают независимо измеренные части, без неизвестных разделителей
+сообщений клиента. Метаданные `tokenizer` описывают этот контракт; `limits`
+и `tokenLimits` независимо ограничивают байты и токены. Старое JSON-поле
+`estimatedTokensUtf8Div4` – только совместимая эвристика, в текстовом отчёте
+показываются подсчитанные токены. Это не billing trace и не гарантия совпадения
+с tokenizer-ом текущей модели. Обязательный Run-layer отделён
 от условных recovery, relation mutations и encrypted provider instructions.
 Решение о подходящей durable связи остаётся в обязательном scope-reference;
 полный mutation-контракт загружается перед созданием/удалением связи.
@@ -430,7 +439,9 @@ initialize в каждом tool description. Старый слой пяти prov
 сохранён для сравнения и не называется полным локальным каталогом. Synthetic
 proposal/result builders и файл 1 MiB измеряются отдельно, без hidden App
 capabilities и без чтения данных компании. Эти условные ответы не прибавляются
-к каждому Run. Уменьшение bytes не заменяет проверки ACL, E2EE и human decisions.
+к каждому Run. Оптимизация сохраняет состав сценариев, ACL, E2EE и human decisions.
+Подробные инструкции остаются в своих references; router и lifecycle направляют
+к ним без повторного изложения условий.
 
 ## Поиск и отдельный файл
 

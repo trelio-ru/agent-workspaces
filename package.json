@@ -1,4 +1,5 @@
 {
+  "name": "agent-workspaces",
   "private": true,
   "scripts": {
     "check:worktree": "bash scripts/assert-clean-worktree.sh",
@@ -10,5 +11,8 @@
     "report:context-budget": "node plugins/trelio-agent-workspaces/scripts/report-context-budget.mjs",
     "test:context-budget": "node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs",
     "test:git-guard": "node --test scripts/git-finish-worktree.test.mjs && bash scripts/git-main-guard.test.sh"
+  },
+  "devDependencies": {
+    "tiktoken": "1.0.22"
   }
 }
