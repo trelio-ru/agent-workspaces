@@ -114,6 +114,24 @@
       "text": "Отчёт.pdf",
       "query": "отчет.pdf",
       "matches": true
+    },
+    {
+      "name": "filename with spaces retains punctuation",
+      "text": "scan 88.pdf",
+      "query": "scan 88.pdf",
+      "matches": true
+    },
+    {
+      "name": "filename with spaces is not token coverage",
+      "text": "pdf 88 scan",
+      "query": "scan 88.pdf",
+      "matches": false
+    },
+    {
+      "name": "digest after a typed prefix",
+      "text": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matches": true
     }
   ]
 }

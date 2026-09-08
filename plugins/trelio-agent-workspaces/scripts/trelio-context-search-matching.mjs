@@ -25,12 +25,16 @@ export const compileContextSearchQuery = (value) => {
     const referenceText = normalizeContextSearchReference(original);
     // Paths, filenames, handles, UUIDs and digests retain punctuation and order.
     // `0126--message_126.jpg` must never become a bag of four ordinary words.
-    const reference = !/\s/u.test(referenceText) && (/[./@:_\\-]/u.test(referenceText) || /^[a-f0-9]{32,64}$/u.test(referenceText));
+    const digest = /^[a-f0-9]{32,64}$/u.test(referenceText);
+    const reference = /[/\\]/u.test(referenceText)
+        || /\.[a-z0-9]{1,12}$/u.test(referenceText)
+        || (!/\s/u.test(referenceText) && (/[./@:_\\-]/u.test(referenceText) || digest));
     const normalized = reference ? referenceText : normalizeContextSearchText(original);
     const tokens = [...new Set(normalized.split(" ").filter(Boolean))];
     const roots = tokens.map(contextSearchTokenRoot);
+    const referenceBoundary = digest ? "\\p{L}\\p{N}" : "\\p{L}\\p{N}./@:_\\-";
     const patterns = reference
-        ? [`(^|[^\\p{L}\\p{N}./@:_\\-])${escapePattern(referenceText)}($|[^\\p{L}\\p{N}./@:_\\-])`]
+        ? [`(^|[^${referenceBoundary}])${escapePattern(referenceText)}($|[^${referenceBoundary}])`]
         : [...new Set(tokens.map((token, index) => {
                 const root = roots[index];
                 const word = /^[а-я]{3,}$/u.test(root) ? `${escapePattern(root)}${ENDING_PATTERN}` : escapePattern(token);

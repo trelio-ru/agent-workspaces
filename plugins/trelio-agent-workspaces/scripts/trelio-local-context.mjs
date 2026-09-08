@@ -3271,12 +3271,11 @@ const buildRegistrySearchFields = (payload) => {
     buildSearchField(
       "registry-title",
       registry.title,
-      { allowQueryContainsField: true },
     ),
     buildSearchField(
       "registry-title",
       registry.slug,
-      { previewText: registry.title, allowQueryContainsField: true },
+      { previewText: registry.title },
     ),
     ...(registry.searchTerms ?? []).map((term) => buildSearchField(
       "registry-search-term",
