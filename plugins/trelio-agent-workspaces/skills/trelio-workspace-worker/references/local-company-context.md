@@ -1,187 +1,199 @@
-# Local company context provider
+<a id="local-company-context-provider"></a>
 
-Read only when native `providerSelection` or exact-task `proposalProvider`
-selects `local_company_context`. Plain tasks omit it and need no extra read.
-Never infer either authoritative route.
-If the local tool returns `provider=native_trelio`, stop this route and continue
-with the ordinary native tool named by the current operation.
+# Локальный контекст компании
 
-## The first local read performs one bounded sync
+Читай только после выбора `local_company_context` через native
+`providerSelection` или `proposalProvider` точной задачи. Plain-задачи
+опускают это поле и не требуют чтения. Сам не выводи ни один маршрут.
+Если local tool вернул `provider=native_trelio`, останови этот путь
+и продолжи обычным native tool текущей операции.
 
-Call `trelio-remote-skills.continue_trelio_local_context` with the exact returned
-operation: `search`, `list`, `get_task`, `fetch`, `search_workspace_files`, or
-`get_workspace_file`. The first mirror-backed call in each MCP host process
-automatically syncs the company; there is no agent-facing manual sync.
+<a id="the-first-local-read-performs-one-bounded-sync"></a>
 
-The host downloads only ACL-filtered canonical projections, resolves E2EE
-markers on-device, opens accepted Workspace bundles in private temporary
-storage, and publishes one encrypted mirror generation. Decrypted content,
-queries, snippets, paths, and keys never go to Trelio.
+## Первое локальное чтение выполняет ограниченную синхронизацию
 
-Sync reuses unchanged revisions/accepted heads and hydrates changed markers in
-bounded mirror-wide batches. A short per-company writer lock protects atomic
-publication while readers retain the prior immutable generation. Contenders may
-wait; they never delete the mirror, widen scope, or create plaintext fallback.
-Lock refresh and stale takeover are bounded and owner-checked.
+Вызови `trelio-remote-skills.continue_trelio_local_context` с точной
+возвращённой операцией: `search`, `list`, `get_task`, `fetch`,
+`search_workspace_files` или `get_workspace_file`. Первый вызов через mirror
+в каждом MCP host-процессе автоматически синхронизирует компанию;
+ручного sync для агента нет.
 
-After sync, mirror-backed reads stay local for that process; a later host process
-syncs again. The host retries a generation change during build. Do not invent a
-refresh before each query.
+Host скачивает только канонические проекции, отфильтрованные ACL, разрешает
+E2EE markers на устройстве, открывает принятые Workspace bundles в приватном
+временном хранилище и публикует одну зашифрованную generation mirror.
+Расшифрованные данные, запросы, snippets, пути и ключи не отправляются в Trelio.
 
-Every dispatched local write, proposal save/action, restore/cancel, and accepted
-encrypted `finish` publishes an owner-private random marker with no content.
-Each MCP host checks it before trusting RAM; a change makes the next read run
-the normal bounded sync. No manual sync or polling is needed. The marker only
-prevents stale reads; server idempotency, revisions, heads, leases and fencing
-tokens still resolve simultaneous-chat conflicts.
+Sync переиспользует неизменные revisions/accepted heads, гидратирует
+изменённые markers ограниченными batch всего mirror. Короткий writer lock
+компании защищает атомарную публикацию; читатели сохраняют прежнюю неизменную
+generation. Конкуренты могут ждать, но не удаляют mirror, не расширяют scope
+и не создают plaintext fallback. Обновление lock и захват устаревшего lock
+ограничены и проверяют владельца.
 
-Disk generations remain encrypted. At most one current generation per company
-and its lazy lexical index are plaintext in process memory, with a hard
-600-second TTL even while idle. Later access reopens the encrypted generation
-without another network sync.
+После sync чтения mirror локальны для процесса; новый host синхронизируется
+заново. Host повторяет сборку при смене generation. Не выдумывай refresh
+перед каждым запросом.
 
-## Search locally and reveal only selected results
+Каждая локальная запись, proposal save/action, restore/cancel и принятый
+encrypted `finish` публикуют приватный случайный маркер без содержимого.
+Каждый MCP host проверяет его до доверия RAM; изменение запускает обычный
+ограниченный sync при следующем чтении. Ручной sync/polling не нужен.
+Маркер лишь предотвращает старое чтение; конкурирующие чаты по-прежнему
+разрешаются server idempotency, revisions, heads, leases и fencing tokens.
 
-Use `search` with one to five faithful formulations and a bounded result count:
+На диске generations зашифрованы. В памяти процесса открыты максимум одна
+текущая generation компании и её ленивый лексический индекс с жёстким TTL
+600 секунд даже в простое. Позднее чтение заново открывает зашифрованную
+generation без нового сетевого sync.
+
+<a id="search-locally-and-reveal-only-selected-results"></a>
+
+## Ищи локально, раскрывай выбранные результаты
+
+Для `search` передай 1–5 верных формулировок и ограниченное число результатов:
 
 ```json
 {
   "operation":"search",
   "companySlug":"exact-company-slug",
-  "queries":["first formulation","independent synonym"],
+  "queries":["первая формулировка","независимый синоним"],
   "limit":20
 }
 ```
 
-Search covers projects; task number/title/description/checklists, visible active
-control notes, custom fields/attachment names/manual comments; workspaces, pages,
-contacts, registries, meetings and accepted text. Status/assignee/participants
-are excluded. Archive results are marked/read-only; optional domains need scopes.
-`context-search-v1`: exact refs > query coverage > field/lexical quality >
-true-tie authority > stable key; entity type has no fixed priority. Ranking stays
-local. Fetch only a relevant set.
+Поиск охватывает проекты; номера/названия/описания/чек-листы задач, видимые
+активные control notes, custom fields, имена вложений, manual comments;
+Workspace, страницы, контакты, реестры, встречи и принятый текст. Статус,
+исполнитель, участники исключены. Архив помечен/read-only; необязательные
+области требуют scopes. `context-search-v1`: точные refs > покрытие запросов >
+качество поля/лексики > авторитет при реальном равенстве > стабильный ключ.
+У типа сущности нет фиксированного приоритета. Ранжирование локально;
+fetch только нужного набора.
 
-Use `list` only for explicit inventory or a task known by project but not number;
-it accepts the documented resource, optional project/offset, and `limit<=100`.
-Use `get_task` with exact project slug and positive number. It returns effective
-rules/profile and resolves an exact pre-encryption or renamed project slug while
-returning only the current canonical slug.
+`list` – лишь для явного inventory или задачи с известным проектом без номера:
+документированный resource, необязательные project/offset, `limit<=100`.
+`get_task` – точный project slug и положительный номер. Он возвращает
+правила/профиль и разрешает точный старый slug до шифрования/переименования,
+возвращая только текущий канонический.
 
-An accepted Workspace search result includes the exact native
-`prepare_agent_workspace_read` target. Reading it remains read-only. A writable
-task or named workspace still uses the ordinary `prepare_agent_workspace_run` and
-bridge commands, with the same per-Workspace leases, fencing tokens,
-checkpoints, submit, acceptance, and optimistic head checks as every other
-company. Never create a company-wide Run lock: neighboring tasks must remain
-independent.
+Результат поиска принятого Workspace содержит точную native-цель
+`prepare_agent_workspace_read`; её чтение остаётся read-only.
+Для записи task/named Workspace используются обычные
+`prepare_agent_workspace_run` и bridge с теми же per-Workspace leases,
+fencing tokens, checkpoints, submit, acceptance и optimistic head.
+Не создавай Run lock всей компании: соседние задачи независимы.
 
-When native `search_agent_workspace_files` selects this provider, repeat its
-queries through `operation=search_workspace_files`; the host filters to accepted
-Workspace text before applying the bounded top-N, so ordinary task or workspace
-matches cannot displace a relevant file. `operation=get_workspace_file` accepts
-the exact `workspaceId`, `workspaceHead`, and `filePath` from that result and
-preserves the native accepted-head fence. These routes do not start a Run or
-expose historical Git bytes to the backend.
+Если native `search_agent_workspace_files` выбрал этот provider, повтори
+запросы через `operation=search_workspace_files`. Host сначала фильтрует
+принятый текст Workspace, затем bounded top-N, чтобы обычная задача/Workspace
+не вытеснили нужный файл. `operation=get_workspace_file` принимает точные
+`workspaceId`, `workspaceHead`, `filePath` результата и сохраняет native
+accepted-head fence. Эти маршруты не начинают Run и не раскрывают backend
+исторические Git bytes.
 
-## Continue Workspace history locally
+<a id="continue-workspace-history-locally"></a>
 
-On returned `continue_trelio_local_workspace`, keep its exact company/operation:
+## Продолжи историю Workspace локально
 
-- `list_revisions`: pass `workspaceId`; select only a head returned by this live
-  result.
-- `get_revision_diff`: pass the original native arguments under `arguments`.
-  Omit `filePath` first; a later patch path must come from that manifest.
-- `read_revision_file`: pass original native arguments, using a manifest path.
-  Binary pointers return metadata; use accepted derived/OCR text instead.
-- `restore_revision`: pass workspace, current/target heads, meaningful plaintext
-  reason and returned runtime session. The host encrypts the reason, preserves
-  current controls, normalizes legacy context and submits a new descendant.
-  `filesChanged` comes from its actual delta; an ambiguous prepare gets one exact
-  marker read-back, never a speculative second Run.
-- `cancel_run`: pass `runId` and concrete reason. The host protects it; only
-  transport/5xx or malformed success can retry, bounded and with the same marker.
+При `continue_trelio_local_workspace` сохрани точные компанию/операцию:
 
-History plaintext stays in a temporary Git root deleted before return; controls
-stay hidden. Never reproduce bridge steps or repeat an unconfirmed restore.
+- `list_revisions`: `workspaceId`; выбирай только head этого актуального ответа.
+- `get_revision_diff`: прежние native arguments внутри `arguments`.
+  Сначала опусти `filePath`; поздний patch path берётся из manifest.
+- `read_revision_file`: прежние arguments с путём manifest. Binary pointers
+  возвращают metadata; используй принятый derived/OCR текст.
+- `restore_revision`: Workspace, текущий/целевой heads, содержательная
+  plaintext-причина и возвращённая runtime session. Host шифрует причину,
+  сохраняет controls, нормализует legacy context и отправляет нового потомка.
+  `filesChanged` вычисляется из реальной delta; неоднозначный prepare получает
+  один точный marker read-back, не предположительный второй Run.
+- `cancel_run`: `runId` и конкретная причина, которую защищает host.
+  Только transport/5xx или malformed success допускают ограниченный повтор
+  с тем же маркером.
 
-## Use the same proposal lifecycle
+Plaintext истории находится во временном Git-корне, удаляемом до возврата;
+controls скрыты. Не воспроизводи шаги bridge и не повторяй неподтверждённый restore.
 
-Use the exact task `proposalProvider`, preserve its Run `runId`, and never
-preflight a native proposal tool. Its routes are:
+<a id="use-the-same-proposal-lifecycle"></a>
 
-- `get_trelio_local_proposal_context`: headless `kind` and `payload.target` –
-  either `runId` or `projectSlug` plus `taskNumber`.
-- `render_trelio_local_proposal`, `operation=save`: the same target, plaintext
-  draft/reasons, and exact revision/snapshot fields from that context response.
-  The host uploads only locally encrypted, signed ciphertext.
+## Сохрани обычный жизненный цикл proposals
 
-App buttons use hidden tools. Text-only `operation=action` requires a decision
-plus exact
-`proposalId`, `expectedRevision`, `action`, `confirmed=true`, and open IDs.
-Comment publish passes reviewed `bodyText` and verifies persisted hydrated text.
-Run completion or rendering is never confirmation.
+Используй точный `proposalProvider` задачи, сохрани `runId` её Run;
+не делай preflight native proposal tool. Маршруты:
 
-Kinds are `comment`, `status`, `control_clear`, and `checklist`. Preserve the
-normal proposal references' semantic rules: unpublished drafts are not public
-history, comment and whole-task status decisions are independent, and
-checklist/control decisions remain item-specific. Context/save/action reuse the
-same server-side ACL, advisory locks, optimistic state revisions, public-comment
-snapshot hashes, and idempotent apply/dismiss/publication behavior as native
-Trelio.
+- `get_trelio_local_proposal_context`: headless `kind` и `payload.target`,
+  где либо `runId`, либо `projectSlug` и `taskNumber`.
+- `render_trelio_local_proposal`, `operation=save`: та же цель, plaintext
+  draft/reasons и точные revision/snapshot из контекста. Host отправляет
+  только локально зашифрованный подписанный ciphertext.
 
-The v8 App uses a three-hour, revision-bound capability in model-hidden metadata.
-A successful decision closes only that card's writes; live state reads retain
-provider/ACL checks until the original expiry, without renewal. Reopened cards
-show their completed state. Saved v5 cards keep their old app tools.
+Кнопки App используют скрытые tools. Текстовый `operation=action` требует
+решение и точные `proposalId`, `expectedRevision`, `action`,
+`confirmed=true`, открытые IDs. Публикация комментария передаёт проверенный
+`bodyText` и сверяет сохранённый гидратированный текст.
+Завершение Run и render не являются подтверждением.
 
-When one response needs two or more cards and native
-`render_task_proposals` or compatibility `render_task_comment_proposals`
-selects this local route, make one `render_trelio_local_proposal` call with
-`kind=bundle`, `operation=save`, and `payload.blocks` copied from the intended
-native bundle. All direct task blocks must name this same exact company; Run
-blocks are checked server-side against it. The host preserves text/card order,
-canonicalizes historical project slugs, encrypts every card through its normal
-kind-specific save path, and returns one bundle whose per-card conflicts remain
-independent. Context reads and final publish/apply/dismiss actions stay separate
-per card. After an ambiguous transport result, reread every affected context
-before retrying; do not repeat the whole bundle blindly.
+Виды: `comment`, `status`, `control_clear`, `checklist`. Соблюдай смысловые
+правила обычных references: неопубликованные drafts не публичная история,
+комментарий и готовность всей задачи независимы, checklist/control решаются
+по точным пунктам. Context/save/action используют те же server ACL, advisory
+locks, optimistic revisions, public-comment snapshot hashes и идемпотентные
+apply/dismiss/publication, что native Trelio.
 
-The returned `reviewUrl` opens the exact task. If the client cannot show an MCP
-App, present the hydrated editable proposal and ask for the same explicit
-publish/apply/dismiss decision; do not silently convert a proposal into a direct
-mutation.
+v8 App хранит скрытую от модели capability на три часа с привязкой к revision.
+Успешное решение закрывает лишь запись этой карточки; чтение текущего состояния
+проверяет provider/ACL до исходного expiry без продления. Повторно открытая
+карточка показывает завершённое состояние. Сохранённые v5 используют старые App tools.
 
-## Continue ordinary actions
+Для нескольких карточек, когда native `render_task_proposals` или совместимый
+`render_task_comment_proposals` выбрали local route, вызови один
+`render_trelio_local_proposal` с `kind=bundle`, `operation=save`,
+`payload.blocks` из намеченного native bundle. Прямые task blocks должны
+принадлежать одной точной компании; Run blocks сервер сверяет с ней.
+Host сохраняет порядок, canonicalize-ит старые project slugs, шифрует карточки
+по их обычным процедурам и возвращает единый bundle с независимыми конфликтами.
+Context reads и итоговые publish/apply/dismiss отдельны для каждой карточки.
+При неоднозначном transport перечитай все затронутые contexts до повтора;
+не отправляй весь bundle вслепую.
 
-Pass native arguments once. For `upload_attachment` or `upload_knowledge_base_attachment`, use absolute
-`localFilePath` only for an exact user-selected or agent-created file; omit
-base64/size/hash. Page uploads use exact `pageSlug`, require company owner/admin,
-and preserve the current article. Insert the returned file URL with the ordinary
-revision-checked page update. The host privately streams it, encrypting if needed. On
-ambiguity reread attachments before reusing the key. Archived rows require
-exact include flags.
+`reviewUrl` открывает точную задачу. Если MCP App не поддерживается, покажи
+гидратированное редактируемое предложение и спроси то же явное решение
+publish/apply/dismiss. Не превращай proposal молча в прямое изменение.
 
-For encrypted `download_attachment`, read the returned `delivery=local-file`
-path and metadata from `structuredContent`; inspect only the needed file content.
-The host makes an owner-private copy (up to 24 MiB), separate from mirror/Git,
-with size/SHA-256 and `expiresAt`. Cleanup runs after one hour while the host is
-alive, otherwise at the next local download. Save durable material only in an
-authorized Workspace. Do not encode or return the downloaded bytes through MCP.
-Successful local results keep complete data in `structuredContent` once; text
-`content` is a short pointer. Hidden App metadata and each human decision remain
-independent.
+<a id="continue-ordinary-actions"></a>
 
-## Fail closed
+## Продолжи обычные действия
 
-Let the bridge own local unlock and materialization. Never request an encryption
-key through chat, MCP arguments, shell input, environment, stdin, clipboard, or
-workspace files. On `access_pending`, stop content work until the owner grants
-the displayed device. Do not use server search, plaintext caches, browser
-scraping, another connector, or improvised HTTP as fallback.
+Передавай native arguments один раз. Для `upload_attachment`/
+`upload_knowledge_base_attachment` используй абсолютный `localFilePath`
+лишь точного выбранного пользователем/созданного агентом файла; опускай
+base64/size/hash. Page upload требует точный `pageSlug`, company owner/admin
+и сохраняет текущую статью. Вставь возвращённый URL обычным revision-checked
+обновлением страницы. Host приватно передаёт потоком, шифруя при необходимости.
+При неоднозначности перечитай вложения до повторного ключа.
+Архивные строки требуют точные include flags.
 
-Local mirror generations are encrypted at rest with the company scope key.
-Decrypted Workspace files exist only in owner-private temporary directories and
-are deleted before a search document is returned in memory. Do not edit mirror
-files or `.trelio/**`. The process-only decrypted generation/search index is
-never persisted and expires after 600 seconds. A read-only snapshot is not a
-Run and cannot be edited, checkpointed, or submitted.
+Для encrypted `download_attachment` прочитай `delivery=local-file` path
+и metadata из `structuredContent`, исследуй лишь нужное содержимое файла.
+Host создаёт приватную копию владельца до 24 MiB вне mirror/Git с size/SHA-256
+и `expiresAt`. При живом host очистка через час, иначе при следующем локальном
+скачивании. Постоянные материалы сохраняй лишь в разрешённом Workspace.
+Не кодируй и не возвращай скачанные bytes через MCP.
+Успех хранит полные данные один раз в `structuredContent`; текстовый `content`
+– краткий указатель. Скрытые App metadata и каждое решение человека независимы.
+
+<a id="fail-closed"></a>
+
+## При нарушении условий остановись
+
+Локальные unlock и развёртывание выполняет bridge. Не проси ключ шифрования
+в chat, MCP arguments, shell input, environment, stdin, clipboard или Workspace.
+При `access_pending` останови содержательную работу до разрешения показанного
+устройства владельцем. Не подменяй server search, plaintext cache, browser
+scraping, другим connector или самодельным HTTP.
+
+Mirror generations на диске зашифрованы company scope key. Открытые Workspace
+файлы существуют лишь в приватных временных каталогах владельца и удаляются
+до возврата поискового документа в память. Не меняй mirror и `.trelio/**`.
+Открытая generation/индекс никогда не сохраняются и истекают через 600 секунд.
+Read-only snapshot не является Run: его нельзя менять, checkpoint или submit.

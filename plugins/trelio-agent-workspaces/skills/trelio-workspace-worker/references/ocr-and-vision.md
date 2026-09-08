@@ -1,9 +1,10 @@
-# OCR and vision artifacts
+<a id="ocr-and-vision-artifacts"></a>
 
-Read this file completely before storing agent-produced OCR or vision output in
-an Agent Workspace.
+# Результаты OCR и визуального распознавания
 
-Perform OCR/vision only when needed. Store the result and a sibling
+Полностью прочитай файл до сохранения результата OCR/vision агента в Workspace.
+
+Выполняй распознавание только при необходимости. Сохрани результат и соседний
 `extraction-manifest.json`:
 
 ```json
@@ -21,19 +22,18 @@ Perform OCR/vision only when needed. Store the result and a sibling
     "method": "agent-vision",
     "verificationStatus": "machine_extracted"
   },
-  "warnings": ["Page 7 is low quality"]
+  "warnings": ["Низкое качество страницы 7"]
 }
 ```
 
-Use only `machine_extracted` or `agent_visually_checked`. Never claim
-`human_verified`; Trelio records it only after an authorized person confirms
-the current accepted artifact. Cite original pages/images for material dates,
-sums, percentages, signatures, and identifiers.
+Используй только `machine_extracted` или `agent_visually_checked`.
+Не заявляй `human_verified`: Trelio фиксирует его лишь после подтверждения
+текущего принятого результата уполномоченным человеком. Для существенных дат,
+сумм, процентов, подписей и идентификаторов ссылайся на исходные страницы/изображения.
 
-The same flow applies to plain and encrypted companies. For an encrypted
-Workspace, `finish` validates the manifest and exact committed source locally,
-then prints each accepted artifact UUID and its exact `source -> artifact` pair.
-Show that pair to the user. Call `verify_agent_workspace_derived_artifact` only
-after the user explicitly confirms that they checked this concrete accepted
-artifact against this concrete source; advance permission to run a test does
-not replace the post-creation comparison.
+Процедура одинакова для plain/encrypted. В зашифрованном Workspace `finish`
+локально проверяет manifest и точный committed source, затем печатает UUID
+каждого принятого результата и пару `source -> artifact`. Покажи пару
+пользователю. `verify_agent_workspace_derived_artifact` вызывай, только когда
+он явно подтвердил сравнение именно этого принятого результата с именно этим
+источником; предварительное разрешение теста не заменяет проверку после создания.

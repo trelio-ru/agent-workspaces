@@ -1,31 +1,34 @@
-# Durable workspace and task relations
+<a id="durable-workspace-and-task-relations"></a>
 
-Read this file completely before linking/unlinking workspaces, changing project relations,
-or creating direct task relations/work cases. Resolve both exact targets and
-apply the access boundary in `scope-and-context.md` first.
+# Постоянные связи Workspace и задач
 
-### Persist task and project relations
+Полностью прочитай файл до связывания/отвязки Workspace, изменения связей
+проектов, создания прямых связей задач или рабочих кейсов. Сначала определи
+обе точные цели и границу доступа по `scope-and-context.md`.
 
-- A task–workspace link is durable and exposes the whole accepted workspace to
-  current and future task readers. Task readers get read; task editors get
-  write/Run without relation-management authority. After exact reads, call
-  `link_workspace_task` without a ceremonial confirmation only when one durable
-  match has at least two stable independent identifiers and the whole workspace
-  suits the task audience. Report what was linked, why, and the resulting
-  access. Add no comment or notification unless separately asked.
-- Multiple candidates, one identifier, temporary relevance, or unclear
-  whole-workspace disclosure require a question. A weak hit is ignored; a
-  partial fit uses narrower pinned context for one Run.
-- Use `link_workspace_project` when the same durable material genuinely belongs
-  in several projects. Project readers then gain read access and project
-  editors gain write/Run access. The primary project and governing rules stay
-  unchanged. Use `unlink_workspace_project` only for a secondary project; move
-  the primary owner through the guarded transfer flow first.
-- `unlink_workspace_task` and `unlink_workspace_project` remove only the exact
-  relation. They never delete either object or rewrite Git history.
+<a id="persist-task-and-project-relations"></a>
 
-When ordinary tasks need a direct task-to-task connection, prefer
-`create_task_relation`. Describe `relationType` in precise human language and
-set `isDirectional` only when order matters. Use a work case only when several
-tasks genuinely represent one shared subject, with a stable unique
-`clientRequestId`.
+### Сохрани связи задач и проектов
+
+- Связь задачи с Workspace постоянна и раскрывает весь принятый Workspace
+  текущим и будущим читателям задачи. Читатели получают read, редакторы –
+  write/Run без права управления связями. После точных чтений вызови
+  `link_workspace_task` без формального подтверждения, только если одно
+  постоянное совпадение доказано двумя независимыми стабильными
+  идентификаторами и весь Workspace подходит аудитории задачи.
+  Сообщи, что связано, почему и какой доступ получен. Комментарий или
+  уведомление не добавляй без отдельной просьбы.
+- Несколько кандидатов, один идентификатор, временная релевантность или
+  неясность раскрытия всего Workspace требуют вопроса. Слабое совпадение
+  игнорируй; частичное соответствие использует узкий pinned context одного Run.
+- `link_workspace_project` нужен, когда одни постоянные материалы относятся
+  к нескольким проектам. Читатели проекта получают read, редакторы – write/Run.
+  Основной проект и правила сохраняются. `unlink_workspace_project` применим
+  только к вторичному проекту; основного владельца сначала меняет защищённый transfer.
+- `unlink_workspace_task` и `unlink_workspace_project` удаляют только точную
+  связь, никогда объекты или Git-историю.
+
+Для прямой связи обычных задач предпочитай `create_task_relation`.
+`relationType` описывай точным понятным языком, `isDirectional` задавай лишь
+при значимом порядке. Рабочий кейс нужен только для нескольких задач одного
+общего предмета со стабильным уникальным `clientRequestId`.

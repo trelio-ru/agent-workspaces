@@ -1,34 +1,35 @@
-# Workspace transfer
+<a id="workspace-transfer"></a>
 
-Read this file completely before changing the primary project/company owner of
-an existing named workspace. Transfer changes governing rules and direct owner
-access; it does not create another workspace or remove secondary relations.
+# Перенос Workspace
 
-1. Resolve the exact `workspaceId`, current owner, company, and target project
-   or company. Never infer a target from a similar project name.
-2. Call `plan_workspace_transfer` before every transfer. The authenticated user
-   must independently manage both sides: company scope requires company
-   owner/admin; project scope requires project admin or company owner/admin.
-   Access derived from a task/project relation never satisfies this check.
-3. Preserve and inspect the complete plan: source and target, permission checks,
-   relation counts, unfinished-Run count, warnings, and actor-bound
-   `expectedStateHash`. Do not transfer by copying files, creating a replacement
-   workspace, or unlinking tasks/projects.
-4. A direct user request identifying the exact workspace and target project is
-   sufficient to apply the current project-target plan. If the agent suggested
-   the move, selected the target, or resolved ambiguity, show the complete plan
-   and wait for explicit confirmation.
-5. A company target gives every active company member direct read access.
-   Supply a concrete `companyScopeReason`, show the plan, and obtain separate
-   explicit confirmation before `confirmCompanyWideAccess: true`.
-6. Do not apply while the plan reports an unfinished or claimable Run. Do not
-   cancel another Run merely to unblock transfer; finish it or obtain explicit
-   authority to cancel, then prepare a fresh plan.
-7. Call `apply_workspace_transfer` with the exact target, reason when
-   applicable, `expectedStateHash`, and a stable `clientRequestId`. Never reuse
-   the hash with another actor or target. On `WORKSPACE_TRANSFER_STATE_CHANGED`,
-   prepare and reassess a fresh plan instead of retrying stale state.
-8. Verify the returned owner. Workspace UUID, accepted Git history, revisions,
-   task links, project links, registry links, and other semantic associations
-   must remain unchanged. Only primary owner metadata and its governing ACL
-   change.
+Полностью прочитай файл до смены основного владельца существующего именованного
+Workspace – проекта или компании. Перенос меняет действующие правила и прямой
+доступ владельца; он не создаёт другой Workspace и не удаляет вторичные связи.
+
+1. Определи точные `workspaceId`, текущего владельца, компанию и целевой проект
+   либо компанию. Не выводи цель из похожего названия проекта.
+2. Перед каждым переносом вызови `plan_workspace_transfer`. Авторизованный
+   пользователь должен независимо управлять обеими сторонами: для компании
+   нужна роль owner/admin, для проекта – project admin или company owner/admin.
+   Доступ через связь задачи/проекта не удовлетворяет этой проверке.
+3. Прочитай и сохрани весь план: источник/цель, проверки прав, числа связей
+   и незавершённых Run, предупреждения и привязанный к пользователю
+   `expectedStateHash`. Не переноси через копирование файлов, замену Workspace
+   или удаление связей задач/проектов.
+4. Прямая просьба пользователя с точным Workspace и целевым проектом разрешает
+   применить текущий план переноса в проект. Если перенос предложил агент,
+   выбрал цель или разрешил неоднозначность, покажи весь план и дождись явного
+   подтверждения.
+5. Перенос в компанию даёт каждому её активному участнику прямое чтение.
+   Укажи конкретный `companyScopeReason`, покажи план и получи отдельное явное
+   подтверждение до `confirmCompanyWideAccess: true`.
+6. Не применяй план с незавершённым или доступным для перехвата Run. Не отменяй
+   чужой Run ради переноса: заверши его либо получи явное разрешение отменить,
+   затем подготовь новый план.
+7. Вызови `apply_workspace_transfer` с точной целью, причиной, если требуется,
+   `expectedStateHash` и стабильным `clientRequestId`. Не используй hash с другим
+   пользователем или целью. При `WORKSPACE_TRANSFER_STATE_CHANGED` подготовь
+   и оцени новый план вместо повтора устаревшего.
+8. Проверь возвращённого владельца. UUID Workspace, принятая Git-история,
+   ревизии, связи задач, проектов, реестров и другие смысловые связи должны
+   сохраниться. Меняются только metadata основного владельца и его ACL.

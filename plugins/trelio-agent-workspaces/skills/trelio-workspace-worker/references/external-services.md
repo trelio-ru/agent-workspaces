@@ -1,56 +1,67 @@
-# Connected services and Agent Skills
+<a id="connected-services-and-agent-skills"></a>
 
-Read this file completely before using a connected service, external system,
-assigned Agent Skill, Remote MCP, or signed runtime. Native Trelio reads,
-discovery, and Agent Workspace control-plane work do not use this gate.
+# Подключённые сервисы и Agent Skills
 
-## Select the current skill
+Полностью прочитай файл до использования подключённого сервиса, внешней
+системы, назначенного Agent Skill, Remote MCP или подписанного runtime.
+Native-чтения Trelio, discovery и управляющие операции Workspace этой проверки
+каталога не требуют.
 
-1. In the exact company/project context, call `search_agent_skills` with the
-   task and compact concept hints; reserve `list_agent_skills` for explicit inventory.
-2. Load `get_agent_skill` once before the first external action in this session. Reuse its complete instructions and exact execution declaration across user turns for up to 12 hours while company/project, skill, implementation and intent stay unchanged. Reload after a new session, lost or compacted full text, 12 hours, route/context change, a resolved setup/access blocker, or once on `AGENT_SKILL_RELEASE_CHANGED`. Do not reread before each subcommand. The trusted host owns the bounded admission cache; never edit it or extend its expiry.
-3. The host may reuse an exact admission for at most 12 hours without sliding renewal. Revocation takes effect at refresh; package verification and Remote MCP tool policy remain mandatory.
-4. Use the selected skill's exact `runtimeExecution` or
-   `remoteMcpExecution`; do not bypass a usable route with browser automation,
-   Computer Use, direct HTTP, another MCP, or an improvised script.
+<a id="select-the-current-skill"></a>
 
-If the selected skill or its company/personal connection reports
-`setup_required`, `no_access`, or `needs_reconnect`, say that it is currently
-unavailable, name the required action, and stop that data request. Outside
-formal `integrationRouting`, another source is allowed only after the user sees
-the blocker and explicitly chooses it. A catalog/control-plane outage,
-timeout, transient failure, or unknown error is not proof that no skill or
-access exists.
+## Выбери текущий навык
 
-## Follow formal routing exactly
+1. В точной компании/проекте вызови `search_agent_skills` с задачей и краткими
+   hints; `list_agent_skills` оставь для явной инвентаризации.
+2. До первого внешнего действия сессии один раз вызови `get_agent_skill`.
+   Переиспользуй полный текст и точную execution declaration между ходами
+   до 12 часов при неизменных company/project, skill, implementation и intent.
+   Перечитай при новой сессии, потере/compaction текста, через 12 часов,
+   смене маршрута/контекста, снятии setup/access blocker или один раз при
+   `AGENT_SKILL_RELEASE_CHANGED`. Не читай перед каждой подкомандой.
+   Admission cache принадлежит доверенному host; не меняй и не продлевай его.
+3. Допуск host действует максимум 12 часов без продления. Отзыв вступает
+   в силу при обновлении; проверка package и Remote MCP policy обязательны.
+4. Используй точные `runtimeExecution`/`remoteMcpExecution` выбранного навыка.
+   Не обходи рабочий маршрут браузером, Computer Use, HTTP, другим MCP или скриптом.
 
-When relevant catalog items return `integrationRouting`, use only its current
-fields; never infer a route from skill IDs, titles, catalog order, prior use,
-or an integration-specific tool name.
+При `setup_required`, `no_access` или `needs_reconnect` навыка/company/
+personal connection сообщи о текущей недоступности, назови необходимое действие
+и останови запрос данных. Вне формального `integrationRouting` другой
+источник допустим лишь после объяснения блокировки и явного выбора пользователя.
+Недоступность каталога/control plane, timeout, временная/неизвестная ошибка
+не доказывают отсутствие навыка или доступа.
 
-- Within one `family`, use the sole enabled item or exact returned `role`,
-  `primarySkillId`, `selectionRule`, and `priority` semantics.
-- Move only to the exact `fallbackSkillId` after the selected implementation
-  establishes a reason listed in its own `fallbackWhen`.
-- Never carry assignment, connection, credential, local session, or policy
-  between skills.
-- Missing, malformed, or inconsistent routing metadata, control-plane outage,
-  timeout, transient/unknown failure, and
-  `ambiguousMutationFallback: forbidden` do not permit fallback or automatic
-  retry. Establish the live result or ask the user first.
+<a id="follow-formal-routing-exactly"></a>
 
-On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill once again before
-retrying; never force the stale release.
+## Соблюдай точную маршрутизацию
 
-## Execute the typed local action
+При `integrationRouting` используй только текущие поля; не выводи маршрут
+из skill IDs, названий, порядка, прежнего использования или имени инструмента.
 
-For a signed runtime call the exact server/tool from
-`runtimeExecution.localAction` with its returned arguments. Append only the
-skill arguments allowed by the current instruction to `parameters.arguments`;
-do not change identity, release, runtime-session, or another field. The local
-dispatcher selects this loaded plugin's bridge and Node executable without a
-shell or PATH lookup.
+- В `family` используй единственный включённый элемент либо точные
+  `role`, `primarySkillId`, `selectionRule`, `priority`.
+- Переходи лишь к точному `fallbackSkillId` после установленной выбранной
+  реализацией причины из её `fallbackWhen`.
+- Не переноси assignment, connection, credential, local session или policy
+  между навыками.
+- Отсутствующие/повреждённые/несогласованные metadata, недоступность control
+  plane, timeout, временная/неизвестная ошибка и
+  `ambiguousMutationFallback: forbidden` не разрешают fallback или автоповтор.
+  Сначала установи реальный результат либо спроси пользователя.
 
-If an older response has only `runtimeExecution.command`, read
-`setup-and-recovery.md` and use its bounded legacy route. Do not probe PATH or
-scan plugin caches.
+При `AGENT_SKILL_RELEASE_CHANGED` перечитай выбранный навык один раз до
+повтора; не форсируй старый релиз.
+
+<a id="execute-the-typed-local-action"></a>
+
+## Исполни структурированное локальное действие
+
+Для подписанного runtime вызови точные server/tool из
+`runtimeExecution.localAction` с возвращёнными аргументами. В
+`parameters.arguments` добавляй лишь разрешённые текущими инструкциями
+аргументы навыка. Не меняй identity, release, runtime-session и другие поля.
+Локальный dispatcher выбирает bridge загруженного плагина и Node без shell/PATH.
+
+Для старого `runtimeExecution.command` прочитай `setup-and-recovery.md`
+и используй ограниченную совместимость. Не ищи PATH и не сканируй cache.

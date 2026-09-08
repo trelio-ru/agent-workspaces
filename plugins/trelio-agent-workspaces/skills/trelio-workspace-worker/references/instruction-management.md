@@ -1,50 +1,46 @@
-# Instruction management
+<a id="instruction-management"></a>
 
-Read this file completely before proposing or publishing a personal profile,
-company rule, or project rule change, including a durable rule identified by
-the agent.
+# Управление инструкциями
 
-1. Never edit `.trelio/**`, managed `AGENTS.md`, managed `CLAUDE.md`, or
-   `context/agent-instructions.md`, and never place instructions in
-   `WORKSPACE_CONTEXT.md`.
-2. Resolve the exact company and optional project/task context. Call
-   `get_agent_instructions` to read current scoped and inherited rules plus the
-   authenticated user's personal profile.
-3. Before drafting a durable rule, identify every scenario whose behavior it
-   would govern and, using the route list in the main skill, read each matching
-   reference completely. A managed rule may specialize an allowed choice but
-   cannot override ACL, secret handling, confirmation, protected runtime, or
-   another mandatory boundary. If the literal request conflicts, explain the
-   conflict and propose the narrowest compliant wording. For example, a task
-   attachment rule must preserve the `task-run.md` limit to important final and
-   genuinely useful intermediate files rather than requiring every workspace
-   file.
-4. Before editing “How the agent should work with me”, assess all five scopes:
-   `current_request`, `task`, `personal`, `project`, and `company`. Prefer the
-   narrowest scope covering the intended people and duration.
-5. Call `plan_my_agent_profile_update` with the complete proposed personal
-   replacement, exact context, recommended scope, and concrete rationale. The
-   tool prepares a personal diff only for `personal`.
-6. For `current_request`, follow the instruction without persistence. For
-   `task`, keep it as an ordinary explicit task requirement. Never hide either
-   in `WORKSPACE_CONTEXT.md`. If `project` or `company` is correct, explain the
-   broader recommendation and ask before switching flows. Never widen a
-   personal request silently.
-7. For a confirmed `project` or `company` scope, prepare the complete
-   replacement and exact diff with `plan_agent_instructions_update`. Show the
-   full plan, rationale, and target scope. The normalized UTF-8 limit is 16 KiB
-   for company rules and 8 KiB for project rules; from 75%, move detailed
-   procedures into an Agent Skill or project documentation instead of trying to
-   compress them into the rule layer.
-8. Do not publish on your own initiative. Call `publish_my_agent_profile` or
-   `publish_agent_instructions` only after explicit confirmation of that exact
-   diff and scope, using its exact `expectedRevisionId`, an audit summary, and
-   a stable idempotency key.
-9. Explain that the new revision applies only to future Runs; active Run
-   snapshots remain immutable.
+Полностью прочитай файл перед предложением или публикацией изменений личного
+профиля, правил компании или проекта, включая правило по инициативе агента.
 
-Personal profile publication uses the authenticated user's
-`mcp:workspaces:write` authority and cannot edit another member's profile.
-Company/project publication requires `mcp:agent-instructions:manage` plus the
-ordinary admin role. If permission is missing, report the blocker. Do not fall
-back to a workspace candidate or conceal the rule in another file.
+1. Не редактируй `.trelio/**`, управляемые `AGENTS.md` и `CLAUDE.md` или
+   `context/agent-instructions.md`. Не помещай инструкции в `WORKSPACE_CONTEXT.md`.
+2. Определи точную компанию и, при необходимости, проект/задачу. Через
+   `get_agent_instructions` прочитай текущие и унаследованные правила этого
+   контекста и личный профиль авторизованного пользователя.
+3. До подготовки постоянного правила определи все сценарии, на которые оно
+   повлияет, и полностью прочитай соответствующие references по маршрутизатору
+   основного навыка. Правило может уточнять разрешённый выбор, но не отменять
+   ACL, защиту секретов, подтверждения, защищённый runtime и другие обязательные
+   границы. При конфликте объясни его и предложи самую узкую допустимую формулировку.
+   Например, правило вложений должно сохранять ограничение `task-run.md` на
+   важные итоговые и полезные промежуточные файлы, а не требовать все файлы Workspace.
+4. Перед изменением «Как агенту работать со мной» оцени все пять областей:
+   `current_request`, `task`, `personal`, `project`, `company`. Выбери самую узкую,
+   которая охватывает нужных людей и срок действия.
+5. Вызови `plan_my_agent_profile_update` с полным новым личным профилем, точным
+   контекстом, рекомендуемой областью и конкретной причиной. Инструмент готовит
+   личный diff только для `personal`.
+6. Для `current_request` исполни инструкцию без сохранения; для `task` оставь её
+   обычным явным требованием задачи. Не скрывай их в `WORKSPACE_CONTEXT.md`.
+   Если подходит `project` или `company`, объясни рекомендацию и спроси перед
+   переключением процедуры. Не расширяй личную просьбу молча.
+7. Для подтверждённой области `project` или `company` подготовь полный новый
+   текст и точный diff через `plan_agent_instructions_update`. Покажи весь план,
+   причину и область. Лимит нормализованного UTF-8: 16 KiB для компании и 8 KiB
+   для проекта. Начиная с 75% переноси подробные процедуры в Agent Skill или
+   документацию проекта, вместо попытки уместить их в слой правил.
+8. Не публикуй по собственной инициативе. `publish_my_agent_profile` и
+   `publish_agent_instructions` вызывай только после явного подтверждения
+   именно этого diff и области. Используй точный `expectedRevisionId`, описание
+   для аудита и стабильный ключ идемпотентности.
+9. Объясни: новая ревизия действует только для будущих Run. Снимки правил
+   активных Run остаются неизменными.
+
+Личный профиль публикуется с правом `mcp:workspaces:write` авторизованного
+пользователя; профиль другого сотрудника менять нельзя. Для правил компании/
+проекта нужны `mcp:agent-instructions:manage` и обычная роль администратора.
+При отсутствии прав сообщи о блокировке. Не используй candidate Workspace
+как обход и не прячь правило в другом файле.

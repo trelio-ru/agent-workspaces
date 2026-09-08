@@ -1,171 +1,175 @@
-# Scope and related context
+<a id="scope-and-related-context"></a>
 
-Read this file completely before discovering or selecting a Trelio task,
-project, company, writable workspace, relation, work case, or related read-only
-context.
+# Область работы и связанный контекст
 
-Treat company/project mappings in local `AGENTS.md` as control-plane bindings,
-not writable Workspace scopes. A Codex project may allow one or several
-companies or projects. Keep exact company boundaries, but never narrow
-Workspace discovery to one project when a workspace may be explicitly linked
-to several projects. Ask only when ambiguity remains after read-only discovery.
+Полностью прочитай файл до поиска/выбора задачи, проекта, компании, writable
+Workspace, связи, рабочего кейса или связанного контекста только для чтения.
 
-Discovery needs no runtime admission; exact content reads do. Follow the main
-skill's approved-hook boundary and `setup-and-recovery.md` on an actual error.
-Never author a proof, infer disabled trust from missing proof, or bypass the gate.
+Привязки компании/проекта в локальном `AGENTS.md` – управляющий контекст,
+не область записи Workspace. Проект Codex может допускать несколько компаний/
+проектов. Сохраняй точные границы компании, но не сужай поиск Workspace до
+одного проекта, если он связан с несколькими. Спрашивай, только если
+неоднозначность осталась после поиска только для чтения.
 
-## Resolve the work item
+Discovery не требует runtime admission; точное чтение содержимого требует.
+Соблюдай границу подтверждённого hook из основного навыка, а при реальной
+ошибке – `setup-and-recovery.md`. Не создавай proof, не выводи выключенное
+доверие из отсутствия proof и не обходи проверку.
 
-Trelio context search is lexical, not semantic. Company/project rules are not
-search documents and never compete with tasks or workspaces in ranking. If the
-user supplied one canonical task URL or one exact company/project/task
-coordinate, call `get_task` directly. If 2–20 distinct exact task locators are
-already known or selected together, call `get_tasks` once in the required
-order; do not make repeated `get_task` calls. Otherwise:
+<a id="resolve-the-work-item"></a>
 
-1. Build up to five short independent queries: important nouns, synonyms,
-   abbreviations, alternate spellings, old names, object/city, counterparty,
-   document type, and expected result.
-2. Call the canonical unified `search` once with separate `queries` and every
-   exact permitted `companySlugs`. Omit company scope only when discovery is
-   genuinely cross-company. Do not concatenate synonyms into one query.
-3. Inspect the mixed result set as one context decision. The same call searches
-   first-class active and archived workspaces, projects, active and archived
-   tasks, task descriptions/comments, and accepted Workspace files. A plausible
-   task must not suppress a procedure or prior decision found in another workspace.
-   Archived Workspace results carry an explicit `[Архив]` title marker and
-   `workspaceState=archived`; they remain valid read-only context, not writable
-   Run targets. Ordinary `list_workspaces` inventory still hides them unless
-   `includeArchived=true` is explicitly requested.
-4. Prefer results found by several variants. Use returned exact metadata and
-   `fetch` to inspect up to three material documents or task candidates. Call
-   `get_workspace` for a first-class workspace, `get_task` for one probable
-   task, or `get_tasks` for several probable tasks before a mutation or Run.
-   `fetch`, `get_workspace`, `get_project_meta`, and `get_task_create_meta`
-   return their ordinary `effectiveInstructions` envelope. Apply loaded
-   instructions before object content outside a prepared Agent Workspace Run.
-   Inside a prepared Run, its pinned `agent-instructions.md` and
-   `user-profile.md` remain authoritative; a later exact read cannot replace
-   that immutable snapshot. If an exact read says `requires_scope`, use the
-   standard `get_agent_instructions` consent/recovery flow. Do not call
-   `get_agent_instructions` again after loaded instructions unless the user is managing rules, the
-   scope changes without another exact read, or the server asks for refresh.
-5. Treat a candidate as probable only when at least two independent identifiers
-   agree. A similar title alone is insufficient. A supplied canonical URL or
-   exact coordinates count after successful readback.
-6. If several candidates remain, show their direct URLs or identifying fields
-   and ask before a mutation or Run.
+## Определи рабочий объект
 
-### Recover a bounded search timeout
+Поиск Trelio лексический, не семантический. Правила компании/проекта не
+поисковые документы и не конкурируют с задачами/Workspace. Один канонический
+URL задачи или точные company/project/task координаты ведут прямо в
+`get_task`. Для 2–20 уже известных или совместно выбранных различных точных
+задач вызови один `get_tasks` в нужном порядке, не последовательные `get_task`.
+В остальных случаях:
 
-`MCP_SEARCH_TIMEOUT` is a structured, server-confirmed read-only search budget
-failure, not a transport outage and not evidence of broken OAuth, Hooks, MCP
-registration, company access, or a missing object. Do not apply generic network
-retries or repeat the same broad call unchanged.
+1. Составь до пяти коротких независимых запросов: значимые существительные,
+   синонимы, сокращения, варианты написания, старые имена, объект/город,
+   контрагент, тип документа, ожидаемый результат.
+2. Один раз вызови единый `search` с отдельными `queries` и всеми точными
+   разрешёнными `companySlugs`. Опускай компанию только для поиска действительно
+   между компаниями. Не склеивай синонимы в один запрос.
+3. Оцени смешанную выдачу как одно решение о контексте. Вызов ищет активные/
+   архивные Workspace, проекты, активные/архивные задачи, их описания/
+   комментарии и принятые файлы Workspace. Вероятная задача не должна скрыть
+   процедуру/прежнее решение другого Workspace. Архив имеет `[Архив]`
+   в названии и `workspaceState=archived`: годится для чтения, не writable
+   Run. Обычный `list_workspaces` скрывает архив без явного `includeArchived=true`.
+4. Предпочитай совпадения нескольких вариантов. По точным metadata и
+   `fetch` прочитай до трёх существенных документов/кандидатов. До mutation/Run
+   вызови `get_workspace` для Workspace, `get_task` для одной вероятной
+   задачи или `get_tasks` для нескольких. `fetch`, `get_workspace`,
+   `get_project_meta`, `get_task_create_meta` возвращают обычные
+   `effectiveInstructions`: вне подготовленного Run примени загруженные
+   инструкции до содержимого объекта. Внутри Run действуют закреплённые
+   `agent-instructions.md`/`user-profile.md`; позднее чтение не заменяет
+   неизменяемый снимок. При `requires_scope` используй стандартный consent/
+   recovery `get_agent_instructions`. После загрузки не повторяй его,
+   кроме управления правилами, смены области без другого точного чтения
+   или требования обновить от сервера.
+5. Кандидат вероятен лишь при совпадении двух независимых идентификаторов;
+   похожего заголовка недостаточно. Канонический URL/точные координаты
+   считаются после успешного read-back.
+6. Если кандидатов несколько, покажи прямые URL/отличительные поля и спроси
+   до mutation/Run.
 
-Retry at most once in the current turn, and only with a strictly narrower
-request:
+<a id="recover-a-bounded-search-timeout"></a>
 
-1. Pass exact `companySlugs`.
-2. Keep at most the two strongest independent formulations.
-3. When an exact project boundary is known and task-only refinement is enough,
-   use one `search_tasks` call with exact `projectSlugs`.
+### Восстанови поиск после превышения бюджета
 
-If no truthful narrower scope exists, or that retry returns the same code, stop
-and ask for the missing company/project discriminator. Do not switch to a
-browser, HTTP, another MCP, `list_workspaces`, or a chain of per-query calls.
-An HTTP 504 without structured `MCP_SEARCH_TIMEOUT` remains a transport/service
-failure and follows the diagnostics path.
+Структурированный `MCP_SEARCH_TIMEOUT` – подтверждённое сервером превышение
+бюджета read-only поиска, не транспортный сбой и не доказательство проблем
+OAuth/Hooks/MCP registration/доступа/наличия объекта. Не применяй обычные
+сетевые повторы и не повторяй прежний широкий вызов без изменений.
 
-## Resolve task-read instructions
+В текущем ходе допустим максимум один строго более узкий повтор:
 
-Current `get_task` and `get_tasks` return `schemaVersion: 3` with a compact task
-core. Each item has one structured `task`; Text `content` is only a summary.
+1. Точные `companySlugs`.
+2. Не больше двух сильнейших независимых формулировок.
+3. Если точная граница проекта известна и достаточно task-only уточнения,
+   один `search_tasks` с точными `projectSlugs`.
 
-For every item in `tasks[]` independently:
+Если честного сужения нет или повтор вернул тот же код, остановись и спроси
+недостающий признак компании/проекта. Не переходи в браузер, HTTP, другой MCP,
+`list_workspaces` или цепочку одиночных запросов.
+HTTP 504 без структурированного `MCP_SEARCH_TIMEOUT` остаётся транспортной/
+сервисной ошибкой и следует диагностике.
 
-1. Require `instructionScope.status=loaded` before substantive work. On
-   `requires_scope`, complete the standard consent flow for that exact scope.
-2. Index `effectiveInstructions.layers` by unique `key`, plus only the complete
-   immutable layers still in this model context named by `reusedLayerKeys`.
-   Resolve the item's `instructionScope.orderedLayerKeys` against that union;
-   conflicting duplicates stop work. If reused bytes were lost, repeat the read
-   without those known keys before interpreting the task.
-3. Apply only the resolved layers, in returned order. Never apply a company,
-   project, or personal layer to a task that does not reference it.
-4. Keep `effectiveRevisionKey` when a later step must verify that the effective
-   order did not change.
+<a id="resolve-task-read-instructions"></a>
 
-On the next exact read, pass `effectiveInstructions.nextReadArguments` (or the
-distinct keys from returned layers plus reusedLayerKeys on an older response)
-only for complete layers still in this context. The server returns changed
-layers in full and preserves per-task order. After compaction, lost text or
-uncertainty omit the affected keys; never persist a key-only cache as authority.
+## Примени инструкции чтения задач
 
-Then inspect `task.deferredSections`. Call `get_task_sections` once with the same
-locator and only the needed subset; do not repeat `get_task` or request all
-sections by default. `itemCount: 0` means known-empty; `null` means not counted.
-Attachments are metadata, not bytes. The supplement rechecks ACL without
-repeating effective instructions, core fields, connections, or related
-workspaces.
+Текущие `get_task`/`get_tasks` возвращают `schemaVersion: 3` с компактным
+ядром. В каждом item одна структурированная `task`; текстовый `content` –
+лишь краткое описание.
 
-Schema v1/v2 is unsupported and indicates a plugin/backend mismatch. Use the
-normal upgrade path instead of interpreting the old payload.
+Для каждого item `tasks[]` независимо:
 
-`search_tasks` and `search_agent_workspace_files` are optional refinements, not
-mandatory consecutive stages. Use the former for task-only ambiguity and the
-latter for Workspace-file ambiguity.
+1. До содержательной работы требуй `instructionScope.status=loaded`.
+   При `requires_scope` заверши стандартное согласие точной области.
+2. Индексируй `effectiveInstructions.layers` по уникальному `key`, добавляя
+   лишь полные неизменяемые слои в текущем контексте из `reusedLayerKeys`.
+   Разреши `instructionScope.orderedLayerKeys` item по этому объединению;
+   конфликтующие дубликаты останавливают работу. Если повторно используемые
+   bytes потеряны, повтори чтение без их известных ключей до интерпретации задачи.
+3. Применяй только разрешённые слои в возвращённом порядке. Не переноси
+   company/project/personal слой на задачу, которая на него не ссылается.
+4. Сохрани `effectiveRevisionKey`, если позднее нужно проверить порядок.
 
-If no task matches, use relevant workspace hits from the unified result before
-creating anything. Do not call `list_workspaces` merely to discover context:
-unified search already covers first-class workspaces and accepted files across
-projects. Use `list_workspaces` only for explicit inventory/management of one
-known owner scope. Prefer an existing project workspace for a continuing
-subject, or `create_workspace` when one project is the narrowest sufficient
-owner. Create a company workspace only for genuinely cross-project context safe
-for every active company member, or after an explicit company-wide request.
-Absence of a task never justifies company scope. Company workspace creation
-requires a concrete `companyScopeReason` and `confirmCompanyWideAccess=true`.
+В следующее точное чтение передавай `effectiveInstructions.nextReadArguments`
+(либо уникальные keys возвращённых layers и reusedLayerKeys старого ответа)
+только для полных слоёв, всё ещё находящихся в контексте. Сервер полностью
+возвращает изменённые слои и сохраняет порядок каждой задачи. После compaction,
+потери текста или сомнения опускай соответствующие keys; key-only cache
+не является полномочиями.
 
-Every task has at most one canonical task-owned workspace. Durable context not
-owned by one task uses a named workspace whose primary owner is one project or
-the company. A named workspace may additionally link to any number of projects
-and tasks in the same company; these links do not change the primary project or
-the rules pinned by new Runs.
+Затем проверь `task.deferredSections`. Один `get_task_sections` с тем же
+locator и только нужным subset; не повторяй `get_task` и не запрашивай всё
+по умолчанию. `itemCount: 0` – точно пусто, `null` – не посчитано.
+Вложения – metadata, не bytes. Дополнение перепроверяет ACL без повторения
+инструкций, core, connections и related workspaces.
 
-## Access and related context
+Schema v1/v2 не поддерживаются и означают несовместимость plugin/backend.
+Используй обычное обновление, не интерпретируй старый payload.
 
-Workspace access is the union of its owner and all explicit task/project links:
+`search_tasks` и `search_agent_workspace_files` – необязательные уточнения
+для неоднозначности задач/файлов соответственно, не обязательные этапы подряд.
 
-- A task reader may read its canonical workspace and every linked workspace.
-  A user who may edit that exact task may also write and run those workspaces.
-- A project reader, including an observer, may read linked workspaces. A
-  project member or moderator may write and run them.
-- Every active company member may read a company-owned workspace; only company
-  owners and administrators may write or run it through the owner scope.
-- Relation-derived access never grants link management, resharing, transfer, or
-  access to the workspace's primary project. Manage a relation only with
-  independent authority over the workspace and the exact task/project target.
-- Archived workspaces are read-only. Cross-company relations are forbidden.
-- Registry, contact, and meeting associations are semantic references only;
-  they never grant Workspace access by themselves.
+Если задачи нет, до создания оцени подходящие Workspace из единой выдачи.
+Не вызывай `list_workspaces` лишь для поиска контекста: search уже охватывает
+Workspace и принятые файлы разных проектов. List нужен только для явного
+inventory/management одной известной области владельца. Для продолжающейся
+темы предпочитай существующий проектный Workspace; `create_workspace` –
+если проект является достаточным самым узким владельцем. Company Workspace
+создавай лишь для межпроектного контекста, безопасного каждому активному
+участнику, или по явной просьбе о всей компании. Отсутствие задачи не
+оправдывает company scope. Создание требует конкретный `companyScopeReason`
+и `confirmCompanyWideAccess=true`.
 
-This read/write distinction follows the source object rather than introducing
-a separate manual Workspace ACL. It preserves read-only project observers and
-other users who can see but cannot edit the task/project.
+У задачи не больше одного канонического task-owned Workspace. Постоянный
+контекст вне одной задачи использует именованный Workspace с одним основным
+владельцем – проектом/компанией. Дополнительные связи с любым числом проектов
+и задач той же компании не меняют основной проект и pinned rules новых Run.
 
-Read `relatedWorkspaces` from exact task responses before searching more widely.
-Use `get_workspace` for current metadata, visible relations and accepted
-material coordinates; every read reapplies ACL. Use
-`prepare_agent_workspace_read` with `workspaceId`, or with task addressing for
-the canonical task workspace, before local read-only materialization.
+<a id="access-and-related-context"></a>
 
-### Decide whether a durable relation is needed
+## Доступ и связанный контекст
 
-After exact reads, a durable task/workspace match with two independent stable
-identifiers, no competing target and whole-workspace suitability for the task
-audience should be linked without ceremonial confirmation. Before the mutation,
-read [workspace-relations.md](workspace-relations.md); it defines the exact tools,
-access disclosure, ambiguous/partial matches, unlinking and task/work-case routes.
-A relation exposes the whole workspace to present and future task readers, and
-allows task editors to write/Run; relation-management authority is separate.
+Доступ к Workspace – объединение владельца и всех явных связей задач/проектов:
+
+- Читатель задачи читает канонический и связанные Workspace; редактор именно
+  этой задачи также получает write/Run.
+- Читатель проекта, включая observer, читает связанные Workspace;
+  участник/модератор получает write/Run.
+- Любой активный участник компании читает company-owned Workspace; через
+  владельца писать/запускать могут лишь company owner/admin.
+- Производный доступ не даёт управление связями, повторное раскрытие,
+  перенос или доступ к основному проекту. Для управления связью нужны
+  независимые полномочия над Workspace и точной задачей/проектом.
+- Архив – только чтение. Межкомпанейские связи запрещены.
+- Реестр, контакт и встреча дают смысловые ссылки, сами по себе не доступ.
+
+Read/write следует исходному объекту без отдельного ручного Workspace ACL.
+Observer и другие читатели без прав редактирования остаются read-only.
+
+До широкого поиска прочитай `relatedWorkspaces` точного ответа задачи.
+`get_workspace` даёт текущие metadata, видимые связи и координаты материалов;
+каждое чтение перепроверяет ACL. До локального read-only развёртывания
+используй `prepare_agent_workspace_read` с `workspaceId` либо координатами
+задачи для её канонического Workspace.
+
+<a id="decide-whether-a-durable-relation-is-needed"></a>
+
+### Реши, нужна ли постоянная связь
+
+После точных чтений постоянное совпадение задачи/Workspace с двумя независимыми
+стабильными идентификаторами, без конкурирующей цели и с подходящей всему
+Workspace аудиторией связывается без формального подтверждения. До mutation
+прочитай [постоянные связи](workspace-relations.md): инструменты, раскрытие
+доступа, неоднозначные/частичные совпадения, отвязка, задачи/кейсы.
+Связь раскрывает весь Workspace нынешним и будущим читателям задачи и даёт
+редакторам write/Run; управление связями остаётся отдельным правом.

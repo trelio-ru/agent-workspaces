@@ -1,37 +1,39 @@
-# Accepted Workspace read
+<a id="accepted-workspace-read"></a>
 
-Read this file completely before reading, reviewing, summarizing, comparing, or
-answering from already accepted Workspace materials without changing them.
+# Чтение принятого Workspace
 
-## Materialize without a Run
+Полностью прочитай файл до чтения, ревью, пересказа, сравнения или ответа
+по уже принятым материалам Workspace без изменений.
 
-1. Resolve the exact `workspaceId`, or the exact task whose canonical workspace
-   is needed, through `scope-and-context.md` unless it is already known. A
-   working-folder binding does not prove accepted materials exist.
-2. Call `prepare_agent_workspace_read` once with exact `workspaceId`, `taskId`,
-   or canonical task URL coordinates. It rechecks read ACL and returns the
-   current accepted head plus exact `bridge.action`. If no accepted materials exist,
-   report that fact; do not call `ensure_agent_workspace`,
-   `prepare_agent_workspace_run`, or `start_agent_workspace_run` to create them.
-3. Call the action's exact `server` and `tool` once with its unchanged
-   `arguments`; do not convert it to a shell command or probe PATH.
-   It creates no Run, lease, checkpoint, task-status proposal, or Trelio mutation.
-   For company E2EE it downloads pinned ciphertext and decrypts it only inside
-   private bridge state. A tracked symlink, gitlink, or other non-regular file
-   blocks inspection rather than exposing a path outside the snapshot.
-4. In the printed directory read `../context/agent-instructions.md`, then
-   `../context/user-profile.md`, then accepted files. Use
-   `../context/index.json` as provenance for the exact head. Keep the snapshot
-   read-only; do not edit it, run checkpoint/finish, or use it as a writable
-   checkout.
-5. For encrypted content use only bounded local file inspection. Never copy a
-   query, path, filename, plaintext, snippet, or derived summary into a remote
-   Trelio content tool. Answer directly from the local snapshot.
+<a id="materialize-without-a-run"></a>
 
-A later request for durable changes is a new writable intent: read the Run
-references and call `prepare_agent_workspace_run`. Never reinterpret read intent
-as permission to create a Run or ask the user to open Trelio and start one
-manually.
+## Разверни материалы без Run
 
-If an older backend returns only `bridge.command`, do not execute it directly;
-read `setup-and-recovery.md` and use its bounded legacy compatibility route.
+1. Если точный `workspaceId` или задача с нужным каноническим Workspace ещё
+   не известны, определи их по `scope-and-context.md`. Привязка рабочей папки
+   не доказывает наличие принятых материалов.
+2. Один раз вызови `prepare_agent_workspace_read` с точным `workspaceId`,
+   `taskId` или координатами канонического URL задачи. Он перепроверяет read
+   ACL и возвращает принятый head и точный `bridge.action`. Если материалов
+   нет, сообщи об этом; не создавай их через `ensure_agent_workspace`,
+   `prepare_agent_workspace_run` или `start_agent_workspace_run`.
+3. Один раз вызови точные `server`/`tool` действия с неизменёнными `arguments`;
+   не превращай в shell-команду и не ищи в PATH. Это не создаёт Run, lease,
+   checkpoint, предложение статуса или изменение Trelio. Для E2EE скачивается
+   закреплённый ciphertext и расшифровывается только в приватном состоянии bridge.
+   Tracked symlink, gitlink или иной файл другого типа блокирует чтение,
+   не открывая путь за пределами снимка.
+4. В возвращённом каталоге сначала прочитай `../context/agent-instructions.md`,
+   затем `../context/user-profile.md` и принятые файлы. Происхождение точного
+   head – в `../context/index.json`. Снимок только для чтения: не меняй,
+   не делай checkpoint/finish и не используй как writable checkout.
+5. Зашифрованное содержимое исследуй только ограниченным чтением локальных
+   файлов. Запросы, пути, имена файлов, plaintext, snippets и производные
+   пересказы не копируются в удалённый content tool Trelio. Отвечай из локального снимка.
+
+Поздняя просьба о постоянных изменениях – новое намерение записи: прочитай Run
+references и вызови `prepare_agent_workspace_run`. Чтение не разрешает Run
+и не требует от пользователя открывать Trelio и запускать его вручную.
+
+Если старый backend вернул лишь `bridge.command`, не исполняй напрямую:
+прочитай `setup-and-recovery.md` и используй ограниченную совместимость.

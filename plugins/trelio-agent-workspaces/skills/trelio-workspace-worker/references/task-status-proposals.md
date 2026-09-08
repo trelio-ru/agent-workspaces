@@ -1,134 +1,129 @@
-# Task status proposals
+<a id="task-status-proposals"></a>
 
-Read this file completely before opening any task-scoped Run, whenever the user
-asks to change a task status, when status readiness is inferred from completed
-work, or when an accepted task Run assessed the whole task as ready.
+# Предложения статуса задачи
 
-## Keep the two inferred intents separate
+Полностью прочитай файл до открытия task-scoped Run, по просьбе сменить статус,
+при выводе о готовности из выполненной работы или после принятого Run,
+оценившего всю задачу как готовую.
 
-Task status is independent from Agent Run lifecycle and the human comment
-proposal. Neither opening nor accepting a Run changes status. An inferred
-status decision always uses one of these exact intents:
+<a id="keep-the-two-inferred-intents-separate"></a>
 
-- `work_started` is the one-shot, non-blocking suggestion made immediately
-  after a task-scoped bridge `open` succeeds. It can only represent a semantic
-  `queue` to `active` transition returned by the server.
-- `whole_task_ready` is the completion suggestion made only after the complete
-  task is assessed as ready for semantic `review` or `done`.
+## Различай два намерения агента
 
-One task/member has one current status draft. A later `whole_task_ready`
-proposal replaces a still-pending `work_started` proposal, so never render two
-status cards for the same task. Opening, checkpointing, pausing, accepting, or
-commenting never applies either proposal.
+Статус задачи независим от жизненного цикла Run и человеческого комментария.
+Открытие и принятие Run не меняют статус. Выведенное решение использует
+одно из точных намерений:
 
-## Offer work start once after open
+- `work_started` – однократное неблокирующее предложение сразу после успешного
+  task-scoped bridge `open`. Только возвращённый сервером semantic переход
+  `queue` → `active`.
+- `whole_task_ready` – предложение завершения лишь после оценки готовности
+  всей задачи к semantic `review` или `done`.
 
-After the exact bridge `open` succeeds and before the first substantive work
-action:
+У пары задача/участник один текущий status draft. Поздний `whole_task_ready`
+заменяет ожидающий `work_started`; не показывай две статусные карточки одной
+задачи. Open/checkpoint/pause/accept/comment сами не применяют proposal.
 
-1. Call `get_task_status_proposal_context` exactly once with that running task
-   Run's `runId`.
-2. Inspect only `workStartProposal`. When its `state` is `eligible`, call
-   `render_task_status_proposal` with `intent=work_started`, the returned
-   `stateRevision`, `expectedStatusId`, exact `targetStatus.code`, and a concise
-   reason that work began in the opened Run. Use the server-selected first
-   transitionable semantic `active` target; never infer it from a localized
-   status name or code.
-3. Continue the Run immediately after rendering. Do not wait for the user to
-   apply or dismiss the card.
+<a id="offer-work-start-once-after-open"></a>
 
-For `run_not_active`, `task_not_queued`,
-`no_transitionable_active_status`, `already_pending`,
-`whole_task_proposal_pending`, `dismissed_for_current_status`, or
-`already_proposed_for_current_status`, render nothing. A durable server marker
-keeps an already shown start suppressed even if a completion proposal later
-replaces it and is applied or dismissed.
+## Предложи начало один раз после open
 
-Do not repeat the context read or start proposal after a tool action,
-checkpoint, pause, progress update, resumed assistant turn, or another Run for
-the same unchanged task status cycle. In particular, never evade dismissal by
-using the direct task locator: backend suppression lasts until the task
-actually leaves that queue status and later enters a new status epoch.
+Сразу после точного успешного `open`, до первого содержательного действия:
 
-## Assess completion across the whole task
+1. Ровно один раз вызови `get_task_status_proposal_context` с `runId`
+   текущего выполняемого task Run.
+2. Проверь только `workStartProposal`. При `state` = `eligible` вызови
+   `render_task_status_proposal` с `intent=work_started`, возвращёнными
+   `stateRevision`, `expectedStatusId`, точным `targetStatus.code` и краткой
+   причиной начала работы. Используй первый допустимый semantic `active`,
+   выбранный сервером; не выводи его из локализованного имени/кода.
+3. Сразу после render продолжай Run, не жди apply/dismiss пользователя.
 
-Completing the immediate agent instruction may cover only part of the task. An
-accepted Run and its `taskOutcome` record evidence and a semantic
-recommendation; neither authorizes an immediate mutation.
+При `run_not_active`, `task_not_queued`, `no_transitionable_active_status`,
+`already_pending`, `whole_task_proposal_pending`, `dismissed_for_current_status`
+или `already_proposed_for_current_status` ничего не показывай. Постоянный
+маркер сервера подавляет уже показанное начало даже после замены карточкой
+завершения и её применения/отклонения.
 
-Assess the complete task description, checklists, open questions, relevant
-comments, linked context, and actual result. Use `no_status_change` as the safe
-handoff default for partial, informational, failed-review, or unresolved work.
-After partial work, still prepare the required comment proposal, but do not
-create a `whole_task_ready` proposal.
+Не повторяй context read или предложение начала после инструмента, checkpoint,
+pause, progress update, нового хода или другого Run в том же цикле статуса.
+Не обходи отказ прямым locator задачи: подавление действует, пока задача
+не покинет этот queue-статус и позднее не войдёт в новую status epoch.
 
-Make this decision before composing the final response or raising a new
-follow-up about task metadata. An unset optional due date, assignee, control,
-or similar field is not an open task question by itself and must not downgrade
-a completed task. It blocks readiness only when the task requirements or the
-target transition policy actually require that value. Likewise, future
-maintenance or an optional improvement belongs in the next action; do not
-invent it as unfinished scope.
+<a id="assess-completion-across-the-whole-task"></a>
 
-After the whole task is ready and the context offers a transitionable semantic
-`review` or `done` target, rendering `intent=whole_task_ready` is required
-before the final response. A start proposal, comment proposal, accepted Run,
-recorded `no_status_change`, or prose question about an optional field is not a
-substitute for that separate completion decision.
+## Оцени готовность всей задачи
 
-## Distinguish a direct command from inferred readiness
+Последняя инструкция может покрывать лишь часть задачи. Принятый Run и
+`taskOutcome` фиксируют результат/рекомендацию, не разрешая немедленное изменение.
 
-Use `update_task_status`, a `statusCode` task patch, batch patch, or
-`move_task_to_project` only when the user explicitly and unambiguously commands
-changing the exact task to the exact status now. Only then set
-`userExplicitlyRequestedImmediateStatusChange=true`. Completing work, accepting
-a Run, the agent's own assessment, or a conditional instruction such as “when
-done move to review” does not satisfy this assertion.
+Оцени полное описание, чек-листы, вопросы, существенные комментарии, связанный
+контекст и фактический результат. Для частичной, информационной, неуспешно
+проверенной или незавершённой работы безопасный handoff – `no_status_change`.
+После частичной работы обязательный comment proposal нужен, `whole_task_ready` – нет.
 
-Without that exact direct command, never send `statusCode` through an immediate
-mutation. Use the applicable inferred intent above instead. A project move
-itself has no inferred status-proposal path; do not call
-`move_task_to_project` without the direct command.
+Решение принимай до финального ответа или нового вопроса о metadata.
+Пустой необязательный срок, исполнитель, контроль и подобное поле сами
+по себе не являются открытым вопросом и не понижают готовность. Они блокируют
+лишь при прямом требовании задачи или target transition policy. Будущее
+обслуживание/улучшение относится к следующему шагу, не выдуманной незавершённости.
 
-## Prepare the editable status decision
+Если вся задача готова и контекст предлагает допустимый semantic `review`
+или `done`, до финального ответа обязательно покажи `intent=whole_task_ready`.
+Start proposal, comment proposal, принятый Run, записанный `no_status_change`
+и вопрос о необязательном поле не заменяют отдельное решение о завершении.
 
-1. For completion, call `get_task_status_proposal_context` with the accepted
-   task Run `runId` or the exact `companySlug`, `projectSlug`, and `taskNumber`.
-   Direct task locators support only `whole_task_ready`; `work_started` always
-   requires the exact currently running Run and the one-shot procedure above.
-2. Choose one currently transitionable semantic `review` or `done` target
-   returned by that context. Use `taskOutcome` only as a recommendation, never
-   as authority. If final evidence proves the whole task ready despite an
-   over-conservative `no_status_change`, prepare the live proposal.
-3. Inventory every interactive comment, status, control-clear, and checklist card needed
-   in the current assistant response. If this status is the sole card, call
-   `render_task_status_proposal` with `intent=whole_task_ready`, the exact
-   `stateRevision`, current status id, target status code, and a concise reason
-   explaining why the whole task is ready. If the response needs two or more
-   cards, read
-   `task-proposal-bundles.md` and put these same exact fields in this card's
-   `statusProposal` block in the one `render_task_proposals` call.
+<a id="distinguish-a-direct-command-from-inferred-readiness"></a>
 
-The rendered card is independent from the comment card. Do not merge one into
-the other's text and do not omit the comment proposal after a substantive
-accepted task Run. Independence is represented by separate cards inside one
-bundle when both are needed. A completion render is allowed to replace the
-older start draft. If status changed between the completion read and
-render/apply, reread the context; never overwrite the newer task decision.
+## Отличай прямую команду от вывода о готовности
 
-## Keep apply and dismissal human-controlled
+`update_task_status`, task patch с `statusCode`, batch patch и
+`move_task_to_project` допустимы лишь по прямой однозначной команде изменить
+точную задачу в точный статус сейчас. Только тогда передавай
+`userExplicitlyRequestedImmediateStatusChange=true`. Завершение работы,
+принятие Run, оценка агента и условное «когда закончишь, переведи на проверку»
+не удовлетворяют этому утверждению.
 
-Do not call `apply_task_status_proposal` or
-`dismiss_task_status_proposal` merely because the card was rendered. Call one
-only after the authenticated user presses the corresponding MCP App action or
-explicitly approves/rejects that exact proposal. A text-only fallback still
-requires the user's decision; a promise in the final response is not approval.
+Без точной прямой команды не передавай `statusCode` немедленной mutation;
+используй подходящее намерение выше. Перенос проекта сам не имеет inferred
+status-proposal: не вызывай `move_task_to_project` без прямой команды.
 
-When no status proposal was rendered, no status-related error affects the work,
-and no task-status action is required from the user, do not mention that absence
-in progress or final text; continue silently. Otherwise mention task status only
-when it is relevant to the user's request or next action: a proposal is actually
-awaiting the user, the user asked about status, the user dismissed a proposal in
-the current exchange, an exact transition was applied, or a status-related error
-or blocker affects the work. Never report Agent Run acceptance as a status
-change.
+<a id="prepare-the-editable-status-decision"></a>
+
+## Подготовь редактируемое решение
+
+1. Для завершения вызови `get_task_status_proposal_context` с принятым task
+   `runId` либо точными `companySlug`, `projectSlug`, `taskNumber`.
+   Прямой locator поддерживает только `whole_task_ready`; `work_started`
+   всегда требует точный текущий Run и однократную процедуру выше.
+2. Выбери один доступный сейчас semantic `review`/`done` из контекста.
+   `taskOutcome` – лишь рекомендация. Если итоговые данные доказывают готовность
+   вопреки излишне осторожному `no_status_change`, подготовь актуальный proposal.
+3. Посчитай все comment/status/control-clear/checklist карточки ответа.
+   Для единственной – `render_task_status_proposal` с
+   `intent=whole_task_ready`, точной `stateRevision`, текущим status id,
+   целевым code и краткой причиной готовности всей задачи. Для двух и более
+   прочитай `task-proposal-bundles.md` и передай те же поля в
+   `statusProposal` одного `render_task_proposals`.
+
+Статусная карточка независима от комментария. Не объединяй их текст и не
+опускай комментарий после содержательного принятого task Run. При необходимости
+обе остаются отдельными карточками одного bundle. Completion render может
+заменить старый start draft. Если статус изменился между completion read
+и render/apply, перечитай контекст; не перезаписывай более новое решение.
+
+<a id="keep-apply-and-dismissal-human-controlled"></a>
+
+## Применение и отклонение решает человек
+
+Не вызывай `apply_task_status_proposal`/`dismiss_task_status_proposal`
+из-за самого render. Нужны действие авторизованного пользователя в MCP App
+или явное одобрение/отклонение точного предложения. Текстовый fallback также
+ждёт решения; обещание в финальном ответе не является одобрением.
+
+Если карточка не показана, статусная ошибка не влияет на работу и действие
+пользователя не требуется, не объясняй отсутствие proposal в progress/final:
+молча продолжай. Иначе упоминай статус только при связи с просьбой/следующим
+шагом: карточка ждёт пользователя, он спросил о статусе или отклонил карточку
+в текущем обмене, применён точный переход либо статусная ошибка блокирует
+работу. Принятие Run не называй сменой статуса.

@@ -40,22 +40,24 @@ export const LOCAL_COMPANY_CONTEXT_PATH =
 
 export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   runtimeAgentsBytes: 10_000,
-  workerSkillBytes: 9_000,
-  // The decision to consider durable sharing stays mandatory. Mutation and
-  // recovery procedures load only for their exact scenario.
-  requiredTaskRunSkillsBytes: 49_000,
-  taskRunWithProposalBundleBytes: 52_000,
-  requiredTaskRunPluginLayerBytes: 58_000,
-  taskRunWithProposalBundlePluginLayerBytes: 61_000,
+  workerSkillBytes: 14_500,
+  // Канонические правила русские: кириллица занимает два UTF-8 байта.
+  // Пределы учитывают этот язык с небольшим запасом, без дублирования EN/RU.
+  // Набор обязательных файлов не расширяется: recovery и local-provider
+  // инструкции по-прежнему загружаются только для подходящего сценария.
+  requiredTaskRunSkillsBytes: 74_000,
+  taskRunWithProposalBundleBytes: 79_000,
+  requiredTaskRunPluginLayerBytes: 83_000,
+  taskRunWithProposalBundlePluginLayerBytes: 88_000,
   // The added schema is a compact typed dispatcher; it replaces launcher
   // resolution prose in every operational Run and signed-runtime prompt.
   localProviderToolSchemasBytes: 3_800,
-  plainCompanyTaskRunPluginLayerBytes: 64_000,
-  encryptedCompanyTaskRunPluginLayerBytes: 73_000,
-  localMcpInstructionsBytes: 2_300,
+  plainCompanyTaskRunPluginLayerBytes: 87_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 103_000,
+  localMcpInstructionsBytes: 4_000,
   modelVisibleLocalToolSchemasBytes: 13_500,
-  clientPrefixedLocalToolSchemasBytes: 46_000,
-  clientPrefixedTaskRunLocalToolSchemasBytes: 3_000,
+  clientPrefixedLocalToolSchemasBytes: 69_000,
+  clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
 });

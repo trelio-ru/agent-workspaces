@@ -1,216 +1,221 @@
-# Setup and recovery
+<a id="setup-and-recovery"></a>
 
-Read this file completely when Trelio MCP tools are absent, an OAuth scope is
-missing, the local bridge reports `TRELIO_GIT_REQUIRED`, Trelio rejects the
-installed plugin version, or a runtime hook returns an error.
+# Настройка и восстановление
 
-## Runtime hook admission
+Полностью прочитай файл, если отсутствуют инструменты Trelio MCP или право OAuth,
+bridge возвращает `TRELIO_GIT_REQUIRED`, Trelio отклоняет установленную версию
+плагина либо runtime hook завершается ошибкой.
 
-Never author, copy, preserve, or retry `runtimeSessionProof` or
-`runtimeAttestation`. Discovery and pairing/session recovery remain available
-without admission; the approved hook injects a fresh one-use proof for context,
-mutation, and Agent Workspace calls.
+<a id="runtime-hook-admission"></a>
 
-If Trelio itself returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop protected work.
-The signal proves only that the request arrived without proof; it does not say
-why. If review of the current definition is not confirmed, give one
-host-specific action: in Codex ask the user to enable/approve this plugin's
-current Hooks in plugin settings or `/hooks`; in Claude Code/Cowork ask for the
-equivalent plugin-hook approval. If current trust is already confirmed, do not
-repeat the enable advice and do not reset OAuth, pairing, Node, or Git.
+## Допуск через runtime hook
 
-For confirmed Codex trust, inspect the exact loaded definition and matcher, then
-compare plugin installation/trust-write time with the owning App Server and task
-start. Core/App Server versions before `0.154.0-alpha.2` do not reload user
-config after local plugin installation. If an older owner predates the current
-plugin or trust write, or chronology is unavailable, fully quit every
-Codex/ChatGPT process, reopen the app, create one fresh task, and retry exactly
-one protected read. Closing a window or creating a task under the same owner is
-not a restart. If the owner definitely started after trust yet the exact call
-still produces no `PreToolUse` event or runtime session, capture the canonical
-tool, hook events, runtime counts, and exact server response and classify a
-client hook-dispatch failure. Never bypass admission through another MCP,
-direct HTTP, browser automation, or a shell script.
+Не создавай, не копируй, не сохраняй и не отправляй повторно `runtimeSessionProof`
+или `runtimeAttestation`. Поиск подключений и восстановление pairing/session
+доступны без допуска. Для чтения контекста, изменений и Agent Workspace
+подтверждённый hook сам добавляет новое одноразовое доказательство.
 
-A `PreToolUse` failure proves that the hook ran. Preserve its exact structured
-code and reason rather than replacing it with the missing-Hooks response.
-`TRELIO_RUNTIME_HOOK_FAILED` follows its exact cause and one current-task retry.
-For `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, follow the required-version
-procedure below and never tell the user to enable Hooks for that failure.
+Если сам Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищённые
+операции. Ответ доказывает только отсутствие proof в запросе, но не его причину.
+Если просмотр текущего определения hook пользователем не подтверждён, назови
+одно действие для его клиента: в Codex – проверить и одобрить текущие Hooks
+плагина в настройках или `/hooks`; в Claude Code/Cowork – выполнить аналогичное
+подтверждение. Если доверие уже подтверждено, не повторяй совет включить Hooks
+и не сбрасывай OAuth, pairing, Node или Git.
 
-If Hooks are already enabled and the same server-side missing-proof response
-repeats, inspect the exact loaded plugin with bundled doctor. The current hook
-contract uses `launch-trelio-node` on macOS/Linux and a quote-free
-`commandWindows` path to `launch-trelio-node.cmd` on Windows. Bare `node` means
-the task loaded a stale incompatible hook definition: update the official
-plugin, approve the changed definition once, and open one new task. Do not
-install Node or reset OAuth when the bundled launcher is available.
+При подтверждённом доверии в Codex проверь точное загруженное определение и
+matcher. Сопоставь время установки плагина и записи доверия со временем запуска
+владеющего App Server и задачи. Core/App Server до `0.154.0-alpha.2` не
+перечитывает config после локальной установки плагина. Если такой процесс
+старше установки/доверия либо хронология неизвестна, нужно полностью завершить
+все процессы Codex/ChatGPT, открыть приложение заново, создать одну новую задачу
+и один раз повторить защищённое чтение. Закрытие окна или новая задача в прежнем
+процессе не считаются перезапуском. Если процесс заведомо запущен после доверия,
+но точный вызов всё ещё не создаёт событие `PreToolUse` или runtime session,
+сохрани имя инструмента, события hook, счётчики runtime и точный ответ сервера:
+это сбой вызова hook клиентом. Не обходи допуск через другой MCP, прямой HTTP,
+автоматизацию браузера или shell-скрипт.
 
-## Missing MCP tools
+Ошибка `PreToolUse` доказывает, что hook запускался. Сохрани точные код и причину
+структурированной ошибки; не подменяй их сообщением об отсутствующих Hooks.
+При `TRELIO_RUNTIME_HOOK_FAILED` устрани указанную причину и повтори вызов один
+раз в текущей задаче. Для `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` и
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` используй процедуру обновления ниже,
+а не совет включить Hooks.
 
-If the workspace skill is available but Trelio MCP tools are absent, treat the
-state as incomplete plugin setup rather than a task, ACL, or browser problem.
+Если Hooks включены, но сервер снова сообщает об отсутствии proof, проверь
+точно загруженный плагин встроенным doctor. Текущее определение использует
+`launch-trelio-node` в macOS/Linux и путь `commandWindows` без кавычек к
+`launch-trelio-node.cmd` в Windows. Прямой `node` означает устаревшее несовместимое
+определение: обнови официальный плагин, дай пользователю один раз подтвердить
+изменённое определение и перейди в новую задачу. Не устанавливай Node и не
+сбрасывай OAuth, если встроенный launcher доступен.
 
-1. Do not open Trelio in a browser as a substitute and do not continue task
-   work without the Agent Workspace control plane.
-2. Inspect `codex mcp list --json` and distinguish the remote `trelio` server
-   from the local `trelio-remote-skills` stdio server. If remote `trelio` needs
-   authentication and the ON_INSTALL OAuth window is not already open, run
-   `codex mcp login trelio` immediately and wait for the command. Treat
-   `auth_status: "o_auth"` only as the configured authentication scheme, not
-   proof that the current process attached its credential: an exact HTTP 401
-   or required/missing-bearer result from a live Trelio read still means the
-   remote connection needs recovery.
-   That single browser flow includes Trelio login when needed and then consent.
-   Never ask the user to log in on the site first, report «я вошёл» in chat, or
-   let Computer Use enter credentials. If the OAuth window is already open, do
-   not start a duplicate flow; let the user finish it.
-3. If the `Trelio` marketplace is missing, run the exact command
-   `codex plugin marketplace add trelio-ru/agent-workspaces`. It tracks the
-   official default branch; refresh an existing snapshot with
-   `codex plugin marketplace upgrade`. Then inspect `codex plugin list --json`.
-   A registered marketplace is not proof that the plugin is installed. If
-   `trelio-agent-workspaces@trelio-plugins` is not installed and enabled, run
-   `codex plugin add trelio-agent-workspaces@trelio-plugins` even though the
-   marketplace declares `INSTALLED_BY_DEFAULT`; that policy is a host
-   optimization, not a CLI readiness check.
-4. If a managed ChatGPT/Codex workspace marks the plugin or connection
-   unavailable, explain that a workspace admin must enable it for the user's
-   role. Do not suggest resetting Trelio credentials before resolving policy.
-5. After installation or OAuth, refresh `codex mcp list --json` and retry the
-   original low-risk Trelio read once in the current task. Continue there when
-   the tool is callable. Start a new task only when this live retry proves the
-   current task has not loaded the connection. If that one retry still reports
-   a missing bearer after completed OAuth, do not run `codex mcp login trelio`
-   again: repeated login creates another credential but cannot repair bearer
-   propagation in an already-open process. Use a fresh task/process and keep
-   the completed authorization; require a full restart only if the new task
-   still lacks tools or reports the old plugin version.
+<a id="missing-mcp-tools"></a>
 
-Failure of only `trelio-remote-skills` is not failed Trelio OAuth. Base remote
-Trelio and bridge work may continue. Inspect `codex mcp list --json`: the
-current plugin definition must launch `./scripts/launch-trelio-node`, not bare
-`node`. Run `trelio-workspace.mjs doctor --json` through that loaded plugin's
-POSIX launcher or Windows `.cmd`; it prefers the bundled Codex runtime before
-system Node and requires version 22+. A missing PATH alias is not a Node
-failure when the launcher succeeds. If Codex still shows bare `node`, follow
-the normal plugin update/new-task path. Never reset OAuth, reinstall Node, or
-repeat restart advice after the launcher has verified a compatible runtime.
-For a startup timeout on a plugin older than `1.19.5`, update first: that local
-host could block its bounded MCP handshake on cache retention. Version `1.19.5`
-starts retention only after the initialize response has been written; retry it
-in a fresh owner process.
+## Отсутствуют инструменты MCP
 
-Do not claim readiness because skill text is visible. Confirm it with a
-successful low-risk MCP read such as `get_my_context` or `get_task`.
+Если навык доступен, а инструментов Trelio MCP нет, настройка плагина не
+завершена. Это само по себе не проблема задачи, ACL или браузера.
 
-## Legacy command-only responses
+1. Не подменяй Trelio MCP браузером и не продолжай работу над задачей без
+   управляющего контура Agent Workspace.
+2. Проверь `codex mcp list --json`: удалённый `trelio` и локальный stdio-сервер
+   `trelio-remote-skills` – разные подключения. Если удалённому `trelio` нужна
+   авторизация, а окно OAuth от ON_INSTALL ещё не открыто, сразу выполни
+   `codex mcp login trelio` и дождись команды. `auth_status: "o_auth"` описывает
+   только настроенную схему авторизации. Это не доказательство передачи
+   credential текущим процессом: явный HTTP 401 или required/missing-bearer при
+   реальном чтении Trelio всё ещё требуют восстановления подключения.
+   Один браузерный flow включает вход в Trelio, если он нужен, и согласие на
+   доступ. Не проси сначала отдельно войти на сайт или написать «я вошёл» в чат.
+   Computer Use не вводит credentials. Если окно OAuth уже открыто, дождись
+   пользователя, не запускай второе.
+3. Если marketplace `Trelio` отсутствует, выполни
+   `codex plugin marketplace add trelio-ru/agent-workspaces`. Он использует
+   официальную ветку по умолчанию; существующий снимок обновляется командой
+   `codex plugin marketplace upgrade`. Затем проверь `codex plugin list --json`.
+   Наличие marketplace не доказывает установку плагина. Если
+   `trelio-agent-workspaces@trelio-plugins` не установлен и не включён, выполни
+   `codex plugin add trelio-agent-workspaces@trelio-plugins`, даже при политике
+   `INSTALLED_BY_DEFAULT`: это оптимизация клиента, а не проверка готовности CLI.
+4. Если управляемая рабочая среда ChatGPT/Codex запрещает плагин или подключение,
+   объясни, что администратор должен разрешить его для роли пользователя. Не
+   предлагай сброс credentials Trelio до устранения этого ограничения.
+5. После установки или OAuth обнови `codex mcp list --json` и один раз повтори
+   исходное безопасное чтение Trelio в текущей задаче. Если инструмент доступен,
+   продолжай здесь. Переходи к новой задаче, только если повторная попытка в
+   текущей задаче подтвердила, что подключение в ней не загрузилось. Если после
+   завершённого OAuth этот повтор снова сообщает об отсутствии bearer, не
+   запускай `codex mcp login trelio` ещё раз: новый вход создаёт другой credential,
+   но не исправляет передачу bearer уже открытым процессом. Используй новую
+   задачу/процесс с сохранением завершённой авторизации. Полный перезапуск нужен,
+   только если и новая задача не видит инструменты или сообщает старую версию.
 
-Use this route only when an older Trelio response has no `bridge.action` or
-`runtimeExecution.localAction` and returns a server-authored command whose first
-token is exactly `trelio-workspace`. Never execute or probe that token in PATH.
-Resolve this loaded plugin's exact `scripts/launch-trelio-node` (or sibling
-`.cmd` on native Windows) and `scripts/trelio-workspace.mjs`, then pass the
-unchanged validated trailing argv to those two bundled paths. Do not `eval` the
-text, scan plugin caches, select another installed version, or accept an
-unknown operation/flag. Prefer returned `argv`/`argvPrefix` over parsing text
-when present.
+Сбой только `trelio-remote-skills` не означает сбой Trelio OAuth. Работа через
+удалённый Trelio и bridge может продолжаться. В `codex mcp list --json` текущее
+определение должно запускать `./scripts/launch-trelio-node`, а не прямой `node`.
+Выполни `trelio-workspace.mjs doctor --json` через POSIX launcher или Windows
+`.cmd` именно загруженного плагина. Он сначала выбирает встроенный runtime Codex,
+затем системный Node и требует версию 22+. Отсутствующий alias в PATH не означает
+неисправность Node, если launcher работает. Если Codex всё ещё показывает прямой
+`node`, обнови плагин и перейди в новую задачу по обычной процедуре. После
+подтверждения совместимого runtime не сбрасывай OAuth, не переустанавливай Node
+и не повторяй совет перезапуска. При startup timeout плагина старше `1.19.5`
+сначала обнови его: очистка cache могла задерживать MCP handshake. Начиная с
+`1.19.5` очистка начинается после записи initialize response; повтори проверку
+в новом владеющем процессе.
 
-This compatibility route is valid only for the public bridge operations
-documented by the loaded bridge. Runtime and secret child arguments stay after
-their existing `--`. For `secret set` from a trusted producer, pipe bytes
-directly into this bundled process; never place them in MCP arguments, argv,
-chat, or a temporary Workspace file. A launcher failure is reportable only
-after the exact bundled route fails; absence of a global command is normal.
+Видимый текст навыка не доказывает готовность. Подтверди её успешным безопасным
+чтением MCP, например `get_my_context` или `get_task`.
 
-## Missing or unusable local Git
+<a id="legacy-command-only-responses"></a>
 
-Git is a local bridge prerequisite, not proof about Trelio OAuth, MCP ACL, or
-plugin installation. On `TRELIO_GIT_REQUIRED`, run this loaded plugin's bundled
-`../../scripts/trelio-workspace.mjs doctor --json` through its exact
-`../../scripts/launch-trelio-node` launcher (or the sibling `.cmd` on native
-Windows). Doctor resolves standalone Git 2.28+ only from standard macOS/
-Windows locations and durable Windows PATH and proves a temporary
-`init → add → commit`. Arbitrary process-PATH executables are not candidates;
-never reuse an undocumented Git private to Codex's marketplace manager.
+## Старые ответы, содержащие только команду
 
-If doctor reports `not_found`, `upgrade_required`, or `unusable`, immediately
-run its exact installation plan without another confirmation question in chat:
+Этот маршрут допустим, только если старый ответ Trelio не содержит `bridge.action`
+или `runtimeExecution.localAction`, а первый токен серверной команды – ровно
+`trelio-workspace`. Не ищи и не запускай этот токен через PATH. Используй точные
+`scripts/launch-trelio-node` (либо соседний `.cmd` в Windows) и
+`scripts/trelio-workspace.mjs` загруженного плагина; передай им проверенные
+оставшиеся argv без изменений. Не используй `eval`, не сканируй cache, не выбирай
+другую версию и не принимай неизвестные операции/флаги. Если возвращены
+`argv`/`argvPrefix`, используй их вместо разбора текста.
 
-- macOS uses `brew install git` when Homebrew is already installed; otherwise
-  start `xcode-select --install` and let the user complete Apple's native
-  installer window;
-- native Windows uses
-  `winget install --id Git.Git -e --source winget --accept-source-agreements
-  --accept-package-agreements`; without `winget`, immediately open the returned
-  official Git for Windows installer URL and let the user complete it.
+Совместимость распространяется только на публичные операции, описанные
+загруженным bridge. Аргументы дочернего runtime и secret остаются после прежнего
+`--`. Для `secret set` от доверенного источника передавай байты напрямую через
+pipe во встроенный процесс. Они не попадают в MCP-аргументы, argv, чат или
+временный файл Workspace. Сообщать о сбое launcher можно только после неудачи
+точного встроенного маршрута; отсутствие глобальной команды нормально.
 
-The client or OS still owns its normal command approval, administrator prompt,
-and signed installer UI; do not bypass or approve it for the user. After the
-installer finishes, rerun doctor in the same task before repeating the failed
-workspace command. Use a newly found absolute Git path immediately even when
-the parent Codex process PATH is stale; no app restart is required. If the
-installer outcome is ambiguous, check doctor before any retry with side
-effects.
+<a id="missing-or-unusable-local-git"></a>
 
-## Missing OAuth scopes
+## Локальный Git отсутствует или не работает
 
-If a Trelio MCP tool reports missing `mcp:*` scopes, treat it as a stale grant,
-not missing setup or a Trelio ACL denial.
+Git нужен локальному bridge; его состояние не доказывает состояние OAuth, MCP
+ACL или установки плагина. При `TRELIO_GIT_REQUIRED` выполни встроенный
+`../../scripts/trelio-workspace.mjs doctor --json` через точный
+`../../scripts/launch-trelio-node` загруженного плагина (либо соседний `.cmd` в
+Windows). Doctor ищет standalone Git 2.28+ только в стандартных каталогах
+macOS/Windows и постоянном Windows PATH и проверяет временный
+`init → add → commit`. Произвольные executable из PATH текущего процесса не
+подходят; не используй недокументированный Git менеджера marketplace Codex.
 
-1. Prefer the native OAuth reauthorization card triggered by
-   `mcp/www_authenticate`. The user must review and approve the new permissions
-   in the browser.
-2. After the browser flow, retry the exact low-risk read once in the current
-   task. Continue there when it succeeds; do not pre-emptively ask for a new
-   task or replace the read with browser access or another integration.
-3. If Codex does not surface the card, run `codex mcp login trelio`. Do not log
-   out first, request only the newly missing scope, print the authorization
-   URL, or inspect/copy stored credentials. The scope-less command requests the
-   current complete Trelio grant so existing rights are preserved.
-4. Wait while the user completes browser consent, then retry the same read
-   once. If the current task still uses the old connection, ask for a new task;
-   require a full restart only when that task also keeps the stale grant.
-5. Outside Codex, use the host's native reconnect flow. Do not assume Codex CLI
-   manages another host's credential store.
+Если doctor вернул `not_found`, `upgrade_required` или `unusable`, сразу выполни
+его точный план установки без дополнительного вопроса-подтверждения в чате:
 
-## Required plugin version
+- macOS: `brew install git`, если Homebrew уже установлен; иначе запусти
+  `xcode-select --install` и дай пользователю завершить штатное окно Apple;
+- Windows: `winget install --id Git.Git -e --source winget --accept-source-agreements
+  --accept-package-agreements`; при отсутствии `winget` сразу открой возвращённый
+  официальный URL установщика Git for Windows и дай пользователю завершить его.
 
-Trelio rejects a plugin below the live `minimumVersion`. On
-`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, never retry the old protected
-process or bypass the gate. When the code comes from an active `PreToolUse`
-failure, it proves that Hooks are enabled; never replace it with the
-`TRELIO_RUNTIME_HOOK_REQUIRED` response.
+Штатное одобрение команды, запрос администратора и окно подписанного установщика
+остаются под контролем клиента/ОС. Не обходи и не подтверждай их за пользователя.
+После установки повтори doctor в той же задаче до повтора команды Workspace.
+Сразу используй найденный абсолютный путь Git, даже если PATH родительского
+Codex устарел: перезапуск приложения не требуется. При неоднозначном результате
+установки сначала проверь doctor, затем решай о повторе действия с последствиями.
 
-1. When a bridge command reports the code in Codex, let its guarded updater run
-   first. It uses the exact official `trelio-plugins` marketplace, bounds
-   transient-network retries, validates the installed manifest and entrypoint,
-   and can re-dispatch the new bridge in the same task. Do not ask the user to
-   update before this path finishes and do not scan plugin caches.
-2. When an active Codex `PreToolUse` hook reports the code, inspect
-   `codex plugin list --json`. If the required version is already installed and
-   enabled, do not update again: the current task retained the old hook, so ask
-   only for a new task and repeat the original protected call there. If the
-   installed version is still below the returned minimum, run the exact
-   official update command from the error or
-   `codex plugin marketplace upgrade trelio-plugins`, verify the installed
-   version, and then retry once in the current task before moving to a new one.
-3. If bridge re-dispatch or that one current-task retry succeeds, continue
-   without an update notice.
-4. If the plugin updated but the current task cannot reload safely, ask only
-   for a new task and preserve any Run directory. There execute the same
-   original structured action, or this section's legacy route when the saved
-   response predates typed actions.
-5. Require a full Codex restart only if the new task still reports the old
-   version or lacks MCP tools. If automatic update failed, show the exact
-   fallback command returned by the bridge and keep the order: current task,
-   new task, full restart.
-6. Claude does not use the Codex updater. Refresh `trelio-plugins` through its
-   plugin manager, use `/reload-plugins` when available or start a new task,
-   and reserve a full restart as the last fallback.
+<a id="missing-oauth-scopes"></a>
 
-Never bypass the version gate with direct HTTP, another `clientKind`, edited
-metadata, or a forged header. Compatibility enforcement complements rather
-than replaces server-side ACL and candidate validation.
+## Не хватает прав OAuth
+
+Отсутствующие `mcp:*` scopes в ответе Trelio MCP означают устаревший grant,
+а не отсутствие настройки или отказ Trelio ACL.
+
+1. Предпочитай штатную карточку повторной авторизации OAuth от
+   `mcp/www_authenticate`. Пользователь сам проверяет и подтверждает новые права
+   в браузере.
+2. После этого один раз повтори точное безопасное чтение в текущей задаче.
+   При успехе продолжай здесь. Не проси новую задачу заранее и не подменяй
+   чтение браузером или другой интеграцией.
+3. Если Codex не показал карточку, выполни `codex mcp login trelio`. Не выходи
+   из аккаунта заранее, не запрашивай только новое недостающее право, не печатай
+   URL авторизации и не читай/копируй сохранённые credentials. Команда без scopes
+   запрашивает полный актуальный grant Trelio, сохраняя прежние права.
+4. Дождись согласия пользователя в браузере и повтори то же чтение один раз.
+   Если задача всё ещё использует старое подключение, попроси новую задачу.
+   Полный перезапуск нужен, только если и там сохранился устаревший grant.
+5. В другом клиенте используй его штатное переподключение. Codex CLI не следует
+   считать менеджером credentials другого клиента.
+
+<a id="required-plugin-version"></a>
+
+## Требуется обновление плагина
+
+Trelio отклоняет версии ниже актуальной `minimumVersion`. При
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` не повторяй старую защищённую операцию
+и не обходи проверку. Такой код из активного `PreToolUse` доказывает, что Hooks
+включены; не подменяй его ответом `TRELIO_RUNTIME_HOOK_REQUIRED`.
+
+1. Если код вернула команда bridge в Codex, сначала дай встроенному guarded
+   updater закончить работу. Он использует официальный marketplace
+   `trelio-plugins`, ограничивает сетевые повторы, проверяет установленный
+   manifest/entrypoint и может запустить новый bridge в той же задаче. До
+   завершения этого пути не проси пользователя обновляться и не сканируй cache.
+2. Если код вернул активный hook `PreToolUse` в Codex, проверь
+   `codex plugin list --json`. Если нужная версия уже установлена и включена,
+   не обновляй её снова: задача сохранила старый hook. Попроси только новую
+   задачу и повтори там исходный защищённый вызов. Если установленная версия
+   ниже требуемой, выполни точную официальную команду обновления из ошибки либо
+   `codex plugin marketplace upgrade trelio-plugins`, проверь установленную
+   версию и сделай один повтор в текущей задаче до перехода в новую.
+3. При успехе перезапуска bridge или единственного повтора продолжай работу
+   без уведомления об обновлении.
+4. Если плагин обновлён, но задача не может безопасно перечитать его, попроси
+   только новую задачу и сохрани каталог Run. Там выполни прежнее структурированное
+   действие; для старого сохранённого ответа используй маршрут совместимости выше.
+5. Полный перезапуск Codex нужен, только если новая задача всё ещё сообщает
+   старую версию или не видит MCP. Если автообновление не удалось, покажи точную
+   запасную команду из ответа bridge. Соблюдай порядок: текущая задача, новая
+   задача, полный перезапуск.
+6. Claude не использует updater Codex. Обнови `trelio-plugins` через менеджер
+   его плагинов, выполни `/reload-plugins`, если доступно, либо начни новую
+   задачу. Полный перезапуск оставь последним вариантом.
+
+Не обходи проверку версии прямым HTTP, другим `clientKind`, изменёнными metadata
+или поддельным заголовком. Проверка совместимости дополняет серверные ACL и
+валидацию candidate, а не заменяет их.

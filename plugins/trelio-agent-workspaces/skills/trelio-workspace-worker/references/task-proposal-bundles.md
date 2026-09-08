@@ -1,57 +1,60 @@
-# Task proposal bundles
+<a id="task-proposal-bundles"></a>
 
-Read this file completely before returning 2+ task proposal cards.
+# Наборы предложений для задач
 
-## Return one host result
+Полностью прочитай файл перед возвратом двух и более карточек предложений.
 
-Inventory the complete response before the first proposal write. When it needs
-more than one interactive card, read every matching proposal-kind reference
-and call `render_task_proposals` exactly once. Do not call
+<a id="return-one-host-result"></a>
+
+## Верни один результат клиенту
+
+До первой записи proposal определи полный состав ответа. При нескольких
+интерактивных карточках прочитай reference каждого вида и вызови
+`render_task_proposals` ровно один раз. В этом ответе не вызывай
 `propose_task_comment`, `render_task_comment_proposal`,
-`render_task_comment_proposals`, `render_task_status_proposal`, or
-`render_task_control_clear_proposal`, or `render_task_checklist_proposal` in
-that response: a host may display only the last standalone App result.
+`render_task_comment_proposals`, `render_task_status_proposal`,
+`render_task_control_clear_proposal` или `render_task_checklist_proposal`:
+клиент может показать только последний отдельный App-результат.
 
-With local `proposalProvider` or server-selected `providerSelection`, follow
-`local-company-context.md`. Reuse an already successful combined review; send
-all ordered blocks in one local render with `kind=bundle`, `operation=save`.
-Otherwise obtain the needed headless contexts. Each card retains its own later
-human decision; never split a bundle into singular render calls.
+Для локального `proposalProvider`/выбранного сервером `providerSelection`
+следуй `local-company-context.md`. Используй успешный combined review
+и передай все упорядоченные блоки одним local render с `kind=bundle`,
+`operation=save`. Иначе получи нужные headless contexts. У каждой карточки
+остаётся отдельное позднее решение человека; не разбивай набор на single render.
 
-For a post-result review, prefer one `get_task_review_context` per exact target
-with only the needed `proposalKinds`. Its `proposalContexts` and shared top-level
-controls/checklists satisfy the matching fresh-context reads below. Preserve the
-returned per-kind revision/snapshot fields and do not reread each singular tool.
-For a standalone proposal or unsupported combined read, use:
+После результата предпочитай один `get_task_review_context` на точную цель
+лишь с нужными `proposalKinds`. Его `proposalContexts` и общие верхнеуровневые
+controls/checklists заменяют соответствующие чтения свежего контекста ниже.
+Сохраняй per-kind revision/snapshot и не перечитывай одиночные инструменты.
+Для отдельного proposal или неподдерживаемого combined read используй:
 
-- `get_task_comment_proposal_context` for each `commentProposal` block;
-- `get_task_status_proposal_context` for each `statusProposal` block;
-- `get_task_control_clear_proposal_context` for each
-  `controlClearProposal` block.
-- `get_task_checklist_proposal_context` for each `checklistProposal` block.
+- `get_task_comment_proposal_context` для `commentProposal`;
+- `get_task_status_proposal_context` для `statusProposal`;
+- `get_task_control_clear_proposal_context` для `controlClearProposal`;
+- `get_task_checklist_proposal_context` для `checklistProposal`.
 
-Carry each target's exact optimistic revision, snapshot/hash, current status,
-control ids, checklist/item snapshots, and other fields only into its own block. A Run target uses its
-exact `runId`; a direct target uses exact `companySlug`, `projectSlug`, and
-`taskNumber`. Never reuse one task's context for a sibling card or create two
-cards of the same kind for the same target.
+Точные optimistic revision, snapshot/hash, текущий статус, control ids,
+checklist/item snapshots и остальные поля каждой цели относятся только к её
+блоку. Run-цель использует точный `runId`; прямая – `companySlug`,
+`projectSlug`, `taskNumber`. Не используй контекст одной задачи для соседней
+карточки и не создавай две карточки одного вида для одной цели.
 
-## Preserve card independence
+<a id="preserve-card-independence"></a>
 
-Keep display order, at most 64 blocks and 20 cards; combine adjacent prose in
-optional `text` blocks.
+## Сохрани независимость карточек
 
-A domain, ACL, conflict, or stale-state error may fail one prepared block while
-sibling cards remain usable. Do not hide successful cards because one block
-failed, and do not replace a failed card with an immediate mutation. A missing
-OAuth scope is a whole-call blocker and follows the standard consent/recovery
-flow.
+Сохраняй порядок, максимум 64 блока и 20 карточек. Соседний текст объединяй
+в необязательные `text` blocks.
 
-Every card keeps its own publish/apply/dismiss action and optimistic state. An
-action on one card never authorizes or decides a sibling card. In a text-only
-client, refer to the exact proposal id/revision and wait for an explicit
-decision on that card. Never interpret approval of the bundle as approval of
-all contained mutations.
+Ошибка domain/ACL/conflict/stale state может отклонить один подготовленный
+блок, оставив остальные рабочими. Не скрывай успешные карточки из-за одного
+сбоя и не заменяй ошибочную карточку немедленным изменением. Недостающее право
+OAuth блокирует весь вызов и требует стандартного consent/recovery.
 
-After an ambiguous transport failure, first read fresh proposal contexts to
-establish which drafts were saved before retrying any mutating bundle call.
+Каждая карточка сохраняет собственные publish/apply/dismiss и optimistic
+state. Действие одной не разрешает и не решает другую. В текстовом клиенте
+ссылайся на точные proposal id/revision и жди явного решения по карточке.
+Одобрение набора не означает одобрения всех изменений внутри.
+
+После неоднозначного транспортного сбоя сначала прочитай свежие proposal
+contexts, чтобы установить, какие drafts сохранились, затем решай о повторе записи.

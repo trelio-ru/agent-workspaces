@@ -1,88 +1,99 @@
 ---
 name: trelio-private-skill-management
-description: Create or publish a company-private Trelio Agent Skill through the guarded local plan/apply flow. Use when a Trelio company owner or administrator asks an agent to create, install, update, or publish a private Markdown skill, declarative Remote MCP skill, or executable .skillpkg release.
+description: Создание и публикация приватного Agent Skill компании Trelio через защищённую локальную процедуру plan/apply. Используй, когда владелец или администратор компании просит создать, установить, обновить или опубликовать приватный Markdown-навык, декларативный Remote MCP или исполняемый .skillpkg.
 ---
 
-# Trelio Private Skill Management
+<a id="trelio-private-skill-management"></a>
 
-Use only the four `trelio-remote-skills` management tools described below. The
-authenticated user must be the company owner or an administrator, and the
-paired bridge session must include `agent-skill:manage`. If an older connection
-lacks it, ask the user to reconnect Trelio in the plugin and retry in a new
-task. Do not substitute browser automation, a raw HTTP request, a database
-write, or the ordinary company publication form.
+# Приватные навыки компании Trelio
 
-## Choose one publication type
+По умолчанию общайся по-русски; явный выбор другого языка сохраняй. Ограничение
+объясняй кратко: причина и следующий шаг. Сохраняй обязательные точные цитаты
+и ссылки; перевод цитаты обозначай как перевод. Команды, инструменты, поля
+и коды ошибок не переводи.
 
-- `executionKind=markdown` publishes instructions only.
-- `executionKind=remote_mcp` requires a complete provider-neutral Remote MCP
-  declaration. Preserve the exact HTTPS endpoint, authentication type,
-  headers, credential-help text, and either the exact allowlist or the
-  credential-free `all_read_only` policy. The local host validates the same
-  declaration again before every execution.
-- `executionKind=skillpkg` requires a local `.skillpkg` path. The bridge reads a
-  regular non-symlink file, binds a short skill slug to the exact company skill
-  identity when necessary, and revalidates every file digest, entrypoint,
-  interpreter, capability, size, and portable path before publication. The
-  package may contain at most 100 files, 64 MiB encoded package bytes and 48
-  MiB decoded file bytes. A package larger than the former 8 MiB limit is
-  automatically bound to `minimumHostVersion >= 1.14.4`.
-- On a later release only, `executionKind=reuse_skillpkg` keeps the current
-  immutable runtime bytes while publishing new instructions and discovery
-  metadata.
+Используй только четыре инструмента управления `trelio-remote-skills`, описанные
+ниже. Авторизованный пользователь должен быть владельцем или администратором
+компании, а paired bridge session – иметь `agent-skill:manage`. Если старое
+подключение не содержит этого права, попроси переподключить Trelio в плагине
+и повторить в новой задаче. Не подменяй процедуру автоматизацией браузера,
+прямым HTTP, записью в БД или обычной формой публикации компании.
 
-An executable package uploaded by a company remains `company_unverified`.
-Publication never supplies device consent: before first execution, every user
-must separately approve the exact release in the bridge's protected local
-window.
+<a id="choose-one-publication-type"></a>
 
-## Prepare the exact plan
+## Выбери тип публикации
 
-For a new skill call `plan_company_private_agent_skill_create`. Creation always
-publishes version `1.0.0`. Supply the company slug, stable lowercase kebab-case
-skill slug, title, description, search terms, category, instructions,
-publication summary, change reason, and one execution type.
+- `executionKind=markdown` публикует только инструкции.
+- `executionKind=remote_mcp` требует полной декларации Remote MCP без привязки
+  к конкретному provider. Сохраняй точный HTTPS endpoint, тип авторизации,
+  заголовки, справку о credentials и точный allowlist либо не требующую
+  credentials политику `all_read_only`. Локальный host заново проверяет
+  декларацию перед каждым выполнением.
+- `executionKind=skillpkg` требует локальный путь `.skillpkg`. Bridge читает
+  обычный файл без symlink, при необходимости связывает короткий slug с точным
+  навыком компании и заново проверяет digest каждого файла, entrypoint,
+  interpreter, capabilities, размер и переносимость путей. Лимиты: 100 файлов,
+  64 MiB закодированных байтов package и 48 MiB декодированных байтов файлов.
+  Package больше прежних 8 MiB автоматически требует `minimumHostVersion >= 1.14.4`.
+- Только для последующего релиза `executionKind=reuse_skillpkg` сохраняет
+  текущие неизменяемые runtime bytes, публикуя новые инструкции и metadata поиска.
 
-For an existing private skill call
-`plan_company_private_agent_skill_release`. Supply the next `X.Y.Z` version and
-the complete new release content. The tool reads the live current release and
-binds the plan to its exact release ID; never guess or reuse an earlier plan.
+Исполняемый package, загруженный компанией, остаётся `company_unverified`.
+Публикация не даёт согласие устройства: перед первым выполнением каждый
+пользователь отдельно одобряет точный релиз в защищённом локальном окне bridge.
 
-When company E2EE is enabled, the bridge automatically opens the company scope
-locally. The user's encryption key is entered only in a loopback page. The
-bridge encrypts prose, discovery terms, Remote MCP configuration, runtime
-manifest, and `.skillpkg` bytes before the apply request. Raw keys and
-plaintext package bytes must never be placed in prompt output, MCP arguments
-beyond the user-provided source content/path, environment variables, argv, or
-Trelio server logs. If the device is awaiting access, preserve the exact
-encryption-settings URL returned by the bridge and ask the owner to grant that
-device access there.
+<a id="prepare-the-exact-plan"></a>
 
-Read the complete plan result: operation, company, skill/version, execution
-summary, content-protection mode, expected current release, changed fields,
-warnings, expiry, `planId`, `planHash`, and `settingsUrl`.
+## Подготовь точный план
 
-## Always pause for separate confirmation
+Для нового навыка вызови `plan_company_private_agent_skill_create`. Создание
+всегда публикует `1.0.0`. Передай slug компании, стабильный skill slug в lowercase
+kebab-case, название, описание, поисковые слова, категорию, инструкции, описание
+публикации, причину изменения и один тип выполнения.
 
-Planning never authorizes apply, even when the original request directly said
-"create" or "publish". Show the material plan, including Remote MCP endpoint,
-authentication/tool policy or `.skillpkg` interpreter/capabilities and every
-warning. Ask the owner/admin to confirm the exact `planHash`. Do not call an
-apply tool in the same assistant turn as its plan.
+Для существующего приватного навыка вызови
+`plan_company_private_agent_skill_release` со следующей версией `X.Y.Z` и полным
+содержимым релиза. Инструмент читает текущий релиз и привязывает план к его
+точному ID; не угадывай и не используй старый план.
 
-After an explicit confirmation, call `create_company_private_agent_skill` or
-`publish_company_private_agent_skill_release` with the same `planId`, exact
-`planHash`, and `confirmed=true`. The bridge owns the stable idempotency key. A
-lost response may be retried with the same plan; never prepare a replacement
-merely to repeat an ambiguous mutation. If the plan expired, company
-encryption state changed, or current release CAS failed, discard it, prepare a
-fresh plan, show the changed result, and obtain fresh confirmation.
+При E2EE компании bridge открывает её контекст локально. Пользователь вводит
+ключ шифрования только на loopback-странице. До apply bridge шифрует тексты,
+поисковые слова, Remote MCP config, runtime manifest и байты `.skillpkg`.
+Ключи и открытые байты package не попадают в prompt output, MCP-аргументы
+за пределами предоставленного пользователем исходного содержимого/пути,
+environment, argv и серверные логи Trelio. Если устройство ожидает доступа,
+сохрани точный URL настроек шифрования из ответа bridge и попроси владельца
+дать этому устройству доступ на указанной странице.
 
-## Report and link the result
+Прочитай весь результат плана: операцию, компанию, навык/версию, описание
+выполнения, защиту содержимого, ожидаемый текущий релиз, изменённые поля,
+предупреждения, срок действия, `planId`, `planHash`, `settingsUrl`.
 
-Treat `replayed=true` as the original success. State the published version and
-execution type, then give the clickable exact `settingsUrl` returned by apply.
-Creation installs the skill but deliberately does not assign or enable it for
-the whole company or any project; release publication also leaves assignment
-unchanged. Say this directly and use that exact page for human review,
-assignment, connection setup, or later management.
+<a id="always-pause-for-separate-confirmation"></a>
+
+## Отдельное подтверждение обязательно
+
+Подготовка плана не разрешает apply, даже если исходная просьба прямо содержит
+«создай» или «опубликуй». Покажи существенные детали плана: Remote MCP endpoint,
+авторизацию/политику инструментов либо interpreter/capabilities `.skillpkg`,
+а также все предупреждения. Попроси владельца/администратора подтвердить точный
+`planHash`. Не вызывай apply в том же ходе ассистента, в котором подготовлен план.
+
+После явного подтверждения вызови `create_company_private_agent_skill` или
+`publish_company_private_agent_skill_release` с тем же `planId`, точным
+`planHash` и `confirmed=true`. Стабильный ключ идемпотентности создаёт bridge.
+После потери ответа допустим повтор того же плана; не создавай замену только
+ради повтора неоднозначного изменения. При истечении плана, смене состояния
+шифрования компании или конфликте CAS текущего релиза откажись от старого плана,
+подготовь новый, покажи изменения и получи новое подтверждение.
+
+<a id="report-and-link-the-result"></a>
+
+## Сообщи результат и дай ссылку
+
+`replayed=true` означает первоначальный успех. Назови опубликованную версию
+и тип выполнения, дай кликабельный точный `settingsUrl` из apply. Создание
+устанавливает навык, но не назначает и не включает его для всей компании или
+проекта; публикация релиза также сохраняет назначения. Скажи об этом прямо.
+Для проверки, назначения, подключения и дальнейшего управления используй
+именно возвращённую страницу.

@@ -1,139 +1,140 @@
 # Agent Workspace Run
 
-Read this file completely before starting, opening, continuing, checkpointing,
-or submitting an Agent Workspace Run. Recovery/history/cleanup additionally
-requires `run-recovery.md` only when that scenario applies. For a
-task-scoped Run, also read `task-run.md`, `task-status-proposals.md`,
-`task-comment-proposals.md`, and `task-checklist-proposals.md` before opening,
-task communication, handoff, submit, or final reporting.
+Полностью прочитай файл до start/open/continue/checkpoint/submit Agent Run.
+Для восстановления/истории/очистки дополнительно нужен `run-recovery.md`
+только при соответствующем сценарии. Для task-scoped Run до открытия,
+общения по задаче, handoff, submit и итогового отчёта также прочитай
+`task-run.md`, `task-status-proposals.md`, `task-comment-proposals.md`
+и `task-checklist-proposals.md`.
 
-## Prepare and open the Run
+<a id="prepare-and-open-the-run"></a>
 
-1. Complete `scope-and-context.md` first: resolve one exact writable workspace
-   target and only materially relevant same-company workspace
-   contexts. Do not guess IDs, repeat its discovery sequence, inherit
-   company/project Workspace context, or use the external Agent Skill catalog
-   for native Trelio control-plane work.
-2. Call `prepare_agent_workspace_run` once with the exact `workspaceId`, or
-   task addressing for its canonical workspace, plus optional
-   `relatedWorkspaceIds`. The tool rechecks write ACL for that exact workspace.
-   By default it returns the initiating user's latest portable draft on
-   the current accepted head; otherwise it pins rules/profile/runtime policy,
-   validates every related context and starts one fully prepared Run. Use
-   `startNewRun=true` only for an intentional independent concurrent branch,
-   because ordinary continuation must not discard earlier partial work. Do not separately call
-   `get_agent_instructions`, `ensure_agent_workspace`,
-   `start_agent_workspace_run` or `attach_agent_workspace_context` on this
-   compact path. Lower-level tools remain only for continuation/recovery with
-   an already exact Run. One Run always writes one workspace; every supplied
-   related workspace is pinned read-only.
-3. Do not add runtime fields to prepare. The approved hook injects proof; the
-   returned `bridge.actions.open` carries only server-authored runtime state.
-   Execute it unchanged, adding the current client project folder only as
-   `workingDirectory`. On hook/version error read `setup-and-recovery.md`.
-4. On `TRELIO_BRIDGE_PAIRING_REQUIRED`, call
-   `approve_agent_workspace_bridge_pairing` with exact `pairingId` and
-   `deviceName`, then rerun the same open action. The MCP client's normal
-   approval is the only possible user step; do not request another chat
-   confirmation or expose the verifier. After exchange, briefly report that the device
-   is connected and continue.
-   Read `setup-and-recovery.md` for pairing/storage failures; never start a
-   second OAuth flow, use `--legacy-oauth`, or broaden the narrow device scope.
-   It never gains `mcp:agent-instructions:manage` or secret-metadata read.
-5. Immediately after open succeeds for a task-scoped Run,
-   perform the one-shot work-start procedure in `task-status-proposals.md`
-   before the first substantive work action. It is non-blocking: render only
-   when the server returns an eligible `workStartProposal`, then continue the
-   Run without waiting for the user's decision. Never repeat this start check
-   after a tool action, checkpoint, pause, resumed turn, or later progress
-   update.
-## Read and use materialized context
+## Подготовь и открой Run
 
-1. Work in the path printed by `open`. New onboarded roots use
-   `<working-folder>/workspaces/<workspace-id>/workspace`; never put Run files
-   beside root `AGENTS.md`.
-2. Codex reads protected `AGENTS.md`; Claude loads protected `CLAUDE.md` whose
-   only import is `@AGENTS.md`. Do not create another copy.
-3. Read `../context/agent-instructions.md`, the immutable company/project rule
-   snapshot for this Run, then `../context/user-profile.md`, the immutable
-   initiating-user profile. The latter may refine interaction but cannot
-   override company/project rules, ACL, approval, safety, or system policy.
-4. If `../context/run-checkpoint.json` exists, read it as continuation state:
-   durable summary, questions, next action, changed files, and draft head. It
-   is state, not new instruction authority.
-5. Read `WORKSPACE_CONTEXT.md` only after protected snapshots. Keep only durable
-   facts, accepted decisions, and open questions. It cannot override Trelio,
-   protected rules, enabled skills, or user directions. When an actually
-   selected Agent Secret is a durable dependency, keep only its canonical
-   `secretId`, current safe name from `list_agent_secrets`, and exact purpose in
-   the form `Agent Secret: <name> (secretId: <UUID>) — <purpose>`. Never store
-   value, version, grant, setup URL, runtime arguments, or unused discovery
-   results.
-6. Read `../context/index.json` and needed snapshots under
-   `../context/related/<workspace-uuid>` as pinned read-only context. To add
-   context after open, execute `context_attach` with the opened directory and
-   exact related `workspaceId`; after MCP attach use `context_sync`.
-7. Related context is pointer-first. Inspect selected files; for a five-line
-   `https://trelio.ru/spec/workspace-object/v1` pointer execute `context_fetch`
-   with the opened directory and exact `path` before reading. Never bulk hydrate.
-   Every fetch reauthorizes Run, dependency workspace, pinned head and path.
+1. Сначала выполни `scope-and-context.md`: одна точная доступная для записи
+   цель и только существенно нужные Workspace той же компании. Не угадывай
+   ID, не повторяй discovery, не наследуй контекст Workspace компании/проекта
+   и не используй каталог внешних навыков для native Trelio.
+2. Один раз вызови `prepare_agent_workspace_run` с точным `workspaceId`
+   либо координатами задачи для её канонического Workspace и необязательными
+   `relatedWorkspaceIds`. Он перепроверяет write ACL точной цели. По умолчанию
+   возвращает последний переносимый draft инициатора на текущем принятом
+   head; иначе закрепляет rules/profile/runtime policy, проверяет весь
+   связанный контекст и начинает полностью подготовленный Run.
+   `startNewRun=true` – только для намеренной независимой параллельной ветки:
+   обычное продолжение не должно терять прежнюю частичную работу.
+   Не вызывай отдельно `get_agent_instructions`, `ensure_agent_workspace`,
+   `start_agent_workspace_run`, `attach_agent_workspace_context` на компактном
+   пути. Низкоуровневые инструменты остаются для продолжения/восстановления
+   уже точного Run. Один Run пишет в один Workspace; все связанные – pinned read-only.
+3. Не добавляй runtime-поля в prepare. Подтверждённый hook добавляет proof,
+   а `bridge.actions.open` несёт лишь серверное runtime state. Исполни без
+   изменений, добавив текущую папку проекта клиента только как
+   `workingDirectory`. При hook/version error прочитай `setup-and-recovery.md`.
+4. При `TRELIO_BRIDGE_PAIRING_REQUIRED` вызови
+   `approve_agent_workspace_bridge_pairing` с точными `pairingId` и
+   `deviceName`, затем повтори то же open. Штатное одобрение MCP-клиента –
+   единственный возможный шаг пользователя; не проси второго подтверждения
+   в чате и не раскрывай verifier. После обмена кратко сообщи о подключении
+   устройства и продолжай. Для pairing/storage failures прочитай
+   `setup-and-recovery.md`; не начинай второй OAuth, не используй
+   `--legacy-oauth` и не расширяй узкие права устройства. Они никогда не
+   включают `mcp:agent-instructions:manage` и чтение secret metadata.
+5. Сразу после успешного open task-scoped Run, до первого содержательного
+   действия, выполни однократную процедуру начала из `task-status-proposals.md`.
+   Она не блокирует: показывай только eligible `workStartProposal` сервера,
+   затем продолжай без ожидания решения. Не повторяй проверку после инструмента,
+   checkpoint, pause, нового хода или сообщения о прогрессе.
 
-## Execute, checkpoint, and submit
+<a id="read-and-use-materialized-context"></a>
 
-1. Work only inside the writable workspace. Keep sources in `sources/`,
-   intermediates in `work/`, final materials in `artifacts/`, and extracted
-   representations in `derived/`. Large/binary writable files remain locally
-   materialized; submit streams them to private object storage and stages exact
-   Git pointers. For a short update, edit existing canonical material and one
-   concise required worklog entry. Create source/intermediate/result files only
-   for distinct useful content; unchanged facts do not need narrative copies.
-2. Run relevant validation. Save each coherent material change before further
-   work using action `checkpoint` with `type=draft`, the exact opened directory and a
-   durable `summary`. If immediately finishing that same delta, call `finish`
-   directly: its handoff checkpoint and submit replace a separate draft
-   checkpoint. Do not perform both for one immediate finalization. A saved draft
-   remains necessary for continuation by `prepare_agent_workspace_run`.
-   Checkpoint before waiting, a turn/session boundary, context compaction or a
-   handoff to another agent. Do not checkpoint a half-written file or create an
-   empty checkpoint without a meaningful delta. A clean working tree after a
-   successful draft checkpoint is normal: `finish` uses the saved candidate
-   delta and must not manufacture another file edit solely to finalize the Run.
-3. Before a blocking question with meaningful local changes, execute `pause`
-   in the exact opened directory with `summary`, `questions`, and `nextAction`.
-   It validates the delta,
-   uploads the draft including external objects and records the blocker. Ask
-   only after success. If the Run is still clean and the question is merely
-   preparatory, ask directly without creating an empty Git draft.
-4. Long-running local work may use heartbeat, but never send a separate
-   heartbeat immediately before finalization: `finish` owns it.
-5. Finalize once with action `finish` in the exact opened directory, passing
-   `summary`, `evidence`, `filePaths`, `questions`, `nextAction`, and when
-   required `taskOutcome`. It computes and prints the complete
-   candidate changed-path manifest relative to the pinned base, including an
-   already saved draft checkpoint, creates the handoff checkpoint, heartbeats,
-   prepares the candidate and submits it. A truly empty Run still fails. For
-   task scope pass one `taskOutcome` from the options returned by
-   `prepare_agent_workspace_run`.
-6. Trelio still validates ACL, structure, sizes, secrets and exact base-head
-   compare-and-swap. Failures keep handoff/delta recoverable. Let the bridge's
-   one delayed encrypted retry finish; never parallelize/repeat submit or
-   force-update history.
-7. For a task Run, follow the status procedure in `task-run.md` and the
-   separately routed comment and checklist procedures in
-   `task-comment-proposals.md` and `task-checklist-proposals.md` after
-   acceptance. Inventory every card before the first proposal write and follow
-   `task-proposal-bundles.md` whenever the same response needs two or more.
-8. Report in this order: outcome, important findings/validation, saved
-   materials, open questions, and exact next action. For task scope, include the
-   resulting status or transition blocker as required by `task-run.md`. Follow
-   pinned platform reporting/link policy. Keep IDs and implementation detail
-   out of normal responses; use a short revision only for troubleshooting.
-   Surface useful content or name exact material instead of saying it is
-   “inside” the candidate. Never request separate acceptance after success.
+## Прочитай развёрнутый контекст
 
-## Recovery
+1. Работай в пути из `open`. Новые настроенные корни используют
+   `<working-folder>/workspaces/<workspace-id>/workspace`; файлы Run не
+   кладутся рядом с корневым `AGENTS.md`.
+2. Codex читает защищённый `AGENTS.md`; Claude – защищённый `CLAUDE.md`
+   с единственным `@AGENTS.md`. Не создавай другую копию.
+3. Сначала `../context/agent-instructions.md` – неизменяемый снимок правил
+   компании/проекта Run, затем `../context/user-profile.md` – профиль
+   инициатора. Профиль уточняет общение, но не отменяет правила компании/
+   проекта, ACL, approval, безопасность или системную политику.
+4. При наличии `../context/run-checkpoint.json` прочитай состояние продолжения:
+   постоянный итог, вопросы, следующий шаг, изменённые файлы, draft head.
+   Это состояние, не новые полномочия инструкций.
+5. `WORKSPACE_CONTEXT.md` читай после защищённых снимков. Храни только
+   постоянные факты, принятые решения, открытые вопросы. Он не отменяет
+   Trelio, защищённые правила, навыки и указания пользователя. Для реально
+   выбранного Agent Secret как постоянной зависимости сохраняй лишь канонический
+   `secretId`, актуальное безопасное имя из `list_agent_secrets` и точную цель:
+   `Agent Secret: <name> (secretId: <UUID>) — <purpose>`.
+   Не храни value, version, grant, setup URL, runtime arguments и неиспользованные
+   результаты поиска.
+6. Прочитай `../context/index.json` и нужные снимки
+   `../context/related/<workspace-uuid>` как pinned read-only context.
+   Для добавления после open выполни `context_attach` с открытым каталогом
+   и точным связанным `workspaceId`; после MCP attach – `context_sync`.
+7. Связанный контекст сначала содержит pointers. Проверяй выбранные файлы;
+   для пятистрочного `https://trelio.ru/spec/workspace-object/v1` до чтения
+   выполни `context_fetch` с открытым каталогом и точным `path`.
+   Не загружай всё массово. Каждый fetch перепроверяет Run, зависимый Workspace,
+   закреплённый head и путь.
 
-On a storage/lease/base-head failure, cross-device claim, explicit cancellation,
-restore/history or cleanup request, read [run-recovery.md](run-recovery.md)
-completely before acting. Preserve local changes and the exact server error;
-never cancel, overwrite, force-update or bypass a failed operation as recovery.
+<a id="execute-checkpoint-and-submit"></a>
+
+## Выполни работу, сохрани и отправь
+
+1. Работай только внутри writable Workspace: источники `sources/`,
+   промежуточные `work/`, итоговые `artifacts/`, извлечённые `derived/`.
+   Большие/бинарные файлы остаются локально; submit потоком передаёт их в
+   приватное object storage и stage-ит точные Git pointers. Для короткого
+   обновления меняй существующий канонический материал и одну краткую
+   обязательную запись worklog. Новые source/intermediate/result файлы нужны
+   лишь для отдельного полезного содержимого; неизменные факты не требуют копий.
+2. Выполни подходящие проверки. До дальнейшей работы сохраняй каждое связное
+   изменение через `checkpoint` с `type=draft`, точным каталогом и постоянным
+   `summary`. Если сразу завершаешь ту же delta, вызывай `finish` напрямую:
+   его handoff checkpoint и submit заменяют отдельный draft checkpoint.
+   Не выполняй оба для одного немедленного завершения. Сохранённый draft
+   остаётся необходимым для продолжения через `prepare_agent_workspace_run`.
+   Делай checkpoint до ожидания, границы хода/сессии, compaction или передачи
+   другому агенту. Не сохраняй недописанный файл и не создавай пустой checkpoint.
+   Чистое дерево после успешного draft нормально: `finish` использует
+   сохранённую delta, не требует выдуманной правки ради завершения.
+3. До блокирующего вопроса при существенных локальных правках выполни `pause`
+   в точном каталоге с `summary`, `questions`, `nextAction`. Он проверяет
+   delta, отправляет draft с external objects и фиксирует блокировку. Спроси
+   лишь после успеха. Для чистого Run и подготовительного вопроса не создавай
+   пустой Git draft.
+4. Длительная локальная работа может использовать heartbeat, но не отдельный
+   heartbeat сразу до завершения: его выполняет `finish`.
+5. Заверши один раз через `finish` в точном каталоге с `summary`, `evidence`,
+   `filePaths`, `questions`, `nextAction` и нужным `taskOutcome`. Он вычисляет
+   и печатает полный manifest изменённых candidate paths от закреплённой базы,
+   включая сохранённый draft, создаёт handoff checkpoint, heartbeat,
+   подготавливает candidate и отправляет. Действительно пустой Run отклоняется.
+   Для задачи передай один `taskOutcome` из `prepare_agent_workspace_run`.
+6. Trelio проверяет ACL, структуру, размеры, секреты и точный base-head CAS.
+   При ошибке handoff/delta остаются восстанавливаемыми. Дождись одного
+   отложенного encrypted retry bridge; не отправляй submit параллельно или повторно и не
+   перезаписывай историю принудительно.
+7. После принятия task Run выполни статусную процедуру `task-run.md`
+   и отдельные `task-comment-proposals.md`/`task-checklist-proposals.md`.
+   До первой записи составь полный список карточек; для двух и более в
+   одном ответе используй `task-proposal-bundles.md`.
+8. Сообщай по порядку: результат, важные выводы/проверки, сохранённые материалы,
+   открытые вопросы, точный следующий шаг. Для задачи добавь итоговый статус
+   или блокировку перехода по `task-run.md`. Соблюдай pinned reporting/link
+   policy. В обычном ответе не нужны IDs и детали реализации; короткая ревизия
+   допустима для диагностики. Покажи полезное содержимое или назови точный
+   материал вместо «внутри candidate». После успеха не проси отдельного принятия.
+
+<a id="recovery"></a>
+
+## Восстановление
+
+При ошибке storage/lease/base-head, перехвате на другом устройстве, явной
+отмене, восстановлении/истории/очистке полностью прочитай
+[восстановление Run](run-recovery.md) до действия. Сохрани локальные правки
+и точную ошибку сервера. Не отменяй, не перезаписывай, не форсируй и не обходи
+ошибочную операцию под видом восстановления.

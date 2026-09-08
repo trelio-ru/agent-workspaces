@@ -4319,86 +4319,86 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "agent-secrets.md",
   ];
 
-  assert.match(mainSkill, /Read every matching\s+reference below completely before its first related tool call/u);
-  assert.match(mainSkill, /If the scenario\s+changes during the task, pause and read the newly relevant reference/u);
-  assert.match(mainSkill, /Classify every user addition independently/u);
-  assert.match(mainSkill, /active\s+maintainer, external-service, or Run route does not absorb a later request/u);
+  assert.match(mainSkill, /Полностью\s+прочитай все подходящие references ниже до первого связанного вызова инструмента/u);
+  assert.match(mainSkill, /При смене сценария сначала прочитай новый reference/u);
+  assert.match(mainSkill, /Каждое дополнение пользователя классифицируй отдельно/u);
+  assert.match(mainSkill, /Работа над исходниками,\s+внешним сервисом или Run не поглощает позднюю отдельную просьбу/u);
   const agentRunReference = await readFile(
     path.join(workerDirectory, "references", "agent-run.md"),
     "utf8",
   );
-  assert.match(agentRunReference, /latest portable draft on\s+the current accepted head/u);
-  assert.match(agentRunReference, /action `checkpoint`/u);
+  assert.match(agentRunReference, /последний переносимый draft инициатора на текущем принятом\s+head/u);
+  assert.match(agentRunReference, /через `checkpoint`/u);
   assert.match(agentRunReference, /startNewRun=true/u);
-  assert.match(agentRunReference, /exact `workspaceId`, or\s+task addressing/u);
-  assert.match(agentRunReference, /One Run always writes one workspace/u);
-  assert.match(agentRunReference, /Complete `scope-and-context\.md` first/u);
-  assert.match(agentRunReference, /Do not guess IDs, repeat its discovery sequence/u);
+  assert.match(agentRunReference, /с точным `workspaceId`\s+либо координатами задачи/u);
+  assert.match(agentRunReference, /Один Run пишет в один Workspace/u);
+  assert.match(agentRunReference, /Сначала выполни `scope-and-context\.md`/u);
+  assert.match(agentRunReference, /Не угадывай\s+ID, не повторяй discovery/u);
   const scopeReference = await readFile(
     path.join(workerDirectory, "references", "scope-and-context.md"),
     "utf8",
   );
-  assert.match(scopeReference, /Do not call `list_workspaces` merely to discover context/u);
-  assert.match(scopeReference, /Call the canonical unified `search` once/u);
-  assert.match(scopeReference, /The same call searches\s+first-class active and archived workspaces, projects, active and archived\s+tasks/u);
-  assert.match(scopeReference, /Archived Workspace results carry an explicit `\[Архив\]` title marker/u);
-  assert.match(scopeReference, /optional refinements, not\s+mandatory consecutive stages/u);
-  assert.match(scopeReference, /explicitly linked\s+to several projects/u);
-  assert.match(scopeReference, /Company\/project rules are not\s+search documents/u);
-  assert.match(scopeReference, /call `get_tasks` once.*do not make repeated `get_task` calls/su);
-  assert.match(scopeReference, /Current `get_task` and `get_tasks` return `schemaVersion: 3`/u);
-  assert.match(scopeReference, /Text `content` is only a summary/u);
-  assert.match(scopeReference, /one structured `task`; Text `content` is only a summary/u);
-  assert.match(scopeReference, /Resolve the item's `instructionScope\.orderedLayerKeys` against that union/u);
-  assert.match(scopeReference, /Never apply a company,\s+project, or personal layer to a task that does not reference it/u);
-  assert.match(scopeReference, /inspect `task\.deferredSections`/u);
-  assert.match(scopeReference, /Call `get_task_sections`\s+once/u);
-  assert.match(scopeReference, /do not repeat `get_task` or request all\s+sections by default/u);
-  assert.match(scopeReference, /`itemCount: 0` means known-empty; `null`\s+means not counted/u);
-  assert.match(scopeReference, /without\s+repeating effective instructions, core fields, connections, or related\s+workspaces/u);
-  assert.match(scopeReference, /Schema v1\/v2 is unsupported/u);
-  assert.match(scopeReference, /plugin\/backend mismatch/u);
-  assert.match(scopeReference, /Inside a prepared Run, its pinned\s+`agent-instructions\.md` and\s+`user-profile\.md` remain authoritative/u);
-  assert.match(scopeReference, /Do not call\s+`get_agent_instructions` again after loaded instructions/u);
+  assert.match(scopeReference, /Не вызывай `list_workspaces` лишь для поиска контекста/u);
+  assert.match(scopeReference, /Один раз вызови единый `search`/u);
+  assert.match(scopeReference, /Вызов ищет активные\/\s+архивные Workspace, проекты, активные\/архивные задачи/u);
+  assert.match(scopeReference, /Архив имеет `\[Архив\]`\s+в названии/u);
+  assert.match(scopeReference, /необязательные уточнения[\s\S]*не обязательные этапы подряд/u);
+  assert.match(scopeReference, /не сужай поиск Workspace до\s+одного проекта, если он связан с несколькими/u);
+  assert.match(scopeReference, /Правила компании\/проекта не\s+поисковые документы/u);
+  assert.match(scopeReference, /вызови один `get_tasks` в нужном порядке, не последовательные `get_task`/u);
+  assert.match(scopeReference, /Текущие `get_task`\/`get_tasks` возвращают `schemaVersion: 3`/u);
+  assert.match(scopeReference, /текстовый `content` –\s+лишь краткое описание/u);
+  assert.match(scopeReference, /одна структурированная `task`; текстовый `content` –\s+лишь краткое описание/u);
+  assert.match(scopeReference, /Разреши `instructionScope\.orderedLayerKeys` item по этому объединению/u);
+  assert.match(scopeReference, /Не переноси\s+company\/project\/personal слой на задачу, которая на него не ссылается/u);
+  assert.match(scopeReference, /проверь `task\.deferredSections`/u);
+  assert.match(scopeReference, /Один `get_task_sections`/u);
+  assert.match(scopeReference, /не повторяй `get_task` и не запрашивай всё\s+по умолчанию/u);
+  assert.match(scopeReference, /`itemCount: 0` – точно пусто, `null` – не посчитано/u);
+  assert.match(scopeReference, /без повторения\s+инструкций, core, connections и related workspaces/u);
+  assert.match(scopeReference, /Schema v1\/v2 не поддерживаются/u);
+  assert.match(scopeReference, /несовместимость plugin\/backend/u);
+  assert.match(scopeReference, /Внутри Run действуют закреплённые\s+`agent-instructions\.md`\/`user-profile\.md`/u);
+  assert.match(scopeReference, /После загрузки не повторяй его,\s+кроме управления правилами/u);
   const relationsReference = await readFile(
     path.join(workerDirectory, "references", "workspace-relations.md"), "utf8",
   );
   assert.match(scopeReference, /workspace-relations\.md/u);
   assert.match(agentRunReference, /run-recovery\.md/u);
-  assert.match(relationsReference, /at least two stable independent identifiers/u);
-  assert.match(relationsReference, /call\s+`link_workspace_task` without a ceremonial confirmation/u);
-  assert.match(relationsReference, /whole accepted workspace to\s+current and future task readers/u);
-  assert.match(relationsReference, /task editors get\s+write\/Run/u);
-  assert.match(relationsReference, /Add no comment or notification unless separately asked/u);
-  assert.match(relationsReference, /unclear\s+whole-workspace disclosure require a question/u);
-  assert.match(relationsReference, /A weak hit is ignored/u);
+  assert.match(relationsReference, /двумя независимыми стабильными\s+идентификаторами/u);
+  assert.match(relationsReference, /вызови\s+`link_workspace_task` без формального подтверждения/u);
+  assert.match(relationsReference, /весь принятый Workspace\s+текущим и будущим читателям задачи/u);
+  assert.match(relationsReference, /редакторы –\s+write\/Run/u);
+  assert.match(relationsReference, /Комментарий или\s+уведомление не добавляй без отдельной просьбы/u);
+  assert.match(relationsReference, /неясность раскрытия всего Workspace требуют вопроса/u);
+  assert.match(relationsReference, /Слабое совпадение\s+игнорируй/u);
   assert.match(relationsReference, /`link_workspace_project`/u);
-  assert.match(relationsReference, /primary project and governing rules stay\s+unchanged/u);
-  assert.match(scopeReference, /Workspace access is the union/u);
-  assert.match(scopeReference, /project member or moderator may write and run/u);
-  assert.match(scopeReference, /Relation-derived access never grants link management/u);
-  assert.match(scopeReference, /Registry, contact, and meeting associations are semantic references only/u);
+  assert.match(relationsReference, /Основной проект и правила сохраняются/u);
+  assert.match(scopeReference, /Доступ к Workspace – объединение/u);
+  assert.match(scopeReference, /участник\/модератор получает write\/Run/u);
+  assert.match(scopeReference, /Производный доступ не даёт управление связями/u);
+  assert.match(scopeReference, /Реестр, контакт и встреча дают смысловые ссылки, сами по себе не доступ/u);
   const acceptedReadReference = await readFile(
     path.join(workerDirectory, "references", "accepted-workspace-read.md"),
     "utf8",
   );
   assert.match(mainSkill, /references\/accepted-workspace-read\.md/u);
-  assert.match(acceptedReadReference, /Call `prepare_agent_workspace_read` once/u);
-  assert.match(acceptedReadReference, /exact `bridge\.action`/u);
-  assert.match(acceptedReadReference, /do not convert it to a shell command or probe PATH/u);
-  assert.match(acceptedReadReference, /creates no Run, lease, checkpoint, task-status proposal/u);
-  assert.match(acceptedReadReference, /read `\.\.\/context\/agent-instructions\.md`, then/u);
-  assert.match(acceptedReadReference, /Never reinterpret read intent\s+as permission to create a Run/u);
+  assert.match(acceptedReadReference, /Один раз вызови `prepare_agent_workspace_read`/u);
+  assert.match(acceptedReadReference, /точный `bridge\.action`/u);
+  assert.match(acceptedReadReference, /не превращай в shell-команду и не ищи в PATH/u);
+  assert.match(acceptedReadReference, /не создаёт Run, lease,\s+checkpoint, предложение статуса/u);
+  assert.match(acceptedReadReference, /сначала прочитай `\.\.\/context\/agent-instructions\.md`,\s+затем/u);
+  assert.match(acceptedReadReference, /Чтение не разрешает Run/u);
   const taskControlsReference = await readFile(
     path.join(workerDirectory, "references", "task-controls.md"),
     "utf8",
   );
   assert.match(taskControlsReference, /`get_task_sections\.sections\.controls`/u);
-  assert.match(taskControlsReference, /authenticated user's personal\s+controls/u);
+  assert.match(taskControlsReference, /личные\s+контроли авторизованного пользователя/u);
   for (const referenceName of references) {
     assert.match(mainSkill, new RegExp(`references/${referenceName.replaceAll(".", "\\.")}`, "u"));
     const reference = await readFile(path.join(workerDirectory, "references", referenceName), "utf8");
-    assert.match(reference, /Read this file completely/u);
+    assert.match(reference, /Полностью прочитай файл/u);
   }
 });
 
@@ -4420,17 +4420,17 @@ test("bundled instructions narrow structured MCP search timeouts without a blind
 
   for (const instructions of [scopeReference, diagnosticsSkill]) {
     assert.match(instructions, /`MCP_SEARCH_TIMEOUT`/u);
-    assert.match(instructions, /not a transport|not a 504/iu);
-    assert.match(instructions, /exact\s+`companySlugs`/u);
-    assert.match(instructions, /at most once|Retry at most once/iu);
-    assert.match(instructions, /no more than two|at most the two/iu);
+    assert.match(instructions, /не транспорт|не 504/iu);
+    assert.match(instructions, /точны(?:е|ми)\s+`companySlugs`/iu);
+    assert.match(instructions, /максимум один/iu);
+    assert.match(instructions, /не больше двух|не более чем двумя/iu);
     assert.match(instructions, /`projectSlugs`/u);
   }
 
-  assert.match(scopeReference, /Do not concatenate/u);
-  assert.match(scopeReference, /HTTP 504 without structured `MCP_SEARCH_TIMEOUT`/u);
-  assert.match(diagnosticsSkill, /Do not run login, reinstall the plugin/u);
-  assert.match(diagnosticsSkill, /A bare HTTP 504 remains in this transport/u);
+  assert.match(scopeReference, /Не склеивай/u);
+  assert.match(scopeReference, /HTTP 504 без структурированного `MCP_SEARCH_TIMEOUT`/u);
+  assert.match(diagnosticsSkill, /Не запускай login, не переустанавливай плагин/u);
+  assert.match(diagnosticsSkill, /Обычный HTTP 504 относится к транспортным ошибкам/u);
 });
 
 test("Claude OAuth recovery keeps the plugin-qualified MCP server name", async () => {
@@ -4459,7 +4459,7 @@ test("Claude OAuth recovery keeps the plugin-qualified MCP server name", async (
   for (const instructions of [diagnosticsSkill, onboardingSkill]) {
     assert.match(instructions, /`Connected`/u);
     assert.match(instructions, /`list_companies`/u);
-    assert.match(instructions, /new `claude`\s+session/u);
+    assert.match(instructions, /запусти новую `claude` из той же (?:точной\s+рабочей )?папки/u);
   }
 });
 
@@ -4600,13 +4600,13 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
     "Проверь установку Trelio Agent Workspaces и объясни, что мешает работе.",
     "Возьми доступную задачу Trelio, выполни её, содержательно сообщи результат и сохрани материалы в рабочем пространстве.",
   ]);
-  const folderGateIndex = onboardingSkill.indexOf("## Confirm the working folder first");
-  const prerequisiteIndex = onboardingSkill.indexOf("## Check prerequisites");
+  const folderGateIndex = onboardingSkill.indexOf("id=\"confirm-the-working-folder-first\"");
+  const prerequisiteIndex = onboardingSkill.indexOf("id=\"check-prerequisites\"");
   const hookApprovalIndex = onboardingSkill.indexOf(
-    "make approval of this plugin's hooks an explicit user checkpoint",
+    "обязательно дай пользователю проверить hooks",
   );
   const companyResolutionIndex = onboardingSkill.indexOf(
-    "Resolve the exact company before `get_agent_instructions`",
+    "До `get_agent_instructions` и любой локальной записи точно выбери компанию.",
   );
 
   // Hook trust is a human checkpoint over the installed bytes. Keeping it
@@ -4616,70 +4616,70 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.ok(prerequisiteIndex > folderGateIndex);
   assert.ok(hookApprovalIndex > prerequisiteIndex);
   assert.ok(companyResolutionIndex > hookApprovalIndex);
-  assert.match(onboardingSkill, /local project with an accessible primary folder/u);
-  assert.match(onboardingSkill, /projectless\s+task is not evidence of a selected folder/u);
-  assert.match(onboardingSkill, /intentionally an ordinary non-Git context\s+folder/u);
+  assert.match(onboardingSkill, /локальный проект с доступной основной папкой/u);
+  assert.match(onboardingSkill, /Cwd процесса в задаче без проекта не доказывает выбор папки/u);
+  assert.match(onboardingSkill, /обычная папка контекста без Git/u);
   assert.match(
     onboardingSkill,
-    /not inside\s+a Git worktree and is not itself a bare repository or Git directory/u,
+    /не находится в Git worktree и сама не является bare repository\s+или Git directory/u,
   );
-  assert.match(onboardingSkill, /selected folder is the exact repository top level/u);
-  assert.match(onboardingSkill, /no ancestor owns another Git worktree/u);
-  assert.match(onboardingSkill, /`HEAD` is unborn/u);
+  assert.match(onboardingSkill, /выбранная папка – точный верхний уровень репозитория/u);
+  assert.match(onboardingSkill, /ни один\s+родитель не владеет другим worktree/u);
+  assert.match(onboardingSkill, /`HEAD` ещё не создан \(unborn\)/u);
   assert.match(
     onboardingSkill,
-    /no commits \(including dangling\s+or reflog-only commits\), remotes, tracked or staged paths/u,
+    /нет commits, включая dangling\/reflog-only,\s+remotes, tracked\/staged paths/u,
   );
   assert.match(
     onboardingSkill,
-    /contains only regular root\s+`AGENTS\.md`, `AGENTS\.override\.md`, `CLAUDE\.md`, and\/or `\.gitignore`/u,
+    /только обычные корневые `AGENTS\.md`,\s+`AGENTS\.override\.md`, `CLAUDE\.md` и\/или `\.gitignore`/u,
   );
-  assert.match(onboardingSkill, /Never rename or delete `\.git`/u);
-  assert.match(onboardingSkill, /without changing `\.git`/u);
-  assert.match(onboardingSkillNormalized, /after exact company resolution and before any company-content read or local binding/u);
-  assert.match(onboardingSkillNormalized, /Both results must identify the root `\.gitignore` and the positive `\/workspaces\/` rule/u);
+  assert.match(onboardingSkill, /Не переименовывай\/удаляй `\.git`/u);
+  assert.match(onboardingSkill, /без изменения `\.git`/u);
+  assert.match(onboardingSkillNormalized, /после точного выбора компании и до чтения её содержимого или локальной привязки/u);
+  assert.match(onboardingSkillNormalized, /Оба результата должны указывать корневой `\.gitignore` и положительное `\/workspaces\/`/u);
   assert.match(onboardingSkillNormalized, /git ls-files --stage -z -- workspaces/u);
-  assert.match(onboardingSkillNormalized, /Recheck the refs\/trees/u);
-  assert.match(onboardingSkillNormalized, /adding an ignore rule does not remove historical copies/u);
+  assert.match(onboardingSkillNormalized, /Повторно проверь refs\/trees/u);
+  assert.match(onboardingSkillNormalized, /добавление ignore не удаляет исторические копии/u);
   // Turn-diff refs retain trees even with unborn HEAD. The folder gate must
   // distinguish that metadata from history. Preserving host metadata avoids
   // protected-directory writes; the separate ignore gate must run before
   // private context or Run metadata can appear below the binding root.
   assert.match(
     onboardingSkillNormalized,
-    /no loose or packed refs except the verified Codex turn-diff tree snapshots/u,
+    /нет loose\/packed refs, кроме проверенных Codex turn-diff trees/u,
   );
-  assert.match(onboardingSkillNormalized, /does not need a separate confirmation/u);
+  assert.match(onboardingSkillNormalized, /не требует отдельного подтверждения/u);
   assert.match(
     onboardingSkill,
-    /do not alter Git and stop before Trelio calls or an\s+instruction-file write/u,
+    /не меняй Git и остановись до Trelio\/записи\s+инструкций/u,
   );
   assert.match(onboardingSkill, /отдельную обычную папку проекта без Git/u);
   assert.match(
     onboardingSkill,
-    /company\/project rules, an exact task or\s+workspace, or their Agent Workspace/u,
+    /правила компании\/проекта, точную\s+задачу\/Workspace и их Agent Workspace/u,
   );
-  assert.match(onboardingSkill, /stop before every setup side\s+effect/u);
+  assert.match(onboardingSkill, /остановись до любого изменения/u);
   assert.match(onboardingSkill, /Рабочая папка не найдена\. Настройка не начата\./u);
   assert.match(onboardingSkill, /`CLAUDE_PROJECT_DIR`/u);
   assert.match(onboardingSkill, /`claude mcp list`/u);
   assert.match(
     onboardingSkill,
-    /current remote registration is shown as\s+`plugin:trelio-agent-workspaces:trelio`/u,
+    /Имена Claude:\s+`plugin:trelio-agent-workspaces:trelio`/u,
   );
-  assert.match(onboardingSkill, /literal `\.\/scripts\/launch-trelio-node` `ENOENT`/u);
-  assert.match(onboardingSkill, /Do not reset OAuth or\s+pairing for this\s+signal/u);
+  assert.match(onboardingSkill, /`ENOENT` буквального `\.\/scripts\/launch-trelio-node`/u);
+  assert.match(onboardingSkill, /Не сбрасывай OAuth\/pairing по этому\s+сигналу/u);
   assert.match(
     onboardingSkill,
     /`claude mcp login plugin:trelio-agent-workspaces:trelio`/u,
   );
   assert.doesNotMatch(onboardingSkill, /`claude mcp login trelio`/u);
-  assert.match(onboardingSkill, /namespaced server as `Connected`/u);
-  assert.match(onboardingSkill, /still\s+lacks `list_companies`/u);
-  assert.match(onboardingSkill, /not failed OAuth: do not run login again/u);
+  assert.match(onboardingSkill, /сервер с namespace как `Connected`/u);
+  assert.match(onboardingSkill, /ещё не видит `list_companies`/u);
+  assert.match(onboardingSkill, /не неудачный OAuth: не повторяй login/u);
   assert.match(
     onboardingSkill,
-    /launch a new `claude`\s+session from the same exact working folder/u,
+    /запусти новую `claude` из той же (?:точной\\s+)?папки/u,
   );
   assert.match(onboardingSkill, /`\/reload-plugins`/u);
   assert.match(onboardingAgentMetadata, /Настройка Trelio в папке/u);
@@ -4706,131 +4706,131 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
 
 Если Trelio недоступен, сообщи, что контекст не проверен, и не подменяй его догадками.
 <!-- trelio-agent-workspaces:end -->`);
-  assert.match(onboardingSkill, /created with exactly `@AGENTS\.md` followed by one newline/u);
-  assert.match(onboardingSkill, /preserve unrelated instructions and add that standalone\s+import only when it is absent/u);
-  assert.match(onboardingSkill, /import `@AGENTS\.override\.md` instead/u);
-  assert.match(onboardingSkill, /Never add both\s+imports or duplicate one/u);
-  assert.match(onboardingSkill, /non-regular `CLAUDE\.md` target/u);
+  assert.match(onboardingSkill, /ровно `@AGENTS\.md` и один перевод строки/u);
+  assert.match(onboardingSkill, /сохрани посторонние\s+инструкции и добавь отдельный import лишь при его отсутствии/u);
+  assert.match(onboardingSkill, /импортируй `@AGENTS\.override\.md` вместо него/u);
+  assert.match(onboardingSkill, /Не добавляй оба imports и не дублируй/u);
+  assert.match(onboardingSkill, /нестандартный тип `CLAUDE\.md` запрещены/u);
   assert.match(
     onboardingSkill,
-    /Use this block exactly for every ready company/u,
+    /Для готовой компании используй точный блок/u,
   );
   assert.match(
     onboardingSkill,
-    /canonical relative `workspaces\/<workspace-id>\/` contract above is intentional/u,
+    /Относительный\s+`workspaces\/<workspace-id>\/` выше – намеренный контракт/u,
   );
   assert.doesNotMatch(onboardingSkill, /replace only its second\s+context lookup bullet/u);
   assert.match(
     onboardingSkill,
-    /Do not\s+describe the instruction files as uncommitted or suggest committing them/u,
+    /Не называй инструкции незакоммиченными и не предлагай commit/u,
   );
   assert.doesNotMatch(onboardingSkillNormalized, /Для запросов, относящихся к Trelio/u);
   assert.match(
     onboardingSkillNormalized,
-    /Before configuring each selected skill, call `get_agent_skill` once/u,
+    /До настройки каждого выбранного навыка один раз вызови `get_agent_skill`/u,
   );
   assert.match(
     onboardingSkillNormalized,
-    /complete uninterrupted configure\/doctor sequence/u,
+    /покрывает непрерывную configure\/doctor/u,
   );
   assert.match(
     onboardingSkillNormalized,
-    /do not repeat it before each subcommand/u,
+    /не повторяй перед каждой подкомандой/u,
   );
   assert.match(onboardingSkill, /AGENTS\.override\.md/u);
   assert.match(onboardingSkill, /get_agent_instructions/u);
   assert.match(onboardingSkill, /metadata-only `encryptionState`/u);
-  assert.match(onboardingSkill, /logical method\s+does not change with transport/iu);
-  assert.match(onboardingSkill, /Do not skip or rename `get_agent_instructions`/u);
-  assert.match(onboardingSkill, /Trelio changes only the\s+transport/u);
-  assert.match(onboardingSkill, /For `encrypting`, `decrypting`, `failed`, or an unknown non-`plain` state/u);
-  assert.match(onboardingSkill, /For every non-`plain` company, skip this entire section/u);
-  assert.match(onboardingSkill, /do not call\s+`list_agent_skills`/u);
-  assert.match(onboardingSkill, /successful bridge login proves only the ordinary\s+local\s+device session/u);
-  assert.match(onboardingSkill, /`operation=encryption_setup`[\s\S]*exact `companySlug`/u);
-  assert.match(onboardingSkill, /mandatory encrypted-device onboarding step/u);
-  assert.match(onboardingSkill, /round-trips a random local canary through the\s+production `TRELIOE1` codec/u);
-  assert.match(onboardingSkill, /creates no Workspace, Agent Run, lease/u);
-  assert.match(onboardingSkill, /require `encryptionState=encrypted` and\s+`selfTest\.status=passed`/u);
-  assert.match(onboardingSkill, /repeat the same setup action rather than starting a Run/u);
-  assert.match(onboardingSkill, /company owner must grant that exact Agent Workspaces device/u);
+  assert.match(onboardingSkill, /Логический метод не зависит от транспорта/iu);
+  assert.match(onboardingSkill, /Не пропускай\/не переименовывай\s+`get_agent_instructions`/u);
+  assert.match(onboardingSkill, /меняется только транспорт/u);
+  assert.match(onboardingSkill, /Для `encrypting`, `decrypting`, `failed` и неизвестного non-`plain`/u);
+  assert.match(onboardingSkill, /Для любой non-`plain` компании пропусти раздел целиком/u);
+  assert.match(onboardingSkill, /не вызывай\s+`list_agent_skills`/u);
+  assert.match(onboardingSkill, /успешный login доказывает только обычную device session/u);
+  assert.match(onboardingSkill, /`operation=encryption_setup`[\s\S]*точным `companySlug`/u);
+  assert.match(onboardingSkill, /обязательная настройка зашифрованного устройства/u);
+  assert.match(onboardingSkill, /проверяет случайный локальный canary production-кодеком\s+`TRELIOE1` в обе стороны/u);
+  assert.match(onboardingSkill, /не создаёт Workspace, Agent Run, lease/u);
+  assert.match(onboardingSkill, /требуй `encryptionState=encrypted`\s+и `selfTest\.status=passed`/u);
+  assert.match(onboardingSkill, /После разрешения повтори setup, не начинай Run/u);
+  assert.match(onboardingSkill, /владелец компании должен разрешить именно это\s+устройство Agent Workspaces/u);
   assert.match(onboardingSkill, /`operation=login`/u);
   assert.match(onboardingSkill, /codex mcp list --json/u);
   assert.match(onboardingSkill, /codex plugin list --json/u);
   assert.match(onboardingSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
-  assert.match(onboardingSkill, /a listed marketplace is not proof that its\s+plugin is installed/u);
-  assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` only as a host optimization/u);
+  assert.match(onboardingSkill, /Marketplace не доказывает установку/u);
+  assert.match(onboardingSkill, /`INSTALLED_BY_DEFAULT` – лишь оптимизация host/u);
   assert.match(
     onboardingSkill,
-    /Installing or enabling a plugin does not make its bundled hooks\s+trusted automatically/u,
+    /Установка\/включение плагина\s+не создают доверие автоматически/u,
   );
-  assert.match(onboardingSkill, /In Codex Desktop say:/u);
-  assert.match(onboardingSkill, /In Codex CLI say:/u);
+  assert.match(onboardingSkill, /Codex Desktop:/u);
+  assert.match(onboardingSkill, /Codex CLI:/u);
   assert.match(onboardingSkill, /Откройте \/hooks/u);
   assert.match(onboardingSkill, /`--dangerously-bypass-hook-trust`/u);
   assert.match(onboardingSkill, /approvalStatus=client_managed_unknown/u);
   assert.match(
     onboardingSkill,
-    /A successful or failed `PreToolUse` event proves that the\s+hook is active/u,
+    /Успешный или ошибочный `PreToolUse` доказывает активность hook/u,
   );
   assert.match(
     onboardingSkill,
-    /Resolve the exact company before `get_agent_instructions` or any local file\s+write/u,
+    /До `get_agent_instructions` и любой локальной записи точно выбери компанию\./u,
   );
-  assert.match(onboardingSkill, /explicit company slug[\s\S]{0,180}exact selector, not as a hint/u);
+  assert.match(onboardingSkill, /Явный slug[\s\S]{0,100}точный selector/u);
   assert.match(
     onboardingSkill,
-    /If that slug is absent, stop[\s\S]{0,180}never substitute another\s+company/u,
+    /Если его\s+нет, остановись[\s\S]{0,100}не подменяй похожей/u,
   );
-  assert.match(onboardingSkill, /one unique\s+exact display-name match/u);
+  assert.match(onboardingSkill, /По display name допустимо лишь единственное точное совпадение/u);
   assert.match(
     onboardingSkill,
-    /working-folder name or path, repository name, nearby files[\s\S]{0,180}never company evidence/u,
+    /Имя\/путь папки, имя репозитория, соседние файлы[\s\S]{0,130}не доказывают компанию/u,
   );
-  assert.match(onboardingSkill, /If several are accessible, ask the user before any\s+scoped read or write/u);
-  assert.match(onboardingSkill, /A user correction invalidates the previous candidate/u);
+  assert.match(onboardingSkill, /При нескольких спроси до scoped read\/write/u);
+  assert.match(onboardingSkill, /Исправление\s+пользователя отменяет прежний выбор/u);
   assert.match(onboardingSkill, /resolve-node\.ps1/u);
-  assert.match(onboardingSkill, /durable\s+machine\/user PATH\s+values/u);
+  assert.match(onboardingSkill, /постоянные machine\/user PATH/u);
   assert.match(onboardingSkill, /launch-trelio-node/u);
-  assert.match(onboardingSkill, /failed Codex PATH-alias creation is not proof/u);
-  assert.match(onboardingSkill, /in Codex use\s+`codex mcp login trelio`/u);
-  assert.match(onboardingSkill, /Never open the Trelio site as a\s+preparatory login/u);
-  assert.match(onboardingSkill, /ask the user\s+to report that login finished/u);
-  assert.match(onboardingSkill, /retry one low-risk\s+Trelio read in this same task/u);
+  assert.match(onboardingSkill, /ошибка PATH-alias не доказывают отсутствия Node/u);
+  assert.match(onboardingSkill, /Codex `codex mcp login trelio`/u);
+  assert.match(onboardingSkill, /Не открывай сайт для\s+предварительного входа/u);
+  assert.match(onboardingSkill, /не\s+проси сообщить о входе до OAuth/u);
+  assert.match(onboardingSkill, /один раз повтори безопасное\s+чтение Trelio в этой задаче/u);
   assert.match(
     onboardingSkill,
-    /Use the equivalent new-task recovery in Codex only when a live retry proves\s+the current task still has no refreshed tools/u,
+    /В Codex новая\s+задача нужна, только если реальный повтор доказал отсутствие обновлённых\s+инструментов/u,
   );
   assert.match(onboardingSkill, /processPathReady=false/u);
-  assert.match(onboardingSkill, /use its absolute\s+`nodePath`/u);
-  assert.match(onboardingSkill, /do not repeat the same advice/u);
-  assert.match(onboardingSkill, /trelio-workspace\.mjs`\s+with `doctor --json/u);
+  assert.match(onboardingSkill, /использует абсолютный `nodePath`/u);
+  assert.match(onboardingSkill, /не повторяй совет/u);
+  assert.match(onboardingSkill, /trelio-workspace\.mjs` с `doctor --json/u);
   assert.match(onboardingSkill, /standalone Git\s+2\.28/u);
-  assert.match(onboardingSkill, /temporary\s+`init → add → commit`/u);
-  assert.match(onboardingSkill, /private Git that Codex may use to\s+download a\s+marketplace/u);
-  assert.match(onboardingSkill, /Do not stop at an\s+offer/u);
-  assert.match(onboardingSkill, /do not ask for a separate confirmation in chat/u);
+  assert.match(onboardingSkill, /временный\s+`init → add → commit`/u);
+  assert.match(onboardingSkill, /не приватный Git\s+загрузки marketplace Codex/u);
+  assert.match(onboardingSkill, /Не останавливайся на предложении/u);
+  assert.match(onboardingSkill, /не задавай отдельный вопрос-подтверждение в чате/u);
   assert.match(onboardingSkill, /brew install git/u);
   assert.match(onboardingSkill, /xcode-select --install/u);
   assert.match(onboardingSkill, /winget install --id Git\.Git -e/u);
-  assert.match(onboardingSkill, /rerun doctor in the same task/u);
-  assert.match(onboardingSkill, /do not require an\s+app restart/u);
+  assert.match(onboardingSkill, /повтори doctor в той же задаче/iu);
+  assert.match(onboardingSkill, /перезапуск не нужен/u);
   assert.match(onboardingSkill, /winget install --id OpenJS\.NodeJS\.LTS -e/u);
   assert.match(onboardingSkill, /brew install node/u);
-  assert.match(onboardingSkill, /Ask one\s+concise explicit confirmation/u);
-  assert.match(onboardingSkill, /do not install or probe a global\s+`trelio-workspace` command/u);
+  assert.match(onboardingSkill, /получи одно краткое явное подтверждение/u);
+  assert.match(onboardingSkill, /не устанавливай и не ищи глобальный `trelio-workspace`/u);
   assert.match(onboardingSkill, /требуется настройка администратором компании/u);
   assert.match(onboardingSkill, /enabledThroughProjectMembership=true/u);
-  assert.match(onboardingSkill, /sources` containing\s+`project_membership`/u);
-  assert.match(onboardingSkill, /treat it as available in the current company scope\s+and offer it now/u);
-  assert.match(onboardingSkill, /Do not misclassify it as strict project-only merely\s+because `enabledAtCompany=false`/u);
-  assert.match(onboardingSkill, /only strict project-only skills missing from the\s+company-wide response will be offered just in time/u);
+  assert.match(onboardingSkill, /`sources` с `project_membership`/u);
+  assert.match(onboardingSkill, /Они доступны в текущей компании;\s+предложи их сразу/u);
+  assert.match(onboardingSkill, /`enabledAtCompany=false` не делает их строго проектными/u);
+  assert.match(onboardingSkill, /лишь отсутствующие\s+строго проектные навыки будут предложены/u);
   assert.doesNotMatch(
     onboardingSkill,
     /project-only skills will be offered just in time when a concrete Trelio/u,
   );
-  assert.match(onboardingSkill, /Do not open a company workspace/u);
-  assert.match(onboardingSkill, /full restart only\s+if that fresh process still sees the old version/u);
+  assert.match(onboardingSkill, /Не открывай Workspace компании/u);
+  assert.match(onboardingSkill, /полный перезапуск – только если она всё ещё видит старую версию/u);
   assert.doesNotMatch(onboardingSkill, /fully restart Codex, and start a new task/u);
   assert.doesNotMatch(onboardingSkill, /\[TODO:/u);
   assert.match(workerAgentMetadata, /для работы с Trelio и безопасного сохранения результата/u);
@@ -4889,34 +4889,34 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   );
 
   assert.match(diagnosticsSkill, /^---\nname: trelio-diagnostics\n/u);
-  assert.match(diagnosticsSkill, /loaded plugin version, hooks,\s+MCP\/OAuth/u);
-  assert.match(diagnosticsSkill, /Keep\s+the first pass read-only/u);
+  assert.match(diagnosticsSkill, /загруженной версии, hooks,\s+MCP\/OAuth/u);
+  assert.match(diagnosticsSkill, /Первый\s+проход – только чтение/u);
   assert.match(diagnosticsSkill, /plugin\.loadedVersion/u);
   assert.match(diagnosticsSkill, /approvalStatus=client_managed_unknown/u);
   assert.match(diagnosticsSkill, /codex plugin list --json/u);
   assert.match(diagnosticsSkill, /codex mcp list --json/u);
   assert.match(diagnosticsSkill, /launch-trelio-node/u);
-  assert.match(diagnosticsSkill, /failed Codex PATH-alias\s+creation is not a missing-Node diagnosis/u);
-  assert.match(diagnosticsSkill, /Do not infer Claude Code only\s+from `CLAUDE_PLUGIN_ROOT`/u);
+  assert.match(diagnosticsSkill, /ошибка создания PATH-alias Codex\s+не доказывают отсутствия Node/u);
+  assert.match(diagnosticsSkill, /Один `CLAUDE_PLUGIN_ROOT`\s+не доказывает Claude Code/u);
   assert.match(
     diagnosticsSkill,
-    /current remote entry is\s+`plugin:trelio-agent-workspaces:trelio`[\s\S]{0,260}remote entry must use HTTP/u,
+    /удалённый – `plugin:trelio-agent-workspaces:trelio`[\s\S]{0,260}Удалённый сервер должен использовать HTTP/u,
   );
-  assert.match(diagnosticsSkill, /URL has no `type`/u);
+  assert.match(diagnosticsSkill, /URL без `type`/u);
   assert.match(
     diagnosticsSkill,
-    /literal relative-path `ENOENT` needs\s+the Claude plugin update plus `\/reload-plugins`/u,
+    /ENOENT буквального относительного пути требует\s+обновления Claude-плагина и `\/reload-plugins`/u,
   );
-  assert.match(diagnosticsSkill, /Do not create or mutate an\s+object just to test a hook/u);
-  assert.match(diagnosticsSkill, /installed version already satisfies the requirement/u);
-  assert.match(diagnosticsSkill, /do not update again/u);
-  assert.match(diagnosticsSkill, /approve the changed definition once/u);
-  assert.match(diagnosticsSkill, /quote-free `commandWindows`/u);
-  assert.match(diagnosticsSkill, /behavior-only fixes[\s\S]{0,100}do not require another/u);
-  assert.match(diagnosticsSkill, /never exposes session IDs or keys/u);
+  assert.match(diagnosticsSkill, /Не создавай и не меняй объект ради\s+теста hook/u);
+  assert.match(diagnosticsSkill, /установленная\s+уже подходит/u);
+  assert.match(diagnosticsSkill, /не обновляй снова/u);
+  assert.match(diagnosticsSkill, /один раз одобрить изменение/u);
+  assert.match(diagnosticsSkill, /`commandWindows` без кавычек/u);
+  assert.match(diagnosticsSkill, /исправления\s+поведения runtime-скрипта не требуют изменения/u);
+  assert.match(diagnosticsSkill, /без ID сессий и ключей/u);
   assert.match(diagnosticsAgentMetadata, /Диагностика Trelio/u);
   assert.match(diagnosticsAgentMetadata, /\$trelio-diagnostics/u);
-  assert.match(workerSkill, /dedicated trelio-diagnostics skill/u);
+  assert.match(workerSkill, /используй trelio-diagnostics/u);
 });
 
 test("bundled skills distinguish missing proof from disabled hook trust", async () => {
@@ -4939,15 +4939,15 @@ test("bundled skills distinguish missing proof from disabled hook trust", async 
     const instructions = await readFile(filePath, "utf8");
     assert.match(
       instructions,
-      /(?:Trelio itself\s+returns\s+`TRELIO_RUNTIME_HOOK_REQUIRED`|`TRELIO_RUNTIME_HOOK_REQUIRED`\s+from Trelio)/u,
+      /(?:сам\s+Trelio\s+вернул\s+`TRELIO_RUNTIME_HOOK_REQUIRED`|`TRELIO_RUNTIME_HOOK_REQUIRED`\s+от Trelio)/u,
     );
     assert.match(instructions, /proof/u);
-    assert.match(instructions, /current (?:definition|trust)/u);
-    assert.match(instructions, /do\s+not\s+repeat/u);
-    assert.match(instructions, /(?:owning|owner-process)/u);
+    assert.match(instructions, /(?:текущего определения|подтверждённом\s+доверии|просмотр определения не подтверждён)/u);
+    assert.match(instructions, /не повторяй/iu);
+    assert.match(instructions, /владеющ[а-я]+\s+процесс/u);
     assert.match(
       instructions,
-      /A `PreToolUse` failure[\s\S]{0,160}proves[\s\S]{0,80}(?:hook is active|hook ran)/u,
+      /Ошибка `PreToolUse` доказывает[\s\S]{0,60}(?:запуск|работу|активность|запускался)[\s\S]{0,20}hook|Ошибка `PreToolUse` доказывает, что hook запускался/u,
     );
     assert.match(instructions, /AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED/u);
   }
@@ -4956,10 +4956,10 @@ test("bundled skills distinguish missing proof from disabled hook trust", async 
   const setupRecovery = await readFile(recoveryFiles.at(-1), "utf8");
   for (const instructions of [diagnosticsSkill, setupRecovery]) {
     assert.match(instructions, /0\.154\.0-alpha\.2/u);
-    assert.match(instructions, /fully quit (?:all|every)\s+Codex\/ChatGPT process/u);
-    assert.match(instructions, /Closing a window[\s\S]{0,100}not a (?:process )?restart/u);
+    assert.match(instructions, /завершить\s+все процессы Codex\/ChatGPT/u);
+    assert.match(instructions, /Закрытие окна[\s\S]{0,100}не (?:считаются|являются) перезапуском/u);
   }
-  assert.match(setupRecovery, /Version `1\.19\.5`[\s\S]{0,120}initialize response/u);
+  assert.match(setupRecovery, /Начиная с\s+`1\.19\.5`[\s\S]{0,100}initialize response/u);
 
   assert.doesNotMatch(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
@@ -4972,49 +4972,49 @@ test("workspace skill recovers stale OAuth grants without discarding existing sc
 
   assert.match(workspaceSkill, /mcp\/www_authenticate/u);
   assert.match(workspaceSkill, /`codex mcp login trelio`/u);
-  assert.match(workspaceSkill, /Do not log\s+out first/u);
-  assert.match(workspaceSkill, /request only the newly missing scope/u);
-  assert.match(workspaceSkill, /user must review and approve/u);
-  assert.match(workspaceSkill, /retry the exact low-risk read once/u);
+  assert.match(workspaceSkill, /Не выходи\s+из аккаунта заранее/u);
+  assert.match(workspaceSkill, /не запрашивай только новое недостающее право/u);
+  assert.match(workspaceSkill, /Пользователь сам проверяет и подтверждает новые права/u);
+  assert.match(workspaceSkill, /один раз повтори точное безопасное чтение/u);
 });
 
 test("workspace skill derives Agent Secret protection from company encryption", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
-  assert.match(workspaceSkill, /call\s+`list_agent_secrets` for the exact target scope/u);
-  assert.match(workspaceSkill, /Storage follows the company's exact encryption state and is not a user choice/u);
-  assert.match(workspaceSkill, /plain company uses `storageMode=trelio`/u);
-  assert.match(workspaceSkill, /encrypted company uses `storageMode=company_e2ee`/u);
-  assert.match(workspaceSkill, /Trelio\s+stores the signed ciphertext and cannot decrypt it/u);
-  assert.match(workspaceSkill, /There is no `local_device` Agent Secret mode/u);
-  assert.match(workspaceSkill, /wants a credential to\s+remain local only, do not create or configure an Agent Secret/u);
-  assert.match(workspaceSkill, /Do not ask the\s+user to choose a storage mode/u);
-  assert.match(workspaceSkill, /MCP placeholder creation is available only\s+for a plain company/u);
-  assert.match(workspaceSkill, /every E2EE\s+rotation is a complete replacement/u);
-  assert.match(workspaceSkill, /never writes Agent\s+Secret values to its private config/u);
+  assert.match(workspaceSkill, /вызови `list_agent_secrets` точной области/u);
+  assert.match(workspaceSkill, /Режим следует точному состоянию шифрования компании, а не выбору пользователя/u);
+  assert.match(workspaceSkill, /plain: `storageMode=trelio`/u);
+  assert.match(workspaceSkill, /encrypted: `storageMode=company_e2ee`/u);
+  assert.match(workspaceSkill, /Trelio хранит подписанный ciphertext\s+и не может его расшифровать/u);
+  assert.match(workspaceSkill, /У Agent Secret нет режима `local_device`/u);
+  assert.match(workspaceSkill, /хочет credential только локально, не создавай\/настраивай Agent Secret/u);
+  assert.match(workspaceSkill, /Не проси выбирать storage mode/u);
+  assert.match(workspaceSkill, /MCP placeholder\s+доступен лишь plain-компании/u);
+  assert.match(workspaceSkill, /каждая ротация E2EE – полная замена/u);
+  assert.match(workspaceSkill, /Bridge никогда не пишет Agent Secret values в private config/u);
   assert.match(workspaceSkill, /`allowAgentSaveChatSecrets`/u);
   assert.match(workspaceSkill, /`save_known_agent_secret`/u);
-  assert.match(workspaceSkill, /merely sharing it, asking\s+to sign in, or asking to use it is not storage consent/u);
+  assert.match(workspaceSkill, /Передача, просьба войти или использовать\s+не являются согласием на хранение/u);
   assert.match(workspaceSkill, /`userExplicitlyRequestedPersistentStorage=true`/u);
-  assert.match(workspaceSkill, /original plaintext remains in the chat and may remain\s+in the AI client's tool history/u);
-  assert.match(workspaceSkill, /nativeTool=save_known_agent_secret` for both plain and encrypted companies/u);
-  assert.match(workspaceSkill, /do not ask for another confirmation or manual re-entry/u);
-  assert.match(workspaceSkill, /locally encrypts E2EE metadata and values before one\s+atomic server write/u);
-  assert.match(workspaceSkill, /Never ask for a new value\s+merely to make the chat exception available/u);
+  assert.match(workspaceSkill, /исходный plaintext\s+остаётся в чате и может остаться в tool history клиента/u);
+  assert.match(workspaceSkill, /В обоих режимах используй локальный[\s\S]{0,120}`nativeTool=save_known_agent_secret`/u);
+  assert.match(workspaceSkill, /не проси\s+повторного подтверждения или ручного ввода/u);
+  assert.match(workspaceSkill, /локально шифрует E2EE metadata\/values до одной атомарной записи/u);
+  assert.match(workspaceSkill, /Не проси новое\s+значение специально ради доступности исключения чата/u);
 });
 
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
-  assert.match(workspaceSkill, /inspect `codex plugin list --json`/u);
-  assert.match(workspaceSkill, /registered marketplace is not proof that the plugin is installed/u);
+  assert.match(workspaceSkill, /проверь `codex plugin list --json`/u);
+  assert.match(workspaceSkill, /Наличие marketplace не доказывает установку плагина/u);
   assert.match(workspaceSkill, /codex plugin add trelio-agent-workspaces@trelio-plugins/u);
-  assert.match(workspaceSkill, /run\s+`codex mcp login trelio` immediately/u);
-  assert.match(workspaceSkill, /single\s+browser flow includes Trelio login/u);
-  assert.match(workspaceSkill, /report «я вошёл» in chat/u);
-  assert.match(workspaceSkill, /retry the\s+original low-risk Trelio read once in the current task/u);
-  assert.match(workspaceSkill, /Start a new task only when this live retry proves/u);
-  assert.match(workspaceSkill, /Failure of only `trelio-remote-skills` is not failed Trelio OAuth/u);
+  assert.match(workspaceSkill, /сразу выполни\s+`codex mcp login trelio`/u);
+  assert.match(workspaceSkill, /Один браузерный flow включает вход в Trelio/u);
+  assert.match(workspaceSkill, /написать «я вошёл» в чат/u);
+  assert.match(workspaceSkill, /один раз повтори\s+исходное безопасное чтение Trelio в текущей задаче/u);
+  assert.match(workspaceSkill, /Переходи к новой задаче, только если повторная попытка в\s+текущей задаче подтвердила, что подключение в ней не загрузилось/u);
+  assert.match(workspaceSkill, /Сбой только `trelio-remote-skills` не означает сбой Trelio OAuth/u);
 });
 
 test("workspace recovery installs missing Git through the native macOS or Windows flow", async () => {
@@ -5022,26 +5022,26 @@ test("workspace recovery installs missing Git through the native macOS or Window
 
   assert.match(workspaceSkill, /`TRELIO_GIT_REQUIRED`/u);
   assert.match(workspaceSkill, /standalone Git 2\.28\+/u);
-  assert.match(workspaceSkill, /temporary\s+`init → add → commit`/u);
-  assert.match(workspaceSkill, /Arbitrary process-PATH executables are not candidates/u);
-  assert.match(workspaceSkill, /never reuse an undocumented Git private to Codex/u);
-  assert.match(workspaceSkill, /immediately\s+run its exact installation plan without another confirmation question/u);
+  assert.match(workspaceSkill, /временный\s+`init → add → commit`/u);
+  assert.match(workspaceSkill, /Произвольные executable из PATH текущего процесса не\s+подходят/u);
+  assert.match(workspaceSkill, /не используй недокументированный Git менеджера marketplace Codex/u);
+  assert.match(workspaceSkill, /сразу выполни\s+его точный план установки без дополнительного вопроса-подтверждения/u);
   assert.match(workspaceSkill, /brew install git/u);
   assert.match(workspaceSkill, /xcode-select --install/u);
   assert.match(workspaceSkill, /winget install --id Git\.Git -e/u);
-  assert.match(workspaceSkill, /normal command approval, administrator prompt/u);
-  assert.match(workspaceSkill, /rerun doctor in the same task/u);
-  assert.match(workspaceSkill, /no app restart is required/u);
+  assert.match(workspaceSkill, /Штатное одобрение команды, запрос администратора/u);
+  assert.match(workspaceSkill, /повтори doctor в той же задаче/iu);
+  assert.match(workspaceSkill, /перезапуск приложения не требуется/u);
 });
 
 test("workspace OAuth recovery distinguishes configured OAuth from a missing process bearer", async () => {
   const workspaceSkill = await readSkillBundle("trelio-workspace-worker");
 
-  assert.match(workspaceSkill, /`auth_status: "o_auth"` only as the configured authentication scheme/u);
-  assert.match(workspaceSkill, /HTTP 401\s+or required\/missing-bearer/u);
-  assert.match(workspaceSkill, /do not run `codex mcp login trelio`\s+again/u);
-  assert.match(workspaceSkill, /cannot repair bearer\s+propagation in an already-open process/u);
-  assert.match(workspaceSkill, /Use a fresh task\/process and keep\s+the completed authorization/u);
+  assert.match(workspaceSkill, /`auth_status: "o_auth"` описывает\s+только настроенную схему авторизации/u);
+  assert.match(workspaceSkill, /HTTP 401 или required\/missing-bearer/u);
+  assert.match(workspaceSkill, /не\s+запускай `codex mcp login trelio` ещё раз/u);
+  assert.match(workspaceSkill, /не исправляет передачу bearer уже открытым процессом/u);
+  assert.match(workspaceSkill, /Используй новую\s+задачу\/процесс с сохранением завершённой авторизации/u);
 });
 
 test("Windows Node resolver uses durable PATH when the Codex process PATH is stale", {
@@ -5146,22 +5146,22 @@ test("project access skill preserves owner-only plan/apply and moderator confirm
 
   // Эти проверки намеренно фиксируют не текст целиком, а ключевые policy
   // инварианты, без которых агент мог бы обойти точечный MCP-контракт.
-  assert.match(projectAccessSkill, /company owner or a company\s+administrator/u);
+  assert.match(projectAccessSkill, /владельцем или администратором\s+компании/u);
   assert.match(projectAccessSkill, /plan_project_access_change/u);
   assert.match(projectAccessSkill, /apply_project_access_change/u);
   assert.match(projectAccessSkill, /expectedStateHash/u);
   assert.match(projectAccessSkill, /mcp:project-access:manage/u);
-  assert.match(projectAccessSkill, /Granting or revoking moderator rights always/u);
-  assert.match(projectAccessSkill, /project moderator cannot initiate/u);
-  assert.match(projectAccessSkill, /Existing connections do not acquire the new scope/u);
-  assert.match(projectAccessSkill, /may target their own direct project role/u);
-  assert.match(projectAccessSkill, /does not remove their company-wide\s+project access/u);
-  assert.match(projectAccessSkill, /self-change does not create a redundant\s+self-notification/u);
+  assert.match(projectAccessSkill, /Назначение и снятие модератора всегда требуют/u);
+  assert.match(projectAccessSkill, /Модератор проекта не может начать эту MCP-операцию/u);
+  assert.match(projectAccessSkill, /Старое подключение не получает новое право автоматически/u);
+  assert.match(projectAccessSkill, /Пользователь может менять собственную прямую роль/u);
+  assert.match(projectAccessSkill, /удаление\s+прямой роли не снимает общий доступ к проектам от компании/u);
+  assert.match(projectAccessSkill, /изменение собственной роли не\s+создаёт лишнего уведомления самому себе/u);
   assert.doesNotMatch(
     projectAccessSkill,
     /Never attempt to change the authenticated user's own direct project role/u,
   );
-  assert.match(projectAccessSkill, /full project PATCH/u);
+  assert.match(projectAccessSkill, /полным PATCH проекта/u);
   assert.doesNotMatch(projectAccessSkill, /\[TODO:/u);
 });
 
@@ -5176,7 +5176,7 @@ test("private skill management keeps owner-only confirmation, E2EE and assignmen
     "utf8",
   );
 
-  assert.match(managementSkill, /company owner or an administrator/u);
+  assert.match(managementSkill, /владельцем или администратором\s+компании/u);
   assert.match(managementSkill, /`agent-skill:manage`/u);
   assert.match(managementSkill, /executionKind=markdown/u);
   assert.match(managementSkill, /executionKind=remote_mcp/u);
@@ -5185,11 +5185,11 @@ test("private skill management keeps owner-only confirmation, E2EE and assignmen
   assert.match(managementSkill, /create_company_private_agent_skill/u);
   assert.match(managementSkill, /plan_company_private_agent_skill_release/u);
   assert.match(managementSkill, /publish_company_private_agent_skill_release/u);
-  assert.match(managementSkill, /Do not call an\s+apply tool in the same assistant turn as its plan/u);
-  assert.match(managementSkill, /exact `planHash`/u);
-  assert.match(managementSkill, /exact `settingsUrl` returned by apply/u);
-  assert.match(managementSkill, /does not assign or enable it/u);
-  assert.match(managementSkill, /bridge encrypts prose, discovery terms, Remote MCP configuration/u);
+  assert.match(managementSkill, /Не вызывай apply в том же ходе ассистента, в котором подготовлен план/u);
+  assert.match(managementSkill, /точный\s+`planHash`/u);
+  assert.match(managementSkill, /точный `settingsUrl` из apply/u);
+  assert.match(managementSkill, /не назначает и не включает его/u);
+  assert.match(managementSkill, /bridge шифрует тексты,\s+поисковые слова, Remote MCP config/u);
   assert.match(managementSkill, /company_unverified/u);
   assert.doesNotMatch(managementSkill, /\[TODO:/u);
 });
@@ -5199,12 +5199,12 @@ test("workspace skill transfers workspaces only with two-sided management author
 
   assert.match(workspaceSkill, /plan_workspace_transfer/u);
   assert.match(workspaceSkill, /apply_workspace_transfer/u);
-  assert.match(workspaceSkill, /manage both sides/u);
-  assert.match(workspaceSkill, /Access derived from a task\/project relation never satisfies this check/u);
+  assert.match(workspaceSkill, /управлять обеими сторонами/u);
+  assert.match(workspaceSkill, /Доступ через связь задачи\/проекта не удовлетворяет этой проверке/u);
   assert.match(workspaceSkill, /confirmCompanyWideAccess: true/u);
   assert.match(workspaceSkill, /WORKSPACE_TRANSFER_STATE_CHANGED/u);
-  assert.match(workspaceSkill, /Do not\s+cancel another Run/u);
-  assert.match(workspaceSkill, /Workspace UUID, accepted Git history, revisions,\s+task links, project links/u);
+  assert.match(workspaceSkill, /Не отменяй\s+чужой Run ради переноса/u);
+  assert.match(workspaceSkill, /UUID Workspace, принятая Git-история,\s+ревизии, связи задач, проектов/u);
 });
 
 test("task handoff requires an explicit outcome and keeps unresolved work out of completion", () => {
@@ -5284,16 +5284,16 @@ test("workspace skill routes direct proposals independently of maintainer work a
     "utf8",
   );
 
-  assert.match(mainSkill, /editable task-comment proposal or reply with or without an Agent\s+Run/u);
-  assert.match(mainSkill, /Editable task-comment proposal or reply/u);
-  assert.match(mainSkill, /even during\s+maintainer work or after context compaction/u);
-  assert.match(proposalReference, /its own native Trelio operation with or\s+without an Agent Workspace Run/u);
-  assert.match(proposalReference, /follow-up during maintainer work, after context compaction/u);
-  assert.match(proposalReference, /Preserve it as a pending deliverable and\s+complete it before the final response/u);
-  assert.match(proposalReference, /direct exact-task proposal\s+uses `companySlug`, `projectSlug`, and `taskNumber`/u);
-  assert.match(proposalReference, /Do not start an\s+Agent Workspace Run solely to prepare a proposal/u);
-  assert.match(proposalReference, /A request to “only propose” reinforces the draft\s+route/u);
-  assert.match(proposalReference, /A quotation, prose block, or promise to suggest text in the final response does\s+not satisfy the request/u);
+  assert.match(mainSkill, /предложения комментария или ответа с Agent Run либо без него/u);
+  assert.match(mainSkill, /Редактируемое предложение комментария или ответа/u);
+  assert.match(mainSkill, /даже\s+при работе над исходниками или после compaction/u);
+  assert.match(proposalReference, /отдельная native-операция Trelio с Run или без него/u);
+  assert.match(proposalReference, /поздний запрос при разработке исходников, после compaction/u);
+  assert.match(proposalReference, /Сохрани её как ожидаемый результат и выполни до финального\s+ответа/u);
+  assert.match(proposalReference, /Прямая задача использует `companySlug`, `projectSlug`,\s+`taskNumber`/u);
+  assert.match(proposalReference, /Не начинай\s+Run только ради proposal/u);
+  assert.match(proposalReference, /«Только предложи» означает draft в инструменте/u);
+  assert.match(proposalReference, /Цитата, блок текста или\s+обещание предложить текст в финале не выполняют просьбу/u);
   assert.doesNotMatch(taskRunReference, /get_task_comment_proposal_context|publish_task_comment_proposal/u);
 });
 
@@ -5301,36 +5301,36 @@ test("workspace skill prepares a human proposal for direct tasks and accepted ta
   const skillMarkdown = await readSkillBundle("trelio-workspace-worker");
   const bridgeSource = await readFile(bridgePath, "utf8");
 
-  assert.match(skillMarkdown, /Do not publish automatically/u);
-  assert.match(skillMarkdown, /After every substantive accepted task Run/u);
+  assert.match(skillMarkdown, /Не публикуй автоматически/u);
+  assert.match(skillMarkdown, /Каждый содержательный принятый task Run/u);
   // The semantic contract matters here, not whether the sentence begins with
   // an uppercase verb after a Markdown heading or continues after a clause.
-  assert.match(skillMarkdown, /call\s+`propose_task_comment` once/iu);
-  assert.match(skillMarkdown, /system handoff is technical audit and agent-readable context/u);
-  assert.match(skillMarkdown, /ordinary comment for\s+people/u);
+  assert.match(skillMarkdown, /один раз\s+вызови create-only `propose_task_comment`/iu);
+  assert.match(skillMarkdown, /Системный handoff – технический аудит и контекст агента/u);
+  assert.match(skillMarkdown, /обычный комментарий людям/u);
   assert.match(skillMarkdown, /get_task_comment_proposal_context/u);
   assert.match(skillMarkdown, /render_task_comment_proposal/u);
   assert.match(skillMarkdown, /dismiss_task_comment_proposal/u);
   assert.match(skillMarkdown, /publish_task_comment_proposal/u);
-  assert.match(skillMarkdown, /server fences authoring basis and state/u);
-  assert.match(skillMarkdown, /standalone publication-ready cumulative update/u);
+  assert.match(skillMarkdown, /Сервер проверяет authoring basis\/state/u);
+  assert.match(skillMarkdown, /самостоятельным готовым к публикации общим итогом/u);
   assert.match(skillMarkdown, /UNPUBLISHED_DRAFT_REQUIRES_CONTEXT/u);
-  assert.match(skillMarkdown, /do not\s+retry it/iu);
-  assert.match(skillMarkdown, /currentDraft\.bodyText` is intentionally absent/u);
-  assert.match(skillMarkdown, /Ignore every draft still visible in the conversation/u);
+  assert.match(skillMarkdown, /не повторяй `propose_task_comment`/iu);
+  assert.match(skillMarkdown, /`currentDraft\.bodyText` намеренно отсутствует/u);
+  assert.match(skillMarkdown, /Игнорируй drafts, видимые в переписке/u);
   assert.match(skillMarkdown, /pendingHumanUpdateBasis\.acceptedRuns/u);
-  assert.match(skillMarkdown, /later Run supersede conflicting\s+earlier work/u);
-  assert.match(skillMarkdown, /only actual published human\s+comments/u);
-  assert.match(skillMarkdown, /net result adds\s+nothing public, dismiss the draft/u);
+  assert.match(skillMarkdown, /поздний Run заменяет конфликтующую раннюю работу/u);
+  assert.match(skillMarkdown, /только опубликованные человеческие\s+комментарии/u);
+  assert.match(skillMarkdown, /Если общий итог не добавляет\s+публично ничего нового, dismiss draft/u);
   // Keep the invariant stable when the reference gives the normal path a more
   // specific name such as "sole-card normal path".
-  assert.match(skillMarkdown, /do not make separate context\/hash\s+calls on (?:the|this sole-card)\s+normal path/u);
-  assert.match(skillMarkdown, /Never use `create_comment` as a workaround/u);
-  assert.match(skillMarkdown, /not acceptance\s+of the durable workspace result/u);
-  assert.match(skillMarkdown, /After acceptance/u);
-  assert.match(skillMarkdown, /only useful final\/intermediate `filePaths`/u);
-  assert.match(skillMarkdown, /Do not\s+attach all workspace files/u);
-  assert.match(skillMarkdown, /ordinary task attachments\s+are created only when\s+the operator publishes/iu);
+  assert.match(skillMarkdown, /на обычном пути одной карточки не\s+делай отдельные context\/hash calls/u);
+  assert.match(skillMarkdown, /Не обходи через `create_comment`/u);
+  assert.match(skillMarkdown, /не принятие\s+постоянного результата Workspace/u);
+  assert.match(skillMarkdown, /После принятия/u);
+  assert.match(skillMarkdown, /только полезные итоговые\/промежуточные `filePaths`/u);
+  assert.match(skillMarkdown, /Не прикладывай все файлы Workspace/u);
+  assert.match(skillMarkdown, /Обычные вложения задачи создаются лишь\s+при публикации оператором/iu);
   assert.match(skillMarkdown, /work_completed/u);
   assert.match(skillMarkdown, /review_passed/u);
   assert.match(skillMarkdown, /direct_completion/u);
@@ -5356,46 +5356,46 @@ test("workspace skill offers work start once and keeps completion status separat
     "utf8",
   );
 
-  assert.match(mainSkill, /asks to change a task status or prepare a separate editable status\s+proposal/u);
-  assert.match(mainSkill, /one-shot start-of-work decision for a task Run/u);
-  assert.match(mainSkill, /Always read it before opening a task Run/u);
-  assert.match(mainSkill, /independently from the required human comment/u);
-  assert.match(statusProposalReference, /`work_started` is the one-shot, non-blocking suggestion/u);
-  assert.match(statusProposalReference, /semantic\s+`queue` to `active` transition returned by the server/u);
-  assert.match(statusProposalReference, /Call `get_task_status_proposal_context` exactly once with that running task\s+Run's `runId`/u);
-  assert.match(statusProposalReference, /When its `state` is `eligible`, call\s+`render_task_status_proposal` with `intent=work_started`/u);
-  assert.match(statusProposalReference, /Continue the Run immediately after rendering/u);
-  assert.match(statusProposalReference, /Do not repeat the context read or start proposal after a tool action/u);
+  assert.match(mainSkill, /смены статуса\s+или отдельного предложения статуса/u);
+  assert.match(mainSkill, /однократного решения о начале task Run/u);
+  assert.match(mainSkill, /Всегда читай до открытия task Run/u);
+  assert.match(mainSkill, /отдельно\s+от обязательного комментария человеку/u);
+  assert.match(statusProposalReference, /`work_started` – однократное неблокирующее предложение/u);
+  assert.match(statusProposalReference, /возвращённый сервером semantic переход\s+`queue` → `active`/u);
+  assert.match(statusProposalReference, /Ровно один раз вызови `get_task_status_proposal_context` с `runId`\s+текущего выполняемого task Run/u);
+  assert.match(statusProposalReference, /При `state` = `eligible` вызови\s+`render_task_status_proposal` с `intent=work_started`/u);
+  assert.match(statusProposalReference, /Сразу после render продолжай Run/u);
+  assert.match(statusProposalReference, /Не повторяй context read или предложение начала после инструмента/u);
   assert.match(statusProposalReference, /`dismissed_for_current_status`/u);
   assert.match(statusProposalReference, /`already_proposed_for_current_status`/u);
-  assert.match(statusProposalReference, /durable server marker/u);
-  assert.match(statusProposalReference, /backend suppression lasts until the task\s+actually leaves that queue status and later enters a new status epoch/u);
-  assert.match(statusProposalReference, /Completing the immediate agent instruction may cover only\s+part of the task/u);
-  assert.match(statusProposalReference, /After partial work, still prepare the required comment proposal, but do not\s+create a `whole_task_ready` proposal/u);
-  assert.match(statusProposalReference, /unset optional due date, assignee, control,\s+or similar field is not an open task question by itself/u);
-  assert.match(statusProposalReference, /blocks readiness only when the task requirements or the\s+target transition policy actually require that value/u);
-  assert.match(statusProposalReference, /recorded `no_status_change`, or prose question about an optional field is not a\s+substitute/u);
+  assert.match(statusProposalReference, /Постоянный\s+маркер сервера/u);
+  assert.match(statusProposalReference, /пока задача\s+не покинет этот queue-статус и позднее не войдёт в новую status epoch/u);
+  assert.match(statusProposalReference, /Последняя инструкция может покрывать лишь часть задачи/u);
+  assert.match(statusProposalReference, /После частичной работы обязательный comment proposal нужен, `whole_task_ready` – нет/u);
+  assert.match(statusProposalReference, /Пустой необязательный срок, исполнитель, контроль и подобное поле сами\s+по себе не являются открытым вопросом/u);
+  assert.match(statusProposalReference, /Они блокируют\s+лишь при прямом требовании задачи или target transition policy/u);
+  assert.match(statusProposalReference, /записанный `no_status_change`\s+и вопрос о необязательном поле не заменяют отдельное решение/u);
   assert.match(statusProposalReference, /get_task_status_proposal_context/u);
   assert.match(statusProposalReference, /render_task_status_proposal/u);
   assert.match(statusProposalReference, /apply_task_status_proposal/u);
   assert.match(statusProposalReference, /dismiss_task_status_proposal/u);
   assert.match(statusProposalReference, /userExplicitlyRequestedImmediateStatusChange=true/u);
-  assert.match(statusProposalReference, /conditional instruction such as “when\s+done move to review” does not satisfy this assertion/u);
-  assert.match(statusProposalReference, /presses the corresponding MCP App action or\s+explicitly approves\/rejects that exact proposal/u);
+  assert.match(statusProposalReference, /условное «когда закончишь, переведи на проверку»\s+не удовлетворяют этому утверждению/u);
+  assert.match(statusProposalReference, /действие авторизованного пользователя в MCP App\s+или явное одобрение\/отклонение точного предложения/u);
   // A suppressed or ineligible proposal is internal control-plane bookkeeping,
   // so it must not create a user-facing progress or completion message by itself.
-  assert.match(statusProposalReference, /When no status proposal was rendered, no status-related error affects the work,\s+and no task-status action is required from the user, do not mention that absence\s+in progress or final text; continue silently/u);
-  assert.match(statusProposalReference, /mention task status only\s+when it is relevant to the user's request or next action/u);
-  assert.match(statusProposalReference, /a status-related error\s+or blocker affects the work/u);
+  assert.match(statusProposalReference, /Если карточка не показана, статусная ошибка не влияет на работу и действие\s+пользователя не требуется, не объясняй отсутствие proposal в progress\/final:\s+молча продолжай/u);
+  assert.match(statusProposalReference, /упоминай статус только при связи с просьбой\/следующим\s+шагом/u);
+  assert.match(statusProposalReference, /статусная ошибка блокирует\s+работу/u);
   assert.doesNotMatch(statusProposalReference, /state honestly whether no status proposal was\s+needed/u);
-  assert.match(agentRunReference, /Immediately after open succeeds for a task-scoped Run/u);
-  assert.match(agentRunReference, /Never repeat this start check\s+after a tool action, checkpoint, pause, resumed turn/u);
-  assert.match(taskRunReference, /Outcome records a\s+recommendation; accepted Run does not change task status/u);
-  assert.match(taskRunReference, /Use `questions` and `no_status_change` only when the answer is required to\s+complete, verify, or decide the task/u);
-  assert.match(taskRunReference, /unresolved completion-blocking questions/u);
-  assert.match(taskRunReference, /Do not manufacture a blocking question\s+from an unset optional due date, assignee, control, or other metadata field/u);
-  assert.match(taskRunReference, /Reassess the whole task from the final evidence even\s+when the recorded outcome is `no_status_change`/u);
-  assert.match(taskRunReference, /Partial work produces no status proposal/u);
+  assert.match(agentRunReference, /Сразу после успешного open task-scoped Run/u);
+  assert.match(agentRunReference, /Не повторяй проверку после инструмента,\s+checkpoint, pause, нового хода/u);
+  assert.match(taskRunReference, /Outcome – рекомендация; принятие Run не меняет статус/u);
+  assert.match(taskRunReference, /`questions` и `no_status_change` нужны, только если ответ необходим для\s+выполнения, проверки или решения задачи/u);
+  assert.match(taskRunReference, /незакрытые вопросы, блокирующие завершение/u);
+  assert.match(taskRunReference, /Не создавай блокирующий вопрос из\s+необязательного пустого срока, исполнителя, контроля или metadata/u);
+  assert.match(taskRunReference, /Заново оцени всю\s+задачу по итоговым доказательствам даже при записанном `no_status_change`/u);
+  assert.match(taskRunReference, /Частичная работа его не создаёт/u);
   assert.doesNotMatch(taskRunReference, /Trelio moves the task|applies the outcome through the normal task-status service/u);
 });
 
@@ -5415,21 +5415,21 @@ test("workspace skill proposes checklist progress without applying inferred stat
     "utf8",
   );
 
-  assert.match(mainSkill, /checklist completion-state review or a separate checklist proposal/u);
-  assert.match(mainSkill, /Checklist state request, inferred item progress, or accepted task Run/u);
-  assert.match(mainSkill, /post-acceptance item-by-item decision even when the whole task is\s+not ready/u);
-  assert.match(checklistReference, /After every substantive accepted task Run, call\s+`get_task_checklist_proposal_context`/u);
-  assert.match(checklistReference, /Partial work may propose the exact items it satisfied/u);
-  assert.match(checklistReference, /status-driven items linked to subtasks/u);
-  assert.match(checklistReference, /render no checklist card and do\s+not mention a ritual “checklist unchanged” result/u);
+  assert.match(mainSkill, /проверки чек-листа или предложения его состояния/u);
+  assert.match(mainSkill, /Просьба изменить чек-лист, вывод о прогрессе пунктов или принятый task Run/u);
+  assert.match(mainSkill, /После принятия оцени каждый пункт, даже если вся задача не готова/u);
+  assert.match(checklistReference, /После каждого содержательного принятого task Run вызови\s+`get_task_checklist_proposal_context`/u);
+  assert.match(checklistReference, /Частичная работа может предложить выполненные ею точные пункты/u);
+  assert.match(checklistReference, /пункты, состояние которых определяется связанной подзадачей/u);
+  assert.match(checklistReference, /не показывай карточку и не сообщай формальное\s+«чек-лист не изменён»/u);
   assert.match(checklistReference, /`render_task_checklist_proposal`/u);
-  assert.match(checklistReference, /`checklistProposal` block/u);
+  assert.match(checklistReference, /в `checklistProposal`/u);
   assert.match(checklistReference, /`apply_task_checklist_proposal`/u);
   assert.match(checklistReference, /`dismiss_task_checklist_proposal`/u);
   assert.match(checklistReference, /userExplicitlyRequestedImmediateChecklistStateChange=true/u);
-  assert.match(checklistReference, /A stale item blocks\s+the whole selected batch/u);
-  assert.match(checklistReference, /must not be copied to task\s+comments, system events, or notifications/u);
-  assert.match(taskRunReference, /Partial work may propose exact satisfied items/u);
+  assert.match(checklistReference, /Устаревший пункт блокирует весь\s+выбранный batch/u);
+  assert.match(checklistReference, /не копируются в комментарии, системные\s+события или уведомления/u);
+  assert.match(taskRunReference, /Частичная работа\s+может предложить точные выполненные пункты/u);
   assert.match(bundleReference, /get_task_checklist_proposal_context/u);
   assert.match(bundleReference, /checklist\/item snapshots/u);
 });
@@ -5448,29 +5448,29 @@ test("workspace skill keeps meeting storage private and distribution explicitly 
     assert.match(skillMarkdown, new RegExp(toolName, "u"));
   }
 
-  assert.match(skillMarkdown, /not an Agent\s+Workspace scope/u);
-  assert.match(skillMarkdown, /Do not copy\s+the full transcript/u);
+  assert.match(skillMarkdown, /не область\s+Agent Workspace/u);
+  assert.match(skillMarkdown, /Полный протокол не копируй/u);
   assert.match(skillMarkdown, /expectedAccessRevision/u);
-  assert.match(skillMarkdown, /one free-form Markdown document/u);
-  assert.match(skillMarkdown, /one or many tasks, workspaces, projects, or the company/u);
-  assert.match(skillMarkdown, /Present the complete target-grouped meeting plan/u);
-  assert.match(skillMarkdown, /successful create is not a terminal result/u);
-  assert.match(skillMarkdown, /do not end the current\s+turn, ask whether to continue/u);
-  assert.match(skillMarkdown, /`workflowStage`, `requiredNextAction`, and `mayFinish`/u);
-  assert.match(skillMarkdown, /name merely mentioned in the transcript is not confirmation/u);
-  assert.match(skillMarkdown, /state the current\s+exact access in plain language/u);
-  assert.match(skillMarkdown, /include one short invitation for the user\s+to name anyone else/u);
-  assert.match(skillMarkdown, /optional\s+question block result\s+preparation/u);
-  assert.match(skillMarkdown, /`items=\[\]` and a concise `noContextUpdatesSummary`/u);
-  assert.match(skillMarkdown, /returned\s+`completed_no_context_updates` stage/u);
-  assert.match(skillMarkdown, /completes only the meeting-distribution\s+branch/u);
-  assert.match(skillMarkdown, /complete post-meeting action set before the first proposal\s+write/u);
-  assert.match(skillMarkdown, /native proposal references and tools/u);
-  assert.match(skillMarkdown, /single proposal-bundle route/u);
-  assert.match(skillMarkdown, /keeping their\s+approval boundaries explicit/u);
-  assert.match(skillMarkdown, /never approve a sibling proposal or\s+mutation/u);
-  assert.match(skillMarkdown, /never grants task\s+participants meeting access/u);
-  assert.match(skillMarkdown, /never silently rewrite already\s+distributed workspaces/u);
+  assert.match(skillMarkdown, /один свободный Markdown-документ/u);
+  assert.match(skillMarkdown, /Встреча может затронуть несколько задач,\s+Workspace, проектов или компанию/u);
+  assert.match(skillMarkdown, /покажи полный план по целям/u);
+  assert.match(skillMarkdown, /Успешное создание не завершает\s+работу/u);
+  assert.match(skillMarkdown, /Не заканчивай ход, не спрашивай о продолжении/u);
+  assert.match(skillMarkdown, /`workflowStage`, `requiredNextAction`, `mayFinish`/u);
+  assert.match(skillMarkdown, /Имя в протоколе\s+не является подтверждением/u);
+  assert.match(skillMarkdown, /просто назови текущий точный доступ/u);
+  assert.match(skillMarkdown, /один раз кратко предложи\s+назвать дополнительных читателей/u);
+  assert.match(skillMarkdown, /Не блокируй итог этим необязательным\s+вопросом/u);
+  assert.match(skillMarkdown, /`items=\[\]` и кратким `noContextUpdatesSummary`/u);
+  assert.match(skillMarkdown, /`completed_no_context_updates` завершает/u);
+  assert.match(skillMarkdown, /завершает только ветку распределения встречи/u);
+  assert.match(skillMarkdown, /До первой proposal-write составь весь набор действий после встречи/u);
+  assert.match(skillMarkdown, /native\s+proposal references\/tools/u);
+  assert.match(skillMarkdown, /для двух и более карточек – один bundle/u);
+  assert.match(skillMarkdown, /сохраняя границы подтверждения/u);
+  assert.match(skillMarkdown, /не соседний proposal\/\s+mutation/u);
+  assert.match(skillMarkdown, /не дают участникам задачи доступ к встрече/u);
+  assert.match(skillMarkdown, /не переписывай\s+уже распределённые Workspace молча/u);
 });
 
 test("workspace skill defaults task-level controls to shared without widening existing personal controls", async () => {
@@ -5480,16 +5480,16 @@ test("workspace skill defaults task-level controls to shared without widening ex
     assert.match(skillMarkdown, new RegExp(toolName, "u"));
   }
 
-  assert.match(skillMarkdown, /Reaching `controlDate` never sends a notification/u);
-  assert.match(skillMarkdown, /For a new control, choose `shared` by default/u);
-  assert.match(skillMarkdown, /Choose `personal` only for an explicitly\s+private working check/u);
-  assert.match(skillMarkdown, /another\s+person's action does not make the control personal/u);
-  assert.match(skillMarkdown, /keep its current visibility unless the\s+user explicitly asks/u);
-  assert.match(skillMarkdown, /creation default never widens an\s+existing personal control/u);
-  assert.match(skillMarkdown, /do not silently create a personal substitute/u);
+  assert.match(skillMarkdown, /Наступление `controlDate` не отправляет уведомление/u);
+  assert.match(skillMarkdown, /Новый контроль по умолчанию `shared`/u);
+  assert.match(skillMarkdown, /`personal` допустим лишь для явно частной рабочей проверки/u);
+  assert.match(skillMarkdown, /Проверка чужого\s+действия не становится личной/u);
+  assert.match(skillMarkdown, /При обновлении сохраняй видимость без прямой просьбы изменить её/u);
+  assert.match(skillMarkdown, /Значение\s+по умолчанию для создания не расширяет существующий personal/u);
+  assert.match(skillMarkdown, /не создавай молча личную замену/u);
   assert.doesNotMatch(skillMarkdown, /Never\s+widen personal to shared/u);
-  assert.match(skillMarkdown, /Clearing a shared control also notifies/u);
-  assert.match(skillMarkdown, /Do not clear a control because the Run completed or task status changed/u);
+  assert.match(skillMarkdown, /Снятие shared также уведомляет аудиторию/u);
+  assert.match(skillMarkdown, /Не снимай контроль из-за завершения Run или смены статуса/u);
   assert.match(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
     /Комментарий, статус, checklist и control задачи являются отдельными user-decision flows/u,
@@ -5509,16 +5509,16 @@ test("hot-path skills use typed bridge actions and keep launcher compatibility l
   );
 
   assert.match(catalogSkill, /runtimeExecution\.localAction/u);
-  assert.match(catalogSkill, /without shell or PATH resolution/u);
+  assert.match(catalogSkill, /без shell\/PATH/u);
   assert.match(workspaceSkill, /continue_trelio_workspace_action/u);
-  assert.match(workspaceSkill, /not a\s+shell\s+command/u);
+  assert.match(workspaceSkill, /а не shell-команду/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /continue_trelio_workspace_action/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /без shell-команды/u);
   assert.doesNotMatch(catalogSkill, /If it is available in `PATH`/u);
   assert.doesNotMatch(workspaceSkill, /logical launcher/u);
   assert.doesNotMatch(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /логический launcher/u);
-  assert.match(recoveryReference, /Legacy command-only responses/u);
-  assert.match(recoveryReference, /Never execute or probe that token in PATH/u);
+  assert.match(recoveryReference, /id="legacy-command-only-responses"/u);
+  assert.match(recoveryReference, /Не ищи и не запускай этот токен через PATH/u);
   assert.match(recoveryReference, /launch-trelio-node/u);
 });
 
@@ -5527,24 +5527,24 @@ test("workspace instructions keep a canonical safe Agent Secret reference and us
 
   for (const instructions of [workspaceSkill]) {
     assert.match(instructions, /secretId/u);
-    assert.match(instructions, /current safe name|текущее safe название/u);
+    assert.match(instructions, /актуальное безопасное имя|текущее safe название/u);
     assert.match(instructions, /prepare_agent_secret_browser_fill/u);
-    assert.match(instructions, /fills automatically|подставляет значение автоматически/u);
+    assert.match(instructions, /автоматически заполняет|подставляет значение автоматически/u);
     assert.doesNotMatch(instructions, /Alt\/Option\+Shift\+S|Alt\+Shift\+S/u);
-    assert.match(instructions, /literal-text Browser\/Chrome tool|literal-text Browser\/Chrome\/Computer Use\s+action/u);
+    assert.match(instructions, /literal-text действие\s+Browser\/Chrome\/Computer Use|literal-text Browser\/Chrome tool/u);
     assert.match(instructions, /clipboard/u);
   }
-  assert.match(workspaceSkill, /merely\s+discovered but unused\s+secrets/u);
+  assert.match(workspaceSkill, /найденные, но не использованные секреты/u);
   assert.match(workspaceSkill, /--format fields-json/u);
-  assert.match(workspaceSkill, /Never\s+split one logical multi-field credential/u);
-  assert.match(workspaceSkill, /in-app Browser/u);
-  assert.match(workspaceSkill, /do not assume that it inherits the system Chrome password\s+manager/u);
-  assert.match(workspaceSkill, /already authenticated, continue with that session and do\s+not request or consume the Agent Secret/u);
-  assert.match(workspaceSkill, /explicitly asks to see/u);
-  assert.match(workspaceSkill, /protected\s+Trelio reveal/u);
+  assert.match(workspaceSkill, /Не разделяй один логический credential с несколькими полями/u);
+  assert.match(workspaceSkill, /Встроенный Browser Codex/u);
+  assert.match(workspaceSkill, /не считай, что он наследует менеджер паролей системного Chrome/u);
+  assert.match(workspaceSkill, /сессия уже авторизована, продолжай её без запроса\/\s+consume Agent Secret/u);
+  assert.match(workspaceSkill, /пользователь прямо просит показать/u);
+  assert.match(workspaceSkill, /защищённому reveal точной карточки Trelio/u);
   assert.match(workspaceSkill, /publicUrl/u);
-  assert.match(workspaceSkill, /selects one or several fields/u);
-  assert.match(workspaceSkill, /direct user gesture/u);
+  assert.match(workspaceSkill, /выбирает одно\/несколько полей/u);
+  assert.match(workspaceSkill, /сам нажимает\s+копирование/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /safe ссылка по secretId/u);
   assert.match(
     AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
@@ -6894,20 +6894,20 @@ test("workspace worker gates external services but not native Trelio work", asyn
   const workerSkillNormalized = workerSkill.replace(/\s+/gu, " ");
   const catalogSkillNormalized = catalogSkill.replace(/\s+/gu, " ");
 
-  assert.match(workerSkill, /Read this file completely before using a connected service/u);
-  assert.match(workerSkill, /`search_agent_skills` with the\s+task and compact concept hints/u);
-  assert.match(workerSkill, /reserve\s+`list_agent_skills` for explicit\s+(?:catalog )?inventory/iu);
+  assert.match(workerSkill, /Полностью прочитай файл до использования подключённого сервиса/u);
+  assert.match(workerSkill, /`search_agent_skills` с задачей и краткими\s+hints/u);
+  assert.match(workerSkill, /`list_agent_skills` оставь для явной инвентаризации/u);
   for (const instruction of [
     workerSkillNormalized,
     catalogSkillNormalized,
   ]) {
     assert.match(
       instruction,
-      /(?:Load|call|вызови) `get_agent_skill` (?:once|один раз)/u,
+      /(?:один раз вызови `get_agent_skill`|вызови `get_agent_skill` один раз)/u,
     );
     assert.match(
       instruction,
-      /(?:do not reread|do not repeat|не повторяй)[^.]+(?:before each|перед каждым) subcommand/iu,
+      /Не читай перед каждой подкомандой/u,
     );
     assert.match(instruction, /AGENT_SKILL_RELEASE_CHANGED/u);
   }
@@ -6917,61 +6917,61 @@ test("workspace worker gates external services but not native Trelio work", asyn
   );
   assert.match(
     catalogSkillNormalized,
-    /Reuse its complete instructions and exact execution declaration across user turns for up to 12 hours/u,
+    /Переиспользуй полные инструкции и точную execution declaration между ходами\s+до 12 часов/u,
   );
   assert.match(
     catalogSkillNormalized,
-    /Do not reread before each subcommand/u,
+    /Не читай перед каждой подкомандой/u,
   );
-  assert.match(workerSkill, /exact `runtimeExecution` or\s+`remoteMcpExecution`/u);
-  assert.match(workerSkill, /do not bypass a usable route/u);
-  assert.match(workerSkill, /reports\s+`setup_required`, `no_access`, or `needs_reconnect`/u);
+  assert.match(workerSkill, /точные `runtimeExecution`\/`remoteMcpExecution`/u);
+  assert.match(workerSkill, /Не обходи рабочий маршрут/u);
+  assert.match(workerSkill, /При `setup_required`, `no_access` или `needs_reconnect`/u);
   assert.match(
     workerSkill,
-    /say that it is currently\s+unavailable, name the required action/u,
+    /сообщи о текущей недоступности, назови необходимое действие/u,
   );
-  assert.match(workerSkill, /another source is allowed only after the user sees\s+the blocker and explicitly chooses it/u);
-  assert.match(workerSkill, /When relevant catalog items return `integrationRouting`/u);
-  assert.match(workerSkill, /never infer a route from skill IDs, titles, catalog order, prior use/u);
-  assert.match(workerSkill, /exact returned `role`,\s+`primarySkillId`, `selectionRule`, and `priority` semantics/u);
-  assert.match(workerSkill, /exact `fallbackSkillId`/u);
-  assert.match(workerSkill, /its\s+own `fallbackWhen`/u);
-  assert.match(workerSkill, /`ambiguousMutationFallback: forbidden` do not permit fallback or automatic\s+retry/u);
-  assert.match(workerSkill, /Native Trelio reads,\s+discovery, and Agent Workspace control-plane work do not use this gate/u);
-  assert.match(workerSkill, /use the external Agent Skill catalog\s+for native Trelio control-plane work/u);
-  assert.match(catalogSkill, /primary workspace\s+workflow, not a fallback from this catalog/);
-  assert.match(workerSkill, /On `AGENT_SKILL_RELEASE_CHANGED`, read the selected skill once again/u);
-  assert.match(workerSkill, /durable rule identified by\s+the agent/);
-  assert.match(workerSkill, /Call\s+`get_agent_instructions` to read current scoped and inherited rules/);
-  assert.match(workerSkill, /exact diff with `plan_agent_instructions_update`/);
-  assert.match(workerSkill, /Call `publish_my_agent_profile` or\s+`publish_agent_instructions` only after explicit confirmation/);
-  assert.match(workerSkill, /never place instructions in\s+`WORKSPACE_CONTEXT\.md`/);
-  assert.match(workerSkill, /applies only to future Runs/);
-  assert.match(workerSkill, /Before drafting a durable rule, identify every scenario whose behavior it\s+would govern/u);
-  assert.match(workerSkill, /read each matching\s+reference completely/u);
-  assert.match(workerSkill, /must preserve the `task-run\.md` limit/u);
-  assert.match(workerSkill, /Call `prepare_agent_workspace_run` once/u);
+  assert.match(workerSkill, /источник допустим лишь после объяснения блокировки и явного выбора пользователя/u);
+  assert.match(workerSkill, /При `integrationRouting` используй только текущи(?:е поля|й контракт)/u);
+  assert.match(workerSkill, /не выводи маршрут\s+из skill IDs, названий, порядка, прежнего использования/u);
+  assert.match(workerSkill, /`role`, `primarySkillId`, `selectionRule`, `priority`/u);
+  assert.match(workerSkill, /точному `fallbackSkillId`/u);
+  assert.match(workerSkill, /из её `fallbackWhen`/u);
+  assert.match(workerSkill, /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоповтор/u);
+  assert.match(workerSkill, /Native-чтения Trelio, discovery и управляющие операции Workspace этой проверки\s+каталога не требуют/u);
+  assert.match(workerSkill, /не используй каталог внешних навыков для native Trelio/u);
+  assert.match(catalogSkill, /основной рабочий маршрут/u);
+  assert.match(workerSkill, /При `AGENT_SKILL_RELEASE_CHANGED` перечитай выбранный навык один раз/u);
+  assert.match(workerSkill, /правило по инициативе агента/u);
+  assert.match(workerSkill, /`get_agent_instructions` прочитай текущие и унаследованные правила/u);
+  assert.match(workerSkill, /точный diff через `plan_agent_instructions_update`/u);
+  assert.match(workerSkill, /`publish_my_agent_profile` и\s+`publish_agent_instructions` вызывай только после явного подтверждения/u);
+  assert.match(workerSkill, /Не помещай инструкции в `WORKSPACE_CONTEXT\.md`/u);
+  assert.match(workerSkill, /действует только для будущих Run/u);
+  assert.match(workerSkill, /До подготовки постоянного правила определи все сценарии, на которые оно\s+повлияет/u);
+  assert.match(workerSkill, /полностью прочитай соответствующие references/u);
+  assert.match(workerSkill, /должно сохранять ограничение `task-run\.md`/u);
+  assert.match(workerSkill, /Один раз вызови `prepare_agent_workspace_run`/u);
   assert.match(workerSkill, /TRELIO_BRIDGE_PAIRING_REQUIRED/);
-  assert.match(workerSkill, /After exchange, briefly report that the device\s+is connected and continue/);
-  assert.match(workerSkill, /never gains\s+`mcp:agent-instructions:manage`/);
-  assert.match(workerSkill, /never start a\s+second OAuth flow/);
-  assert.match(catalogSkill, /For an ordinary task, call `search_agent_skills` once/u);
-  assert.match(catalogSkill, /Use `list_agent_skills` only when the user explicitly asks for the whole catalog/u);
-  assert.match(catalogSkill, /Do not call `request_plugin_install`/u);
-  assert.match(catalogSkill, /personal skill or connector remains allowed/u);
-  assert.match(catalogSkill, /do not silently turn absence of readiness into permission to choose another\s+source/u);
-  assert.match(catalogSkill, /project-scoped response already contains the additive union/);
-  assert.match(catalogSkill, /When `runtimeExecution` is present, invoke its exact `localAction`/);
-  assert.match(catalogSkill, /The host still verifies package signatures and file hashes on every execution/);
-  assert.match(catalogSkill, /When relevant catalog items return `integrationRouting`/u);
-  assert.match(catalogSkill, /never infer precedence from skill IDs, titles, array order/u);
-  assert.match(catalogSkill, /exact\s+returned `role`, `primarySkillId`, `selectionRule`, and `priority` semantics/u);
-  assert.match(catalogSkill, /exact `fallbackSkillId`/u);
-  assert.match(catalogSkill, /its own `fallbackWhen`/u);
-  assert.match(catalogSkill, /`ambiguousMutationFallback: forbidden` never authorize fallback or automatic\s+retry/u);
-  assert.match(catalogSkill, /current skill instruction requires a content-free `doctor` or auth probe/u);
-  assert.match(catalogSkill, /runtime-owned local credential cache/u);
-  assert.match(catalogSkill, /Do not infer the exception from a skill ID/u);
+  assert.match(workerSkill, /После обмена кратко сообщи о подключении\s+устройства и продолжай/u);
+  assert.match(workerSkill, /никогда не\s+включают `mcp:agent-instructions:manage`/u);
+  assert.match(workerSkill, /не начинай второй OAuth/u);
+  assert.match(catalogSkill, /Для обычной задачи вызови `search_agent_skills` один раз/u);
+  assert.match(catalogSkill, /`list_agent_skills` нужен только по явному запросу всего каталога/u);
+  assert.match(catalogSkill, /не вызывай `request_plugin_install`/u);
+  assert.match(catalogSkill, /личный навык\/коннектор разрешён/u);
+  assert.match(catalogSkill, /не считай неготовность разрешением другого\s+источника/u);
+  assert.match(catalogSkill, /Ответ проекта уже\s+объединяет назначения компании\/проекта/u);
+  assert.match(catalogSkill, /Вызови точные server\/tool из `runtimeExecution\.localAction`/u);
+  assert.match(catalogSkill, /Host проверяет подпись\s+package и file hashes при каждом запуске/u);
+  assert.match(catalogSkill, /При `integrationRouting` используй только текущи(?:е поля|й контракт)/u);
+  assert.match(catalogSkill, /Не выводи приоритет\s+из ID, названий, порядка элементов/u);
+  assert.match(catalogSkill, /точные\s+значения `role`, `primarySkillId`, `selectionRule`, `priority`/u);
+  assert.match(catalogSkill, /точному `fallbackSkillId`/u);
+  assert.match(catalogSkill, /из собственного `fallbackWhen`/u);
+  assert.match(catalogSkill, /`ambiguousMutationFallback: forbidden` не разрешают fallback или автоповтор/u);
+  assert.match(catalogSkill, /текущий навык требует `doctor`\/auth probe без содержимого/u);
+  assert.match(catalogSkill, /собственный credential cache runtime/u);
+  assert.match(catalogSkill, /Не выводи исключение из skill ID/u);
 });
 
 test("bridge adds its release version and bearer credential to every API request", () => {

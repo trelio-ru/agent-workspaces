@@ -1,143 +1,152 @@
 ---
 name: trelio-project-access
-description: Manage one existing Trelio company member's direct role in one project through the guarded MCP plan/apply flow. Use when a company owner or administrator asks to add, remove, promote, demote, or otherwise change a project's moderator, participant, or observer, or when an agent proposes such an access change.
+description: Изменение прямой роли одного существующего участника компании Trelio в одном проекте через защищённую процедуру MCP plan/apply. Используй, когда владелец или администратор компании просит добавить, удалить, повысить, понизить или иначе изменить модератора, участника, наблюдателя проекта либо агент предлагает такое изменение доступа.
 ---
 
-# Trelio Project Access
+<a id="trelio-project-access"></a>
 
-Use only the dedicated Trelio MCP tools. This flow changes one active company
-member's direct membership in one project; it does not invite people to the
-company, edit groups, or perform bulk membership replacement.
+# Доступ к проекту Trelio
 
-Do not add runtime fields yourself. Discovery/recovery remains available, but
-instruction/context reads and both plan/apply steps rely on the approved
-client hook to inject a one-use `runtimeSessionProof`. When Trelio itself
-returns `TRELIO_RUNTIME_HOOK_REQUIRED`, stop this flow and give one host-specific
-action only when review of the current definition is unconfirmed: in Codex ask
-the user to enable/approve this plugin's Hooks in settings or `/hooks`; in
-Claude Code/Cowork ask for the equivalent approval. The server signal proves
-only that proof was absent. If current trust is confirmed, do not repeat the
-enable advice: use the diagnostics skill to inspect the loaded definition,
-matcher, owner-process chronology, and actual `PreToolUse` dispatch. Never
-bypass the gate through another route.
+По умолчанию общайся по-русски; явный выбор другого языка сохраняй. Ограничение
+объясняй кратко: причина и следующий шаг. Сохраняй обязательные точные цитаты
+и ссылки; перевод цитаты обозначай как перевод. Команды, инструменты, поля
+и коды ошибок не переводи.
 
-A `PreToolUse` failure proves that the hook is active. Preserve its exact code
-and reason. On `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` or
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED`, update the plugin only when the
-required version is not installed, then retry in a new task if the current task
-cannot reload it; reserve a full restart for a new task that still sees the old
-version. Never answer that version failure with the missing-Hooks instruction.
-On `TRELIO_RUNTIME_HOOK_FAILED`, resolve the stated cause and retry once in the
-current task.
+Используй только предназначенные для этого инструменты Trelio MCP. Процедура
+меняет прямое участие одного активного сотрудника компании в одном проекте;
+она не приглашает в компанию, не меняет группы и не заменяет участников массово.
 
-## Check authority and connection
+Не добавляй runtime-поля сам. Поиск и восстановление доступны, но чтение
+инструкций/контекста и оба шага plan/apply требуют одноразовый
+`runtimeSessionProof` от подтверждённого клиентского hook. Если сам Trelio
+вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови процедуру. Только если просмотр
+текущего определения не подтверждён, назови одно действие для клиента: в Codex –
+включить/одобрить Hooks плагина в настройках или `/hooks`; в Claude Code/Cowork –
+аналогичное подтверждение. Ответ сервера доказывает лишь отсутствие proof.
+При уже подтверждённом доверии не повторяй совет включения: через навык
+диагностики проверь загруженное определение, matcher, хронологию владеющего
+процесса и реальный вызов `PreToolUse`. Не обходи проверку другим маршрутом.
 
-1. Require callable Trelio MCP tools. If the tools are missing, ask the user to
-   open `Plugins -> Trelio Agent Workspaces`, complete Trelio OAuth, and start
-   a new task. Do not use the browser or a broad project settings request as a
-   substitute.
-2. The authenticated user must be the company owner or a company
-   administrator. A project moderator cannot initiate this MCP operation, even
-   in a project they manage through the web interface.
-3. The OAuth token must contain `mcp:project-access:manage` together with
-   `mcp:read`. Existing connections do not acquire the new scope
-   automatically. If the scope is missing, ask the user to reconnect Trelio
-   OAuth and retry in a new task.
-4. The authenticated user may target their own direct project role through
-   this same guarded flow. Because only a company owner or administrator can
-   call it, removing that direct role does not remove their company-wide
-   project access. Still preserve every warning and the separate moderator
-   confirmation rule.
+Ошибка `PreToolUse` доказывает работу hook. Сохрани точные код и причину.
+При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` обновляй плагин, только если нужная
+версия не установлена; если текущая задача не может её перечитать, повтори
+в новой. Полный перезапуск оставь для новой задачи, которая всё ещё видит
+старую версию. Не отвечай на ошибку версии инструкцией об отсутствующих Hooks.
+При `TRELIO_RUNTIME_HOOK_FAILED` устрани указанную причину и повтори один раз
+в текущей задаче.
 
-## Resolve exact identities
+<a id="check-authority-and-connection"></a>
 
-1. Resolve the exact company and project from a canonical URL, explicit slugs,
-   or read-only discovery. Do not guess when several projects match.
-2. Call `get_agent_instructions` for the resolved company and project before
-   substantive work. Follow the effective company/project rules and the
-   authenticated user's personal profile.
-3. Call `get_project_meta` or `resolve_user` and select one exact active
-   `memberId`. A display name, username, or email-like text is discovery input,
-   never the mutation identity.
-4. If several people match, ask the user to choose. If nobody matches, explain
-   that this flow only manages existing company members; do not invent an
-   invite or placeholder workflow.
-5. Map the requested direct project role exactly:
+## Проверь полномочия и подключение
+
+1. Инструменты Trelio MCP должны быть доступны для вызова. Если их нет,
+   попроси открыть `Plugins -> Trelio Agent Workspaces`, завершить Trelio OAuth
+   и начать новую задачу. Не подменяй процедуру браузером или общим запросом
+   настроек проекта.
+2. Авторизованный пользователь должен быть владельцем или администратором
+   компании. Модератор проекта не может начать эту MCP-операцию, даже если
+   управляет проектом через веб-интерфейс.
+3. OAuth-токен должен содержать `mcp:project-access:manage` и `mcp:read`.
+   Старое подключение не получает новое право автоматически. При его отсутствии
+   попроси переподключить Trelio OAuth и повторить в новой задаче.
+4. Пользователь может менять собственную прямую роль тем же защищённым способом.
+   Поскольку вызвать его может лишь владелец/администратор компании, удаление
+   прямой роли не снимает общий доступ к проектам от компании. Всё равно сохраняй
+   предупреждения и отдельное подтверждение изменения прав модератора.
+
+<a id="resolve-exact-identities"></a>
+
+## Определи точные объекты
+
+1. Определи компанию и проект по каноническому URL, явным slug или поиску только
+   для чтения. При нескольких совпадениях не угадывай.
+2. До содержательной работы вызови `get_agent_instructions` для выбранной
+   компании/проекта. Соблюдай действующие правила и личный профиль пользователя.
+3. Через `get_project_meta` или `resolve_user` выбери один точный активный
+   `memberId`. Имя, username и текст, похожий на email, подходят для поиска,
+   но не являются идентификатором изменения.
+4. При нескольких людях попроси выбрать. Если совпадений нет, объясни, что
+   процедура работает только с существующими участниками компании; не
+   придумывай приглашение или временного участника.
+5. Точно сопоставь прямую роль:
    - `admin` – модератор;
    - `member` – участник;
    - `watcher` – наблюдатель;
    - `null` – удалить прямое участие в проекте.
 
-## Always prepare a plan
+<a id="always-prepare-a-plan"></a>
 
-Call `plan_project_access_change` for the exact company, project, `memberId`,
-and requested role before every mutation.
+## Всегда подготовь план
 
-Read and preserve all returned fields that affect the decision:
+Перед каждым изменением вызови `plan_project_access_change` с точными компанией,
+проектом, `memberId` и запрошенной ролью.
 
-- `action` and `canApply`;
-- current and requested direct roles;
-- group role and effective role before and after;
-- company-wide owner/administrator access;
-- task-scoped full access that will remain;
+Прочитай и сохрани все поля, влияющие на решение:
+
+- `action` и `canApply`;
+- текущую и запрошенную прямые роли;
+- роль группы и итоговую роль до и после;
+- общий доступ владельца/администратора компании;
+- полный доступ через задачи, который сохранится;
 - `warnings`;
-- `confirmationRequired`, `confirmationReasons`, and
-  `confirmationMessages`;
+- `confirmationRequired`, `confirmationReasons`, `confirmationMessages`;
 - `expectedStateHash`.
 
-If `canApply=false`, report that the requested direct role is already set and
-do not call apply.
+При `canApply=false` сообщи, что нужная прямая роль уже установлена; apply не вызывай.
 
-## Decide whether to pause
+<a id="decide-whether-to-pause"></a>
 
-An exact direct user command naming the project, person (including the
-authenticated user), and participant or observer role – or explicitly asking
-to remove that person – authorizes apply after the plan when
-`confirmationRequired=false`. Do not ask a ceremonial second question.
+## Определи, требуется ли пауза
 
-Show the complete plan and wait for explicit confirmation when any of these is
-true:
+Точная прямая команда пользователя, называющая проект, человека (включая самого
+пользователя) и роль участника/наблюдателя либо явно требующая удалить человека,
+разрешает apply после плана при `confirmationRequired=false`. Повторный
+формальный вопрос не нужен.
 
-- the agent suggested or inferred the change;
-- the person, project, role, or intended removal is ambiguous;
-- the user asked only for analysis or a recommendation;
-- the plan reports `confirmationRequired=true`.
+Покажи весь план и дождись явного подтверждения, если выполняется хотя бы одно:
 
-Granting or revoking moderator rights always has
-`confirmationRequired=true`. A direct command such as “сделай Ивана
-модератором” is not the second confirmation: show the resolved plan and ask
-the user to confirm that exact grant or revocation. Set `confirmed=true` only
-after that reply.
+- изменение предложил или вывел агент;
+- человек, проект, роль или намерение удалить неоднозначны;
+- пользователь просил только анализ или рекомендацию;
+- план вернул `confirmationRequired=true`.
 
-Do not hide warnings. In particular, explain when company-wide, group, or
-task-scoped access remains after removing the direct role, and when the project
-will have no direct moderator.
+Назначение и снятие модератора всегда требуют `confirmationRequired=true`.
+Прямая команда «сделай Ивана модератором» не является вторым подтверждением:
+покажи подготовленный план и попроси подтвердить точное назначение/снятие.
+`confirmed=true` ставь только после этого ответа.
 
-## Apply exactly once
+Не скрывай предупреждения. Объясни, если после удаления прямой роли остаётся
+доступ через компанию, группу или задачу либо проект останется без прямого модератора.
 
-1. Call `apply_project_access_change` with the same company, project,
-   `targetMemberId`, requested role, and exact `expectedStateHash` returned by
-   the current plan.
-2. Create one stable `clientRequestId` for this exact intended change. Reuse it
-   when retrying after a lost response; never reuse it for another person,
-   project, role, or confirmation state.
-3. Pass `confirmed=true` only under the confirmation rule above. Omit it or
-   pass `false` for a direct participant/observer change that does not require
-   confirmation.
-4. If the server says the project access changed after the plan, discard the
-   stale hash and prepare a fresh plan. Show the new plan and obtain a fresh
-   confirmation whenever its sensitive result or warnings require one.
-5. Treat a replayed success as the original success. Do not create a new
-   request merely because the first response was lost.
+<a id="apply-exactly-once"></a>
 
-## Report the result
+## Примени ровно один раз
 
-State the project, exact person, previous direct role, new direct role, and
-effective access after the change. Include every remaining-access warning.
-Mention that a different target receives the ordinary Trelio project
-membership notification, while a self-change does not create a redundant
-self-notification. Every change is recorded as an MCP company activity event.
+1. Вызови `apply_project_access_change` с прежними компанией, проектом,
+   `targetMemberId`, запрошенной ролью и точным `expectedStateHash` текущего плана.
+2. Создай один стабильный `clientRequestId` для этого конкретного изменения.
+   Повторно используй после потери ответа; не переноси на другого человека,
+   проект, роль или состояние подтверждения.
+3. Передавай `confirmed=true` только по правилу выше. Для прямой смены
+   участника/наблюдателя без требования подтверждения опусти поле либо передай
+   `false`.
+4. Если сервер сообщает об изменении доступа после плана, отбрось старый hash
+   и подготовь новый план. Покажи его и получи новое подтверждение, если
+   чувствительный результат или предупреждения этого требуют.
+5. Повторённый успешный ответ означает первоначальный успех. Не создавай новый
+   запрос только из-за потери первого ответа.
 
-Never work around this contract with a full project PATCH, a group edit,
-several single-member calls presented as an unreviewed bulk action, direct
-database access, or any route other than this exact plan/apply flow.
+<a id="report-the-result"></a>
+
+## Сообщи результат
+
+Назови проект, точного человека, прежнюю и новую прямые роли, итоговый доступ.
+Включи все предупреждения о сохранённом доступе. Укажи: другой участник получает
+обычное уведомление Trelio об участии в проекте; изменение собственной роли не
+создаёт лишнего уведомления самому себе. Каждое изменение фиксируется как
+MCP-событие активности компании.
+
+Не обходи контракт полным PATCH проекта, правкой группы, серией одиночных
+вызовов под видом непроверенного массового действия, прямым доступом к БД или
+любым маршрутом вне точной процедуры plan/apply.

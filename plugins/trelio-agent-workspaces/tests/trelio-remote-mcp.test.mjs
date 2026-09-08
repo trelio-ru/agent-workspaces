@@ -2401,33 +2401,33 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
 
   assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   for (const invariant of [
-    /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u,
-    /Follow only server-selected providerSelection; never infer the local route/u,
-    /resolve the intended Trelio company before installing, authorizing, or invoking/u,
-    /Ask when several companies remain possible/u,
-    /Use search_agent_skills; list_agent_skills is only for explicit inventory/u,
-    /get_agent_skill before its first external action/u,
-    /Reuse the full read across turns for up to 12 hours with unchanged session\/context\/skill\/implementation\/intent/u,
-    /reload on a new session, lost\/compacted text, expiry, route change, resolved blocker or AGENT_SKILL_RELEASE_CHANGED/u,
-    /Missing active tools do not prove skill absence/u,
-    /runtimeExecution\.localAction or declared Remote MCP tools with returned identity\/release/u,
-    /formal integrationRouting, including primary\/fallback roles and exact allowed fallback reasons/u,
-    /never infer these from IDs or order/u,
-    /Missing or invalid routing never permits fallback/u,
-    /each skill's assignment, connection and session independent/u,
-    /setup_required, no_access or needs_reconnect require explaining the blocker and setup action/u,
-    /user's explicit choice after that explanation, unless the formal routing permits it/u,
-    /If search finds no relevant assigned skill, use compatible personal connectors/u,
-    /Transient\/control-plane failures never prove absence or authorize fallback/u,
-    /establish an ambiguous mutation's live result before any retry/u,
-    /Never bypass a usable skill via browser, HTTP, another MCP or script/u,
-    /request_plugin_install before catalog resolution/u,
-    /explicit development\/debug\/audit\/release task in an identified canonical repository/u,
-    /A checkout alone is insufficient/u,
-    /Preserve scope\/ACL, secret delivery, no-logging, output bounds and external-mutation authority/u,
-    /ordinary company work returns to catalog routing/u,
-    /Never weaken secret, personal-session or independent human-decision boundaries/u,
-    /external-services\.md reference/u,
+    /Native Trelio task\/Workspace\/Run не требуют поиска навыка/u,
+    /Следуй только серверному providerSelection; не выводи локальный маршрут сам/u,
+    /До установки, авторизации или вызова другой внешней интеграции определи компанию Trelio/u,
+    /при нескольких спроси/u,
+    /Используй search_agent_skills, list_agent_skills – только для явного inventory/u,
+    /До первого внешнего действия загрузи точный включённый get_agent_skill/u,
+    /Полный текст переиспользуется между ходами до 12 часов при неизменных session\/context\/skill\/implementation\/intent/u,
+    /Перечитай при новой сессии, потере\/compaction текста, expiry, смене маршрута, снятии blocker или AGENT_SKILL_RELEASE_CHANGED/u,
+    /Отсутствие активного tool не доказывает отсутствие навыка/u,
+    /runtimeExecution\.localAction либо Remote MCP tools с возвращёнными identity\/release/u,
+    /формальному integrationRouting, primary\/fallback и точным разрешённым причинам/u,
+    /не выводи их из IDs\/порядка/u,
+    /Нет корректного routing – нет fallback/u,
+    /Assignment, connection, session каждого навыка независимы/u,
+    /При setup_required\/no_access\/needs_reconnect объясни блокировку и необходимую настройку/u,
+    /требует явного выбора пользователя после объяснения, кроме разрешения formal routing/u,
+    /Если поиск не нашёл релевантный назначенный навык, совместимый личный connector допустим/u,
+    /Временная ошибка\/control-plane outage не доказывает отсутствие и не разрешает fallback/u,
+    /До повтора неоднозначной mutation установи реальный результат/u,
+    /Не обходи рабочий навык browser\/HTTP\/другим MCP\/script/u,
+    /request_plugin_install до каталога/u,
+    /Явная development\/debug\/audit\/release задача в определённом каноническом репозитории/u,
+    /одного checkout недостаточно/u,
+    /Сохраняй scope\/ACL, доставку секретов, запрет логирования, bounds и разрешение внешних mutations/u,
+    /обычная работа компании возвращается к каталогу/u,
+    /Границы секретов, личных сессий и независимых решений человека не ослабляются/u,
+    /Подробности – выбранный навык и external-services\.md/u,
   ]) assert.match(instructions, invariant);
 });
 
@@ -2448,7 +2448,7 @@ test("platform routing sends a provider-neutral signed skill through runtimeExec
     type: "runtimeExecution",
     skillId: "signed-inventory-runtime",
   });
-  assert.match(instructions, /selected skill's declared runtimeExecution\.localAction/u);
+  assert.match(instructions, /объявленные выбранным навыком runtimeExecution\.localAction/u);
 });
 
 test("platform routing sends a provider-neutral knowledge service through remoteMcpExecution", async () => {
@@ -2471,7 +2471,7 @@ test("platform routing sends a provider-neutral knowledge service through remote
     type: "remoteMcpExecution",
     skillId: "remote-knowledge",
   });
-  assert.match(instructions, /declared Remote MCP tools with returned identity\/release/u);
+  assert.match(instructions, /объявленные выбранным навыком runtimeExecution\.localAction либо Remote MCP tools с возвращёнными identity\/release/u);
 });
 
 test("platform routing discovers a runtime even without an integration-specific tool", async () => {
@@ -2499,7 +2499,7 @@ test("platform routing discovers a runtime even without an integration-specific 
     type: "runtimeExecution",
     skillId: "team-messages-single",
   });
-  assert.match(instructions, /Missing active tools do not prove skill absence/u);
+  assert.match(instructions, /Отсутствие активного tool не доказывает отсутствие навыка/u);
 });
 
 test("formal routing uses the returned primary skill regardless of catalog order", () => {
@@ -2643,7 +2643,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
     type: "remoteMcpExecution",
     skillId: "future-orbital-inventory",
   });
-  assert.match(instructions, /Use search_agent_skills/u);
+  assert.match(instructions, /Используй search_agent_skills/u);
   assert.doesNotMatch(
     instructions,
     /signed-inventory-runtime|remote-knowledge|future-orbital-inventory/iu,
@@ -2661,9 +2661,9 @@ test("platform routing allows a named fallback when no relevant skill exists", a
     type: "fallback",
     reason: "no_relevant_skill",
   });
-  assert.match(instructions, /If search finds no relevant assigned skill/u);
-  assert.match(instructions, /use compatible personal connectors/u);
-  assert.match(instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
+  assert.match(instructions, /Если поиск не нашёл релевантный назначенный навык/u);
+  assert.match(instructions, /совместимый личный connector допустим/u);
+  assert.match(instructions, /Native Trelio task\/Workspace\/Run не требуют поиска навыка/u);
 });
 
 test("platform routing blocks on explicit no_access until the user chooses another source", async () => {
@@ -2684,8 +2684,8 @@ test("platform routing blocks on explicit no_access until the user chooses anoth
     type: "blocked",
     reason: "no_access",
   });
-  assert.match(instructions, /require explaining the blocker and setup action/u);
-  assert.match(instructions, /user's explicit choice after that explanation/u);
+  assert.match(instructions, /объясни блокировку и необходимую настройку/u);
+  assert.match(instructions, /требует явного выбора пользователя после объяснения/u);
 });
 
 test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
@@ -2741,8 +2741,8 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(frames[0].result.serverInfo.version, "2.0.8");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
-  assert.match(frames[0].result.instructions, /legacy responses without a structured action/iu);
-  assert.match(frames[0].result.instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
+  assert.match(frames[0].result.instructions, /Для старых command-ответов – его процедура совместимости/u);
+  assert.match(frames[0].result.instructions, /Native Trelio task\/Workspace\/Run не требуют поиска навыка/u);
   assert.equal(frames[1].result.tools.length, 28);
 });
 

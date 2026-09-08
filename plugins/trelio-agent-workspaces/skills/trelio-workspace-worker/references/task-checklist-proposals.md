@@ -1,78 +1,83 @@
-# Task checklist proposals
+<a id="task-checklist-proposals"></a>
 
-Read this file completely whenever the user asks to change checklist completion
-state, when progress suggests that checklist items may now be satisfied, or after
-a substantive task-scoped Run is accepted.
+# Предложения состояния чек-листа
 
-## Separate inferred progress from an immediate command
+Полностью прочитай файл по просьбе изменить выполнение пунктов, при выводе
+о выполнении из прогресса или после принятого содержательного task Run.
 
-Checklist completion state is a human decision independent from Agent Run
-acceptance, task status, comments, and controls. An accepted result never marks
-an item by itself.
+<a id="separate-inferred-progress-from-an-immediate-command"></a>
 
-Use `complete_checklist_item`, or change an existing item's `isCompleted` through
-`update_checklist`, only when the user explicitly and unambiguously commands the
-exact item and exact state now. Only then pass
-`userExplicitlyRequestedImmediateChecklistStateChange=true`. Do not derive that
-assertion from completed work, a handoff, task readiness, or a general request to
-keep the task current.
+## Отличай вывод о прогрессе от немедленной команды
 
-When the state change is inferred, use the proposal flow. Do not work around it
-by recreating an item, replacing the checklist, or adding a new completed item.
+Выполнение чек-листа – решение человека, независимое от принятия Run,
+статуса, комментариев и контролей. Принятый результат сам не отмечает пункт.
 
-## Reassess the live checklist after accepted work
+`complete_checklist_item` или изменение `isCompleted` через `update_checklist`
+допустимы лишь по прямой однозначной команде пользователя изменить точный пункт
+в точное состояние сейчас. Только тогда передавай
+`userExplicitlyRequestedImmediateChecklistStateChange=true`. Завершённая
+работа, handoff, готовность задачи и общая просьба поддерживать её актуальность
+не являются такой командой.
 
-After every substantive accepted task Run, call
-`get_task_checklist_proposal_context` with the exact accepted `runId` and compare
-the accepted result with every live ordinary item. This check is required even
-when the whole task is not ready for a status transition.
+Для выведенного изменения используй proposal. Не обходи его пересозданием
+пункта, заменой чек-листа или добавлением нового уже выполненного пункта.
 
-Propose only completion-state transitions directly supported by the actual
-result. Partial work may propose the exact items it satisfied without implying
-that the entire checklist or task is complete. A prior completed item may be
-proposed as incomplete only when the result directly proves that its requirement
-is no longer satisfied.
+<a id="reassess-the-live-checklist-after-accepted-work"></a>
 
-Do not propose:
+## После принятой работы проверь актуальный чек-лист
 
-- checklist or item text changes;
-- additions, deletions, or reordering;
-- a no-op target equal to the current state;
-- status-driven items linked to subtasks;
-- speculative changes justified only by task status or broad progress.
+После каждого содержательного принятого task Run вызови
+`get_task_checklist_proposal_context` с точным принятым `runId` и сопоставь
+результат с каждым текущим обычным пунктом. Это обязательно даже при неготовности
+всей задачи к смене статуса.
 
-If no item has a directly supported transition, render no checklist card and do
-not mention a ritual “checklist unchanged” result.
+Предлагай только переходы выполнения, прямо доказанные результатом.
+Частичная работа может предложить выполненные ею точные пункты, не объявляя
+готовым весь список/задачу. Ранее выполненный пункт можно предложить снять
+только при прямом доказательстве, что его требование больше не выполнено.
 
-## Prepare one exact decision
+Не предлагай:
 
-Use only item and checklist snapshots returned by the immediately preceding
-context read. For every proposed item, preserve its exact `checklistId`,
-`checklistUpdatedAt`, `itemId`, content, position, `expectedIsCompleted`,
-`targetIsCompleted`, `updatedAt`, and one concrete private reason.
+- изменение текста чек-листа/пункта;
+- добавление, удаление или перестановку;
+- целевое состояние, совпадающее с текущим;
+- пункты, состояние которых определяется связанной подзадачей;
+- предположения только по статусу задачи или общему прогрессу.
 
-When this is the sole interactive proposal card, call
-`render_task_checklist_proposal`. When any comment, status, control-clear, or
-another checklist proposal is also needed, read `task-proposal-bundles.md` and
-put the exact fields in one `checklistProposal` block of the single
-`render_task_proposals` call. A substantive accepted task Run always also needs
-its human comment proposal, so its checklist proposal normally uses the bundle.
+Если доказанных переходов нет, не показывай карточку и не сообщай формальное
+«чек-лист не изменён».
 
-The App initially selects the proposed items, but the user may deselect any of
-them. Reasons explain the private decision and must not be copied to task
-comments, system events, or notifications.
+<a id="prepare-one-exact-decision"></a>
 
-## Keep apply and dismissal human-controlled
+## Подготовь точное решение
 
-Do not call `apply_task_checklist_proposal` or
-`dismiss_task_checklist_proposal` because the card was rendered. Call one only
-after the authenticated user presses the App action or explicitly decides the
-exact visible proposal. In a text-only client, preserve the exact proposal
-id/revision and wait for that decision.
+Используй только snapshots непосредственно предыдущего context read.
+Для каждого пункта сохраняй точные `checklistId`, `checklistUpdatedAt`,
+`itemId`, текст, позицию, `expectedIsCompleted`, `targetIsCompleted`,
+`updatedAt` и одну конкретную приватную причину.
 
-Apply sends only the selected item ids. The backend rechecks live task ACL and
-every selected snapshot and applies the subset atomically. A stale item blocks
-the whole selected batch; reread context and prepare a fresh proposal instead of
-partially applying or switching to an immediate mutation. Successful apply
-creates the ordinary checklist system events and notifications, never the
-private reasons.
+Для единственной карточки вызови `render_task_checklist_proposal`.
+Если также нужны comment/status/control-clear/другой checklist, прочитай
+`task-proposal-bundles.md` и передай поля в `checklistProposal` одного
+`render_task_proposals`. Содержательный принятый task Run также требует
+комментарий человеку, поэтому его чек-лист обычно входит в bundle.
+
+App изначально выбирает предложенные пункты, пользователь может снять любые.
+Причины объясняют приватное решение и не копируются в комментарии, системные
+события или уведомления.
+
+<a id="keep-apply-and-dismissal-human-controlled"></a>
+
+## Применение и отклонение решает человек
+
+Не вызывай `apply_task_checklist_proposal` или
+`dismiss_task_checklist_proposal` из-за самого render. Вызов допустим только
+после действия авторизованного пользователя в App или явного решения по
+точному видимому proposal. Текстовый клиент сохраняет точные proposal id/revision
+и ждёт того же решения.
+
+Apply передаёт только выбранные item ids. Backend заново проверяет task ACL
+и каждый snapshot, применяя subset атомарно. Устаревший пункт блокирует весь
+выбранный batch: перечитай контекст и подготовь новый proposal, не применяй
+частично и не переходи к немедленной mutation. Успех создаёт обычные системные
+события/уведомления чек-листа, никогда приватные причины.

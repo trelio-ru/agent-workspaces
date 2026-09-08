@@ -1,246 +1,246 @@
 # Agent Secrets
 
-Read this file completely before discovering, creating, configuring, checking
-out, filling, revealing, or recording a dependency on an Agent Secret.
+Полностью прочитай файл до поиска, создания, настройки, checkout, fill,
+reveal или сохранения зависимости от Agent Secret.
 
-Use `list_agent_secrets` only for safe metadata. If access is missing, call
-`request_agent_secret_access`; never ask the user to paste a password, token,
-private key, TOTP seed, or company encryption key into chat. Values never
-belong in prompts, ordinary MCP output, argv, ambient environment, workspace
-files, Git, comments, checkpoints, handoffs, or logs.
+`list_agent_secrets` используй только для безопасных metadata. Без доступа
+вызови `request_agent_secret_access`; не проси пароль, token, private key,
+TOTP seed или company encryption key в чате. Значения не попадают в prompt,
+обычный MCP output, argv, общее environment, Workspace, Git, комментарии,
+checkpoint, handoff и логи.
 
-## Storage contract
+<a id="storage-contract"></a>
 
-Storage follows the company's exact encryption state and is not a user choice:
+## Хранение
 
-- a plain company uses `storageMode=trelio`. Trelio Vault encrypts the bundle at
-  rest with the server keyring and opens it only inside an authorized
-  reveal/checkout;
-- an encrypted company uses `storageMode=company_e2ee`. The browser or paired
-  bridge seals the value with the company scope key before upload. Trelio
-  stores the signed ciphertext and cannot decrypt it.
+Режим следует точному состоянию шифрования компании, а не выбору пользователя:
 
-There is no `local_device` Agent Secret mode, company storage policy, local
-secret file, transfer, or adoption command. If the user wants a credential to
-remain local only, do not create or configure an Agent Secret and do not send
-the value to Trelio. Explain the consequence when relevant: a credential that
-is not an Agent Secret cannot use Trelio ACL, reveal, one-use grants,
-multi-device access, or unattended Workspace execution.
+- plain: `storageMode=trelio`. Trelio Vault шифрует bundle на диске серверным
+  keyring и открывает только внутри разрешённого reveal/checkout;
+- encrypted: `storageMode=company_e2ee`. Браузер/paired bridge шифрует
+  значение company scope key до отправки. Trelio хранит подписанный ciphertext
+  и не может его расшифровать.
 
-Before creating a record, call `list_agent_secrets` for the exact target scope
-to detect an existing card and read `allowAgentSaveChatSecrets`. Do not ask the
-user to choose a storage mode and do not pass one to
-`create_agent_secret_placeholder`. MCP placeholder creation is available only
-for a plain company. Unless the already-shared chat flow below applies, in an
-encrypted company the user creates the card in
-Trelio's protected browser UI, where its name, description, field labels, and
-eventual value are encrypted locally.
+У Agent Secret нет режима `local_device`, политики хранения компании,
+локального secret-файла, transfer или adoption команды. Если пользователь
+хочет credential только локально, не создавай/настраивай Agent Secret и не
+отправляй значение в Trelio. Когда это существенно, объясни: credential вне
+Agent Secret не использует Trelio ACL, reveal, одноразовые grants,
+доступ с нескольких устройств или выполнение Workspace без присутствия пользователя.
 
-## Configure a value
+До создания вызови `list_agent_secrets` точной области для поиска существующей
+карточки и чтения `allowAgentSaveChatSecrets`. Не проси выбирать storage mode
+и не передавай его в `create_agent_secret_placeholder`. MCP placeholder
+доступен лишь plain-компании. Для encrypted, кроме случая уже присланного
+значения ниже, пользователь создаёт карточку в защищённом браузерном UI Trelio:
+имя, описание, подписи полей и будущее значение шифруются локально.
 
-Let the user use Trelio's protected browser form when practical. When the
-value already exists in a trusted local producer/file, an active Run may send
-it straight to the bridge without model-visible transport:
+<a id="configure-a-value"></a>
 
-- for a file, call `continue_trelio_workspace_action` with
-  `operation=secret_set_file`, the exact opened `workingDirectory`, and only
-  `secretId`, absolute `filePath`, and optional `format=fields-json`;
-- for a producer/stdin value, read `setup-and-recovery.md` and use its bounded
-  process-only secret-input route. Never put producer output in an MCP call;
-- for several fields, the file/producer contains one JSON object with exact
-  string/null values and explicit `fields-json` format.
+## Настрой значение
 
-Without the format flag, JSON-looking bytes remain one scalar value for
-compatibility. Never split one logical multi-field credential into separate
-Agent Secrets merely to avoid `--format fields-json`.
+По возможности используй защищённую браузерную форму Trelio. Если значение
+уже есть у доверенного локального producer/файла, активный Run может передать
+его прямо bridge без видимого модели транспорта:
 
-`secret set` checks the plugin and fetches a value-free write context before
-reading stdin/file. For a plain company the backend encrypts the accepted
-value. For an encrypted company the bridge requires a ready company encryption
-device, builds a signed `agent_secret.value` payload in memory, and sends only
-ciphertext. Because the server cannot merge encrypted fields, every E2EE
-rotation is a complete replacement: include every required field; omitted,
-empty, or null optional fields are removed. The bridge never writes Agent
-Secret values to its private config or Workspace.
+- файл: `continue_trelio_workspace_action` с `operation=secret_set_file`,
+  точным открытым `workingDirectory` и только `secretId`, абсолютным
+  `filePath`, необязательным `format=fields-json`;
+- producer/stdin: прочитай `setup-and-recovery.md` и используй ограниченный
+  process-only secret-input. Не помещай output producer в MCP call;
+- несколько полей: один JSON object с точными string/null и явным `fields-json`.
 
-## Already-shared chat values
+Без format-флага похожие на JSON bytes остаются одним scalar для совместимости.
+Не разделяй один логический credential с несколькими полями на отдельные Agent Secrets
+ради отказа от `--format fields-json`.
 
-Use local `trelio-remote-skills.continue_trelio_local_action` with
-`nativeTool=save_known_agent_secret` for both plain and encrypted companies,
-only when every condition below is true:
+`secret set` проверяет plugin и получает write context без значений до
+чтения stdin/file. В plain принятое значение шифрует backend. В encrypted
+нужно готовое устройство шифрования: bridge в памяти строит подписанный
+`agent_secret.value` и отправляет только ciphertext. Сервер не может
+объединить encrypted fields, поэтому каждая ротация E2EE – полная замена:
+включи все обязательные поля; пропущенные/пустые/null необязательные удаляются.
+Bridge никогда не пишет Agent Secret values в private config или Workspace.
 
-- `allowAgentSaveChatSecrets=true` for the exact company;
-- the exact value was already supplied in the current conversation and the
-  user directly asked to save that value durably; merely sharing it, asking
-  to sign in, or asking to use it is not storage consent;
-- the target is an existing secret with `manage` or a new card in an exact
-  scope where the user can create secrets, and an applicable Agent Run is active;
-- the call supplies exact `expectedCurrentVersion`, a stable
-  `clientRequestId`, and literal
-  `userExplicitlyRequestedPersistentStorage=true`.
+<a id="already-shared-chat-values"></a>
 
-The user's request to save, including a request accompanying the value, is
-sufficient: do not ask for another confirmation or manual re-entry. Tell the
-user that the original plaintext remains in the chat and may remain
-in the AI client's tool history. Send it only in the local sensitive tool input;
-never echo or copy it elsewhere.
+## Значение уже прислано в чат
 
-Pass the exact `companySlug`, `nativeTool`, and an `arguments` object with:
+В обоих режимах используй локальный
+`trelio-remote-skills.continue_trelio_local_action` с
+`nativeTool=save_known_agent_secret`, только если выполнены все условия:
 
-- `secretId` for an existing card, or `newSecret` containing
-  `scopeType`, `scopeId`, `name`, optional `publicDescription` and
-  `templateType`, and `fields` with exact `key/label/type/required`;
-- `runId`, exact `expectedCurrentVersion` (zero for creation), stable
-  `clientRequestId`, and `userExplicitlyRequestedPersistentStorage=true`;
-- exactly one of `value` (one field) or `values` (named string/null fields).
+- `allowAgentSaveChatSecrets=true` для точной компании;
+- точное значение уже прислано в текущей переписке и пользователь прямо
+  попросил сохранить его постоянно. Передача, просьба войти или использовать
+  не являются согласием на хранение;
+- цель – существующий secret с `manage` либо новая карточка точной области,
+  где пользователь может создавать секреты; подходящий Run активен;
+- передаются точный `expectedCurrentVersion`, стабильный `clientRequestId`
+  и буквальный `userExplicitlyRequestedPersistentStorage=true`.
 
-This local flow replaces the whole bundle in both modes: include all required
-fields; omitted, empty, or null optional fields are cleared. The plugin performs
-a value-free preflight and locally encrypts E2EE metadata and values before one
-atomic server write. Never author internal `localWrite`, use a generic payload
-uploader, or turn chat values into shell/stdin/file/clipboard transport.
+Просьбы сохранить, в том числе вместе со значением, достаточно: не проси
+повторного подтверждения или ручного ввода. Сообщи, что исходный plaintext
+остаётся в чате и может остаться в tool history клиента. Передавай только
+чувствительным input локального инструмента, не повторяй и не копируй в другое место.
 
-The loaded local tool must advertise `save_known_agent_secret`. An older
-generic local-action tool is not this capability: update the plugin through
-the normal compatibility flow or use the protected form.
+Передай точные `companySlug`, `nativeTool` и `arguments`:
 
-On an uncertain result, read current safe metadata and retry the exact input
-with the same request ID; never invent a new ID to bypass a conflict. Revoked
-policy/ACL, stale version, expired Run, and pending device access stop the save.
-Follow the normal pairing/device setup route when needed; never request a
-company key through chat. Use the protected browser form if company opt-in or
-the local capability is unavailable. Legacy direct remote
-`save_known_agent_secret` accepts only existing plain-company values and is
-not the default flow. Never ask for a new value
-merely to make the chat exception available.
+- `secretId` существующей карточки либо `newSecret` с `scopeType`,
+  `scopeId`, `name`, необязательными `publicDescription`, `templateType`
+  и `fields` с точными `key/label/type/required`;
+- `runId`, точный `expectedCurrentVersion` (ноль при создании),
+  стабильный `clientRequestId`, `userExplicitlyRequestedPersistentStorage=true`;
+- ровно одно из `value` (одно поле) или `values` (именованные string/null).
 
-## Executable checkout
+В обоих режимах это полная замена bundle: все обязательные поля; пропущенные,
+пустые или null необязательные очищаются. Plugin выполняет preflight без
+значений и локально шифрует E2EE metadata/values до одной атомарной записи.
+Не создавай внутренний `localWrite`, не используй общий uploader и не
+превращай chat values в shell/stdin/file/clipboard.
 
-When an authorized executable needs a value, call
-`prepare_agent_secret_checkout` for the exact current Run, executable, and
-field set, then execute the single returned `bridge.action` through its exact
-local server/tool and opened `workingDirectory`. Append only the intended
-child arguments to `parameters.arguments`; never change its executable or grant.
-The bridge consumes the
-grant through the authorized stdin, scoped env, or private temporary-file mode.
-In an encrypted company the server returns only the ACL-gated ciphertext; the
-bridge validates its company/scope/secret/version binding, decrypts it in
-memory, selects only the granted fields, and derives a current TOTP code
-locally. Never replace the executable with a shell, logger, `env`, `printenv`,
-`cat`, or another value-revealing program.
+Загруженный local tool должен объявлять `save_known_agent_secret`.
+Старый общий local-action tool не даёт эту capability: обнови plugin обычным
+путём совместимости либо используй защищённую форму.
 
-An installation-managed credential is a separate provider contract, not an
-Agent Secret. Follow the exact
-`prepare_agent_skill_managed_credential_checkout` response: only
-`reusePolicy.mode=time_bound` permits reusing the unchanged
-`bridge.argvPrefix` in the same Run and release before server `expiresAt`.
-Never extend that lease to an Agent Secret, TOTP, browser-fill, or
-recovery/setup credential, and never cache the value locally.
+При неопределённом результате прочитай текущие безопасные metadata и повтори
+точный input с тем же request ID; не создавай новый ID ради обхода конфликта.
+Отозванные policy/ACL, старая версия, истёкший Run и ожидающий device access
+останавливают сохранение. При необходимости штатный pairing/device setup,
+никогда ключ компании через чат. Без opt-in/capability используй защищённую
+форму. Старый прямой remote `save_known_agent_secret` принимает лишь значения
+существующих plain-карточек и не является основным путём. Не проси новое
+значение специально ради доступности исключения чата.
 
-## Browser authentication
+<a id="executable-checkout"></a>
 
-Before requesting checkout or browser fill, use the selected service runtime's
-content-free authentication probe when available. If it confirms that the
-current session is already authenticated, continue with that session and do
-not request or consume the Agent Secret. The dedicated profile keeps provider
-session state; do not clear it to force another login. An unavailable or
-ambiguous probe is not proof of logout and does not authorize reading fields.
+## Checkout для executable
 
-Never pass a named secret field to a literal-text Browser/Chrome/Computer Use
-action. First open the exact login page in the client's built-in browser using
-its ordinary allowed browser tool, inspect only the empty form, and identify
-fields plus the login/next button before requesting the grant. A host/tool/site
-denial is binding: the native helper must never bypass it.
+Когда разрешённому executable нужно значение, вызови
+`prepare_agent_secret_checkout` для точных текущего Run, executable и полей,
+затем исполни единственный `bridge.action` через точные local server/tool
+и открытый `workingDirectory`. В `parameters.arguments` добавляй только
+намеченные child arguments; не меняй executable/grant.
+Bridge расходует grant через разрешённые stdin, scoped env или private
+temporary-file. В encrypted сервер возвращает лишь ciphertext с проверкой ACL;
+bridge валидирует company/scope/secret/version, расшифровывает в памяти,
+выбирает только разрешённые поля и локально вычисляет текущий TOTP.
+Не заменяй executable shell, logger, `env`, `printenv`, `cat` или другой
+программой раскрытия значений.
 
-Call `prepare_agent_secret_browser_fill` with the current Run and ordered steps:
+Installation-managed credential – отдельный provider contract, не Agent Secret.
+Следуй точному `prepare_agent_skill_managed_credential_checkout`:
+лишь `reusePolicy.mode=time_bound` разрешает повтор неизменённого
+`bridge.argvPrefix` в том же Run/release до серверного `expiresAt`.
+Не распространяй lease на Agent Secret, TOTP, browser-fill или recovery/setup
+credential и не кешируй значение локально.
 
-- put username and password on the same page in one step;
-- use exact HTTPS URLs and one visible supported top-level field per selector;
-- native AX/UIA requires exact `#id` or `[id="..."]` selectors for both fields
-  and any `submitSelector`; do not guess or assign ids;
-- when the final login button has no supported id (for example, only
-  `button[type="submit"]` identifies it), omit the final `submitSelector` and
-  use `browser=embedded`. After successful fill, click the button identified
-  from the empty form in that same tab with the ordinary browser tool, without
-  a snapshot or field read. Embedded-only mode keeps this separate click bound
-  to the prepared tab instead of silently filling a different Chrome profile;
-- non-final native steps require a supported `submitSelector`. If a field or
-  intermediate button has no supported id, choose the declared Chrome flow
-  before delivery; do not weaken selectors or split a same-page credential.
+<a id="browser-authentication"></a>
 
-Execute exactly one returned `bridge.action` through its declared local
-server/tool and exact opened `workingDirectory`. Default `browser=auto` prepares
-the already-open embedded Codex/Claude Code browser on macOS/Windows before
-one-use consume; it fills automatically through direct native element setters.
-E2EE values are decrypted only in bridge memory. No value enters tool arguments,
-clipboard, argv, ambient environment, output or field read-back.
+## Авторизация в браузере
 
-Chrome is an automatic fallback only before checkout when native platform,
-client, compiler, Accessibility permission, application/tree or selector/step
-support is unavailable. A 404 from an older backend's value-free context route
-uses the existing Chrome consume flow on the same host. `browser=embedded`
-requires the embedded surface; `browser=chrome` explicitly chooses Chrome.
-Wrong app identity/URL, missing, ambiguous, hidden or read-only fields and
-transport/auth failures stop the operation. After consume or partial fill,
-never switch browser, request another grant or retry the value blindly.
+До checkout/fill используй auth probe выбранного runtime без содержимого,
+если доступен. Если текущая сессия уже авторизована, продолжай её без запроса/
+consume Agent Secret. Отдельный profile хранит session provider; не очищай
+его ради нового login. Недоступный/неоднозначный probe не доказывает logout
+и не разрешает читать поля.
 
-`client_unsupported` means the Run has no supported hook-verified client
-identity; it does not prove that the installed app lacks a built-in browser.
-Use the diagnostics route and preserve the exact reason. Do not enable model
-restrictions as a workaround or author runtime metadata/proofs. With a fixed
-backend, resume/reopen the Run through the returned action and a fresh approved
-hook proof before preparing a new fill; old grants are not repaired in place.
+Не передавай именованное secret field в literal-text действие
+Browser/Chrome/Computer Use. Сначала обычным разрешённым browser tool открой
+точную страницу login во встроенном браузере клиента. Исследуй лишь пустую
+форму, определи поля и login/next до grant. Отказ host/tool/site обязателен:
+native helper не может его обходить.
 
-macOS needs the system Swift compiler (Command Line Tools) and user-granted
-Accessibility access; Windows needs the system .NET Framework WPF/UIA runtime.
-The bridge builds its helper privately without downloads, elevation or granting
-permissions. Missing prerequisites produce a safe fallback reason; they do not
-justify changing OS permissions automatically.
+Вызови `prepare_agent_secret_browser_fill` с текущим Run и упорядоченными steps:
 
-A successful result means filled fields/explicit submit, not proven login.
-Do not snapshot or inspect filled fields. If no final submitSelector was given,
-click the button identified before filling, then inspect only non-sensitive
-authentication state. Keep the selected browser session/profile across steps.
-Never create separate grants for login and password on the same page or ask the
-user to focus a field. Native session values are intentionally delivered to the
-authorized website; this is not protection against browser telemetry or another
-process running as the same OS user.
+- username/password одной страницы – один step;
+- точные HTTPS URL и одно видимое поддерживаемое поле верхнего уровня на selector;
+- native AX/UIA требует точные `#id` или `[id="..."]` полей и любого
+  `submitSelector`; не угадывай и не назначай ID;
+- если финальная login-кнопка не имеет поддерживаемого ID (например, только
+  `button[type="submit"]`), опусти финальный `submitSelector` и используй
+  `browser=embedded`. После успеха fill нажми определённую на пустой форме
+  кнопку обычным browser tool в той же вкладке без snapshot/чтения полей.
+  Embedded-only связывает отдельный клик с подготовленной вкладкой, не
+  заполняя молча другой Chrome profile;
+- промежуточным native steps нужен поддерживаемый `submitSelector`.
+  Если поле/промежуточная кнопка без ID, выбери объявленный Chrome flow до
+  доставки; не ослабляй selectors и не разделяй credential одной страницы.
 
-A user-controlled login is a separate safe handoff. When the user explicitly
-prefers it or dedicated fill reports `browser_unavailable`, offer one visible
-surface and wait for completion. Codex's in-app Browser is a separate surface;
-do not assume that it inherits the system Chrome password manager. System
-Chrome/Edge may use its own password manager. Never type, paste, inspect,
-screenshot, or read credentials for the user. Afterward verify only
-non-sensitive authenticated state.
+Исполни ровно один `bridge.action` через объявленные local server/tool и
+точный `workingDirectory`. По умолчанию `browser=auto` до одноразового
+consume подготавливает уже открытый embedded Codex/Claude в macOS/Windows
+и автоматически заполняет прямыми native setters. E2EE расшифровывается
+только в памяти bridge. Значения не попадают в tool arguments, clipboard,
+argv, общее environment, output и чтение полей обратно.
 
-## Protected reveal
+Chrome – автоматический запасной путь только до checkout при недоступных
+native platform/client/compiler/Accessibility permission/application tree/
+selector/steps. 404 старого backend для value-free context использует
+существующий Chrome consume на том же host. `browser=embedded` требует
+встроенную поверхность; `browser=chrome` явно выбирает Chrome.
+Неверные app identity/URL, отсутствующие, неоднозначные, скрытые/read-only
+поля и transport/auth failures останавливают операцию. После consume или
+частичного fill не меняй браузер, не запрашивай другой grant и не повторяй
+значение вслепую.
 
-If the user explicitly asks to see a stored value, route them to the protected
-Trelio reveal for the exact record. Check safe `canReveal` and request `reveal`
-access when absent. When metadata contains `publicUrl`, give that exact
-value-free URL to the user but do not open or inspect it with Browser, Chrome,
-or Computer Use.
+`client_unsupported` означает отсутствие поддерживаемой hook-verified identity
+клиента у Run, не отсутствие встроенного браузера у установленного приложения.
+Используй диагностику с точной причиной. Не включай model restrictions как
+обход и не создавай runtime metadata/proofs. После исправления backend
+продолжи/открой Run через возвращённое action и свежий proof подтверждённого
+hook до нового fill; старые grants не исправляются на месте.
 
-The user performs fresh authentication, selects one or several fields, and
-uses any copy action as a direct user gesture. In an encrypted company the
-browser opens the ciphertext locally with the company key; Trelio still cannot
-read the value. Warn that the OS or clipboard manager may retain copied text
-after Trelio's best-effort clear. Never echo plaintext in chat.
+macOS требует системный Swift compiler (Command Line Tools) и разрешение
+Accessibility пользователя; Windows – системный .NET Framework WPF/UIA.
+Bridge собирает helper приватно без скачивания, повышения прав или выдачи
+разрешений. Отсутствующие компоненты дают безопасную причину fallback,
+не разрешение автоматически менять права ОС.
 
-## Durable workspace dependency
+Успех означает заполнение/явный submit, не доказанный login. Не делай
+snapshot и не читай заполненные поля. Без финального submitSelector нажми
+кнопку, найденную до заполнения, затем проверь лишь нечувствительное состояние
+авторизации. Сохраняй session/profile между шагами. Не создавай отдельные
+grants login/password одной страницы и не проси фокусировать поле.
+Native session values намеренно доставляются разрешённому сайту; это не
+защита от browser telemetry или другого процесса того же пользователя ОС.
 
-Only after a selected secret becomes a real durable dependency, record this
-safe reference in `WORKSPACE_CONTEXT.md`:
+Самостоятельный вход пользователя – отдельная безопасная передача управления.
+При его прямом выборе либо `browser_unavailable` dedicated fill предложи
+одну видимую поверхность и дождись завершения. Встроенный Browser Codex
+отдельный: не считай, что он наследует менеджер паролей системного Chrome.
+Системные Chrome/Edge могут использовать собственный. Не вводи, не вставляй,
+не исследуй, не снимай screenshot и не читай credentials за пользователя.
+После входа проверь только нечувствительное авторизованное состояние.
+
+<a id="protected-reveal"></a>
+
+## Защищённый просмотр значения
+
+Если пользователь прямо просит показать сохранённое значение, направь
+к защищённому reveal точной карточки Trelio. Проверь безопасное `canReveal`;
+при отсутствии запроси `reveal`. Если metadata содержат `publicUrl`,
+дай точный URL без значений, но не открывай/исследуй через Browser/Chrome/Computer Use.
+
+Пользователь заново авторизуется, выбирает одно/несколько полей и сам нажимает
+копирование. В encrypted браузер локально открывает ciphertext ключом
+компании; Trelio не читает значение. Предупреди: ОС/менеджер clipboard могут
+сохранить копию после попытки очистки Trelio. Не повторяй plaintext в чате.
+
+<a id="durable-workspace-dependency"></a>
+
+## Постоянная зависимость Workspace
+
+Только когда выбранный secret стал реальной постоянной зависимостью,
+запиши безопасную ссылку в `WORKSPACE_CONTEXT.md`:
 
 ```markdown
-- Agent Secret: `Current safe name` (`secretId: 00000000-0000-4000-8000-000000000000`) — exact purpose.
+- Agent Secret: `Актуальное безопасное имя` (`secretId: 00000000-0000-4000-8000-000000000000`) — точная цель.
 ```
 
-`secretId` is canonical. Refresh the current safe name with
-`list_agent_secrets` when revisiting it. Never store the value, version,
-checkout grant, setup URL, runtime arguments, or merely discovered but unused
-secrets.
+`secretId` канонический. При повторном обращении обнови имя через
+`list_agent_secrets`. Не храни value, version, checkout grant, setup URL,
+runtime arguments и найденные, но не использованные секреты.
 
-If an older backend returns only a secret command, use the bounded legacy route
-in `setup-and-recovery.md`. Never probe PATH or scan plugin caches.
+Для старого backend с одной secret-командой используй ограниченную
+совместимость `setup-and-recovery.md`. Не ищи PATH и не сканируй cache.

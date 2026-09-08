@@ -1,45 +1,50 @@
-# Agent Run recovery and history
+<a id="agent-run-recovery-and-history"></a>
 
-Read this file completely on a Run/storage/lease/base-head failure, cross-device claim,
-explicit cancellation, restore/history or local cleanup request. The ordinary
-open/checkpoint/finish procedure remains in `agent-run.md`.
+# Восстановление и история Agent Run
 
-## Blockers, restore, concurrency, and cleanup
+Полностью прочитай файл при ошибке Run/storage/lease/base-head, перехвате Run на
+другом устройстве, явной отмене, восстановлении, запросе истории или локальной
+очистки. Обычные open/checkpoint/finish описаны в `agent-run.md`.
 
-- On `COMPANY_STORAGE_BALANCE_REQUIRED`, stop the mutation and do not retry,
-  cancel, or create another Run. Tell the user that company balance blocks new
-  storage, local files remain intact, and the current Run is preserved. After
-  an authorized person replenishes the balance, repeat the exact same
-  `checkpoint`, `pause`, `finish`, or `submit` action. Do not convert this
-  transport blocker into `waiting_for_human`: a human checkpoint is valid only
-  after its draft was durably saved.
-- Cancel only when the user explicitly abandons/withdraws an open Run; call
-  `cancel_agent_workspace_run` with a concrete audit reason. If it returns
-  `providerSelection.tool=continue_trelio_local_workspace`, continue that exact
-  `cancel_run` route instead; the host protects the reason locally. A temporary
-  blocker or failed command is not cancellation.
-- A later exact `open` action for the same workspace and Run can
-  claim the waiting Run on another computer, materialize the server draft, and expose
-  `run-checkpoint.json`. Chat history is not copied. A dirty/diverged older
-  local tree is never overwritten; use a fresh directory or merge deliberately.
-- Normal `prepare_agent_workspace_run` also selects the latest own non-empty
-  server draft whose base is still current. Opening its returned action claims
-  that Run and fences the older lease. Use `startNewRun=true` only when an
-  independent concurrent branch is genuinely intended.
-- On `LEASE_EXPIRED` or stale fencing, never mutate with old identifiers. Claim
-  your intentional existing Run again, or start a new Run from current accepted
-  head and reapply only inspected changes.
-- On `WORKSPACE_OUTDATED`, preserve the rejected candidate, start a new Run from
-  current accepted head, compare concurrent changes, and merge/reapply without
-  force-updating canonical history.
-- To undo accepted changes, list revisions, select an exact head, then restore
-  with current `expectedHead` and a meaningful reason. If either native call
-  selects `continue_trelio_local_workspace`, use its matching list/restore
-  operation. Accepted-Run diff/file reads use its matching history operations.
-  Restore adds a descendant and rejects concurrency; never improvise encrypted
-  Git/HTTP access.
-- Never delete Workspace roots manually. Execute `clean` first with explicit
-  `dryRun=true`; it lists only roots unused for 30 days,
-  backend-terminal, locally clean and not opening, plus cache bytes. A later
-  explicit `dryRun=false` deletes that exact local plan, never the
-  server revision. Backend outage is a no-op; active, unknown or dirty roots remain.
+<a id="blockers-restore-concurrency-and-cleanup"></a>
+
+## Блокировки, восстановление, конкуренция и очистка
+
+- При `COMPANY_STORAGE_BALANCE_REQUIRED` останови изменение. Не повторяй его,
+  не отменяй Run и не создавай другой. Объясни: баланс компании блокирует новую
+  запись в хранилище; локальные файлы и текущий Run сохранены. После пополнения
+  уполномоченным лицом повтори то же действие `checkpoint`, `pause`, `finish`
+  или `submit`. Не превращай эту блокировку передачи в `waiting_for_human`:
+  checkpoint ожидания человека допустим только после надёжного сохранения draft.
+- Отменяй открытый Run, только если пользователь явно отказался от него.
+  Вызови `cancel_agent_workspace_run` с конкретной причиной для аудита. При
+  `providerSelection.tool=continue_trelio_local_workspace` продолжи точный маршрут
+  `cancel_run`; host защищает причину локально. Временная блокировка или ошибка
+  команды не означают отмену.
+- Последующее точное `open` для того же Workspace и Run может забрать ожидающий
+  Run на другом компьютере, развернуть серверный draft и показать
+  `run-checkpoint.json`. История чата не переносится. Старое локальное дерево
+  с правками или расхождением не перезаписывается: используй новый каталог
+  либо осознанно объедини изменения.
+- Обычный `prepare_agent_workspace_run` также выбирает последний собственный
+  непустой серверный draft с актуальной базой. Открытие возвращённого действия
+  забирает этот Run и блокирует старую lease. `startNewRun=true` используй
+  только для намеренно независимой параллельной ветки.
+- При `LEASE_EXPIRED` или устаревшем fencing не меняй данные со старыми
+  идентификаторами. Повторно забери нужный существующий Run либо начни новый
+  от текущего принятого head и перенеси только проверенные изменения.
+- При `WORKSPACE_OUTDATED` сохрани отклонённый candidate, начни новый Run от
+  текущего принятого head, сравни параллельные изменения и объедини/перенеси
+  свои без принудительной перезаписи канонической истории.
+- Для отмены принятых изменений прочитай список ревизий, выбери точный head
+  и восстанови его с актуальным `expectedHead` и содержательной причиной.
+  Если native-вызов выбирает `continue_trelio_local_workspace`, используй
+  соответствующую операцию list/restore. Diff и файлы принятых Run читаются
+  через его операции history. Restore добавляет потомка и отклоняет конфликт;
+  не изобретай доступ к зашифрованным данным через Git/HTTP.
+- Не удаляй корни Workspace вручную. Сначала выполни `clean` с явным
+  `dryRun=true`: план включает только неиспользуемые 30 дней, завершённые на
+  backend, локально чистые и не открывающиеся сейчас корни, а также объём cache.
+  Последующий явный `dryRun=false` удаляет только этот локальный план, никогда
+  серверную ревизию. При недоступном backend ничего не удаляется; активные,
+  неизвестные и изменённые корни сохраняются.

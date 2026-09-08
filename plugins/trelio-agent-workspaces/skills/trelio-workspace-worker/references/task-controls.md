@@ -1,50 +1,43 @@
-# Task controls
+<a id="task-controls"></a>
 
-Read this file completely before creating, updating, changing visibility of,
-or clearing a task control.
+# Контроли задачи
 
-Schema-v3 `get_task` keeps controls deferred. Read
-`get_task_sections.sections.controls` for the exact task; it contains all
-visible active shared controls and only the authenticated user's personal
-controls. Do not look for a schema-v2 inline controls array: plugin `1.14.2`
-requires the schema-v3 section contract.
-These date-only controls are repeatable check points, not extra deadlines.
+Полностью прочитай файл до создания, изменения, смены видимости или снятия контроля.
 
-1. Use `create_task_control`, `update_task_control`, or `clear_task_control`
-   only when the request, task, or pinned rule calls for a concrete future
-   check. Do not manufacture one because an Agent Workspace Run exists.
-2. For a new control, choose `shared` by default when the check records an
-   objective task state, expected external response, date checkpoint, or next
-   step useful to the task audience. Choose `personal` only for an explicitly
-   private working check that should not become task-wide. Monitoring another
-   person's action does not make the control personal when that action gates
-   the next task step.
-3. When updating an existing control, keep its current visibility unless the
-   user explicitly asks to change it. The creation default never widens an
-   existing personal control. If the task needs a shared control but current
-   ACL does not permit one, do not silently create a personal substitute;
-   report the mismatch or ask whether a private fallback is acceptable.
-4. Put the exact verification action in `note`. If later communication is
-   needed, record the check result in an ordinary task comment; controls have
-   no result field.
-5. Reaching `controlDate` never sends a notification. Dashboard filters show
-   the nearest visible date across deadline and active controls.
-6. Shared create/update/visibility/clear actions produce system comments.
-   Clearing a shared control also notifies the task audience, including the
-   creator when someone else clears it. Personal controls and changes never
-   enter shared comments or notifications.
-7. Do not clear a control because the Run completed or task status changed.
-   Clear only the exact handled check or when the user explicitly asks.
+В schema v3 `get_task` контроли отложены. Читай
+`get_task_sections.sections.controls` точной задачи: все видимые активные
+общие контроли и только личные контроли авторизованного пользователя.
+Не ищи inline-массив schema v2: plugin `1.14.2` требует schema v3.
+Контроли с датой без времени – повторяемые проверки, не дополнительные сроки.
 
-When clearing one or more controls is an inferred recommendation rather than
-an exact immediate command, first call
-`get_task_control_clear_proposal_context` and preserve one concrete private
-reason per proposed control. If this is the sole interactive proposal card in
-the current response, use `render_task_control_clear_proposal`. If any comment,
-status, checklist, or another task's control-clear card is also needed, read
-`task-proposal-bundles.md` and put the exact context revision and control items
-in one `controlClearProposal` block of the single `render_task_proposals` call.
-Never emit several single-card App calls. Proposal reasons remain private and
-must not enter task comments, shared-control audit events, or notifications.
-Only the user's App action or explicit decision on the exact proposal may
-apply or dismiss it.
+1. `create_task_control`, `update_task_control`, `clear_task_control` нужны,
+   только когда просьба, задача или pinned rule требуют конкретной будущей
+   проверки. Наличие Run само по себе не повод создавать контроль.
+2. Новый контроль по умолчанию `shared`, если фиксирует объективное состояние,
+   ожидаемый внешний ответ, дату проверки или полезный аудитории следующий шаг.
+   `personal` допустим лишь для явно частной рабочей проверки. Проверка чужого
+   действия не становится личной, если от него зависит следующий шаг задачи.
+3. При обновлении сохраняй видимость без прямой просьбы изменить её. Значение
+   по умолчанию для создания не расширяет существующий personal. Если нужен
+   shared, а ACL не разрешает, не создавай молча личную замену: сообщи о
+   несоответствии или спроси, подходит ли частный вариант.
+4. В `note` укажи точное действие проверки. Результат при необходимости
+   сообщается обычным комментарием; поля результата у контроля нет.
+5. Наступление `controlDate` не отправляет уведомление. Dashboard показывает
+   ближайшую видимую дату среди срока и активных контролей.
+6. Общие create/update/visibility/clear создают системные комментарии.
+   Снятие shared также уведомляет аудиторию, включая автора при снятии другим.
+   Личные контроли и их изменения не попадают в общие комментарии/уведомления.
+7. Не снимай контроль из-за завершения Run или смены статуса. Снимай только
+   точную выполненную проверку либо по явной просьбе.
+
+Если снятие одного/нескольких контролей – вывод агента, а не точная немедленная
+команда, сначала вызови `get_task_control_clear_proposal_context` и сохрани
+по одной конкретной приватной причине. Для единственной карточки –
+`render_task_control_clear_proposal`. Если нужны comment/status/checklist
+или контроль другой задачи, прочитай `task-proposal-bundles.md` и передай
+точную ревизию/контроли в `controlClearProposal` одного `render_task_proposals`.
+Не делай несколько одиночных App-вызовов. Причины остаются приватными, не
+попадают в комментарии, аудит shared controls или уведомления. Применить/
+отклонить можно лишь после действия пользователя в App или явного решения
+по точному предложению.
