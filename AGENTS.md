@@ -29,6 +29,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   приравнивается к отсутствию навыка.
 - Не ослабляй ACL, exact confirmation, idempotency/CAS, bounds, attestation и
   secret boundaries ради упрощения текста или кода.
+- Onboarding не предлагает отключить согласования отправки и не сохраняет
+  разрешение оператора для будущих разговоров. Provider-specific команды и
+  проверки отдельной отправки остаются в актуальном выбранном навыке.
 - После неоднозначной mutation сначала установи live state; blind retry
   запрещён.
 - Не удаляй compatibility/legacy path без доказательства, что он больше не
