@@ -45,7 +45,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "2.0.6");
+  }), "2.0.7");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -2417,7 +2417,7 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
     /each skill's assignment, connection and session independent/u,
     /setup_required, no_access or needs_reconnect require explaining the blocker and setup action/u,
     /user's explicit choice after that explanation, unless the formal routing permits it/u,
-    /No relevant assigned skill allows compatible personal connectors/u,
+    /If search finds no relevant assigned skill, use compatible personal connectors/u,
     /Transient\/control-plane failures never prove absence or authorize fallback/u,
     /establish an ambiguous mutation's live result before any retry/u,
     /Never bypass a usable skill via browser, HTTP, another MCP or script/u,
@@ -2661,8 +2661,8 @@ test("platform routing allows a named fallback when no relevant skill exists", a
     type: "fallback",
     reason: "no_relevant_skill",
   });
-  assert.match(instructions, /No relevant assigned skill/u);
-  assert.match(instructions, /allows compatible personal connectors/u);
+  assert.match(instructions, /If search finds no relevant assigned skill/u);
+  assert.match(instructions, /use compatible personal connectors/u);
   assert.match(instructions, /Native Trelio task\/Workspace\/Run actions need no skill catalog query/u);
 });
 
@@ -2738,7 +2738,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "2.0.6");
+  assert.equal(frames[0].result.serverInfo.version, "2.0.7");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /legacy responses without a structured action/iu);

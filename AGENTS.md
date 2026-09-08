@@ -24,6 +24,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   причина которых не очевидна из синтаксиса.
 - Не добавляй токены, credentials, cookies, локальные sessions, содержимое
   workspace и другие секреты в Git, fixtures, логи или release notes.
+- Отсутствие подходящего назначенного навыка после успешного catalog search
+  разрешает совместимый личный коннектор; transport/setup/access failure не
+  приравнивается к отсутствию навыка.
 - Не ослабляй ACL, exact confirmation, idempotency/CAS, bounds, attestation и
   secret boundaries ради упрощения текста или кода.
 - После неоднозначной mutation сначала установи live state; blind retry
