@@ -336,6 +336,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   Это generic host primitive для класса интеграций с company key и личным
   входом; provider runtime не получает bridge credentials. Live проверки и
   process-only доставка обязательны, admission/value cache не применяется.
+  Catalog направляет такие setup-команды в exact runtime action без checkout grant.
 - Browser fill использует встроенный браузер по умолчанию; generic AX/UIA
   helper готовится до consume, Chrome допустим только как pre-delivery fallback.
   Native id binding относится к полям и кнопкам; финальная кнопка без id требует

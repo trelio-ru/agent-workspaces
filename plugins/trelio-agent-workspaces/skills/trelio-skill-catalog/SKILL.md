@@ -199,8 +199,9 @@ runtime-команды без session binding требуют разрешени�
   и `localIdentity` из `get_agent_skill`;
 - не проси пароль, API hash, код входа, 2FA, cookie, token или session в чате;
 - недостающее значение компании администратор вводит в защищённой форме подключения;
-- доставляй Agent Secret только через `prepare_agent_secret_checkout` и точный
-  executable текущего навыка;
+- если текущий signed runtime объявляет автоматическую доставку поля для exact
+  setup-команды, запускай её напрямую: bridge проверяет доступ без Run;
+  для остальных команд используй `prepare_agent_secret_checkout` и exact executable;
 - личные sessions и `policy.json` хранятся в локальном каталоге интеграции,
   выбранном runtime, никогда в Workspace или checkout плагина.
 
