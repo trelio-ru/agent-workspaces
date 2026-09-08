@@ -375,6 +375,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
+- Корневой `README.md` остаётся обычным редактируемым материалом в поиске,
+  browser-проекции, истории и proposal attachments; не включай его в список
+  protected/hidden paths. Совместимость старых проекций описана в
+  [файловом контракте](docs/agent-workspace-runtime.md#контекст-и-файлы).
 - Extraction manifests encrypted candidate bridge проверяет по exact committed
   Git blobs до шифрования. Paths, source digest, type, method и manifest идут
   только в field-bound company payload; server получает signed structural

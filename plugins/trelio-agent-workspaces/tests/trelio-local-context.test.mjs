@@ -1937,6 +1937,7 @@ test("local encrypted history reproduces bounded native diff and file reads", as
     ]);
     await Promise.all([
       fs.writeFile(path.join(repository, "AGENTS.md"), "base control\n"),
+      fs.writeFile(path.join(repository, "README.md"), "base readme\n"),
       fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "base metadata\n"),
       fs.writeFile(path.join(repository, "artifacts", "report.md"), "base line\nsecond line\n"),
       fs.writeFile(path.join(repository, "artifacts", "old-name.md"), "rename me\n"),
@@ -1948,6 +1949,7 @@ test("local encrypted history reproduces bounded native diff and file reads", as
 
     await Promise.all([
       fs.writeFile(path.join(repository, "AGENTS.md"), "after control\n"),
+      fs.writeFile(path.join(repository, "README.md"), "accepted readme\n"),
       fs.writeFile(path.join(repository, ".trelio", "workspace.json"), "after metadata\n"),
       fs.writeFile(path.join(repository, "artifacts", "report.md"), "after line\nsecond line\nthird line\n"),
     ]);
@@ -1964,6 +1966,7 @@ test("local encrypted history reproduces bounded native diff and file reads", as
     assert.equal(manifest.files.some((file) => file.newPath === "artifacts/report.md"), true);
     assert.equal(manifest.files.some((file) => file.status === "renamed"), true);
     assert.equal(manifest.files.some((file) => file.newPath === "AGENTS.md"), false);
+    assert.equal(manifest.files.some((file) => file.newPath === "README.md"), true);
     assert.equal(manifest.files.some((file) => file.newPath?.startsWith(".trelio/")), false);
 
     const boundedPatch = await inspectLocalWorkspaceRevisionDiff({
@@ -1986,6 +1989,12 @@ test("local encrypted history reproduces bounded native diff and file reads", as
     });
     assert.equal(before.text, "line");
     assert.equal(before.nextOffset, 9);
+    const readme = await readLocalWorkspaceRevisionFile({
+      repositoryDirectory: repository,
+      revisionHead: acceptedHead,
+      filePath: "README.md",
+    });
+    assert.equal(readme.text, "accepted readme\n");
     const pointer = await readLocalWorkspaceRevisionFile({
       repositoryDirectory: repository,
       revisionHead: acceptedHead,
@@ -2398,6 +2407,20 @@ test("encrypted proposal paths resolve only through the exact local browser mani
     fileName: "SMOKE_TEST.md",
     contentType: "text/plain; charset=utf-8",
   }]);
+  // Legacy-проекция не переписывается и не разрешает чтение из произвольного
+  // Git tree. Ошибка говорит о составе проекции, а не об отсутствии Git blob.
+  assert.throws(
+    () => selectEncryptedProposalFilesFromManifest({
+      manifest,
+      projectionId,
+      projectionFileCount: 1,
+      workspaceId,
+      acceptedHead,
+      filePaths: ["README.md"],
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_WORKSPACE_FILE_NOT_FOUND"
+      && /файловая проекция/u.test(error.message),
+  );
   assert.throws(
     () => selectEncryptedProposalFilesFromManifest({
       manifest,
