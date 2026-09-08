@@ -6,6 +6,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 import {
   AGENT_SKILL_ROUTING_INSTRUCTIONS,
@@ -2429,6 +2430,31 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
     /Границы секретов, личных сессий и независимых решений человека не ослабляются/u,
     /Подробности – выбранный навык и external-services\.md/u,
   ]) assert.match(instructions, invariant);
+});
+
+test("integration-only completion can reach the full context review without a task or Run", async () => {
+  const instructions = await readRoutingInstructionsFromInitialize();
+  const reference = "trelio-workspace-worker/references/workspace-context-review.md";
+  assert.ok(instructions.includes(reference));
+  const review = await readFile(new URL("../skills/" + reference, import.meta.url), "utf8");
+  for (const entrypoint of [
+    "trelio-skill-catalog/SKILL.md",
+    "trelio-workspace-worker/SKILL.md",
+    "trelio-workspace-worker/references/accepted-workspace-read.md",
+    "trelio-workspace-worker/references/external-services.md",
+  ]) {
+    const markdown = await readFile(new URL("../skills/" + entrypoint, import.meta.url), "utf8");
+    assert.ok(markdown.includes("workspace-context-review.md"), entrypoint);
+  }
+  for (const outcome of ["saved", "no_new_context", "not_authorized", "blocked"]) {
+    assert.ok(review.includes("`" + outcome + "`"), outcome);
+  }
+  // The common review distinguishes durable acceptance from a local draft and
+  // retains policy/encryption boundaries on the integration-only path.
+  for (const invariant of ["Workspace/Run/candidate head", "checkpoint/draft",
+    "manual/capture/maintain", "encrypted provider", "get_agent_instructions"]) {
+    assert.ok(review.includes(invariant), invariant);
+  }
 });
 
 test("platform routing sends a provider-neutral signed skill through runtimeExecution", async () => {

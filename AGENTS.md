@@ -117,6 +117,11 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Работа с plugin-кодом
 
+- Перед финальным ответом о содержательном результате общий routing и catalog
+  ведут к проверке сохранения контекста даже без task/Run. Критерии accepted
+  evidence и границы полномочий заданы в
+  [workspace runtime](docs/agent-workspace-runtime.md#workspace-context-review).
+
 - Канонический текст bundled `SKILL.md`, их references и MCP routing rules
   пишется по-русски, чтобы обязательная дословная цитата была понятна
   пользователю. Не поддерживай параллельную английскую копию правил. Имена

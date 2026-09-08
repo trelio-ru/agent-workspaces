@@ -289,6 +289,28 @@ accepted revision со старым деревом, не переписывая 
 blocker, а не подтверждение сохранённого draft и не переход в
 `waiting_for_human`.
 
+<a id="workspace-context-review"></a>
+
+## Финальная проверка контекста
+
+До итогового ответа после содержательной работы агент выполняет
+[`workspace-context-review.md`](../plugins/trelio-agent-workspaces/skills/trelio-workspace-worker/references/workspace-context-review.md).
+Этот шаг доступен через MCP initialize, worker и каталог даже после внешнего
+поиска без task/Run. Exact effective rules или pinned snapshot задают разрешение
+записи; неизвестная или legacy policy не становится maintain.
+
+Исход `saved` требует проверенного результата и подтверждённой accepted revision
+нужного Workspace/Run/head. `no_new_context` означает отсутствие существенной
+дельты после сравнения, `not_authorized` – отсутствие полномочия по правилам
+или прямому ограничению пользователя, `blocked` – конкретную причину незавершённой
+нужной записи. Разрешённая дельта сохраняется обычным Run до ответа; локальный
+output, draft/checkpoint или handoff без acceptance этого не заменяют.
+
+Это инструкция с проверяемым основанием результата, не автоматический stop hook
+и не новая серверная запись о диалоге. Пустые Run и файлы отчёта не создаются,
+ACL и отдельные подтверждения сохраняются. После сохранения выполняются
+применимые независимые task-проверки ниже.
+
 ## Task-scoped результат
 
 Task handoff содержит semantic outcome:

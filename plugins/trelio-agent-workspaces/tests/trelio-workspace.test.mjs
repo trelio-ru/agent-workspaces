@@ -4306,6 +4306,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "workspace-relations.md",
     "run-recovery.md",
     "accepted-workspace-read.md",
+    "workspace-context-review.md",
     "workspace-transfer.md",
     "task-controls.md",
     "task-comment-proposals.md",
@@ -4388,7 +4389,9 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
   assert.match(acceptedReadReference, /не превращай в shell-команду и не ищи в PATH/u);
   assert.match(acceptedReadReference, /не создаёт Run, lease,\s+checkpoint, предложение статуса/u);
   assert.match(acceptedReadReference, /сначала прочитай `\.\.\/context\/agent-instructions\.md`,\s+затем/u);
-  assert.match(acceptedReadReference, /Чтение не разрешает Run/u);
+  assert.match(acceptedReadReference, /Само чтение не требует Run/u);
+  assert.match(acceptedReadReference, /фиксация разрешена effective rules или поручением/u);
+  assert.match(acceptedReadReference, /workspace-context-review\.md/u);
   const taskControlsReference = await readFile(
     path.join(workerDirectory, "references", "task-controls.md"),
     "utf8",

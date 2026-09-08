@@ -113,6 +113,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "",
   "## Работа и результат",
   "",
+  "- До финального ответа выполни references/workspace-context-review.md навыка trelio-workspace-worker: проверь фиксацию результата по pinned rules, затем независимые task decisions.",
   "- Реальные источники храни в `sources/`, промежуточные материалы в `work/`, результаты в `artifacts/`. Для короткого уточнения обнови канонический материал и краткий обязательный worklog; не создавай отдельные файлы с повтором тех же фактов.",
   "- После coherent file change сохрани action `checkpoint` с `type=draft`, opened directory и `summary` до дальнейшей работы, ожидания, границы реплики/сессии, compaction или передачи. При немедленном завершении вместо draft вызывай `finish`: он сам делает handoff checkpoint и submit. Не сохраняй незавершённый или пустой checkpoint.",
   "- Перед блокирующим вопросом с полезными изменениями выполни action `pause` с exact папкой, `summary`, `questions` и `nextAction`; подготовительный вопрос не требует draft.",

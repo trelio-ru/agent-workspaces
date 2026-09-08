@@ -27,6 +27,7 @@ export const TASK_RUN_REQUIRED_SKILL_PATHS = [
   "skills/trelio-workspace-worker/SKILL.md",
   "skills/trelio-workspace-worker/references/scope-and-context.md",
   "skills/trelio-workspace-worker/references/agent-run.md",
+  "skills/trelio-workspace-worker/references/workspace-context-review.md",
   "skills/trelio-workspace-worker/references/task-run.md",
   "skills/trelio-workspace-worker/references/task-status-proposals.md",
   "skills/trelio-workspace-worker/references/task-comment-proposals.md",
@@ -43,17 +44,17 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   workerSkillBytes: 14_500,
   // Канонические правила русские: кириллица занимает два UTF-8 байта.
   // Пределы учитывают этот язык с небольшим запасом, без дублирования EN/RU.
-  // Набор обязательных файлов не расширяется: recovery и local-provider
-  // инструкции по-прежнему загружаются только для подходящего сценария.
-  requiredTaskRunSkillsBytes: 74_000,
-  taskRunWithProposalBundleBytes: 79_000,
-  requiredTaskRunPluginLayerBytes: 83_000,
-  taskRunWithProposalBundlePluginLayerBytes: 88_000,
+  // Общая финальная проверка добавляет один reference (~5 KiB) к завершённому
+  // Run и явно учитывается здесь. Recovery и local-provider остаются условными.
+  requiredTaskRunSkillsBytes: 78_000,
+  taskRunWithProposalBundleBytes: 83_000,
+  requiredTaskRunPluginLayerBytes: 87_000,
+  taskRunWithProposalBundlePluginLayerBytes: 92_000,
   // The added schema is a compact typed dispatcher; it replaces launcher
   // resolution prose in every operational Run and signed-runtime prompt.
   localProviderToolSchemasBytes: 3_800,
-  plainCompanyTaskRunPluginLayerBytes: 87_000,
-  encryptedCompanyTaskRunPluginLayerBytes: 103_000,
+  plainCompanyTaskRunPluginLayerBytes: 91_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 107_000,
   localMcpInstructionsBytes: 4_000,
   modelVisibleLocalToolSchemasBytes: 13_500,
   clientPrefixedLocalToolSchemasBytes: 69_000,
