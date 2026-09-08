@@ -10343,7 +10343,6 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
         !normalizedPath
         || normalizedPath === "AGENTS.md"
         || normalizedPath === "CLAUDE.md"
-        || normalizedPath === "README.md"
         || normalizedPath.startsWith(".trelio/")
         || baseName === ".gitkeep"
         || !COMPANY_CONTEXT_SEARCHABLE_EXTENSIONS.has(extension)
@@ -11666,10 +11665,12 @@ const isHumanFacingEncryptedWorkspacePath = (filePath) => {
   const normalizedPath = String(filePath || "").replaceAll("\\", "/");
   const basename = normalizedPath.split("/").at(-1) || "";
 
+  // README.md — обычный редактируемый материал. Он нужен в той же проекции
+  // для дерева файлов, browser ZIP и вложений к комментариям; иначе принятый
+  // в Git результат оказывается недоступным только из-за имени файла.
   return Boolean(normalizedPath)
     && normalizedPath !== "AGENTS.md"
     && normalizedPath !== "CLAUDE.md"
-    && normalizedPath !== "README.md"
     && !normalizedPath.startsWith(".trelio/")
     && basename !== ".gitkeep";
 };

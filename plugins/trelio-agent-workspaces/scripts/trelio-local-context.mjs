@@ -5440,9 +5440,12 @@ export const selectEncryptedProposalFilesFromManifest = ({
   return filePaths.map((filePath) => {
     const file = byPath.get(filePath);
     if (!file) {
+      // Историческая подписанная проекция могла исключить README.md, хотя
+      // файл есть в accepted Git. Отсутствие descriptor доказывает только
+      // недоступность вложения, поэтому не объявляем сам файл потерянным.
       throw new TrelioLocalContextError(
         "LOCAL_CONTEXT_WORKSPACE_FILE_NOT_FOUND",
-        `Workspace file "${filePath}" is absent from the exact accepted encrypted Run.`,
+        `Файл "${filePath}" недоступен во вложениях: файловая проекция принятого зашифрованного Run его не содержит.`,
       );
     }
     return file;
@@ -7491,10 +7494,11 @@ const isHumanFacingLocalWorkspacePath = (filePath) => {
   const normalizedPath = String(filePath || "").replaceAll("\\", "/");
   const basename = normalizedPath.split("/").at(-1) || "";
 
+  // История и точное чтение сохраняют ту же границу, что browser-проекция:
+  // изменяемый README.md является материалом, а runtime instructions закрыты.
   return Boolean(normalizedPath)
     && normalizedPath !== "AGENTS.md"
     && normalizedPath !== "CLAUDE.md"
-    && normalizedPath !== "README.md"
     && !normalizedPath.startsWith(".trelio/")
     && basename !== ".gitkeep";
 };

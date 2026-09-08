@@ -114,6 +114,7 @@ import {
   hpkeSeal,
   wrapAndRememberAgentEncryptionDevice,
 } from "../scripts/trelio-company-encryption.mjs";
+import { selectEncryptedProposalFilesFromManifest } from "../scripts/trelio-local-context.mjs";
 import {
   buildSecretBrowserArguments,
   controlSecretBrowserViaDevTools,
@@ -3885,8 +3886,12 @@ test("encrypted browser projection exposes only opaque ranges before local decry
 
   try {
     await mkdir(path.join(workspaceDirectory, "artifacts"), { recursive: true });
+    await mkdir(path.join(workspaceDirectory, ".trelio"), { recursive: true });
     await writeFile(path.join(workspaceDirectory, "AGENTS.md"), "protected\n");
-    await writeFile(path.join(workspaceDirectory, "README.md"), "control\n");
+    await writeFile(path.join(workspaceDirectory, "CLAUDE.md"), "@AGENTS.md\n");
+    await writeFile(path.join(workspaceDirectory, ".trelio", "workspace.json"), "{}\n");
+    await writeFile(path.join(workspaceDirectory, "artifacts", ".gitkeep"), "");
+    await writeFile(path.join(workspaceDirectory, "README.md"), "# Итог в README\n");
     await writeFile(path.join(workspaceDirectory, "artifacts", "result.md"), "# Готово\n");
     await execFileAsync("git", ["init", "-b", "main"], { cwd: workspaceDirectory });
     await execFileAsync("git", ["config", "user.name", "Trelio Test"], { cwd: workspaceDirectory });
@@ -3922,7 +3927,8 @@ test("encrypted browser projection exposes only opaque ranges before local decry
 
       assert.equal(clearIndex.includes("artifacts"), false);
       assert.equal(clearIndex.includes("result.md"), false);
-      assert.equal(index.files.length, 2);
+      assert.equal(clearIndex.includes("README.md"), false);
+      assert.equal(index.files.length, 3);
       const manifestRange = index.files.find((file) => file.kind === "manifest");
       await writeFile(
         path.join(temporaryDirectory, "manifest.trelioe1"),
@@ -3938,8 +3944,20 @@ test("encrypted browser projection exposes only opaque ranges before local decry
         scopePrivateJwk,
       });
       const manifest = JSON.parse(await readFile(decryptedManifestPath, "utf8"));
-      assert.deepEqual(manifest.files.map((file) => file.path), ["artifacts/result.md"]);
-      const contentRange = index.files.find((file) => file.kind === "content");
+      assert.deepEqual(manifest.files.map((file) => file.path), ["README.md", "artifacts/result.md"]);
+      // Проверяем producer и consumer вместе: README из реальной подписанной
+      // проекции должен разрешаться в opaque attachment selector того же head.
+      const [readmeAttachment] = selectEncryptedProposalFilesFromManifest({
+        manifest,
+        projectionId: projection.projectionId,
+        projectionFileCount: 2,
+        workspaceId,
+        acceptedHead: workspaceHead,
+        filePaths: ["README.md"],
+      });
+      assert.equal(readmeAttachment.fileName, "README.md");
+      const contentRange = index.files.find((file) => file.id === readmeAttachment.sourceFileId);
+      assert.equal(contentRange.kind, "content");
       await writeFile(
         path.join(temporaryDirectory, "result.trelioe1"),
         bytes.subarray(
@@ -3953,7 +3971,7 @@ test("encrypted browser projection exposes only opaque ranges before local decry
         scopePrivateKey: scope.privateKey,
         scopePrivateJwk,
       });
-      assert.equal(await readFile(decryptedFilePath, "utf8"), "# Готово\n");
+      assert.equal(await readFile(decryptedFilePath, "utf8"), "# Итог в README\n");
     });
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
