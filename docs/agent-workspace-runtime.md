@@ -422,3 +422,35 @@ initialize в каждом tool description. Старый слой пяти prov
 proposal/result builders и файл 1 MiB измеряются отдельно, без hidden App
 capabilities и без чтения данных компании. Эти условные ответы не прибавляются
 к каждому Run. Уменьшение bytes не заменяет проверки ACL, E2EE и human decisions.
+
+## Поиск и отдельный файл
+
+`context-search-v2` задаёт одинаковые matching patterns и ranking для native и
+local provider: регистр, ё/е, границы слов, полное покрытие и явные семейства
+русских окончаний. Filename/path/hash сохраняют пунктуацию. Сначала сравниваются
+точные references и сильнейшее совпадение поля, затем независимые формулировки.
+Повторные формы одного набора слов не увеличивают вес. Rank строится один раз,
+preview – только для top-N.
+
+Local mirror schema 5 читает accepted browser manifest и bounded safe text;
+имена binary/external файлов индексируются без их скачивания. Только явно
+отсутствующая legacy projection использует прежний encrypted bundle. Ошибка
+ACL, head, crypto или сети не переключает transport.
+
+Один file hit разрешается через `get_agent_workspace_file(delivery=local-file)`
+либо server-selected local `get_workspace_file`/`fetch`, затем typed
+`download_file`. Путь не попадает в argv или env: операция выполняется в MCP
+процессе. Bridge проверяет свежие ACL/head/rules, получает один оригинал до
+24 MiB и возвращает owner-private `localFilePath`, имя/MIME, SHA-256 и одночасовой
+lease через общий download primitive вложений. Plain файл с `head` не теряет
+revision fence в object redirect; E2EE использует только opaque UUID и ciphertext.
+
+Повторный `inspect` после свежего read-snapshot сверяет exact bindings и
+fingerprint реальных bytes. Неизменный Workspace не скачивается заново, правила
+и профиль обновляются. Подмена bytes, head, origin или encryption scope исключает
+reuse; локальная папка не подтверждает текущий ACL.
+
+Изменение относится к generic host: encrypted matching, безопасная локальная
+выдача и проверка cache не могут выполняться на backend без раскрытия plaintext.
+Для выпуска требуется согласованная пара plugin/backend с search v2 и
+`download_file`; live activation следует обычному marketplace/policy read-back.

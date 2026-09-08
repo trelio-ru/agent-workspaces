@@ -10,12 +10,12 @@ import {
 } from "../scripts/trelio-context-search-ranking.mjs";
 
 const fixturePath = fileURLToPath(new URL(
-  "./fixtures/context-search-ranking-v1.json",
+  "./fixtures/context-search-ranking-v2.json",
   import.meta.url,
 ));
 const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
 
-test("local context ranking follows the cross-provider v1 golden vectors", async (context) => {
+test("local context ranking follows the cross-provider v2 golden vectors", async (context) => {
   assert.equal(fixture.policyVersion, CONTEXT_SEARCH_RANKING_POLICY_VERSION);
 
   for (const fixtureCase of fixture.cases) {
@@ -49,7 +49,7 @@ test("one formulation found in several fields is counted once at its strongest f
     ],
   };
 
-  assert.equal(compareContextSearchCandidates(twoQueryCandidate, duplicateFieldCandidate) < 0, true);
+  assert.equal(compareContextSearchCandidates(duplicateFieldCandidate, twoQueryCandidate) < 0, true);
 });
 
 test("an exact contact channel survives a duplicate title hit for the same formulation", () => {

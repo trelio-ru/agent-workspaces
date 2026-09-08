@@ -1,3 +1,5 @@
+import { downloadAcceptedWorkspaceFile, validateWorkspaceFileLocator } from "./trelio-workspace-files.mjs";
+import { compileContextSearchQuery, normalizeContextSearchQueries, normalizeContextSearchReference } from "./trelio-context-search-matching.mjs";
 /**
  * Encrypted-company context provider for the static local MCP facade.
  *
@@ -51,6 +53,7 @@ import {
 import {
   CONTEXT_SEARCH_RANKING_POLICY_VERSION,
   compareContextSearchCandidates,
+  rankContextSearchCandidates,
   normalizeContextSearchText,
 } from "./trelio-context-search-ranking.mjs";
 import {
@@ -58,11 +61,9 @@ import {
   materializeLocalAttachment,
 } from "./trelio-local-attachments.mjs";
 
-// Version 4 replaces the previous split metadata projection with first-class workspace
-// metadata and gives accepted Workspace files their own unambiguous result-id
-// namespace. A schema-specific root means an older process can finish safely
+// Version 5 includes binary filenames from accepted file manifests. A schema-specific root means an older process can finish safely
 // without publishing an incompatible generation to a newly updated bridge.
-const MIRROR_SCHEMA_VERSION = 4;
+const MIRROR_SCHEMA_VERSION = 5;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -122,6 +123,7 @@ const TRELIO_WORKSPACE_ACTION_OPERATIONS = new Set([
   "login",
   "encryption_setup",
   "inspect",
+  "download_file",
   "open",
   "status",
   "heartbeat",
@@ -3330,7 +3332,8 @@ const buildContactSearchFields = (payload) => {
 const buildKnowledgePageSearchFields = (payload) => {
   const page = payload?.page ?? {};
   return compactSearchFields([
-    buildSearchField("knowledge-page-title", [page.title, page.slug]),
+    buildSearchField("knowledge-page-title", page.title),
+    buildSearchField("knowledge-page-title", page.slug, { previewText: page.title }),
     buildSearchField("knowledge-page-body", page.bodyPlainText),
   ]);
 };
@@ -3338,7 +3341,7 @@ const buildKnowledgePageSearchFields = (payload) => {
 const buildMeetingSearchFields = (payload) => {
   const meeting = payload?.meeting ?? {};
   return compactSearchFields([
-    buildSearchField("meeting", meeting.title),
+    buildSearchField("meeting-title", meeting.title),
     buildSearchField("meeting", payload?.result?.resultMarkdown),
     ...(payload?.sources ?? []).map((source) => buildSearchField("meeting", source?.contentText)),
   ]);
@@ -3391,7 +3394,8 @@ const buildSearchDocuments = (mirror) => {
   );
   for (const project of mirror.projects ?? []) {
     const fields = compactSearchFields([
-      buildSearchField("project", [project.name, project.slug, project.slugAliases]),
+      buildSearchField("project", project.name),
+      buildSearchField("project", project.slug),
     ]);
     documents.push({
       id: `project:${mirror.company.slug}/${project.slug}`,
@@ -3497,7 +3501,7 @@ const buildSearchDocuments = (mirror) => {
         + `:${encodeURIComponent(workspace.acceptedHead)}`
         + `:${encodeURIComponent(file.path)}`;
       const fields = compactSearchFields([
-        buildSearchField("workspace-file", `${file.path}\n${file.text}`),
+        buildSearchField("workspace-file", `${file.name}\n${file.path}\n${file.text ?? ""}`),
       ]);
       documents.push({
         // `workspace:<uuid>` belongs to the first-class workspace itself. A
@@ -3515,6 +3519,11 @@ const buildSearchDocuments = (mirror) => {
         ].join("/"),
         referenceValues: [workspace.id, file.path, file.name],
         fields,
+        scopePrefix: [mirror.company.name,
+          (mirror.projects ?? []).find((project) => project.id === workspace.projectId)?.name,
+          workspaceEntry?.title, workspaceEntry?.description,
+          (mirror.tasks ?? []).find((task) => task.id === workspace.taskId)?.payload?.task?.title,
+        ].filter(Boolean).join("\n"),
         text: fields.map((field) => field.text).join("\n"),
         metadata: {
           workspaceId: workspace.id,
@@ -3525,6 +3534,7 @@ const buildSearchDocuments = (mirror) => {
           taskId: workspace.taskId ?? null,
           path: file.path,
           sizeBytes: file.sizeBytes,
+          contentType: file.contentType ?? "application/octet-stream",
         },
       });
     }
@@ -3540,39 +3550,20 @@ const getSearchIndex = (mirror) => {
     fields: document.fields.map((field) => ({
       ...field,
       normalizedText: normalizeSearchText(field.text),
+      referenceText: normalizeContextSearchReference(field.text),
     })),
   }));
   mirrorSearchIndexCache.set(mirror, index);
   return index;
 };
 
-const matchLocalSearchField = (field, normalizedQuery) => {
-  if (
-    field.normalizedText.includes(normalizedQuery)
-    || (
-      field.allowQueryContainsField
-      && field.normalizedText.length > 0
-      && normalizedQuery.includes(field.normalizedText)
-    )
-  ) {
-    return true;
-  }
-
-  const tokens = normalizedQuery.split(" ").filter((token) => token.length > 1);
-  if (tokens.length === 0) return false;
-  const fieldTokens = field.normalizedText.split(" ").filter(Boolean);
-  const matchedTokens = tokens.filter((token) => {
-    if (field.normalizedText.includes(token)) return true;
-    if (token.length < 6) return false;
-
-    // Native PostgreSQL search uses the Russian dictionary. The encrypted
-    // provider cannot send plaintext there, so a conservative six-character
-    // stem keeps common endings aligned without making short words fuzzy.
-    const stem = token.slice(0, 6);
-    return fieldTokens.some((fieldToken) => fieldToken.length >= 6 && fieldToken.startsWith(stem));
-  }).length;
-  const requiredCoverage = tokens.length <= 2 ? 1 : 0.6;
-  return matchedTokens / tokens.length >= requiredCoverage;
+const matchLocalSearchField = (field, query) => {
+  if (typeof query === "string") query = compileContextSearchQuery(query);
+  if (!query.expressions.length) return false;
+  const text = query.reference ? (field.referenceText ?? normalizeContextSearchReference(field.text)) : field.normalizedText;
+  if (query.expressions.every((expression) => expression.test(text))) return true;
+  return field.allowQueryContainsField && !query.reference && Boolean(text)
+    && compileContextSearchQuery(text).expressions.every((expression) => expression.test(query.normalized));
 };
 
 const buildLocalRankingCandidate = (document, matches) => ({
@@ -3616,14 +3607,11 @@ export const searchCompanyContextMirror = (
   mirror,
   rawQueries,
   rawLimit = 20,
-  { maximumQueries = MAX_SEARCH_QUERIES, documentTypes = null } = {},
+  { maximumQueries = MAX_SEARCH_QUERIES, documentTypes = null, includeScopeMetadata = false } = {},
 ) => {
-  const queries = [...new Map((Array.isArray(rawQueries) ? rawQueries : [])
-    .map((query) => normalizeBoundedString(query, "query", 500))
-    .map((query) => [normalizeSearchText(query), query]))
-    .entries()]
-    .filter(([normalized]) => normalized)
-    .slice(0, maximumQueries);
+  const queries = normalizeContextSearchQueries((Array.isArray(rawQueries) ? rawQueries : [])
+    .map((query) => normalizeBoundedString(query, "query", 500)))
+    .slice(0, maximumQueries).map((query) => [query, query.original]);
   if (queries.length === 0) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
@@ -3642,16 +3630,15 @@ export const searchCompanyContextMirror = (
     // corpus. Keeping the original mirror also preserves Workspace archive
     // metadata needed for an explicit historical-result marker.
     if (allowedDocumentTypes && !allowedDocumentTypes.has(document.type)) continue;
-    const matches = findLocalSearchMatches(document, queries);
+    const searchedDocument = includeScopeMetadata && document.scopePrefix ? {
+      ...document, fields: [{ source: "workspace-file", text: `${document.scopePrefix}\n${document.text}`,
+        previewText: `${document.scopePrefix}\n${document.text}`,
+        normalizedText: `${normalizeSearchText(document.scopePrefix)} ${document.fields[0].normalizedText}`,
+        referenceText: `${normalizeContextSearchReference(document.scopePrefix)}\n${document.fields[0].referenceText}`,
+      }],
+    } : document;
+    const matches = findLocalSearchMatches(searchedDocument, queries);
     if (matches.length === 0) continue;
-    const previewMatch = matches.reduce((strongestMatch, match) => (
-      compareContextSearchCandidates(
-        buildLocalRankingCandidate(document, [match]),
-        buildLocalRankingCandidate(document, [strongestMatch]),
-      ) < 0
-        ? match
-        : strongestMatch
-    ));
     results.push({
       id: document.id,
       type: document.type,
@@ -3660,15 +3647,11 @@ export const searchCompanyContextMirror = (
       referenceValues: document.referenceValues,
       matches,
       matchedQueries: matches.map((match) => match.query),
-      preview: buildPreview(
-        previewMatch?.previewText ?? document.text,
-        normalizeSearchText(previewMatch?.query ?? queries[0][1]),
-      ),
       ...document.metadata,
     });
   }
 
-  results.sort(compareContextSearchCandidates);
+  const rankedResults = rankContextSearchCandidates(results, (result) => result);
   return {
     schemaVersion: 1,
     provider: "local_company_context",
@@ -3676,12 +3659,18 @@ export const searchCompanyContextMirror = (
     company: { id: mirror.company.id, slug: mirror.company.slug, name: mirror.company.name },
     generation: mirror.generation,
     queries: queries.map(([, original]) => original),
-    results: results.slice(0, limit).map(({
+    results: rankedResults.slice(0, limit).map(({
       stableKey: _stableKey,
       referenceValues: _referenceValues,
       matches: _matches,
       ...result
-    }) => result),
+    }) => {
+      // Snippets are display work: only normalize the winning top-N, after
+      // every candidate has received its single precomputed rank.
+      const strongest = rankContextSearchCandidates(_matches,
+        (match) => ({ ...result, stableKey: _stableKey, referenceValues: _referenceValues, matches: [match] }))[0];
+      return { ...result, preview: buildPreview(strongest.previewText, normalizeSearchText(strongest.query)) };
+    }),
     hasMore: results.length > limit,
     freshness: { mirroredAt: mirror.createdAt, serverGeneration: mirror.serverGeneration },
   };
@@ -3692,7 +3681,7 @@ export const searchWorkspaceFilesFromMirror = (mirror, rawQueries, rawLimit) => 
     mirror,
     rawQueries,
     rawLimit,
-    { documentTypes: ["workspace_file"] },
+    { documentTypes: ["workspace_file"], includeScopeMetadata: true },
   );
   return { ...search, resultType: "workspace_file" };
 };
@@ -4508,6 +4497,7 @@ const searchTasksFromMirror = (mirror, rawInput) => {
       fields: buildTaskSearchFields(task, record.number).map((field) => ({
         ...field,
         normalizedText: normalizeSearchText(field.text),
+        referenceText: normalizeContextSearchReference(field.text),
       })),
     };
     const matches = findLocalSearchMatches(rankingDocument, rankingQueries);
@@ -5280,8 +5270,8 @@ export const getWorkspaceFileFromMirror = (
     },
     file,
     materialize: {
-      nativeTool: "prepare_agent_workspace_read",
-      workspaceId: workspace.id,
+      server: "trelio-remote-skills", tool: "continue_trelio_workspace_action",
+      arguments: { schemaVersion: 1, operation: "download_file", parameters: { workspaceId, workspaceHead, filePath } },
     },
   };
 };
@@ -7183,6 +7173,11 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
   );
   let argumentsList;
 
+  if (operation === "download_file") {
+    assertWorkspaceActionKeys(parameters, new Set(["workspaceId", "workspaceHead", "filePath"]));
+    // Protected paths stay in this process; they never enter child argv or env.
+    return { operation, parameters: validateWorkspaceFileLocator(parameters), workingDirectory, argumentsList: [] };
+  }
   if (operation === "doctor") {
     assertWorkspaceActionKeys(parameters, new Set(["json"]));
     argumentsList = ["doctor"];
@@ -7455,6 +7450,9 @@ export const handleTrelioWorkspaceActionOperation = async (
   { signal, runBridge = runWorkspaceBridge } = {},
 ) => {
   const invocation = buildTrelioWorkspaceActionInvocation(rawInput);
+  if (invocation.operation === "download_file") {
+    return downloadAcceptedWorkspaceFile(origin, invocation.parameters, { signal });
+  }
   try {
     const result = await runBridge(origin, invocation.argumentsList, {
       ...(invocation.workingDirectory ? { cwd: invocation.workingDirectory } : {}),

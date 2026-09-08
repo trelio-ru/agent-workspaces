@@ -39,7 +39,8 @@ URL задачи или точные company/project/task координаты �
    процедуру/прежнее решение другого Workspace. Архив имеет `[Архив]`
    в названии и `workspaceState=archived`: годится для чтения, не writable
    Run. Обычный `list_workspaces` скрывает архив без явного `includeArchived=true`.
-4. Предпочитай совпадения нескольких вариантов. По точным metadata и
+4. Предпочитай точный identifier/filename и сильное совпадение названия;
+   несколько слабых упоминаний не доказывают, что общий реестр лучше оригинала. По точным metadata и
    `fetch` прочитай до трёх существенных документов/кандидатов. До mutation/Run
    вызови `get_workspace` для Workspace, `get_task` для одной вероятной
    задачи или `get_tasks` для нескольких. `fetch`, `get_workspace`,

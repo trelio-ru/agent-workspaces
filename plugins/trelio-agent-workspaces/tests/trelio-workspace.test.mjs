@@ -8753,19 +8753,26 @@ test("bridge inspects an accepted Workspace read-only without creating an Agent 
   const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-workspace-inspect-"));
   const homeDirectory = path.join(temporaryDirectory, "home");
   const workspaceId = "44444444-4444-4444-8444-444444444444";
-  const rulesRevisionId = "55555555-5555-4555-8555-555555555555";
+  let rulesRevisionId = "55555555-5555-4555-8555-555555555555";
   const profileRevisionId = "66666666-6666-4666-8666-666666666666";
-  const rulesMarkdown = "# Рабочие правила\n\nСначала прочитай принятые материалы.\n";
-  const rulesSha256 = createHash("sha256").update(rulesMarkdown, "utf8").digest("hex");
+  let rulesMarkdown = "# Рабочие правила\n\nСначала прочитай принятые материалы.\n";
+  let rulesSha256 = createHash("sha256").update(rulesMarkdown, "utf8").digest("hex");
   const accepted = await createExportBundle(path.join(temporaryDirectory, "accepted"), {
     "WORKSPACE_CONTEXT.md": "# Задача №56\n\nПроверенный контекст Workspace.\n",
     "artifacts/result.md": "# Результат\n\nПринятый материал.\n",
   });
   const requests = [];
   let serverError = null;
+  let revoked = false;
+  const originalBytes = Buffer.from([0xff, 0xd8, 0x01, 0x02, 0xff, 0xd9]);
   const server = createServer(async (request, response) => {
     try {
       requests.push({ method: request.method, url: request.url });
+      if (revoked && request.url?.endsWith("/read-snapshot")) {
+        response.statusCode = 403;
+        response.end(JSON.stringify({ code: "ACCESS_DENIED", message: "Access revoked" }));
+        return;
+      }
       assert.equal(request.headers.authorization, "Bearer integration-token");
       assert.equal(request.headers["x-trelio-agent-workspaces-version"], BRIDGE_VERSION);
 
@@ -8831,6 +8838,12 @@ test("bridge inspects an accepted Workspace read-only without creating an Agent 
         return;
       }
 
+      if (request.url?.startsWith(`/api/agent-workspaces/workspaces/${workspaceId}/file?`)) {
+        response.setHeader("content-type", "image/jpeg");
+        response.setHeader("x-trelio-accepted-head", accepted.head);
+        response.end(originalBytes);
+        return;
+      }
       if (
         request.url
         === `/api/agent-workspaces/workspaces/${workspaceId}/bundle?head=${accepted.head}`
@@ -8905,6 +8918,47 @@ test("bridge inspects an accepted Workspace read-only without creating an Agent 
       assert.equal((await stat(contextDirectory)).mode & 0o222, 0);
       assert.equal((await stat(path.join(workspaceDirectory, "artifacts", "result.md"))).mode & 0o222, 0);
     }
+    const inspectAgain = () => execFileAsync(process.execPath,
+      [bridgePath, "inspect", "--origin", origin, "--workspace", workspaceId],
+      { cwd: temporaryDirectory, encoding: "utf8", timeout: 15_000, env: { ...process.env, HOME: homeDirectory } });
+    const bundleCount = () => requests.filter(({ url }) => String(url).includes("/bundle?")).length;
+    rulesMarkdown = "# Новые правила\n\nИспользуй актуальные документы.\n";
+    rulesSha256 = createHash("sha256").update(rulesMarkdown, "utf8").digest("hex");
+    rulesRevisionId = "55555555-5555-4555-8555-555555555556";
+    await inspectAgain();
+    assert.equal(await readFile(path.join(contextDirectory, "agent-instructions.md"), "utf8"), rulesMarkdown);
+    assert.equal(bundleCount(), 1, "an unchanged verified inspection reuses bytes after a fresh snapshot");
+    const materialPath = path.join(workspaceDirectory, "artifacts", "result.md");
+    if (process.platform !== "win32") await execFileAsync("chmod", ["u+w", materialPath]);
+    await writeFile(materialPath, "tampered inspection", "utf8");
+    await inspectAgain();
+    assert.equal(bundleCount(), 2, "changed local bytes must be replaced from the authenticated accepted head");
+    assert.equal(await readFile(materialPath, "utf8"), "# Результат\n\nПринятый материал.\n");
+
+    if (process.platform !== "win32") await execFileAsync("chmod", ["-R", "u+w", workspaceDirectory]);
+    await rm(path.join(workspaceDirectory, ".git"), { recursive: true });
+    await inspectAgain();
+    assert.equal(bundleCount(), 3, "missing Git state invalidates a cache even after its metadata was loaded");
+
+    const fileModule = new URL("../scripts/trelio-workspace-files.mjs", import.meta.url).href;
+    const download = (workspaceHead = accepted.head) => execFileAsync(process.execPath,
+      ["--input-type=module", "-e", `import { downloadAcceptedWorkspaceFile } from ${JSON.stringify(fileModule)};
+        const result = await downloadAcceptedWorkspaceFile(${JSON.stringify(origin)}, ${JSON.stringify({ workspaceId, workspaceHead, filePath: "sources/original.jpg" })});
+        process.stdout.write(JSON.stringify(result));`],
+      { cwd: temporaryDirectory, encoding: "utf8", timeout: 15_000, env: { ...process.env, HOME: homeDirectory } });
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const delivered = JSON.parse((await download()).stdout);
+      assert.equal(delivered.delivery, "local-file");
+      assert.equal(delivered.originalName, "original.jpg");
+      assert.deepEqual(await readFile(delivered.localFilePath), originalBytes);
+      assert.equal(delivered.sha256, createHash("sha256").update(originalBytes).digest("hex"));
+      assert.equal(delivered.dataBase64, undefined);
+      assert.equal(bundleCount(), 3, "file delivery never downloads an inspection bundle");
+    }
+    await assert.rejects(download("e".repeat(40)), /WORKSPACE_OUTDATED/u);
+    revoked = true;
+    await assert.rejects(inspectAgain(), /Access revoked/u);
+    assert.equal(bundleCount(), 3, "an existing cache cannot bypass revoked access");
     assert.equal(requests.some(({ method }) => method !== "GET"), false);
     assert.equal(requests.some(({ url }) => String(url).includes("/runs")), false);
     assert.ifError(serverError);

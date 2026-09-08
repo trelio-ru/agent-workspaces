@@ -402,7 +402,7 @@ test("local mirror search ranks structured and workspace context without remote 
   );
 
   assert.equal(result.provider, "local_company_context");
-  assert.equal(result.rankingPolicyVersion, "context-search-v1");
+  assert.equal(result.rankingPolicyVersion, "context-search-v2");
   assert.deepEqual(result.queries, ["релевантный поиск контекста", "fencing token"]);
   assert.equal(result.results.some(({ type }) => type === "task"), true);
   assert.equal(result.results.some(({ type }) => type === "workspace_file"), true);
@@ -643,7 +643,7 @@ test("native task search keeps ordinary lexical result ids and never needs a rem
   });
 
   assert.equal(result.searchMode, "lexical");
-  assert.equal(result.rankingPolicyVersion, "context-search-v1");
+  assert.equal(result.rankingPolicyVersion, "context-search-v2");
   assert.equal(result.tasks.length, 1);
   assert.equal(result.tasks[0].id, "task:acme/mobile/17");
   assert.equal(result.tasks[0].matchCount, 2);
@@ -2309,7 +2309,7 @@ test("encrypted mirror generations are schema-isolated while mutation coherence 
     companyId: "11111111-1111-4111-8111-111111111111",
   });
 
-  assert.equal(paths.root.endsWith("schema-4"), true);
+  assert.equal(paths.root.endsWith("schema-5"), true);
   assert.equal(paths.pointer.startsWith(paths.root), true);
   assert.equal(paths.lock.startsWith(paths.root), true);
   assert.equal(paths.generations.startsWith(paths.root), true);

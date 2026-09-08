@@ -83,6 +83,8 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-context-search-matching.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-workspace-files.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-context.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace-action-process.test.mjs
@@ -130,6 +132,9 @@ jobs:
       # Exercise actual file DACL hardening, expiration and encrypted delivery.
       - name: Run Windows private attachment delivery regressions
         run: node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
+
+      - name: Run Windows encrypted Workspace file delivery regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-files.test.mjs
 
       # The local facade must keep an explicit child cwd and return a typed
       # restart requirement when the loaded plugin disappears during an update.

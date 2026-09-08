@@ -1,0 +1,119 @@
+{
+  "policyVersion": "context-search-v2",
+  "cases": [
+    {
+      "name": "name inflections",
+      "text": "Документы Марии",
+      "query": "Документы Мария",
+      "matches": true
+    },
+    {
+      "name": "reverse name inflections",
+      "text": "Документы Мария",
+      "query": "документы марии",
+      "matches": true
+    },
+    {
+      "name": "yo and case",
+      "text": "ПОЛЁТ над рекой",
+      "query": "полет",
+      "matches": true
+    },
+    {
+      "name": "boundaries",
+      "text": "дорога",
+      "query": "рога",
+      "matches": false
+    },
+    {
+      "name": "no word prefixes",
+      "text": "architecture",
+      "query": "arch",
+      "matches": false
+    },
+    {
+      "name": "full coverage",
+      "text": "новые документы в архиве",
+      "query": "новые документы Марии",
+      "matches": false
+    },
+    {
+      "name": "reordered words",
+      "text": "Договор аренды",
+      "query": "аренда договор",
+      "matches": true
+    },
+    {
+      "name": "literal filename",
+      "text": "0088--scan_88.jpg",
+      "query": "0088--scan_88.jpg",
+      "matches": true
+    },
+    {
+      "name": "filename punctuation matters",
+      "text": "0088 scan 88 jpg",
+      "query": "0088--scan_88.jpg",
+      "matches": false
+    },
+    {
+      "name": "filename is not token coverage",
+      "text": "message jpg 126",
+      "query": "0126--message_126.jpg",
+      "matches": false
+    },
+    {
+      "name": "literal path",
+      "text": "sources/scan.jpg",
+      "query": "sources/scan.jpg",
+      "matches": true
+    },
+    {
+      "name": "hash exact",
+      "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "matches": true
+    },
+    {
+      "name": "hash prefix rejected",
+      "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "matches": false
+    },
+    {
+      "name": "compatibility characters stay distinct",
+      "text": "Ｆｉｌｅ",
+      "query": "file",
+      "matches": false
+    },
+    {
+      "name": "regex literals",
+      "text": "report[1].pdf",
+      "query": "report[1].pdf",
+      "matches": true
+    },
+    {
+      "name": "registry reference mention",
+      "text": "Файл: 0088--scan_88.jpg",
+      "query": "0088--scan_88.jpg",
+      "matches": true
+    },
+    {
+      "name": "email value",
+      "text": "Email · ann@example.test",
+      "query": "ann@example.test",
+      "matches": true
+    },
+    {
+      "name": "empty punctuation",
+      "text": "",
+      "query": "...",
+      "matches": false
+    },
+    {
+      "name": "yo in exact filename",
+      "text": "Отчёт.pdf",
+      "query": "отчет.pdf",
+      "matches": true
+    }
+  ]
+}

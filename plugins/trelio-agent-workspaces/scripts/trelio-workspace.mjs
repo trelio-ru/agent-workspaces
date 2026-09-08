@@ -10153,6 +10153,32 @@ const removePreviousWorkspaceInspection = async (rootDirectory, workspaceId) => 
   }
 };
 
+/** Hash actual bytes, not Git's cached stat/index: unchanged mtimes, ignored
+ * files and assume-unchanged flags must not make an edited inspection reusable. */
+export const fingerprintWorkspaceInspection = async (directory) => {
+  const digest = crypto.createHash("sha256");
+  const walk = async (relative = "") => {
+    const entries = await fs.readdir(path.join(directory, relative), { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      if (!relative && entry.name === ".git") continue;
+      const item = path.posix.join(relative, entry.name);
+      const absolute = path.join(directory, item);
+      const stat = await fs.lstat(absolute);
+      if (stat.isSymbolicLink()) throw new Error("Inspection contains a symbolic link.");
+      if (stat.isDirectory()) { digest.update(`directory\0${item}\0`); await walk(item); }
+      else if (stat.isFile()) {
+        const file = await hashFile(absolute);
+        digest.update(`file\0${item}\0${file.sizeBytes}\0${file.sha256}\0`);
+      } else throw new Error("Inspection contains an unsupported file type.");
+    }
+  };
+  const root = await fs.lstat(directory);
+  if (!root.isDirectory() || root.isSymbolicLink()) throw new Error("Inspection root is not a regular directory.");
+  await walk();
+  return digest.digest("hex");
+};
+
 const materializeWorkspaceInspection = async ({
   origin,
   token,
@@ -10170,6 +10196,53 @@ const materializeWorkspaceInspection = async ({
   validateWorkspaceReadSnapshot(snapshot, workspaceId);
   await ensurePrivateDirectory(WORKSPACE_INSPECTION_DIRECTORY);
   const targetRoot = path.join(WORKSPACE_INSPECTION_DIRECTORY, workspaceId);
+  // The caller obtained a fresh authenticated read-snapshot and encryption
+  // context before this check. A local head alone is never an ACL capability.
+  let cached = null;
+  try {
+    const stat = await fs.lstat(targetRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe inspection root.");
+    cached = await readPrivateJsonFile(path.join(targetRoot, ".trelio-inspection.json"));
+    const workspaceDirectory = path.join(targetRoot, "workspace");
+    const gitStat = await fs.lstat(path.join(workspaceDirectory, ".git"));
+    if (!gitStat.isDirectory() || gitStat.isSymbolicLink()) throw new Error("Unsafe inspection Git directory.");
+    const gitHead = await runGit(["rev-parse", "HEAD"], { cwd: workspaceDirectory });
+    if (gitHead.stdout.trim() !== acceptedHead) throw new Error("Inspection Git head changed.");
+    await runGit(["diff", "--cached", "--quiet", "--no-ext-diff", acceptedHead, "--"], { cwd: workspaceDirectory });
+    if (cached.schemaVersion !== 1 || cached.mode !== "read_only_accepted_workspace"
+      || cached.origin !== origin || cached.workspaceId !== workspaceId
+      || cached.company?.id !== snapshot.company.id || cached.acceptedHead !== acceptedHead
+      || cached.workspaceDirectory !== workspaceDirectory
+      || JSON.stringify(cached.encryption) !== JSON.stringify(companyEncryption?.metadata ?? { enabled: false })
+      || !cached.contentFingerprint
+      || cached.contentFingerprint !== await fingerprintWorkspaceInspection(workspaceDirectory)) cached = null;
+  } catch {
+    // A missing Git directory or file is also an invalid cache, even if its
+    // metadata was already read successfully before the ENOENT.
+    cached = null;
+  }
+  if (cached) {
+    const contextDirectory = path.join(targetRoot, "context");
+    const freshContextRoot = await fs.mkdtemp(path.join(WORKSPACE_INSPECTION_DIRECTORY, `.${workspaceId}.context-`));
+    try {
+      await writeWorkspaceInspectionContext({ rootDirectory: freshContextRoot, publishedRootDirectory: targetRoot,
+        workspace: snapshot.workspace, company: snapshot.company, acceptedHead,
+        agentInstructionsSnapshot: snapshot.agentInstructionsSnapshot, userProfileSnapshot: snapshot.userProfileSnapshot });
+      const contextStat = await fs.lstat(contextDirectory);
+      if (!contextStat.isDirectory() || contextStat.isSymbolicLink()) throw new Error("Unsafe inspection context directory.");
+      await makeWritable(contextDirectory);
+      await fs.rm(contextDirectory, { recursive: true, force: true });
+      // macOS needs write permission on a directory while changing its parent.
+      // Keep the source owner-only during that move, then restore read-only mode.
+      if (process.platform !== "win32") await fs.chmod(path.join(freshContextRoot, "context"), 0o700);
+      await fs.rename(path.join(freshContextRoot, "context"), contextDirectory);
+      if (process.platform !== "win32") await fs.chmod(contextDirectory, 0o555);
+      return { workspaceDirectory: cached.workspaceDirectory, encryptedRevisionId: cached.encryptedRevisionId, reused: true };
+    } finally {
+      await makeWritable(freshContextRoot).catch(() => undefined);
+      await fs.rm(freshContextRoot, { recursive: true, force: true });
+    }
+  }
   const stagingRoot = await fs.mkdtemp(path.join(
     WORKSPACE_INSPECTION_DIRECTORY,
     `.${workspaceId}.staging-`,
@@ -10251,6 +10324,7 @@ const materializeWorkspaceInspection = async ({
       encryptedRevisionId,
       workspaceDirectory: path.join(targetRoot, "workspace"),
       createdAt: new Date().toISOString(),
+      contentFingerprint: await fingerprintWorkspaceInspection(workspaceDirectory),
     });
     await removePreviousWorkspaceInspection(targetRoot, workspaceId);
     await fs.rename(stagingRoot, targetRoot);
@@ -10282,7 +10356,45 @@ const COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES = 16 * 1024 * 1024;
  * resolves.  Persistent mirror generations are encrypted separately by the
  * caller, while unchanged heads can reuse their previous encrypted records.
  */
-export const readEncryptedWorkspaceSearchDocuments = async ({
+export const readEncryptedWorkspaceSearchDocuments = async (input) => {
+  const { readEncryptedWorkspaceFileManifest, readEncryptedWorkspaceSelectedFile, workspaceFileSearchText } =
+    await import("./trelio-workspace-files.mjs");
+  const requestInput = { ...input, workspaceHead: input.acceptedHead };
+  let files;
+  try { files = await readEncryptedWorkspaceFileManifest(requestInput); }
+  catch (error) {
+    // Only an explicitly missing legacy projection allows the old encrypted
+    // transport. Network/crypto/ACL errors must never trigger a second path.
+    if (error.code !== "WORKSPACE_BROWSER_PROJECTION_UNAVAILABLE") throw error;
+    return readLegacyEncryptedWorkspaceSearchDocuments(input);
+  }
+  const documents = files.filter((file) => isHumanFacingEncryptedWorkspacePath(file.path))
+    .sort((left, right) => left.sizeBytes - right.sizeBytes || (left.path < right.path ? -1 : 1))
+    .map((file) => ({ kind: "workspace_file", workspaceId: input.workspaceId, workspaceHead: input.acceptedHead,
+      path: file.path, name: file.path.split("/").at(-1), sizeBytes: file.sizeBytes,
+      contentType: file.contentType, sourceFileId: file.id, text: "" }));
+  const byId = new Map(files.map((file) => [file.id, file]));
+  let indexedBytes = 0;
+  const textDocuments = documents.filter((file) => {
+    if (!file.contentType.startsWith("text/plain") || file.sizeBytes > COMPANY_CONTEXT_SEARCHABLE_FILE_BYTES
+      || indexedBytes + file.sizeBytes > COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES) return false;
+    indexedBytes += file.sizeBytes;
+    return true;
+  });
+  // A small fixed pool amortizes HTTP latency without buffering many documents
+  // or transferring a single binary merely to make its filename searchable.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, textDocuments.length) }, async () => {
+    while (next < textDocuments.length) {
+      const document = textDocuments[next++];
+      const bytes = await readEncryptedWorkspaceSelectedFile(requestInput, byId.get(document.sourceFileId));
+      try { document.text = workspaceFileSearchText(bytes); } finally { bytes.fill(0); }
+    }
+  }));
+  return documents;
+};
+
+const readLegacyEncryptedWorkspaceSearchDocuments = async ({
   origin,
   token,
   companyEncryption,
@@ -10346,7 +10458,6 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
         || normalizedPath === "README.md"
         || normalizedPath.startsWith(".trelio/")
         || baseName === ".gitkeep"
-        || !COMPANY_CONTEXT_SEARCHABLE_EXTENSIONS.has(extension)
       ) {
         continue;
       }
@@ -10355,11 +10466,10 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
       if (
         !metadata.isFile()
         || metadata.isSymbolicLink()
-        || metadata.size > COMPANY_CONTEXT_SEARCHABLE_FILE_BYTES
       ) {
         continue;
       }
-      candidates.push({ path: normalizedPath, absolutePath, sizeBytes: metadata.size });
+      candidates.push({ path: normalizedPath, absolutePath, sizeBytes: metadata.size, searchable: COMPANY_CONTEXT_SEARCHABLE_EXTENSIONS.has(extension) });
     }
 
     candidates.sort((left, right) => (
@@ -10368,23 +10478,19 @@ export const readEncryptedWorkspaceSearchDocuments = async ({
     const documents = [];
     let indexedBytes = 0;
     for (const candidate of candidates) {
-      if (indexedBytes + candidate.sizeBytes > COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES) {
-        continue;
+      let text = "";
+      let sizeBytes = candidate.sizeBytes;
+      if (candidate.sizeBytes <= COMPANY_CONTEXT_SEARCHABLE_FILE_BYTES) {
+        const bytes = await fs.readFile(candidate.absolutePath);
+        try {
+          const pointer = parseWorkspaceObjectPointer(bytes);
+          if (pointer) sizeBytes = pointer.sizeBytes;
+          else if (candidate.searchable && indexedBytes + bytes.length <= COMPANY_CONTEXT_SEARCHABLE_WORKSPACE_BYTES
+            && !bytes.includes(0) && isUtf8(bytes)) { indexedBytes += bytes.length; text = bytes.toString("utf8"); }
+        } finally { bytes.fill(0); }
       }
-      const bytes = await fs.readFile(candidate.absolutePath);
-      if (bytes.includes(0) || !isUtf8(bytes) || parseWorkspaceObjectPointer(bytes)) {
-        continue;
-      }
-      indexedBytes += bytes.byteLength;
-      documents.push({
-        kind: "workspace_file",
-        workspaceId: normalizedWorkspaceId,
-        workspaceHead: acceptedHead,
-        path: candidate.path,
-        name: candidate.path.split("/").at(-1) ?? candidate.path,
-        sizeBytes: candidate.sizeBytes,
-        text: bytes.toString("utf8"),
-      });
+      documents.push({ kind: "workspace_file", workspaceId: normalizedWorkspaceId, workspaceHead: acceptedHead,
+        path: candidate.path, name: candidate.path.split("/").at(-1), sizeBytes, text });
     }
 
     return documents;
@@ -10417,13 +10523,13 @@ const inspectWorkspace = async (origin, options) => {
         token,
         company,
       });
-      const inspection = await materializeWorkspaceInspection({
+      const inspection = await withWorkspaceOpenLock(workspaceId, () => materializeWorkspaceInspection({
         origin: workspaceOrigin,
         token,
         workspaceId,
         rawSnapshot,
         companyEncryption,
-      });
+      }));
       process.stdout.write(`${inspection.workspaceDirectory}\n`);
       return;
     } catch (error) {
