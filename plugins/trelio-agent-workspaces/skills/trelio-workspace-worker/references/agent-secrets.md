@@ -116,7 +116,12 @@ Bridge никогда не пишет Agent Secret values в private config ил
 
 ## Checkout для executable
 
-Когда разрешённому executable нужно значение, вызови
+Если свежая инструкция signed runtime объявляет setup-команду с автоматической
+доставкой company connection field, исполни её exact `runtimeExecution` напрямую.
+Такой setup не требует Run: не проси ссылку на задачу и не создавай Run ради входа.
+Bridge сам выполняет live проверку; отказ устраняй по его коду без чтения ключа.
+
+Для остальных executable, которым нужно значение, вызови
 `prepare_agent_secret_checkout` для точных текущего Run, executable и полей,
 затем исполни единственный `bridge.action` через точные local server/tool
 и открытый `workingDirectory`. В `parameters.arguments` добавляй только

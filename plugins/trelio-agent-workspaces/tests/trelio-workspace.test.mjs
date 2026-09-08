@@ -4065,7 +4065,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.0.9");
+  assert.equal(BRIDGE_VERSION, "2.0.10");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -7497,6 +7497,8 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
     stdin: "one-use-stdin-secret",
   };
   let resolveCount = 0;
+  let setupCount = 0;
+  let setupDenied = false;
   let packageDownloadCount = 0;
   const consumedGrants = [];
   let serverError = null;
@@ -7512,18 +7514,23 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
       `const fileGrant = process.env.TRELIO_SECRET_FILE ? (await readFile(process.env.TRELIO_SECRET_FILE, "utf8")) === ${JSON.stringify(secretValues.file)} : false;`,
       `if (process.env.TRELIO_SECRET_FILE) await writeFile(${JSON.stringify(deliveredFilePathLog)}, process.env.TRELIO_SECRET_FILE, "utf8");`,
       `const stdinGrant = stdinValue === ${JSON.stringify(secretValues.stdin)};`,
+      `if (process.env.TRELIO_TEST_SETUP_TOKEN) process.stdout.write("setup-authorized:" + (process.env.TRELIO_TEST_SETUP_TOKEN === ${JSON.stringify(secretValues.env)}) + "\\n");`,
       "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}:${process.env.TRELIO_SKILL_MEMBER_ID}:${process.env.TRELIO_SKILL_CONNECTION_ID}:${process.env.TRELIO_SKILL_CONNECTION_CONFIG_JSON}:project=${process.env.TRELIO_SKILL_PROJECT_ID || 'none'}:grants=${envGrant},${fileGrant},${stdinGrant}\\n`);",
       "",
     ].join("\n"),
     { mode: 0o755 },
   );
+  await writeFile(path.join(sourceDirectory, "trelio-secret-setup.json"), JSON.stringify({
+    schemaVersion: 1, commands: [{ id: "configure", arguments: ["configure"], bindingKey: "service_token",
+      fieldKey: "value", environmentVariable: "TRELIO_TEST_SETUP_TOKEN" }],
+  }));
   const packageBytes = await buildAgentSkillPackage({
     skillId,
     runtimeVersion: "2.0.0",
     sourceDirectory,
     entrypointPath: "main.mjs",
     interpreter: "node",
-    capabilities: ["network"],
+    capabilities: ["network", "secret-checkout"],
   });
   const packageSha256 = createHash("sha256").update(packageBytes).digest("hex");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -7582,6 +7589,25 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
         return;
       }
 
+      if (request.method === "POST" && request.url === "/api/agent-skills/runtime/setup-secret") {
+        setupCount += 1;
+        const body = JSON.parse((await readRequestBody(request)).toString("utf8"));
+        assert.equal(body.commandId, "configure");
+        assert.equal(body.connectionId, connectionId);
+        assert.equal(body.expectedReleaseId, releaseId);
+        assert.equal(body.runId, undefined);
+        assert.equal(body.secretId, undefined);
+        response.setHeader("content-type", "application/json");
+        if (setupDenied) {
+          response.statusCode = 403;
+          response.end(JSON.stringify({ message: "setup access revoked" }));
+          return;
+        }
+        response.end(JSON.stringify({ schemaVersion: 1, companyId, memberId, releaseId,
+          artifactId, packageSha256, connectionId, configSha256: body.configSha256,
+          commandId: "configure", environmentVariable: "TRELIO_TEST_SETUP_TOKEN", value: secretValues.env }));
+        return;
+      }
       const grantEntry = Object.entries(grantIds).find(([, grantId]) => (
         request.method === "POST"
         && request.url === `/api/agent-secrets/checkout-grants/${grantId}/consume`
@@ -7704,7 +7730,7 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
       `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
       "utf8",
     );
-    const runSkill = () => execFileAsync(
+    const runSkill = (runtimeArguments = ["--message", "hello"]) => execFileAsync(
       process.execPath,
       [
         bridgePath,
@@ -7720,8 +7746,7 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
         releaseId,
         ...runtimeArgv,
         "--",
-        "--message",
-        "hello",
+        ...runtimeArguments,
       ],
       {
         cwd: temporaryDirectory,
@@ -7829,6 +7854,22 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
     assert.match(repairedRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
     assert.equal(resolveCount, boundSession ? 2 : 7, "damaged package bytes require live reauthorization");
     assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
+    const resolvesBeforeSetup = resolveCount;
+    for (let invocation = 0; invocation < 2; invocation += 1) {
+      const result = await runSkill(["configure"]);
+      assert.match(result.stdout, /setup-authorized:true/u);
+      assert.ok(!result.stdout.includes(secretValues.env));
+      assert.ok(!result.stderr.includes(secretValues.env));
+    }
+    assert.equal(setupCount, 2, "each process receives a freshly authorized value");
+    assert.equal(resolveCount, resolvesBeforeSetup + 2, "setup never reuses twelve-hour admission");
+    setupDenied = true;
+    await assert.rejects(runSkill(["configure"]), (error) => {
+      assert.match(error.stderr, /setup access revoked/u);
+      assert.doesNotMatch(error.stdout, /setup-authorized|runtime:/u);
+      return true;
+    });
+    assert.equal(setupCount, 3, "denied delivery is not retried");
     assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));

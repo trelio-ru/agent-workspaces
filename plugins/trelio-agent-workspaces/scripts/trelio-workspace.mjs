@@ -8,6 +8,7 @@
  * приватном локальном файле и отправляет на сервер только candidate bundle
  * текущего Run.
  */
+import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "./trelio-skill-secret-setup.mjs";
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
@@ -71,7 +72,7 @@ import {
 } from "./trelio-skill-admission.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "2.0.9";
+export const BRIDGE_VERSION = "2.0.10";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -6543,6 +6544,7 @@ const runMaterializedAgentSkill = async ({
   executionContext,
   grantedEnvironment = {},
   grantedStdin = null,
+  prepareSetupEnvironment = null,
 }) => {
   const entrypointPath = path.join(
     runtimeDirectory,
@@ -6566,6 +6568,9 @@ const runMaterializedAgentSkill = async ({
     });
   }
 
+  // Resolve the interpreter before delivering a value; setup is authorized
+  // immediately before spawn and cannot reuse a previous invocation's secret.
+  if (prepareSetupEnvironment) grantedEnvironment = await prepareSetupEnvironment();
   const exitCode = await new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       cwd: runtimeDirectory,
@@ -7027,6 +7032,15 @@ const skillCommand = async (
     runtimeDirectory = materialized.runtimeDirectory;
   }
 
+  const setupCommand = readSkillSecretSetupCommand(artifactForCache.parsedPackage, positional.slice(1));
+  if (setupCommand && (Object.keys(grantedEnvironment).length || grantedStdin !== null)) {
+    throw new Error("Команда настройки использует собственную signed-доставку. Запустите её через runtimeExecution без checkout grant.");
+  }
+  // Signed setup always refreshes company config and admission, including a
+  // verified package cache hit. The value endpoint repeats every live gate.
+  if (setupCommand && cachedAdmission) {
+    return skillCommand(origin, options, positional, { refreshAdmission: true });
+  }
   if (!cachedAdmission) {
     await saveRuntimeSkillAdmission(admissionKey, token, admissionResolution, admissionCheckedAt);
   }
@@ -7043,6 +7057,10 @@ const skillCommand = async (
     },
     grantedEnvironment,
     grantedStdin,
+    prepareSetupEnvironment: setupCommand ? () => deliverSkillSetupEnvironment({
+      request, origin, token, command: setupCommand, resolution, companyId,
+      projectId, skillId, releaseId, runtimeSessionId,
+    }) : null,
   });
 };
 

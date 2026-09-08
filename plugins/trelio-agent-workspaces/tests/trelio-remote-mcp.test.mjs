@@ -46,7 +46,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "2.0.9");
+  }), "2.0.10");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -2764,7 +2764,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "2.0.9");
+  assert.equal(frames[0].result.serverInfo.version, "2.0.10");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /Для старых command-ответов – его процедура совместимости/u);

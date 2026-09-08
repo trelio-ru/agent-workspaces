@@ -482,3 +482,26 @@ JSON-объектом с exact ключами и строковыми либо `
 `secretId` каноничен, название освежается через `list_agent_secrets`. Value,
 version, grant, setup URL, runtime arguments и найденные, но неиспользованные
 секреты в workspace не записываются.
+
+## Signed setup без Agent Run
+
+Generic host поддерживает optional подписанный файл `trelio-secret-setup.json`
+(schemaVersion=1, до восьми команд `id/arguments/bindingKey/fieldKey/environmentVariable`).
+Для exact argv без prefix/wildcard bridge получает одно company connection field
+через paired `POST /api/agent-skills/runtime/setup-secret`. Требуется host
+`2.0.10+`, capability `secret-checkout` и platform-verified plain package.
+
+Setup всегда повторяет live admission и разрешение сервера; 12-часовой кеш
+не применяется. Сервер сверяет scope/policy/release/signature/connection/config
+и checkout ACL, выбирая secret самостоятельно. Bridge сверяет binding ответа
+и передаёт value только одному child через scoped env после подготовки
+интерпретатора. Значение не кешируется и не печатается; автоматического повтора
+выдачи нет. Encrypted и unverified code остаются fail-closed. Обычный checkout
+сохраняет Run. Провайдерные команды живут только в независимом signed package.
+
+Основание изменения plugin – общий host primitive для класса интеграций с
+company key и личным входом. Markdown/Remote MCP/provider runtime не могут
+безопасно получить bridge credential или выдать company secret самостоятельно.
+Старые пакеты работают как прежде; global minimum не повышается. Rollback
+сначала возвращает прежний skill release, затем совместимый plugin/latest;
+minimumHostVersion новых пакетов не подменяется.

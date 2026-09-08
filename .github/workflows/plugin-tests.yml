@@ -87,6 +87,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-mcp-results.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-skill-secret-setup.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-matching.test.mjs
@@ -120,6 +121,9 @@ jobs:
       # Windows PowerShell Set-Acl/Get-Acl path that the other runners skip.
       - name: Run admission cache boundary regressions
         run: node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
+
+      - name: Run signed setup boundary regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-skill-secret-setup.test.mjs
 
       - name: Run Windows ACL regressions
         run: >-

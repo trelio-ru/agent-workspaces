@@ -331,6 +331,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
   Любой credential не попадает в model-visible output, argv, ambient
   environment, workspace, comments, checkpoints, handoff или logs.
+- Exact setup-команды signed package могут получать одно company connection
+  field без Run по `docs/agent-skills-and-secrets.md#signed-setup-без-agent-run`.
+  Это generic host primitive для класса интеграций с company key и личным
+  входом; provider runtime не получает bridge credentials. Live проверки и
+  process-only доставка обязательны, admission/value cache не применяется.
 - Browser fill использует встроенный браузер по умолчанию; generic AX/UIA
   helper готовится до consume, Chrome допустим только как pre-delivery fallback.
   Native id binding относится к полям и кнопкам; финальная кнопка без id требует
