@@ -505,7 +505,15 @@ Inspect, draft resume, history и restore используют тот же ло�
 До первого HTTP ciphertext и точные подписи сохраняются в owner-only
 `.encrypted-uploads/<runId>` рядом с Run metadata, вне Workspace Git. После
 обрыва или restart bridge сначала читает upload/publication state, затем
-передаёт только недостающие части или незавершённую публикацию. Cooldown
-10–12 минут остаётся прежним. После подтверждённого acceptance cache удаляется;
+передаёт только недостающие части или незавершённую публикацию. HTTP 429
+запускает до восьми повторов логической операции: Retry-After до пяти минут,
+при отсутствии заголовка – 1/2/4/8/16/30 секунд и далее по 30 секунд, с jitter
+до 250 мс. Каждый повтор сначала сверяет состояние, сохраняя UUID, ciphertext
+и точную подпись; готовые части и публикации не отправляются повторно.
+Heartbeat во время загрузки тоже соблюдает Retry-After. HTTP 401/403/409/5xx
+не повторяются этим механизмом. Отдельный cooldown 10–12 минут с одним повтором
+остаётся только для transport-обрыва. Backend отделяет upload metadata/parts
+от обычных mutations, ограничивает verified userId и общий IP, а также
+одновременные storage-операции. После подтверждённого acceptance cache удаляется;
 при ошибке он сохраняется. Server backup и maintenance учитывают upload parts,
 reused file references и зависимости full/delta истории.

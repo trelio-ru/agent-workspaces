@@ -382,7 +382,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   Право `mcp:tasks:update` не заменяет `mcp:knowledge-base:write` и page manage ACL.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
   bridge. Protocol 2 передаёт opaque `TRELIOE1` files/manifests и Git full/delta
-  частями по 8 МиБ с durable retry cache; неизменённые файлы переиспользуются
+  частями по 8 МиБ с durable retry cache; HTTP 429 обрабатывается bounded
+  Retry-After retry логической операции с read-back до mutation.
+  Неизменённые файлы переиспользуются
   только из exact accepted base. Подписанная browser-проекция содержит UUID и
   ciphertext digests, а paths/MIME/plaintext hashes – только encrypted manifest.
   Legacy full bundle/pack остаются читаемыми. Лимиты и recovery описаны в

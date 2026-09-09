@@ -1460,20 +1460,19 @@ export const withEncryptedWorkspaceTransportCooldownRetry = async (
   }
 };
 
-const requestWithRateLimitRetry = async ({
-  origin,
-  token,
-  pathname,
-  createOptions,
-}) => {
+// Retry surrounds the logical operation, not just fetch. Protocol-v2 callers
+// first reconcile upload/publication state inside that operation, so even an
+// upstream 429 after a committed write cannot resend an accepted part or record.
+export const withRateLimitRetry = async (operation, {
+  waitForRetry = wait,
+  random = Math.random,
+  report = (message) => process.stdout.write(message),
+} = {}) => {
   let retryCount = 0;
 
   while (true) {
     try {
-      // Upload body передаётся фабрикой, а не готовым stream: после ответа 429
-      // fetch уже мог прочитать исходный ReadStream, и повторно использовать его
-      // нельзя. Каждый retry обязан открыть файл заново с первого байта.
-      return await request(origin, token, pathname, createOptions());
+      return await operation();
     } catch (error) {
       if (
         !(error instanceof TrelioApiError)
@@ -1487,10 +1486,10 @@ const requestWithRateLimitRetry = async ({
       const fallbackDelay = Math.min(
         FALLBACK_RATE_LIMIT_DELAY_MS * (2 ** retryCount),
         MAX_FALLBACK_RATE_LIMIT_DELAY_MS,
-      ) + Math.floor(Math.random() * 251);
+      ) + Math.floor(Math.min(1, Math.max(0, Number(random()) || 0)) * 250);
       const delayMilliseconds = retryAfterMilliseconds ?? fallbackDelay;
 
-      if (delayMilliseconds > MAX_RATE_LIMIT_WAIT_MS) {
+      if (!Number.isFinite(delayMilliseconds) || delayMilliseconds < 0 || delayMilliseconds > MAX_RATE_LIMIT_WAIT_MS) {
         throw new Error(
           "Trelio запросил слишком долгую паузу Retry-After; повторите submit позже.",
           { cause: error },
@@ -1498,15 +1497,28 @@ const requestWithRateLimitRetry = async ({
       }
 
       retryCount += 1;
-      process.stdout.write(
+      report(
         `Trelio ограничил скорость запросов. Повтор ${retryCount}/${MAX_RATE_LIMIT_RETRIES} через ${
           Math.ceil(delayMilliseconds / 1000)
         } сек.\n`,
       );
-      await wait(delayMilliseconds);
+      await waitForRetry(delayMilliseconds);
     }
   }
 };
+
+const requestWithRateLimitRetry = ({ origin, token, pathname, createOptions }) =>
+  // A consumed ReadStream cannot be reused. Each attempt opens the same
+  // immutable file again through the existing options factory.
+  withRateLimitRetry(() => request(origin, token, pathname, createOptions()));
+
+export const withEncryptedWorkspaceRequestRetry = (operation, options = {}) =>
+  // HTTP 429 has its own short Retry-After path. A real transport failure
+  // still gets exactly one 10–12 minute cooldown, never one per HTTP retry.
+  withEncryptedWorkspaceTransportCooldownRetry(
+    () => withRateLimitRetry(operation, options),
+    options,
+  );
 
 const getKeychainValue = async (
   service,
@@ -12155,7 +12167,7 @@ const resolveEncryptedWorkspaceStorage = async ({ metadata, origin, token, compa
   if (companyEncryption.storageCapabilitiesKey === cacheKey) return companyEncryption.storageCapabilities;
   let capabilities;
   try {
-    capabilities = await withEncryptedWorkspaceTransportCooldownRetry(async () => validateEncryptedWorkspaceCapabilities(
+    capabilities = await withEncryptedWorkspaceRequestRetry(async () => validateEncryptedWorkspaceCapabilities(
       await (await request(resolveCompanyEncryptionRequestOrigin(origin, companyEncryption), token,
         `/api/agent-workspaces/runs/${metadata.runId}/encrypted-storage`)).json(), metadata));
   } catch (error) {
@@ -12190,16 +12202,16 @@ const createEncryptedUploadHeartbeat = (metadata, api) => {
   let refreshedAt = Date.now();
   return async () => {
     if (Date.now() - refreshedAt < 30_000) return;
-    await api(`/api/agent-workspaces/runs/${metadata.runId}/heartbeat`, { method: "POST",
+    await withRateLimitRetry(() => api(`/api/agent-workspaces/runs/${metadata.runId}/heartbeat`, { method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ leaseId: metadata.leaseId, fencingToken: Number(metadata.fencingToken) }) });
+      body: JSON.stringify({ leaseId: metadata.leaseId, fencingToken: Number(metadata.fencingToken) }) }));
     refreshedAt = Date.now();
   };
 };
 
 export const uploadIncrementalEncryptedWorkspaceProjection = async ({
   metadata, metadataPath, origin, token, companyEncryption, workspaceHead, storage,
-  transportRequest = request, retry = withEncryptedWorkspaceTransportCooldownRetry, onProgress,
+  transportRequest = request, retry = withEncryptedWorkspaceRequestRetry, onProgress,
 }) => {
   const cacheDirectory = encryptedWorkspaceCacheDirectory(metadataPath, metadata);
   await ensurePrivateDirectory(cacheDirectory);
@@ -12404,7 +12416,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
       sourcePath: bundlePath, kind: "revision", metadata, companyEncryption,
       originalName: "workspace.bundle", mimeType: "application/vnd.git.bundle", ensurePrivateDirectory, readPrivateJsonFile, writePrivateJsonFile });
     const api = (pathname, options) => request(resolveCompanyEncryptionRequestOrigin(origin, companyEncryption), token, pathname, options);
-    await uploadEncryptedWorkspaceFile({ file, metadata, api, retry: withEncryptedWorkspaceTransportCooldownRetry,
+    await uploadEncryptedWorkspaceFile({ file, metadata, api, retry: withEncryptedWorkspaceRequestRetry,
       onProgress: createEncryptedUploadHeartbeat(metadata, api) });
     const body = await cacheEncryptedWorkspaceRecord({ cacheDirectory,
       key: { ...binding, ...bundlePlan, workspaceHead, revisionKind, uploadId: file.uploadId,
@@ -12423,7 +12435,7 @@ const uploadEncryptedAgentWorkspaceRevision = async ({
       },
     });
     return publishEncryptedWorkspaceRecord({ metadata, kind: revisionKind, api,
-      retry: withEncryptedWorkspaceTransportCooldownRetry,
+      retry: withEncryptedWorkspaceRequestRetry,
       record: buildEncryptedAgentWorkspaceRevisionRecord({ ...body, ...binding, revisionKind }), signature: body.signature,
       publish: async () => (await api(
       `/api/agent-workspaces/runs/${metadata.runId}/encrypted-storage/${revisionKind === "draft" ? "draft" : "candidate"}`,

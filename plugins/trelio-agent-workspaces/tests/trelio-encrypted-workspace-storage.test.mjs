@@ -18,6 +18,7 @@ import {
 import {
   assertEncryptedCandidateSafe, ensurePrivateDirectory, readPrivateJsonFile, writePrivateJsonFile,
   uploadIncrementalEncryptedWorkspaceProjection,
+  TrelioApiError, withRateLimitRetry, withEncryptedWorkspaceRequestRetry,
 } from "../scripts/trelio-workspace.mjs";
 
 const exec = promisify(execFile);
@@ -61,7 +62,7 @@ const fixture = async (t) => {
 };
 
 /** Stateful transport emulates committed writes followed by a lost response. */
-const transport = (binding = {}) => {
+const transport = (binding = {}, lossError = lost) => {
   const uploads = new Map();
   const projections = new Map();
   const requests = [];
@@ -75,7 +76,7 @@ const transport = (binding = {}) => {
     requests.push({ pathname, method, size: Buffer.isBuffer(options.body) ? options.body.length : 0 });
     const match = /\/uploads(?:\/([0-9a-f-]+))?(?:\/(parts|complete)(?:\/(\d+))?)?$/u.exec(pathname);
     const json = (body) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-    const maybeLose = (key) => { if (losses.delete(key)) throw lost(); };
+    const maybeLose = (key) => { if (losses.delete(key)) throw lossError(); };
     if (match) {
       const [, id, action, index] = match;
       if (!id) {
@@ -147,6 +148,80 @@ test("resumable ciphertext reconciles create, part and completion response loss 
   const handle = await fs.open(file.encryptedPath, "r+");
   await handle.write(Buffer.from([0]), 0, 1, 0); await handle.close();
   await assert.rejects(uploadEncryptedWorkspaceFile({ file, metadata, api: server.api, retry }), /изменилась/u);
+});
+
+test("many small files survive 429 before and after writes without retransmitting ready ciphertext", async (t) => {
+  const { directory, metadata, companyEncryption, git, storage } = await fixture(t);
+  const rateLimited = () => new TrelioApiError(429, "synthetic rate limit", 3000);
+  const server = transport({ companyId: companyEncryption.runtime.company.id, workspaceId: metadata.workspaceId }, rateLimited);
+  for (let index = 0; index < 50; index++) {
+    await fs.writeFile(path.join(metadata.workspaceDirectory, `file-${index}.txt`), `fixture ${index}`);
+  }
+  await git(["add", "--all"]); await git(["commit", "-m", "Много файлов"]);
+  const workspaceHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
+  for (const phase of ["create", "part:0", "complete", "projection"]) server.losses.add(phase);
+  const pendingFailures = new Set(["create", "part", "complete"]);
+  const delays = [];
+  let writes = 0, progress = 0, oldBudgetHit = false;
+  const options = {
+    metadata, metadataPath: path.join(directory, "private", "run.json"), origin: "https://trelio.test", token: "fixture",
+    companyEncryption, workspaceHead, storage,
+    onProgress: async () => { progress++; },
+    retry: (operation) => withEncryptedWorkspaceRequestRetry(operation, {
+      waitForRetry: async (ms) => delays.push(ms), report: () => {},
+      waitForCooldown: async () => assert.fail("429 must not enter the network cooldown"),
+    }),
+    transportRequest: async (_origin, _token, pathname, options = {}) => {
+      if (options.method === "POST" || options.method === "PUT") {
+        const phase = pathname.endsWith("/uploads") ? "create"
+          : pathname.includes("/parts/") ? "part" : pathname.endsWith("/complete") ? "complete" : "projection";
+        if (pendingFailures.delete(phase)) throw rateLimited();
+        // An old server/proxy budget can still reject the 61st mutation.
+        // The logical upload must pause and finish within the same invocation.
+        if (writes === 60 && !oldBudgetHit) { oldBudgetHit = true; throw rateLimited(); }
+        writes++;
+      }
+      return server.api(pathname, options);
+    },
+  };
+  const result = await uploadIncrementalEncryptedWorkspaceProjection(options);
+  assert.equal(server.projections.get(result.projectionId).files.length, 51);
+  assert.equal(oldBudgetHit, true);
+  assert.equal(progress >= 51, true);
+  assert.deepEqual(delays, Array(8).fill(3000));
+  assert.equal(server.requests.filter((entry) => entry.method === "PUT").length, 51);
+  assert.equal(writes, 51 * 3 + 1, "committed writes are never replayed");
+  const before = server.requests.length;
+  const resumed = await uploadIncrementalEncryptedWorkspaceProjection(options);
+  assert.equal(resumed.projectionId, result.projectionId, "restart reuses the exact signed projection");
+  assert.equal(server.requests.slice(before).every((entry) => entry.method === "GET"), true);
+});
+
+test("exhausted 429 retries preserve the immutable cache for a later invocation", async (t) => {
+  const { directory, metadata, companyEncryption } = await fixture(t);
+  const sourcePath = path.join(directory, "source.txt");
+  await fs.writeFile(sourcePath, "small encrypted upload");
+  const input = { cacheDirectory: path.join(directory, "cache"), cacheKey: encryptedWorkspaceCacheKey({ fixture: "429" }),
+    sourcePath, kind: "content", metadata, companyEncryption, originalName: "source.txt", mimeType: "text/plain",
+    ensurePrivateDirectory, readPrivateJsonFile, writePrivateJsonFile };
+  const file = await prepareCachedEncryptedWorkspaceFile(input);
+  const server = transport();
+  let rejections = 0;
+  await assert.rejects(uploadEncryptedWorkspaceFile({ file, metadata,
+    api: (pathname, options) => {
+      if (options?.method === "PUT") { rejections++; throw new TrelioApiError(429, "rate limit", 1000); }
+      return server.api(pathname, options);
+    },
+    retry: (operation) => withEncryptedWorkspaceRequestRetry(operation, {
+      waitForRetry: async () => {}, report: () => {},
+    }),
+  }), { statusCode: 429 });
+  assert.equal(rejections, 9);
+  const resumed = await prepareCachedEncryptedWorkspaceFile(input);
+  assert.deepEqual(resumed, file);
+  await uploadEncryptedWorkspaceFile({ file: resumed, metadata, api: server.api, retry: withEncryptedWorkspaceRequestRetry });
+  assert.equal(server.uploads.get(file.uploadId).state, "ready");
+  assert.equal(server.requests.filter((entry) => entry.method === "POST" && entry.pathname.endsWith("/uploads")).length, 1);
 });
 
 test("a tree above 100 MiB uploads once and one-file changes reuse the accepted opaque objects", async (t) => {
@@ -240,4 +315,50 @@ test("encrypted full-base plus delta history restores real Git bytes and rejects
   assert.equal(await fs.readFile(path.join(restored, "result.txt"), "utf8"), "revision 1");
   revisions[1].parentRevisionId = randomUUID(); await saveTransport();
   await assert.rejects(materializeEncryptedWorkspaceChain({ ...options, destination: path.join(directory, "invalid.bundle") }), /базовую ревизию/u);
+});
+
+test("429 respects Retry-After, uses bounded fallback and stops after eight retries", async () => {
+  const delays = [];
+  let attempts = 0;
+  const error = new TrelioApiError(429, "rate limit");
+  await assert.rejects(withRateLimitRetry(async () => {
+    attempts++;
+    throw error;
+  }, { waitForRetry: async (ms) => delays.push(ms), random: () => 0, report: () => {} }), (caught) => caught === error);
+  assert.equal(attempts, 9);
+  assert.deepEqual(delays, [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  attempts = 0;
+  const result = await withRateLimitRetry(async () => {
+    if (!attempts++) throw new TrelioApiError(429, "rate limit", 17000);
+    return "resumed";
+  }, { waitForRetry: async (ms) => assert.equal(ms, 17000), report: () => {} });
+  assert.equal(result, "resumed");
+  for (const ms of [300001, -1, Infinity, NaN]) {
+    await assert.rejects(withRateLimitRetry(async () => { throw new TrelioApiError(429, "rate limit", ms); },
+      { waitForRetry: async () => assert.fail("invalid delay must not wait") }), /Retry-After/u);
+  }
+});
+
+test("HTTP retry and the single transport cooldown remain independent", async () => {
+  const waits = [];
+  let attempts = 0;
+  const network = new TypeError("fetch failed");
+  await assert.rejects(withEncryptedWorkspaceRequestRetry(async () => {
+    attempts++;
+    if (attempts === 1 || attempts === 3) throw new TrelioApiError(429, "rate limit", 2000);
+    throw network;
+  }, {
+    random: () => 0, report: () => {},
+    waitForRetry: async (ms) => waits.push(ms),
+    waitForCooldown: async (ms) => waits.push(ms),
+  }), (error) => error === network);
+  assert.equal(attempts, 4);
+  assert.deepEqual(waits, [2000, 600000, 2000]);
+  for (const status of [401, 403, 409, 500, 503]) {
+    const error = new TrelioApiError(status, "explicit HTTP error");
+    await assert.rejects(withEncryptedWorkspaceRequestRetry(async () => { throw error; }, {
+      waitForRetry: async () => assert.fail("not 429"),
+      waitForCooldown: async () => assert.fail("not a transport failure"),
+    }), (caught) => caught === error);
+  }
 });
