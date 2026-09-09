@@ -480,3 +480,32 @@ reuse; локальная папка не подтверждает текущи�
 выдача и проверка cache не могут выполняться на backend без раскрытия plaintext.
 Для выпуска требуется согласованная пара plugin/backend с search v2 и
 `download_file`; live activation следует обычному marketplace/policy read-back.
+
+
+## Инкрементальное encrypted хранилище
+
+Bridge получает protocol 2 capabilities и per-file limit компании до проверки
+candidate. Общего ограничения 96/100 МиБ для этого протокола нет: ciphertext
+передаётся частями по 8 МиБ, manifest ограничен 8 МиБ, число файлов – server
+capability. Только явный `404` включает прежний transport старого backend.
+
+Каждый файл – отдельный `TRELIOE1` с random UUID. Bridge сверяет exact committed
+path/type/size/plaintext digest с расшифрованным manifest принятой base revision.
+Неизменённые bytes сохраняют прежний UUID; новые и изменённые файлы шифруются
+отдельно. Paths, MIME и plaintext digests остаются защищёнными. Scope rotation
+создаёт новые containers. Server повторяет ACL и разрешает reuse только из
+exact base того же Workspace либо текущего Run/device.
+
+Git передаётся encrypted delta относительно exact parent revision. Full
+checkpoint создаётся при смене scope/epoch и после цепочки из 128 containers.
+При чтении bridge проверяет `TRELIOH1` descriptor, каждый ciphertext digest/AAD,
+parent/head и Git ancestry, затем собирает полный bundle в private local state.
+Inspect, draft resume, history и restore используют тот же локальный путь.
+
+До первого HTTP ciphertext и точные подписи сохраняются в owner-only
+`.encrypted-uploads/<runId>` рядом с Run metadata, вне Workspace Git. После
+обрыва или restart bridge сначала читает upload/publication state, затем
+передаёт только недостающие части или незавершённую публикацию. Cooldown
+10–12 минут остаётся прежним. После подтверждённого acceptance cache удаляется;
+при ошибке он сохраняется. Server backup и maintenance учитывают upload parts,
+reused file references и зависимости full/delta истории.

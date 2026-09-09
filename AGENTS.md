@@ -381,9 +381,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   local path остаётся в local tool, bytes не входят в model context; task ABI сохраняется.
   Право `mcp:tasks:update` не заменяет `mcp:knowledge-base:write` и page manage ACL.
 - Encrypted Agent Workspace materialize-ится и индексируется только локальным
-  bridge. Сервер получает полный opaque `TRELIOE1` Git bundle и подписанную
-  browser-проекцию: её clear index содержит только UUID, ciphertext ranges и
-  digests, а paths/MIME/file bytes находятся в отдельных `TRELIOE1` containers.
+  bridge. Protocol 2 передаёт opaque `TRELIOE1` files/manifests и Git full/delta
+  частями по 8 МиБ с durable retry cache; неизменённые файлы переиспользуются
+  только из exact accepted base. Подписанная browser-проекция содержит UUID и
+  ciphertext digests, а paths/MIME/plaintext hashes – только encrypted manifest.
+  Legacy full bundle/pack остаются читаемыми. Лимиты и recovery описаны в
+  [runtime-контракте](docs/agent-workspace-runtime.md#инкрементальное-encrypted-хранилище).
   Accepted candidate без проекции запрещён. Локальный bridge перед upload
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path

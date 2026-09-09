@@ -177,6 +177,7 @@ export const buildEncryptedAgentWorkspaceRevisionRecord = (input) => ({
   ...(input.derivedArtifactsSha256
     ? { derivedArtifactsSha256: String(input.derivedArtifactsSha256) }
     : {}),
+  ...(input.bundleFormat ? { bundleFormat: input.bundleFormat, parentRevisionId: input.parentRevisionId ?? null } : {}),
 });
 
 /**

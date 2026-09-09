@@ -89,6 +89,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-skill-secret-setup.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-encrypted-workspace-storage.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-context-search-matching.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace-files.test.mjs
