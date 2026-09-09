@@ -268,6 +268,34 @@ Control paths не раскрываются, а backend не получает fi
 - `derived/` – OCR и другие извлечённые представления;
 - `worklog/` – отдельная человекочитаемая запись каждого содержательного Run.
 
+## Выбор локальной папки
+
+Без явного `parameters.directory` (CLI: `--dir`) bridge сначала сохраняет
+прежний legacy root. Для зарегистрированных roots приоритет имеет точный
+`runId`. Если подходящих папок несколько, однозначное нахождение `cwd`
+внутри одной из них выбирает её; общий onboarding root, похожий prefix и
+несколько вложенных кандидатов выбором не являются. Filesystem aliases
+сравниваются через realpath. Root-symlink и записи с чужими Workspace/origin,
+повреждёнными metadata либо невалидным Run не становятся кандидатами.
+
+Оставшаяся неоднозначность до start/claim возвращает
+`TRELIO_WORKSPACE_DIRECTORY_REQUIRED`. MCP сохраняет этот код и
+`details.workspaceId`, `requiredAction=select_directory`,
+`parameter=parameters.directory`, до десяти `candidates[]` с
+`directory` и `runId`, а также `omittedCandidateCount`.
+Это локальные пути; они не отправляются серверу. Полные metadata, содержимое
+Workspace и повторная копия stderr не включаются. CLI печатает тот же
+JSON-envelope после `Ошибка: `; остальные ошибки сохраняют прежний формат.
+
+Повторяется тот же `open` с прежними Workspace/Run/runtime arguments и
+выбранным `parameters.directory` – корнем над `workspace/`.
+`parameters.dir` отклоняется с подсказкой правильного поля.
+`workingDirectory` остаётся cwd дочернего процесса, а не явным directory
+override. Список подтверждает только локальную identity: live terminal state,
+clean Git и принятый head проверяются обычным preflight до записи. Плагин не
+повторяет mutation автоматически, не выбирает первый root, не создаёт
+новую папку ради обхода и не удаляет старые roots.
+
 ## Agent Run
 
 1. Агент вызывает `prepare_agent_workspace_run` один раз для exact

@@ -327,6 +327,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   по [контракту runtime](docs/agent-workspace-runtime.md#запуск-локального-bridge).
   Нельзя менять `cwd` общего host-процесса, выбирать другую plugin-version либо
   скрывать требование restart после удаления файлов загруженного плагина.
+- Неоднозначные зарегистрированные roots обрабатываются по
+  [контракту выбора папки](docs/agent-workspace-runtime.md#выбор-локальной-папки):
+  exact Run и однозначный текущий root сохраняют приоритет; structured recovery
+  использует `parameters.directory` и не отменяет live/Git preflight.
 - Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
   только exact executable через scoped one-use delivery. Стабильный
   installation-managed API key/client secret может повторно использоваться

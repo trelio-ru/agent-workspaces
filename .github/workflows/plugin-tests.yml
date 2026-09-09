@@ -96,6 +96,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-context.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace-action-process.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-workspace-directory.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
@@ -151,6 +152,9 @@ jobs:
       # restart requirement when the loaded plugin disappears during an update.
       - name: Run Windows Workspace subprocess regressions
         run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-action-process.test.mjs
+
+      - name: Run Windows Workspace directory selection regressions
+        run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-directory.test.mjs
 
       # Compile the shipped UIA helper with the system compiler, exercise
       # value-free protocol rejection, then use a disposable WPF document to

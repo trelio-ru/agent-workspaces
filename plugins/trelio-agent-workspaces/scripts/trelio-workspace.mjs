@@ -9,6 +9,7 @@
  * текущего Run.
  */
 import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "./trelio-skill-secret-setup.mjs";
+import { WorkspaceDirectoryRequiredError } from "./trelio-workspace-directory.mjs";
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
@@ -1167,6 +1168,9 @@ const RUN_STORAGE_CONTINUATION_COMMANDS = new Set([
 ]);
 
 export const formatBridgeCommandError = (error, command = "") => {
+  if (error instanceof WorkspaceDirectoryRequiredError) {
+    return JSON.stringify(error);
+  }
   if (
     !(error instanceof TrelioApiError)
     || error.code !== COMPANY_STORAGE_BALANCE_REQUIRED_CODE
@@ -9175,15 +9179,20 @@ const pathEntryExists = async (candidatePath) => {
   }
 };
 
-const resolveRegisteredWorkspaceRootDirectory = async ({ workspaceId, runId, origin }) => {
+export const resolveRegisteredWorkspaceRootDirectory = async (
+  { workspaceId, runId, origin, startDirectory = process.cwd() },
+  { readRegistry = readRunRegistry } = {},
+) => {
   const candidates = [];
 
-  for (const registeredRoot of [...new Set(await readRunRegistry())]) {
+  for (const registeredRoot of [...new Set(await readRegistry())]) {
     const rootDirectory = path.resolve(registeredRoot);
     let metadata;
     let metadataOrigin;
 
     try {
+      const rootStat = await fs.lstat(rootDirectory);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) continue;
       metadata = await readOptionalRunMetadata(rootDirectory);
       metadataOrigin = metadata
         ? normalizeOrigin(metadata.origin || DEFAULT_ORIGIN)
@@ -9197,6 +9206,7 @@ const resolveRegisteredWorkspaceRootDirectory = async ({ workspaceId, runId, ori
 
     if (
       metadata?.workspaceId === workspaceId
+      && UUID_PATTERN.test(String(metadata.runId || ""))
       && metadataOrigin === origin
       && path.resolve(String(metadata.workspaceDirectory || ""))
         === path.join(rootDirectory, "workspace")
@@ -9216,8 +9226,31 @@ const resolveRegisteredWorkspaceRootDirectory = async ({ workspaceId, runId, ori
     : candidates;
 
   if (selectedCandidates.length > 1) {
-    throw new Error(
-      "Для этого Agent Workspace зарегистрировано несколько локальных roots. Повторите open с exact --dir.",
+    // Запуск внутри конкретного уже зарегистрированного root даёт точный
+    // локальный выбор; общий onboarding root или похожий prefix его не дают.
+    // realpath учитывает системные aliases (/var ↔ /private/var). При этом
+    // exact Run выше имеет приоритет: cwd другого Run не перехватывает draft.
+    // Это только выбор пути, прежний live/Git preflight остаётся обязательным.
+    const currentDirectory = await fs.realpath(startDirectory).catch(() => null);
+    const currentCandidates = [];
+    if (currentDirectory) {
+      for (const candidate of selectedCandidates) {
+        const realRoot = await fs.realpath(candidate.rootDirectory).catch(() => null);
+        if (!realRoot) continue;
+        const relative = path.relative(realRoot, currentDirectory);
+        if (
+          relative === ""
+          || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+        ) currentCandidates.push(candidate);
+      }
+    }
+    if (currentCandidates.length === 1) return currentCandidates[0].rootDirectory;
+    throw new WorkspaceDirectoryRequiredError(
+      workspaceId,
+      selectedCandidates.map(({ rootDirectory, runId: localRunId }) => ({
+        directory: rootDirectory,
+        runId: localRunId,
+      })),
     );
   }
 
@@ -9273,6 +9306,7 @@ const resolveWorkspaceRootDirectory = async ({
     workspaceId,
     runId,
     origin,
+    startDirectory,
   });
   if (registeredRoot) {
     return {

@@ -2,9 +2,24 @@
 
 # Восстановление и история Agent Run
 
-Полностью прочитай файл при ошибке Run/storage/lease/base-head, перехвате Run на
+Полностью прочитай файл при ошибке выбора папки/Run/storage/lease/base-head, перехвате Run на
 другом устройстве, явной отмене, восстановлении, запросе истории или локальной
 очистки. Обычные open/checkpoint/finish описаны в `agent-run.md`.
+
+## Выбор папки при нескольких локальных roots
+
+`TRELIO_WORKSPACE_DIRECTORY_REQUIRED` означает неоднозначность локальных
+копий, а не сбой OAuth или установки. `details.candidates` содержит точные
+корни `directory` и их локальные `runId`; `omittedCandidateCount` сообщает
+о сокращённом списке. Список не доказывает чистоту Git и завершение Run.
+Повтори прежний `open`, добавив выбранный корень над `workspace/` как
+`parameters.directory`. Не используй `parameters.dir`: `--dir` – CLI-флаг.
+Сохрани Workspace/Run/runtime arguments и рабочую папку клиента.
+
+Используй уже подтверждённую папку текущей работы; при нескольких равноправных
+копиях уточни выбор. Не выбирай первую по порядку, не придумывай recovery-папку
+и не удаляй roots или registry. Обычный preflight проверит live Run и Git до
+записи. Ошибка preflight не разрешает обход или отмену Run.
 
 <a id="blockers-restore-concurrency-and-cleanup"></a>
 

@@ -29,6 +29,8 @@
    а `bridge.actions.open` несёт лишь серверное runtime state. Исполни без
    изменений, добавив текущую папку проекта клиента только как
    `workingDirectory`. При hook/version error прочитай `setup-and-recovery.md`.
+   При `TRELIO_WORKSPACE_DIRECTORY_REQUIRED` прочитай выбор папки в
+   `run-recovery.md` и сохрани тот же Run.
 4. При `TRELIO_BRIDGE_PAIRING_REQUIRED` вызови
    `approve_agent_workspace_bridge_pairing` с точными `pairingId` и
    `deviceName`, затем повтори то же open. Штатное одобрение MCP-клиента –

@@ -1,4 +1,5 @@
 import { downloadAcceptedWorkspaceFile, validateWorkspaceFileLocator } from "./trelio-workspace-files.mjs";
+import { parseWorkspaceDirectoryRequiredError } from "./trelio-workspace-directory.mjs";
 import { compileContextSearchQuery, normalizeContextSearchQueries, normalizeContextSearchReference } from "./trelio-context-search-matching.mjs";
 /**
  * Encrypted-company context provider for the static local MCP facade.
@@ -7212,6 +7213,12 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
       normalizeWorkspaceActionUuid(parameters.workspaceId, "parameters.workspaceId"),
     ];
   } else if (operation === "open") {
+    if (Object.hasOwn(parameters, "dir")) {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
+        "Для open используйте parameters.directory с абсолютным путём корня; parameters.dir – имя CLI-флага, не поле MCP.",
+      );
+    }
     assertWorkspaceActionKeys(parameters, new Set(["workspaceId", "runId", "directory", "runtimeSessionId"]));
     argumentsList = [
       "open",
@@ -7455,6 +7462,9 @@ export const handleTrelioWorkspaceActionOperation = async (
   if (invocation.operation === "download_file") {
     return downloadAcceptedWorkspaceFile(origin, invocation.parameters, { signal });
   }
+  const recoveryWorkspaceId = invocation.operation === "open"
+    ? normalizeWorkspaceActionUuid(rawInput.parameters.workspaceId, "parameters.workspaceId")
+    : null;
   try {
     const result = await runBridge(origin, invocation.argumentsList, {
       ...(invocation.workingDirectory ? { cwd: invocation.workingDirectory } : {}),
@@ -7475,6 +7485,18 @@ export const handleTrelioWorkspaceActionOperation = async (
     }
     const stderr = truncateWorkspaceActionOutput(error?.stderr).trim();
     const stdout = truncateWorkspaceActionOutput(error?.stdout).trim();
+    const directoryRecovery = invocation.operation === "open"
+      ? parseWorkspaceDirectoryRequiredError(error?.stderr, recoveryWorkspaceId)
+      : null;
+    if (directoryRecovery) {
+      // Не повторяем open и не выбираем первый root за вызывающего агента.
+      // Structured recovery сохраняет exact пути без второй копии stderr.
+      throw new TrelioLocalContextError(
+        directoryRecovery.code,
+        directoryRecovery.message,
+        directoryRecovery.details,
+      );
+    }
     throw new TrelioLocalContextError(
       "TRELIO_WORKSPACE_ACTION_FAILED",
       stderr || "The Trelio Workspace bridge action failed.",
