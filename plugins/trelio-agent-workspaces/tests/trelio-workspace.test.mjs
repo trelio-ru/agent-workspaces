@@ -5022,6 +5022,11 @@ test("workspace skill derives Agent Secret protection from company encryption", 
   assert.match(workspaceSkill, /не проси\s+повторного подтверждения или ручного ввода/u);
   assert.match(workspaceSkill, /локально шифрует E2EE metadata\/values до одной атомарной записи/u);
   assert.match(workspaceSkill, /Не проси новое\s+значение специально ради доступности исключения чата/u);
+  assert.match(workspaceSkill, /`nativeTool=generate_agent_secret`/u);
+  assert.match(workspaceSkill, /не зависит от `allowAgentSaveChatSecrets`/u);
+  assert.match(workspaceSkill, /`userExplicitlyRequestedGeneratedPersistentStorage=true`/u);
+  assert.match(workspaceSkill, /Direct\s+remote `generate_agent_secret` всегда отклоняется/u);
+  assert.match(workspaceSkill, /не\s+переноси generation через shell, stdin, файл, clipboard или mirror/u);
 });
 
 test("workspace setup keeps initial OAuth in one browser flow and retries the current task", async () => {

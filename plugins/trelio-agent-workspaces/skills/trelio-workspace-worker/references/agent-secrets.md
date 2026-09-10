@@ -62,6 +62,41 @@ Agent Secret не использует Trelio ACL, reveal, одноразовы�
 включи все обязательные поля; пропущенные/пустые/null необязательные удаляются.
 Bridge никогда не пишет Agent Secret values в private config или Workspace.
 
+<a id="generated-password"></a>
+
+## Сгенерируй пароль без раскрытия модели
+
+Если пользователь прямо просит сгенерировать и постоянно сохранить password,
+используй локальный `trelio-remote-skills.continue_trelio_local_action` с
+`nativeTool=generate_agent_secret`. Не генерируй значение сам и не передавай
+`value`/`values`: paired bridge создаст bytes только после value-free preflight,
+а модель получит безопасную квитанцию.
+
+Передай `companySlug`, `nativeTool` и `arguments`:
+
+- `secretId` либо `newSecret` с exact `scopeType`, `scopeId`, safe name,
+  description/template и полной схемой полей;
+- active `runId`, exact `expectedCurrentVersion` (0 для новой карточки), stable
+  `clientRequestId`;
+- `generatedFields`: 1–50 объектов `{key, generator:"password", length}` с
+  длиной 16–128;
+- literal `userExplicitlyRequestedGeneratedPersistentStorage=true`.
+
+Каждое required поле должно иметь тип `password` и входить в
+`generatedFields`; optional password можно пропустить. Не используй этот путь
+для username, token, TOTP, key, certificate или text. До создания вызови
+`list_agent_secrets` exact scope и не создавай дубликат. Путь работает в plain
+и encrypted company, не зависит от `allowAgentSaveChatSecrets` и требует
+manage/create ACL, применимый active Run, `mcp:secrets:write`, `secret:write`
+paired bridge и допустимый runtime proof.
+
+Не создавай `localWrite`: plugin нормализует policy, детерминированно выводит
+пароль для безопасного ambiguous retry, E2EE-шифрует при необходимости и
+атомарно сохраняет карточку/версию/audit/replay. Не проси пароль в чате и не
+переноси generation через shell, stdin, файл, clipboard или mirror. Direct
+remote `generate_agent_secret` всегда отклоняется. При неопределённом ответе
+прочитай safe metadata и повтори exact input с тем же request ID.
+
 <a id="already-shared-chat-values"></a>
 
 ## Значение уже прислано в чат

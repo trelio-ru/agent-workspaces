@@ -470,6 +470,23 @@ Plaintext остаётся в исходном чате и может остат
 новая инструкция выбирает локальный facade. При недоступном opt-in или
 устройстве используется штатная настройка доступа либо защищённая форма.
 
+Когда пользователь прямо просит сгенерировать и сохранить password, агент
+использует тот же local facade с `nativeTool=generate_agent_secret`, но не
+генерирует значение в модели. Аргументы содержат `secretId` либо `newSecret`,
+active Run, CAS, stable request ID,
+`userExplicitlyRequestedGeneratedPersistentStorage=true` и 1–50
+`generatedFields` вида `{key,generator:"password",length}` с длиной 16–128.
+Каждое required поле должно быть password и входить в policy; другие типы
+значений этот primitive не синтезирует.
+
+Plugin делает value-free preflight, затем внутри paired bridge выводит
+retry-stable сильный пароль и сразу строит plain server-keyring write либо
+signed E2EE payload. Пароль не попадает в model-facing input/output, argv,
+shell, stdin, файл, clipboard, mirror или лог. Путь не зависит от
+`allowAgentSaveChatSecrets`, но сохраняет exact manage/create ACL, active Run,
+OAuth/bridge scopes, runtime proof, CAS и atomic replay. Direct remote
+`generate_agent_secret` и вручную построенный `localWrite` отклоняются.
+
 `secret set` сначала проверяет версию plugin и получает value-free write
 context, затем читает stdin/file. Однополевый ввод без format сохраняется одной
 строкой, даже если похож на JSON. Многополевый контейнер передаётся одним

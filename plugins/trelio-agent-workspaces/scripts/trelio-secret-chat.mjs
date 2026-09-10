@@ -62,6 +62,35 @@ const canonicalJson = (value) => JSON.stringify(
   },
 );
 
+export const normalizeAgentSecretNewCard = (card, expectedCurrentVersion) => {
+  if (
+    !isRecord(card)
+    || Object.keys(card).some((key) => !["scopeType", "scopeId", "name", "publicDescription", "templateType", "fields"].includes(key))
+    || !["company", "project", "task"].includes(card.scopeType) || !UUID.test(card.scopeId || "")
+    || !boundedString(card.name?.trim(), 255)
+    || (card.publicDescription !== undefined && !boundedString(card.publicDescription, 5000, true))
+    || (card.templateType !== undefined && !TEMPLATES.has(card.templateType))
+    || !Array.isArray(card.fields) || card.fields.length < 1 || card.fields.length > 50
+    || expectedCurrentVersion !== 0
+  ) invalid();
+  const keys = new Set();
+  const fields = card.fields.map((field) => {
+    if (
+      !isRecord(field) || Object.keys(field).some((key) => !["key", "label", "type", "required"].includes(key))
+      || !FIELD_KEY.test(field.key || "") || keys.has(field.key)
+      || !boundedString(field.label?.trim(), 120) || !FIELD_TYPES.has(field.type)
+      || (field.required !== undefined && typeof field.required !== "boolean")
+    ) invalid();
+    keys.add(field.key);
+    return { key: field.key, label: field.label.trim(), type: field.type, required: field.required !== false };
+  });
+  return {
+    scopeType: card.scopeType, scopeId: card.scopeId, name: card.name.trim(),
+    publicDescription: card.publicDescription?.trim() ?? "",
+    templateType: card.templateType ?? "custom", fields,
+  };
+};
+
 export const normalizeKnownAgentSecretChatInput = (input) => {
   if (
     !isRecord(input) || Object.keys(input).some((key) => !INPUT_KEYS.has(key))
@@ -73,36 +102,9 @@ export const normalizeKnownAgentSecretChatInput = (input) => {
     || Boolean(input.secretId) === Boolean(input.newSecret)
   ) invalid();
   if (input.secretId && !UUID.test(input.secretId)) invalid();
-  let newSecret;
-  if (input.newSecret) {
-    const card = input.newSecret;
-    if (
-      !isRecord(card)
-      || Object.keys(card).some((key) => !["scopeType", "scopeId", "name", "publicDescription", "templateType", "fields"].includes(key))
-      || !["company", "project", "task"].includes(card.scopeType) || !UUID.test(card.scopeId || "")
-      || !boundedString(card.name?.trim(), 255)
-      || (card.publicDescription !== undefined && !boundedString(card.publicDescription, 5000, true))
-      || (card.templateType !== undefined && !TEMPLATES.has(card.templateType))
-      || !Array.isArray(card.fields) || card.fields.length < 1 || card.fields.length > 50
-      || input.expectedCurrentVersion !== 0
-    ) invalid();
-    const keys = new Set();
-    const fields = card.fields.map((field) => {
-      if (
-        !isRecord(field) || Object.keys(field).some((key) => !["key", "label", "type", "required"].includes(key))
-        || !FIELD_KEY.test(field.key || "") || keys.has(field.key)
-        || !boundedString(field.label?.trim(), 120) || !FIELD_TYPES.has(field.type)
-        || (field.required !== undefined && typeof field.required !== "boolean")
-      ) invalid();
-      keys.add(field.key);
-      return { key: field.key, label: field.label.trim(), type: field.type, required: field.required !== false };
-    });
-    newSecret = {
-      scopeType: card.scopeType, scopeId: card.scopeId, name: card.name.trim(),
-      publicDescription: card.publicDescription?.trim() ?? "",
-      templateType: card.templateType ?? "custom", fields,
-    };
-  }
+  const newSecret = input.newSecret
+    ? normalizeAgentSecretNewCard(input.newSecret, input.expectedCurrentVersion)
+    : undefined;
   if (input.value !== undefined && !boundedString(input.value, 65536)) invalid();
   if (input.values !== undefined && (
     !isRecord(input.values) || Object.keys(input.values).length < 1 || Object.keys(input.values).length > 50
@@ -114,7 +116,7 @@ export const normalizeKnownAgentSecretChatInput = (input) => {
   return { ...input, ...(newSecret ? { newSecret } : {}) };
 };
 
-const protectNewSecretMetadata = async (card, context, companyEncryption) => {
+export const protectNewSecretMetadata = async (card, context, companyEncryption) => {
   const entityId = crypto.randomUUID();
   const metadata = { name: card.name };
   if (card.publicDescription !== undefined) metadata.public_description = card.publicDescription;
@@ -154,12 +156,21 @@ const protectNewSecretMetadata = async (card, context, companyEncryption) => {
   };
 };
 
-export const buildKnownAgentSecretChatWrite = async ({ input, context, companyEncryption, token }) => {
+export const buildLocalAgentSecretWrite = async ({
+  input,
+  context,
+  companyEncryption,
+  token,
+  values,
+  source,
+}) => {
   const encrypted = context.storageMode === "company_e2ee";
   if (
     !["trelio", "company_e2ee"].includes(context.storageMode)
     || context.encryptionState !== (encrypted ? "encrypted" : "plain")
-    || context.allowAgentSaveChatSecrets !== true
+    || (source === "chat" && context.allowAgentSaveChatSecrets !== true)
+    || (source === "generated" && context.generatedSecretStorageSupported !== true)
+    || !["chat", "generated"].includes(source)
     || !UUID.test(context.secretId || "") || !UUID.test(context.companyId || "")
     || !UUID.test(context.companyMemberId || "")
     || (input.secretId && input.secretId !== context.secretId)
@@ -172,12 +183,10 @@ export const buildKnownAgentSecretChatWrite = async ({ input, context, companyEn
     || new Set(fields.map((field) => field.key)).size !== fields.length
   ) invalid();
   const writeContext = { ...context, fields, currentVersion: input.expectedCurrentVersion };
-  let values;
-  try {
-    values = buildCompleteAgentSecretValues({ valuePayload: input, context: writeContext });
-  } catch {
-    invalid();
-  }
+  if (
+    !isRecord(values) || Object.keys(values).length < 1 || Object.keys(values).length > 50
+    || Object.entries(values).some(([key, value]) => !FIELD_KEY.test(key) || !boundedString(value, 65536))
+  ) invalid();
   if (Buffer.byteLength(JSON.stringify({ version: 1, values }), "utf8") > 65536) invalid();
   // Fingerprint the logical plaintext before randomized encryption. The key is
   // never sent to Trelio, so a persisted replay row is not a password oracle.
@@ -189,7 +198,9 @@ export const buildKnownAgentSecretChatWrite = async ({ input, context, companyEn
   let fingerprint;
   try {
     fingerprint = crypto.createHmac("sha256", key)
-      .update("trelio:local-secret-chat:v1\0")
+      // Domain separation prevents a generated request from colliding with a
+      // chat save even if all public coordinates and the resulting bytes match.
+      .update(`trelio:local-secret-${source}:v1\0`)
       .update(canonicalJson({
         companyId: context.companyId, memberId: context.companyMemberId,
         requestId: input.clientRequestId, secretId: context.secretId,
@@ -209,13 +220,29 @@ export const buildKnownAgentSecretChatWrite = async ({ input, context, companyEn
   return {
     secretId: context.secretId, runId: input.runId,
     expectedCurrentVersion: input.expectedCurrentVersion, clientRequestId: input.clientRequestId,
-    userExplicitlyRequestedPersistentStorage: true,
+    ...(source === "chat"
+      ? { userExplicitlyRequestedPersistentStorage: true }
+      : { userExplicitlyRequestedGeneratedPersistentStorage: true }),
     localWrite: {
       ...valueWrite, companySlug: context.companySlug, requestFingerprint: fingerprint,
       ...(input.newSecret ? { newSecret: metadata?.card ?? input.newSecret } : {}),
       ...(metadata ? { encryptedPayloads: [metadata.payload, ...protectedValue.encryptedPayloads] } : {}),
     },
   };
+};
+
+export const buildKnownAgentSecretChatWrite = async ({ input, context, companyEncryption, token }) => {
+  const fields = input.newSecret?.fields ?? context.fields;
+  const writeContext = { ...context, fields, currentVersion: input.expectedCurrentVersion };
+  let values;
+  try {
+    values = buildCompleteAgentSecretValues({ valuePayload: input, context: writeContext });
+  } catch {
+    invalid();
+  }
+  return buildLocalAgentSecretWrite({
+    input, context, companyEncryption, token, values, source: "chat",
+  });
 };
 
 export const handleKnownAgentSecretChatSave = async (

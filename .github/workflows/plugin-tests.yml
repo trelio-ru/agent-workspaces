@@ -102,6 +102,7 @@ jobs:
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-runtime-session-timeout.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-secret-chat.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-secret-generate.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
 

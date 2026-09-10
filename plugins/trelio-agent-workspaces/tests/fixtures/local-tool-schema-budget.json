@@ -10,9 +10,9 @@
     },
     "continue_trelio_local_action": {
       "modelVisible": true,
-      "baselineBytes": 825,
+      "baselineBytes": 851,
       "maxBytes": 960,
-      "baselineTokens": 204,
+      "baselineTokens": 208,
       "maxTokens": 240
     },
     "get_trelio_local_proposal_context": {
