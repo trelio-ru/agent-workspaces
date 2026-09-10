@@ -1479,6 +1479,22 @@ export const protectLocalActionArguments = async ({
   const expectedPayloadValues = {};
   let objectSequence = 0;
   const normalizedArguments = normalizeLocalActionRichTextInputs(rawArguments);
+  if (nativeTool === "delete_workspace") {
+    if (normalizedArguments.userRequestedDeletion !== true || typeof normalizedArguments.reason !== "string"
+      || !normalizedArguments.reason.trim() || normalizedArguments.reason.trim().length > 2000) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Deletion requires an explicit user request and the user's nonempty reason.");
+    }
+    normalizedArguments.reason = normalizedArguments.reason.trim();
+    const workspace = mirror?.workspaceEntries?.find((entry) => entry.id === normalizedArguments.workspaceId);
+    if (!workspace?.title || !workspace.updatedAt) {
+      throw new TrelioLocalContextError("LOCAL_CONTEXT_RESULT_NOT_FOUND", "Read the exact Workspace before deletion.");
+    }
+    // A fresh title/reason payload prevents retaining deleted description bytes
+    // that shared the original title's encryption envelope. CAS on the server
+    // prevents a stale mirror from replacing the most recent title.
+    normalizedArguments.title = workspace.title;
+    normalizedArguments.expectedUpdatedAt = workspace.updatedAt;
+  }
   assertLocalAgentInstructionPublicationWithinLimit({
     nativeTool,
     arguments: normalizedArguments,
@@ -1689,7 +1705,10 @@ export const protectLocalActionArguments = async ({
           || nativeTool === "update_knowledge_base_page"
           || nativeTool === "upsert_registry_rows"
         );
-      if (protectedField) protectedEntries.push([field, child, LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
+      if (protectedField) protectedEntries.push([field, child,
+        // The existing `reason` input is already encrypted by older hosts.
+        // They fail closed on the new field contract without sending plaintext.
+        nativeTool === "delete_workspace" && field === "reason" ? "deletion_reason" : LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
       else result[field] = await visit(child, `${objectPath}.${field}`);
     }
     if (protectedEntries.length === 0) return result;
@@ -3438,6 +3457,7 @@ const buildSearchDocuments = (mirror) => {
     });
   }
   for (const workspace of mirror.workspaceEntries ?? []) {
+    if (workspace.state === "deleted") continue;
     const workspaceTitle = String(workspace.title || "Воркспейс");
     const isArchived = workspace.state === "archived";
     const fields = compactSearchFields([
@@ -3496,6 +3516,7 @@ const buildSearchDocuments = (mirror) => {
   for (const workspace of mirror.workspaces ?? []) {
     const workspaceEntry = workspaceEntryById.get(workspace.id);
     const workspaceState = workspaceEntry?.state ?? null;
+    if (workspaceState === "deleted") continue;
     for (const file of workspace.documents ?? []) {
       const documentId = `workspace-file:${encodeURIComponent(workspace.id)}`
         + `:${encodeURIComponent(workspace.acceptedHead)}`
@@ -4836,6 +4857,7 @@ const listWorkspacesFromMirror = (mirror, rawInput) => {
     );
   }
   const workspaces = (mirror.workspaceEntries ?? []).filter((workspace) => {
+    if (workspace.state === "deleted") return false;
     if (rawInput?.includeArchived !== true && workspace.state !== "active") return false;
     if (!project) return workspace.ownerScope === "company";
 
@@ -5170,7 +5192,7 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
         "Workspace result is stale.",
       );
     }
-    const acceptedWorkspace = (mirror.workspaces ?? []).find((candidate) => (
+    const acceptedWorkspace = workspace.state === "deleted" ? null : (mirror.workspaces ?? []).find((candidate) => (
       candidate.id === workspaceId
     ));
     return {
@@ -5233,6 +5255,9 @@ export const getWorkspaceFileFromMirror = (
     );
   }
 
+  if ((mirror.workspaceEntries ?? []).some((entry) => entry.id === workspaceId && entry.state === "deleted")) {
+    throw new TrelioLocalContextError("WORKSPACE_DELETED", "Воркспейс удалён. Причина и автор доступны в get_workspace.");
+  }
   const workspace = (mirror.workspaces ?? []).find((candidate) => candidate.id === workspaceId);
   if (!workspace) {
     throw new TrelioLocalContextError(

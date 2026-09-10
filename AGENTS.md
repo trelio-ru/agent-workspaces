@@ -481,6 +481,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   сам пользователь в разрешённом browser handoff. Агент не вводит и не читает
   credential.
 
+- Удаление именованного Workspace следует [процедуре удаления](plugins/trelio-agent-workspaces/skills/trelio-workspace-worker/references/workspace-deletion.md)
+  навыка worker: только явная просьба/согласие пользователя и его обязательная
+  причина; повторное подтверждение уже прямой просьбы не требуется.
+
 ## Документация
 
 - Общая установка и обновление: [`README.md`](README.md).

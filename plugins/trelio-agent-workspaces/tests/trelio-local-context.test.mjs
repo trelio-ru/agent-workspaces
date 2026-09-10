@@ -1062,6 +1062,22 @@ test("local action protects nested task content and converts Markdown before upl
   assert.match(JSON.stringify(decryptedValues), /bulletList/u);
   assert.match(JSON.stringify(decryptedValues), /Не утечь/u);
 
+  const deletedWorkspaceId = "11111111-1111-4111-8111-111111111111";
+  const deletionMirror = { workspaceEntries: [{ id: deletedWorkspaceId, title: "Лишний воркспейс", description: "Не удерживать это описание", updatedAt: "2026-09-10T12:00:00.000Z" }] };
+  const deletion = await protectLocalActionArguments({ nativeTool: "delete_workspace",
+    arguments: { workspaceId: deletedWorkspaceId, reason: " Создан дважды ", userRequestedDeletion: true },
+    mirror: deletionMirror, companyEncryption });
+  assert.doesNotMatch(JSON.stringify(deletion.value), /Лишний|Создан|Не удерживать/);
+  assert.equal(deletion.value.userRequestedDeletion, true);
+  assert.equal(deletion.value.expectedUpdatedAt, "2026-09-10T12:00:00.000Z");
+  assert.equal(deletion.payloads.length, 1);
+  const deletionValues = await decryptCompanyPayload({ encryptedPayload: deletion.payloads[0],
+    scopePrivateKey: device.privateKeys.encryptionPrivateKey, scopePrivateJwk: device.privateBundle.encryptionPrivateJwk });
+  assert.deepEqual(deletionValues.values, { deletion_reason: "Создан дважды", title: "Лишний воркспейс" });
+  await assert.rejects(protectLocalActionArguments({ nativeTool: "delete_workspace",
+    arguments: { workspaceId: deletedWorkspaceId, reason: "  ", userRequestedDeletion: true },
+    mirror: deletionMirror, companyEncryption }), /user's nonempty reason/);
+
   const contactRequest = await protectLocalActionArguments({
     nativeTool: "create_contact",
     arguments: {
@@ -2479,4 +2495,23 @@ test("encrypted same-context task reads reuse complete authority and reload chan
   assert.equal(changed.effectiveInstructions.layers[0].markdown, "Новое полное правило.\n");
   const afterCompaction = handleNativeLocalContextRead(fixture, "get_task", target);
   assert.deepEqual(afterCompaction.effectiveInstructions.layers, changed.effectiveInstructions.layers);
+});
+
+
+test("workspace tombstones are exact-readable but cannot expose even stale local files", () => {
+  const workspaceId = "11111111-1111-4111-8111-111111111111";
+  const workspaceHead = "a".repeat(40);
+  const mirror = { company: { slug: "acme" }, generation: "tombstone-test", workspaceEntries: [{
+    id: workspaceId, title: "Удалённый", state: "deleted", ownerScope: "company", deletionReason: "Создан по ошибке",
+    createdAt: "2026-09-09T12:00:00Z", deletedAt: "2026-09-10T12:00:00Z", deletedByMemberId: "actor" }],
+    workspaces: [{ id: workspaceId, acceptedHead: workspaceHead, documents: [{ path: "secret.md", content: "Не показывать" }] }] };
+  const exact = fetchMirrorResult(mirror, `workspace:${workspaceId}`);
+  assert.equal(exact.workspace.state, "deleted");
+  assert.equal(exact.workspace.deletionReason, "Создан по ошибке");
+  assert.equal(exact.acceptedWorkspace, null);
+  assert.equal(exact.materialize, undefined);
+  assert.deepEqual(handleNativeLocalContextRead(mirror, "list_workspaces", { includeArchived: true }).workspaces, []);
+  assert.equal(searchCompanyContextMirror(mirror, ["Удалённый", "Не показывать"], 20).results.length, 0);
+  assert.throws(() => getWorkspaceFileFromMirror(mirror, { workspaceId, workspaceHead, filePath: "secret.md" }),
+    (error) => error.code === "WORKSPACE_DELETED");
 });
