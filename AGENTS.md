@@ -338,6 +338,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   до exact `expiresAt`; plugin сам не расширяет policy и не кеширует value.
   Любой credential не попадает в model-visible output, argv, ambient
   environment, workspace, comments, checkpoints, handoff или logs.
+- Настройка всех видов Agent Skill не требует задачи, Workspace или Run по
+  [общему контракту](docs/agent-skills-and-secrets.md#setup-without-run).
+  Отсутствие безопасного setup transport блокирует навык, а не требует фиктивного Run.
 - Exact setup-команды signed package могут получать одно company connection
   field без Run по `docs/agent-skills-and-secrets.md#signed-setup-без-agent-run`.
   Это generic host primitive для класса интеграций с company key и личным
