@@ -293,14 +293,18 @@ provider-tag workflow или внутренние release playbooks в этот 
   value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
   ID или private key и не объявляет Hooks включёнными: client approval остаётся
   `client_managed_unknown` до отдельного client/live-read подтверждения.
-- Codex onboarding после подтверждённой установки плагина явно останавливается
-  на пользовательском review текущего hook definition: в desktop это раздел
-  Hooks в настройках плагина, в CLI – `/hooks`. Установка либо enable плагина не
-  считаются доверием к его hooks; агент не автоматизирует approval, не использует
-  bypass-флаг и не подменяет live proof результатом doctor-а. Уже наблюдённый
-  `PreToolUse` не требует повторного review в той же задаче, а стандартный
-  `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed сигналом отсутствующего
-  proof, но сам по себе не доказывает, что Hooks выключены. При уже
+- Codex onboarding после подтверждённой установки плагина, OAuth и exact company
+  resolve сначала выполняет обязательный read-only `get_agent_instructions` как
+  live-проверку Hooks. Ранее одобренный `PreToolUse` сам добавляет proof, поэтому
+  предварительный пользовательский checkpoint не нужен. Новая либо неодобренная
+  definition fail-closed не раскрывает content; только
+  `TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` при неподтверждённом review
+  направляет пользователя в Hooks настроек плагина или `/hooks`. Установка либо
+  enable плагина не считаются доверием к его hooks; агент не автоматизирует
+  approval, не использует bypass-флаг и не подменяет live proof результатом
+  doctor-а. Уже наблюдённый `PreToolUse` не требует повторного review в той же
+  задаче, а стандартный `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed
+  сигналом отсутствующего proof, но сам по себе не доказывает, что Hooks выключены. При уже
   подтверждённом trust агент не повторяет enable-инструкцию: он проверяет exact
   matcher, dispatch и хронологию plugin/trust относительно owning App Server.
   Подтверждённый `hook/started` направляет диагностику к завершению и timeout

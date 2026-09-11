@@ -4623,20 +4623,20 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   ]);
   const folderGateIndex = onboardingSkill.indexOf("id=\"confirm-the-working-folder-first\"");
   const prerequisiteIndex = onboardingSkill.indexOf("id=\"check-prerequisites\"");
-  const hookApprovalIndex = onboardingSkill.indexOf(
-    "обязательно дай пользователю проверить hooks",
+  const hookProbeIndex = onboardingSkill.indexOf(
+    "не останавливай настройку заранее только потому",
   );
   const companyResolutionIndex = onboardingSkill.indexOf(
     "До `get_agent_instructions` и любой локальной записи точно выбери компанию.",
   );
 
-  // Hook trust is a human checkpoint over the installed bytes. Keeping it
-  // between plugin discovery and company reads prevents a fresh installation
-  // from reaching protected Trelio content with an unreviewed definition.
+  // The first required read is the live hook probe. A previously approved
+  // definition continues without a redundant user checkpoint, while the
+  // server still withholds content when PreToolUse does not inject proof.
   assert.ok(folderGateIndex >= 0);
   assert.ok(prerequisiteIndex > folderGateIndex);
-  assert.ok(hookApprovalIndex > prerequisiteIndex);
-  assert.ok(companyResolutionIndex > hookApprovalIndex);
+  assert.ok(hookProbeIndex > prerequisiteIndex);
+  assert.ok(companyResolutionIndex > hookProbeIndex);
   assert.match(onboardingSkill, /локальный проект с доступной основной папкой/u);
   assert.match(onboardingSkill, /Cwd процесса в задаче без проекта не доказывает выбор папки/u);
   assert.match(onboardingSkill, /обычная папка контекста без Git/u);
@@ -4792,8 +4792,21 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /approvalStatus=client_managed_unknown/u);
   assert.match(
     onboardingSkill,
+    /обязательный read-only\s+`get_agent_instructions` по шагу 5 как live-проверку/u,
+  );
+  assert.match(
+    onboardingSkill,
+    /hook\s+definition уже одобрена, `PreToolUse` сам добавит one-use proof/u,
+  );
+  assert.match(
+    onboardingSkill,
+    /Только при `reason=missing`, если просмотр текущей definition не подтверждён/u,
+  );
+  assert.match(
+    onboardingSkill,
     /Успешный или ошибочный `PreToolUse` доказывает активность hook/u,
   );
+  assert.doesNotMatch(onboardingSkill, /обязательно дай пользователю проверить hooks/u);
   assert.match(
     onboardingSkill,
     /До `get_agent_instructions` и любой локальной записи точно выбери компанию\./u,
@@ -4858,7 +4871,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(workerAgentMetadata, /массовым обычным поиском/u);
 });
 
-test("Codex installation makes plugin hook trust explicit before starter onboarding", async () => {
+test("Codex installation reuses approved hooks and gates missing proof before starter onboarding", async () => {
   const repositoryRoot = path.resolve(pluginDirectory, "..", "..");
   const instructionPaths = [
     path.join(repositoryRoot, "README.md"),
@@ -4871,21 +4884,24 @@ test("Codex installation makes plugin hook trust explicit before starter onboard
     const installIndex = instructions.indexOf(
       "codex plugin add trelio-agent-workspaces@trelio-plugins",
     );
-    const hookTrustIndex = instructions.indexOf("После установки");
+    const liveProbeIndex = instructions.indexOf("get_agent_instructions");
     const starterIndex = instructions.indexOf("starter prompt");
 
     assert.ok(installIndex >= 0, `${instructionPath} must include plugin installation`);
     assert.ok(
-      hookTrustIndex > installIndex,
-      `${instructionPath} must require hook review after plugin installation`,
+      liveProbeIndex > installIndex,
+      `${instructionPath} must describe the live hook probe after plugin installation`,
     );
     assert.ok(
-      starterIndex > hookTrustIndex,
-      `${instructionPath} must require hook review before the starter prompt`,
+      starterIndex > liveProbeIndex,
+      `${instructionPath} must describe the live hook probe before the starter prompt`,
     );
     assert.match(instructions, /Codex Desktop/u);
-    assert.match(instructions, /Codex CLI[^\n]*`\/hooks`/u);
-    assert.match(instructions, /не доверяет\s+plugin-bundled hooks автоматически/u);
+    assert.match(instructions, /Codex CLI[\s\S]{0,100}`\/hooks`/u);
+    assert.match(instructions, /настройка\s+продолжается\s+без паузы/u);
+    assert.match(instructions, /TRELIO_RUNTIME_HOOK_REQUIRED/u);
+    assert.match(instructions, /reason=missing/u);
+    assert.match(instructions, /не доверяет\s+plugin-bundled\s+hooks\s+автоматически/u);
     assert.match(instructions, /bypass-флаг/u);
   }
 });

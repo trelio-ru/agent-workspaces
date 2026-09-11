@@ -25,13 +25,17 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
 ```
 
-После установки пользователь явно разрешает hooks плагина. В Codex Desktop он
-открывает настройки `Trelio Agent Workspaces`, просматривает текущую
-конфигурацию в разделе Hooks и включает её. В Codex CLI он открывает `/hooks`,
-выбирает источник `Trelio Agent Workspaces`, проверяет текущую конфигурацию и
-отмечает её доверенной. Codex не доверяет plugin-bundled hooks автоматически и
-пропускает новую либо изменённую definition до review; onboarding не
-автоматизирует trust и не использует bypass-флаг.
+После установки onboarding завершает OAuth, выбирает exact company и выполняет
+первый обязательный read-only `get_agent_instructions`. Если текущие hooks уже
+были одобрены, `PreToolUse` добавляет proof и настройка продолжается без паузы.
+Для новой либо неодобренной definition protected content не возвращается; после
+`TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` агент просит проверить Hooks.
+В Codex Desktop пользователь открывает настройки `Trelio Agent Workspaces`,
+просматривает текущую конфигурацию в разделе Hooks и включает её. В Codex CLI он
+открывает `/hooks`, выбирает источник `Trelio Agent Workspaces`, проверяет
+текущую конфигурацию и отмечает её доверенной. Codex не доверяет plugin-bundled
+hooks автоматически и пропускает новую либо изменённую definition до review;
+onboarding не автоматизирует trust и не использует bypass-флаг.
 
 Codex CLI добавляет marketplace и устанавливает plugin разными операциями.
 `INSTALLED_BY_DEFAULT` может ускорить установку в host UI, но сообщение только
