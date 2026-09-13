@@ -32,6 +32,7 @@ import {
   AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN,
   AGENT_WORKSPACE_RUNTIME_CLAUDE_MARKDOWN,
+  AGENT_WORKSPACE_WORKLOG_FORMAT_MARKDOWN,
   BRIDGE_VERSION,
   COMPANY_STORAGE_BALANCE_REQUIRED_CODE,
   LEGACY_WORKSPACE_CONTEXT_FILE_NAME,
@@ -42,6 +43,7 @@ import {
   AgentSkillDeviceConsentDeclinedError,
   TrelioApiError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
+  assertEncryptedCandidateSafe,
   assertMaterializedWorkspaceFileTypes,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
@@ -71,8 +73,9 @@ import {
   isStableVersionAtLeast,
   isTransientCodexMarketplaceUpdateError,
   materializeRuntimeControlFiles,
+  normalizeLegacyWorkspaceScaffold,
   resolveWorkspaceContextFileName,
-  ensureWorkspaceWorklog,
+  ensureAutomaticRunWorklog,
   findTrelioWorkingFolderRoot,
   formatBridgeCommandError,
   normalizeAgentSkillPackagePath,
@@ -2496,6 +2499,14 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
       await readFile(path.join(rootDirectory, "context", "index.json"), "utf8"),
     );
     assert.equal(contextIndex.userProfile.profile.revisionId, "77777777-7777-4777-8777-777777777777");
+    assert.equal(
+      await readFile(path.join(rootDirectory, "context", "worklog-format.md"), "utf8"),
+      AGENT_WORKSPACE_WORKLOG_FORMAT_MARKDOWN,
+    );
+    assert.equal(
+      contextIndex.worklogFormat.path,
+      await realpath(path.join(rootDirectory, "context", "worklog-format.md")),
+    );
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /plan_my_agent_profile_update/u);
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /user-profile\.md/u);
     assert.match(
@@ -2505,12 +2516,12 @@ test("bridge open keeps a large parent context pointer-first and downloads zero 
     assert.equal(
       await getGitStatus(path.join(rootDirectory, "workspace")),
       "",
-      "runtime control files and an untouched reproducible WORKLOG fallback must not make the Run dirty",
+      "runtime control files must not make the Run dirty",
     );
     assert.equal(
       (await runGit(path.join(rootDirectory, "workspace"), ["status", "--porcelain"])).stdout,
-      "?? WORKLOG.md\n",
-      "the default WORKLOG stays a normal candidate file once substantive Run changes exist",
+      "",
+      "the runtime worklog format must stay outside accepted Git",
     );
     assert.equal(
       (await runGit(path.join(rootDirectory, "workspace"), [
@@ -4260,7 +4271,7 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     "runtimeSessionProof",
     "TRELIO_RUNTIME_HOOK_REQUIRED",
     "WORKSPACE_CONTEXT.md",
-    "WORKLOG.md",
+    "worklog-format.md",
     "continue_trelio_workspace_action",
   ]) {
     assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, new RegExp(identifier, "u"));
@@ -4281,7 +4292,8 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
     /`\.\.\/context\/agent-instructions\.md`.*`\.\.\/context\/user-profile\.md`.*`\.\.\/context\/run-checkpoint\.json`.*`WORKSPACE_CONTEXT\.md`/u,
     /pinned authority snapshot.*не заменяй его более новой live revision/u,
     /короткое активное резюме.*до 15 000 символов/u,
-    /`WORKLOG\.md` открывай перед первой записью, а не автоматически в начале Run/u,
+    /Формат журнала доступен read-only в `\.\.\/context\/worklog-format\.md`.*bridge сам создаёт/u,
+    /Не создавай дубликат вручную/u,
     /Agent Secret: <текущее safe название> \(secretId: <UUID>\)/u,
     /Секретные значения никогда не передавай модели, MCP, prompt, env, argv/u,
     /Bridge action выполняй через `continue_trelio_workspace_action`/u,
@@ -9234,7 +9246,7 @@ test("runtime bootstrap supports a legacy context only during the release migrat
   }
 });
 
-test("bridge creates a default WORKLOG only when missing and preserves later edits", async () => {
+test("bridge keeps the worklog format out of accepted Git", async () => {
   const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-worklog-"));
 
   try {
@@ -9245,34 +9257,173 @@ test("bridge creates a default WORKLOG only when missing and preserves later edi
     await runGit(workspaceDirectory, ["add", "--all"]);
     await runGit(workspaceDirectory, ["commit", "-m", "Workspace without a worklog"]);
 
-    const created = await ensureWorkspaceWorklog(workspaceDirectory);
-    assert.deepEqual(created, { created: true, isDefault: true });
-    assert.equal(
-      await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
-      AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
-    );
-    assert.equal(
-      await getGitStatus(workspaceDirectory),
-      "",
-      "an untouched reproducible fallback must not make an abandoned Run permanently dirty",
-    );
+    await materializeRuntimeControlFiles(workspaceDirectory);
 
+    await assert.rejects(
+      readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
+      (error) => error?.code === "ENOENT",
+    );
+    assert.equal(await getGitStatus(workspaceDirectory), "");
+  } finally {
+    if (process.platform !== "win32") {
+      await execFileAsync("chmod", ["-R", "u+w", workspaceDirectory]).catch(() => undefined);
+    }
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge removes only untouched legacy scaffold on a meaningful candidate", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-legacy-scaffold-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await mkdir(path.join(workspaceDirectory, ".trelio"), { recursive: true });
+    await mkdir(path.join(workspaceDirectory, "work"), { recursive: true });
+    await mkdir(path.join(workspaceDirectory, "sources"), { recursive: true });
     await writeFile(
-      path.join(workspaceDirectory, "WORKLOG.md"),
-      "# Формат журнала компании\n",
+      path.join(workspaceDirectory, "README.md"),
+      [
+        "# Задача №1",
+        "",
+        "Это управляемое рабочее пространство Trelio уровня `task`.",
+        "",
+        "Каноническая версия принимается через Trelio. Не изменяйте служебную папку `.trelio`",
+        "и защищённые `AGENTS.md` / `CLAUDE.md` напрямую — сервер отклонит такой candidate.",
+        "",
+      ].join("\n"),
       "utf8",
     );
-    assert.equal(await getGitStatus(workspaceDirectory), "?? WORKLOG.md");
-    assert.deepEqual(
-      await ensureWorkspaceWorklog(workspaceDirectory),
-      { created: false, isDefault: false },
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await writeFile(
+      path.join(workspaceDirectory, ".trelio", "workspace.json"),
+      `${JSON.stringify({ schemaVersion: 1, scopeType: "task", taskId: runId }, null, 2)}\n`,
+      "utf8",
     );
+    await writeFile(path.join(workspaceDirectory, "work", ".gitkeep"), "", "utf8");
+    await writeFile(path.join(workspaceDirectory, "sources", ".gitkeep"), "", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Legacy initial workspace"]);
+
+    await writeFile(path.join(workspaceDirectory, "work", ".gitkeep"), "keep this marker\n", "utf8");
+    await writeFile(
+      path.join(workspaceDirectory, "WORKLOG.md"),
+      AGENT_WORKSPACE_DEFAULT_WORKLOG_MARKDOWN,
+      "utf8",
+    );
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Customize one path and accept old worklog"]);
+    await writeFile(path.join(workspaceDirectory, "result.md"), "# Результат\n", "utf8");
+
+    const removed = await normalizeLegacyWorkspaceScaffold(workspaceDirectory);
+
+    assert.deepEqual(removed.sort(), [
+      ".trelio/workspace.json",
+      "README.md",
+      "WORKLOG.md",
+      "sources/.gitkeep",
+    ].sort());
     assert.equal(
-      await readFile(path.join(workspaceDirectory, "WORKLOG.md"), "utf8"),
-      "# Формат журнала компании\n",
+      await readFile(path.join(workspaceDirectory, "work", ".gitkeep"), "utf8"),
+      "keep this marker\n",
+    );
+    assert.equal(await readFile(path.join(workspaceDirectory, "result.md"), "utf8"), "# Результат\n");
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("encrypted candidate accepts only removal of initial legacy workspace metadata", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-encrypted-legacy-metadata-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await mkdir(path.join(workspaceDirectory, ".trelio"), { recursive: true });
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await writeFile(path.join(workspaceDirectory, ".trelio", "workspace.json"), "{}\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Legacy initial workspace"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+
+    await rm(path.join(workspaceDirectory, ".trelio", "workspace.json"));
+    await writeFile(path.join(workspaceDirectory, "result.md"), "# Результат\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await assertEncryptedCandidateSafe({ workspaceDirectory, baseHead });
+
+    await runGit(workspaceDirectory, ["reset", "--hard", baseHead]);
+    await writeFile(path.join(workspaceDirectory, ".trelio", "workspace.json"), "{\"changed\":true}\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await assert.rejects(
+      assertEncryptedCandidateSafe({ workspaceDirectory, baseHead }),
+      /защищённые control-файлы/u,
     );
   } finally {
     await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge creates one deterministic worklog entry from handoff", async () => {
+  const runDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-automatic-worklog-"));
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  const metadataPath = path.join(runDirectory, ".trelio-run.json");
+  const runId = "11111111-1111-4111-8111-111111111111";
+
+  try {
+    await mkdir(workspaceDirectory);
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Initial workspace"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+    await mkdir(path.join(workspaceDirectory, "artifacts"));
+    await writeFile(path.join(workspaceDirectory, "artifacts", "result.md"), "# Готово\n", "utf8");
+    const metadata = { workspaceDirectory, baseHead, runId, clientKind: "workspace-bridge" };
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+
+    const firstPath = await ensureAutomaticRunWorklog({
+      metadata,
+      metadataPath,
+      summary: "Подготовлен проверенный итог для пользователя.",
+      evidence: ["Тесты прошли"],
+      candidatePaths: ["artifacts/result.md", "README.md"],
+      openQuestions: [],
+      nextActionInstruction: "Проверить результат.",
+      now: new Date("2026-09-13T12:00:00.000Z"),
+    });
+    const persistedMetadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    const expectedPath = `worklog/2026-09-13-run-${runId}.md`;
+    assert.equal(firstPath, expectedPath);
+    assert.equal(persistedMetadata.automaticWorklogPath, expectedPath);
+    assert.match(
+      await readFile(path.join(workspaceDirectory, expectedPath), "utf8"),
+      /## Подтверждения\n\n- Тесты прошли[\s\S]*## Материалы\n\n- artifacts\/result\.md/u,
+    );
+
+    assert.equal(
+      await ensureAutomaticRunWorklog({
+        metadata: persistedMetadata,
+        metadataPath,
+        summary: "Подготовлен проверенный итог для пользователя.",
+        evidence: ["Тесты прошли"],
+        candidatePaths: ["artifacts/result.md", expectedPath],
+        openQuestions: [],
+        nextActionInstruction: "Проверить результат.",
+        now: new Date("2026-09-14T12:00:00.000Z"),
+      }),
+      expectedPath,
+      "retry must reuse the original path even after the date changes",
+    );
+    assert.deepEqual(
+      (await readdir(path.join(workspaceDirectory, "worklog"))).filter((name) => name.endsWith(".md")),
+      [path.basename(expectedPath)],
+    );
+  } finally {
+    await rm(runDirectory, { recursive: true, force: true });
   }
 });
 

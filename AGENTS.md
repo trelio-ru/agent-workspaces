@@ -404,9 +404,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
-- Корневой `README.md` остаётся обычным редактируемым материалом в поиске,
-  browser-проекции, истории и proposal attachments; не включай его в список
-  protected/hidden paths. Совместимость старых проекций описана в
+- Новая initial revision содержит только `WORKSPACE_CONTEXT.md`; технический
+  README, `.trelio/workspace.json` и пустые category markers не создаются.
+  Корневой `README.md`, если его создали пользователь или агент, остаётся
+  обычным редактируемым материалом в поиске, browser-проекции, истории и
+  proposal attachments; не включай его в список protected/hidden paths.
+  Формат журнала живёт в read-only `context/worklog-format.md`, а `finish`
+  создаёт одну детерминированную запись `worklog/` из handoff. Совместимость
+  старых проекций описана в
   [файловом контракте](docs/agent-workspace-runtime.md#контекст-и-файлы).
 - Extraction manifests encrypted candidate bridge проверяет по exact committed
   Git blobs до шифрования. Paths, source digest, type, method и manifest идут
