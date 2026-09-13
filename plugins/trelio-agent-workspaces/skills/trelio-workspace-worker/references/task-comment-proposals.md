@@ -35,8 +35,10 @@ comment tool, чтобы лишь потом обнаружить необход
 Для единственной карточки без известного private proposal задачи следуй точному
 `proposalProvider`: headless context, затем local render. Иначе один раз
 вызови create-only `propose_task_comment`. Plain-задачи не содержат
-`proposalProvider`: один вызов без provider preflight. `proposalText` уже
-должен быть самостоятельным готовым к публикации общим итогом. Не пиши его
+`proposalProvider`: один вызов без provider preflight. `proposalText` должен быть
+самостоятельным готовым к публикации общим итогом в Markdown. Ссылка:
+`[понятная подпись](URL)` без
+дублирующего raw URL; raw HTML останется текстом. Не пиши его
 как дополнение, исправление, усиление или обновление прежнего неопубликованного
 proposal либо автоматического handoff:
 
@@ -81,6 +83,10 @@ proposal либо автоматического handoff:
 клиенте вызови proposal tool и используй fallback; `publish_task_comment_proposal`
 вызывай лишь после явного одобрения точного видимого текста и выбранных файлов.
 После явного отказа публиковать вызови `dismiss_task_comment_proposal`.
+
+`currentDraft.bodyText` – Markdown source с прежним wire-name для совместимости.
+App показывает безопасный live preview, а публикация сохраняет обычный rich-text
+комментарий. Не экранируй Markdown.
 
 Недостающее право блокирует только человеческий proposal, не принятие
 постоянного результата Workspace. Обычные вложения задачи создаются лишь

@@ -23,6 +23,8 @@ import {
   buildEncryptedRestoreHandoffArguments,
   buildLocalTaskAttachmentStreamRequest,
   buildLocalMarkdownDocument,
+  buildLocalProposalPublicationDocument,
+  buildProposalValueMarkers,
   buildTrelioWorkspaceActionInvocation,
   buildWorkspaceBridgeProcessArguments,
   fetchMirrorResult,
@@ -1488,6 +1490,70 @@ test("local Markdown conversion preserves malformed fences as visible text", () 
   const document = buildLocalMarkdownDocument("```js\nconst answer = 42;");
   assert.match(JSON.stringify(document), /```js/u);
   assert.match(JSON.stringify(document), /const answer = 42/u);
+});
+
+test("proposal encryption uses a JSON marker for the pre-rendered Markdown document", () => {
+  const entityId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const markers = buildProposalValueMarkers(entityId, {
+    body_text: "[Задача](https://trelio.ru/task)",
+    body_json: { type: "doc", content: [{ type: "paragraph" }] },
+    body_plain_text: "Задача",
+  });
+
+  assert.equal(markers.body_text, `~e1:${entityId}:body_text~`);
+  assert.deepEqual(markers.body_json, {
+    $trelioE2ee: { v: 1, id: entityId, field: "body_json" },
+  });
+  assert.equal(markers.body_plain_text, `~e1:${entityId}:body_plain_text~`);
+});
+
+test("local Markdown conversion preserves links, inline marks, quotes and tables", () => {
+  const document = buildLocalMarkdownDocument([
+    "[Задача](https://trelio.ru/acme/mobile/tasks/17/) и **готово**",
+    "",
+    "> Проверено `локально`",
+    "",
+    "| Поле | Значение |",
+    "| --- | --- |",
+    "| Статус | *готово* |",
+  ].join("\n"));
+  const serialized = JSON.stringify(document);
+
+  assert.match(serialized, /"type":"link"/u);
+  assert.match(serialized, /https:\/\/trelio\.ru\/acme\/mobile\/tasks\/17\//u);
+  assert.match(serialized, /"type":"bold"/u);
+  assert.match(serialized, /"type":"blockquote"/u);
+  assert.match(serialized, /"type":"code"/u);
+  assert.match(serialized, /"type":"table"/u);
+  assert.match(serialized, /"type":"italic"/u);
+});
+
+test("encrypted proposal publication builds the complete reviewed Markdown document locally", () => {
+  const attachmentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const document = buildLocalProposalPublicationDocument({
+    bodyMarkdown: "Смотрите [задачу](https://trelio.ru/acme/mobile/tasks/17/) – @anna",
+    publicationContext: {
+      companySlug: "acme",
+      project: { slug: "mobile" },
+      task: { number: 17, url: "https://trelio.ru/acme/mobile/tasks/17/" },
+      mentionableMembers: [{
+        memberId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        username: "anna",
+        displayName: "Анна",
+      }],
+      attachments: [{ id: attachmentId, fileName: "result.pdf" }],
+    },
+    attachmentIds: [attachmentId],
+  });
+  const serialized = JSON.stringify(document);
+
+  assert.match(serialized, /"type":"link"/u);
+  assert.match(serialized, /"type":"mention"/u);
+  assert.match(serialized, /"taskAttachmentKind":"file"/u);
+  assert.match(
+    serialized,
+    /api\/companies\/acme\/projects\/mobile\/tasks\/17\/attachments\/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\/download/u,
+  );
 });
 
 test("workspace-only local refinement and exact file read preserve the accepted-head fence", () => {

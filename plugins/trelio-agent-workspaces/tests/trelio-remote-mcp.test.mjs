@@ -1740,7 +1740,7 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.equal(contextTool.annotations.readOnlyHint, true);
   assert.equal(contextTool._meta, undefined);
   assert.equal(renderTool.annotations.readOnlyHint, false);
-  assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v8.html");
+  assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v9.html");
   assert.equal(providerTools.some(({ name }) => name === "continue_trelio_local_proposal"), false);
   assert.equal(appOnlyProposalTools.length, 14);
   for (const tool of appOnlyProposalTools) {
@@ -1774,7 +1774,7 @@ test("local MCP exposes the proposal App resource without adding its HTML to too
     method: "resources/list",
     params: {},
   });
-  const uri = "ui://trelio/task-proposals/v8.html";
+  const uri = "ui://trelio/task-proposals/v9.html";
   assert.deepEqual(listed.result.resources.map((resource) => resource.uri), [uri]);
   assert.equal(listed.result.resources[0]._meta.ui.csp.frameDomains, undefined);
   assert.equal(listed.result.resources[0]._meta["openai/widgetCSP"].frame_domains, undefined);
@@ -1845,7 +1845,7 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
     },
   };
   const origin = "https://proposal-cache-test.invalid";
-  const currentUri = "ui://trelio/task-proposals/v8.html";
+  const currentUri = "ui://trelio/task-proposals/v9.html";
   const legacyV5Uri = "ui://trelio/task-proposals/v5.html";
   const legacyV4Uri = "ui://trelio/task-proposals/v4.html";
   const legacyV3Uri = "ui://trelio/task-proposals/v3.html";
@@ -1857,7 +1857,7 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
   const currentAgain = await readLocalProposalAppResource(origin, currentUri, options);
 
   assert.deepEqual(requestedPaths, [
-    "/api/agent-workspaces/mcp-app-resources/task-proposals-v8",
+    "/api/agent-workspaces/mcp-app-resources/task-proposals-v9",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v5",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v4",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
@@ -1891,7 +1891,7 @@ test("local proposal render returns a real MCP App result instead of JSON text o
     },
   });
 
-  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v8.html");
+  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v9.html");
   assert.equal(result._meta["trelio/taskProposalApp"].schemaVersion, 1);
   assert.match(result._meta["trelio/taskProposalApp"].capabilityToken, /^[A-Za-z0-9_-]{43}$/u);
   assert.equal(result.structuredContent.kind, "taskProposalBlocks");
@@ -1980,10 +1980,14 @@ test("local proposal App capability binds refresh and one delayed final action t
       provider: "local_company_context",
       proposal: {
         schemaVersion: 3,
+        project: { slug: "mobile" },
+        task: { number: 17, url: "https://trelio.example/acme/mobile/tasks/17/" },
+        mentionableMembers: [],
         currentDraft: {
           proposalId,
           revision: 7,
           bodyText: "Готовый комментарий",
+          attachments: [],
           contextRequest: { runId },
         },
       },
@@ -2061,6 +2065,13 @@ test("local proposal App capability binds refresh and one delayed final action t
         action: "publish",
         bodyText: "Отредактированный комментарий",
         attachmentIds: [],
+        _localMarkdownPublicationContext: {
+          companySlug: "protected-company",
+          project: { slug: "mobile" },
+          task: { number: 17, url: "https://trelio.example/acme/mobile/tasks/17/" },
+          mentionableMembers: [],
+          attachments: [],
+        },
       },
     },
   ]);

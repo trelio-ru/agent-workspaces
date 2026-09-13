@@ -137,7 +137,7 @@ const LOCAL_PROPOSAL_APP_TOOL_ROUTE = new Map([
 const localProposalRouteById = new Map();
 const localProposalAppCapabilityByToken = new Map();
 const LOCAL_PROPOSAL_APP_RESOURCE_PATH_BY_URI = new Map([
-  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v8"],
+  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v9"],
   ...TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS.map((uri) => {
     // Keep every immutable ui:// generation paired with the matching backend
     // endpoint. A legacy read must never populate the cache with newer bytes
@@ -3457,6 +3457,29 @@ const readLocalProposalTarget = (proposal) => {
   return null;
 };
 
+const readLocalCommentMarkdownPublicationContext = (proposal, companySlug) => {
+  const draft = proposal?.currentDraft;
+  if (
+    !draft
+    || !proposal?.project
+    || !proposal?.task
+    || !Array.isArray(draft.attachments)
+    || !Array.isArray(proposal.mentionableMembers)
+  ) return null;
+
+  // The capability already binds proposal id, revision and target. Keep the
+  // matching decrypted presentation data beside that binding so the local
+  // action can turn reviewed Markdown into rich text without another server
+  // round trip or any plaintext crossing the encrypted-company boundary.
+  return structuredClone({
+    companySlug,
+    project: proposal.project,
+    task: proposal.task,
+    mentionableMembers: proposal.mentionableMembers,
+    attachments: draft.attachments,
+  });
+};
+
 const localizeProposalPayload = (value, companySlug, kind) => {
   if (Array.isArray(value)) {
     return value.map((item) => localizeProposalPayload(item, companySlug, kind));
@@ -3537,6 +3560,14 @@ const createLocalProposalAppCapability = (origin, structuredContent) => {
       kind: route.kind,
       revision: route.revision,
       target: route.target,
+      ...(route.kind === "comment"
+        ? {
+            markdownPublicationContext: readLocalCommentMarkdownPublicationContext(
+              block.proposal,
+              route.companySlug,
+            ),
+          }
+        : {}),
       actionConsumed: false,
     });
   });
@@ -3809,6 +3840,9 @@ const handleGenericLocalProposalAppToolCall = async (
       actionPayload.bodyText = rawArguments?.bodyText;
       if (rawArguments?.attachmentIds !== undefined) {
         actionPayload.attachmentIds = rawArguments.attachmentIds;
+      }
+      if (target.markdownPublicationContext) {
+        actionPayload._localMarkdownPublicationContext = target.markdownPublicationContext;
       }
     } else if (target.kind === "status") {
       actionPayload.targetStatusCode = rawArguments?.targetStatusCode;

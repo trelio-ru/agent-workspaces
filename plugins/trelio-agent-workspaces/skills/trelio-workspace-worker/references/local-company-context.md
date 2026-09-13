@@ -130,7 +130,11 @@ controls скрыты. Не воспроизводи шаги bridge и не п�
 Кнопки App используют скрытые tools. Текстовый `operation=action` требует
 решение и точные `proposalId`, `expectedRevision`, `action`,
 `confirmed=true`, открытые IDs. Публикация комментария передаёт проверенный
-`bodyText` и сверяет сохранённый гидратированный текст.
+Markdown source в `bodyText`. Current App локально строит из него полный
+rich-text JSON, канонические mentions и ссылки выбранных файлов, шифрует
+`body_text`, `body_json` и `body_plain_text` одним payload и сверяет exact
+сохранённый гидратированный документ. Старые карточки без Markdown context
+сохраняют совместимый `body_text`-only путь.
 Завершение Run и render не являются подтверждением.
 
 Виды: `comment`, `status`, `control_clear`, `checklist`. Соблюдай смысловые
@@ -140,7 +144,7 @@ controls скрыты. Не воспроизводи шаги bridge и не п�
 locks, optimistic revisions, public-comment snapshot hashes и идемпотентные
 apply/dismiss/publication, что native Trelio.
 
-v8 App хранит скрытую от модели capability на три часа с привязкой к revision.
+v9 App хранит скрытую от модели capability на три часа с привязкой к revision.
 Успешное решение закрывает лишь запись этой карточки; чтение текущего состояния
 проверяет provider/ACL до исходного expiry без продления. Повторно открытая
 карточка показывает завершённое состояние. Сохранённые v5 используют старые App tools.

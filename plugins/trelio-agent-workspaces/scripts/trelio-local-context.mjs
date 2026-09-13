@@ -80,8 +80,9 @@ const MIRROR_STALE_READ_REFRESH_WAIT_MS = 30 * 1000;
 const MIRROR_LOCK_HEARTBEAT_MS = 20 * 1000;
 const MIRROR_GENERATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const TRELIO_LOCAL_MIRROR_MEMORY_TTL_SECONDS = 600;
-export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v8.html";
+export const TRELIO_LOCAL_PROPOSAL_RESOURCE_URI = "ui://trelio/task-proposals/v9.html";
 export const TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS = [
+  "ui://trelio/task-proposals/v8.html",
   "ui://trelio/task-proposals/v5.html",
   "ui://trelio/task-proposals/v4.html",
   "ui://trelio/task-proposals/v3.html",
@@ -624,6 +625,19 @@ const buildEncryptedPayloadSignatureRecord = (payload) => ({
   writerDeviceId: payload.writerDeviceId,
 });
 
+export const buildProposalValueMarkers = (entityId, values) => Object.fromEntries(
+  Object.keys(values).map((field) => [
+    field,
+    values[field] && typeof values[field] === "object"
+      ? buildCompanyEncryptedJsonMarker(
+          entityId,
+          field,
+          Array.isArray(values[field]) ? "array" : "object",
+        )
+      : buildCompanyEncryptedTextMarker(entityId, field),
+  ]),
+);
+
 const protectProposalValues = async ({ companyEncryption, values, source }) => {
   const entityId = crypto.randomUUID();
   const encrypted = await encryptCompanyPayload({
@@ -659,10 +673,7 @@ const protectProposalValues = async ({ companyEncryption, values, source }) => {
   );
   return {
     payload,
-    markers: Object.fromEntries(Object.keys(values).map((field) => [
-      field,
-      buildCompanyEncryptedTextMarker(entityId, field),
-    ])),
+    markers: buildProposalValueMarkers(entityId, values),
   };
 };
 
@@ -1165,7 +1176,18 @@ const removePublishedTaskAttachmentLinks = (value) => {
 export const assertHydratedLocalProposalPublicationMatches = ({
   publication,
   expectedBodyText,
+  expectedBodyJson,
 }) => {
+  if (expectedBodyJson !== undefined) {
+    if (!isDeepStrictEqual(publication?.comment?.content, expectedBodyJson)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_PROPOSAL_PUBLICATION_MISMATCH",
+        "The persisted encrypted proposal comment does not match the reviewed Markdown document.",
+      );
+    }
+    return publication;
+  }
+
   const expected = normalizeBoundedString(
     expectedBodyText,
     "expectedBodyText",
@@ -1209,18 +1231,196 @@ const buildLocalPlainTextDocument = (value) => {
  * Markdown. Unsupported block syntax remains visible text instead of being
  * dropped, which preserves user bytes and is safer than a lossy "best guess".
  */
+const LOCAL_MARKDOWN_LINK_PROTOCOL_PATTERN = /^([a-z][a-z0-9+.-]*):/iu;
+const LOCAL_MARKDOWN_LINK_ALLOWED_PROTOCOLS = new Set([
+  "http:",
+  "https:",
+  "mailto:",
+  "tel:",
+  "codex:",
+  "tg:",
+]);
+
+const normalizeLocalMarkdownLinkHref = (value) => {
+  const candidate = String(value ?? "").trim();
+  if (!candidate || /[\u0000-\u0020\u00a0\u1680\u180e\u2000-\u2029\u205f\u3000]/u.test(candidate)) {
+    return "";
+  }
+  const protocol = candidate.match(LOCAL_MARKDOWN_LINK_PROTOCOL_PATTERN)?.[1]?.toLowerCase();
+  if (protocol && !LOCAL_MARKDOWN_LINK_ALLOWED_PROTOCOLS.has(`${protocol}:`)) return "";
+  if (protocol || candidate.startsWith("/") || candidate.startsWith("#")) return candidate;
+  return `https://${candidate}`;
+};
+
+const localMarkdownMarksEqual = (left, right) => (
+  JSON.stringify(left ?? []) === JSON.stringify(right ?? [])
+);
+
+const pushLocalMarkdownText = (nodes, text, marks = []) => {
+  if (!text) return;
+  const nextMarks = marks.length > 0 ? structuredClone(marks) : undefined;
+  const previous = nodes.at(-1);
+  if (previous?.type === "text" && localMarkdownMarksEqual(previous.marks, nextMarks)) {
+    previous.text += text;
+    return;
+  }
+  nodes.push({ type: "text", text, ...(nextMarks ? { marks: nextMarks } : {}) });
+};
+
+const buildLocalMarkdownInlineNodes = (value, inheritedMarks = []) => {
+  const source = String(value ?? "");
+  const nodes = [];
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    if (source[cursor] === "\\" && cursor + 1 < source.length) {
+      pushLocalMarkdownText(nodes, source[cursor + 1], inheritedMarks);
+      cursor += 2;
+      continue;
+    }
+    if (source[cursor] === "\n") {
+      nodes.push({ type: "hardBreak" });
+      cursor += 1;
+      continue;
+    }
+    if (source[cursor] === "`") {
+      const codeEnd = source.indexOf("`", cursor + 1);
+      if (codeEnd > cursor + 1) {
+        pushLocalMarkdownText(nodes, source.slice(cursor + 1, codeEnd), [{ type: "code" }]);
+        cursor = codeEnd + 1;
+        continue;
+      }
+    }
+    if (source[cursor] === "[") {
+      const link = source.slice(cursor).match(
+        /^\[([^\]\n]+)\][ \t\r\n]*\(([^)\s]+)(?:[ \t]+["'][^"']*["'])?\)/u,
+      );
+      if (link) {
+        const href = normalizeLocalMarkdownLinkHref(link[2]);
+        if (href) {
+          nodes.push(...buildLocalMarkdownInlineNodes(link[1], [
+            ...inheritedMarks,
+            { type: "link", attrs: { href } },
+          ]));
+          cursor += link[0].length;
+          continue;
+        }
+      }
+    }
+    if (source[cursor] === "<") {
+      const autoLink = source.slice(cursor).match(/^<((?:https?:\/\/|mailto:)[^>\s]+)>/iu);
+      if (autoLink) {
+        const href = normalizeLocalMarkdownLinkHref(autoLink[1]);
+        if (href) {
+          const label = autoLink[1].replace(/^mailto:/iu, "");
+          pushLocalMarkdownText(nodes, label, [
+            ...inheritedMarks,
+            { type: "link", attrs: { href } },
+          ]);
+          cursor += autoLink[0].length;
+          continue;
+        }
+      }
+    }
+
+    const delimiter = [
+      { marker: "**", mark: "bold" },
+      { marker: "__", mark: "bold" },
+      { marker: "~~", mark: "strike" },
+      { marker: "*", mark: "italic" },
+      { marker: "_", mark: "italic" },
+    ].find(({ marker }) => source.startsWith(marker, cursor));
+    if (delimiter) {
+      const contentStart = cursor + delimiter.marker.length;
+      const contentEnd = source.indexOf(delimiter.marker, contentStart);
+      if (contentEnd > contentStart) {
+        nodes.push(...buildLocalMarkdownInlineNodes(
+          source.slice(contentStart, contentEnd),
+          [...inheritedMarks, { type: delimiter.mark }],
+        ));
+        cursor = contentEnd + delimiter.marker.length;
+        continue;
+      }
+    }
+
+    const rawUrl = source.slice(cursor).match(/^https?:\/\/[^\s<>]+/iu);
+    if (rawUrl) {
+      const label = rawUrl[0].replace(/[),.;:!?]+$/u, "");
+      const trailing = rawUrl[0].slice(label.length);
+      const href = normalizeLocalMarkdownLinkHref(label);
+      if (href) {
+        pushLocalMarkdownText(nodes, label, [
+          ...inheritedMarks,
+          { type: "link", attrs: { href } },
+        ]);
+        pushLocalMarkdownText(nodes, trailing, inheritedMarks);
+        cursor += rawUrl[0].length;
+        continue;
+      }
+    }
+
+    let next = cursor + 1;
+    while (next < source.length && !"\\\n`[<*_~hH".includes(source[next])) next += 1;
+    pushLocalMarkdownText(nodes, source.slice(cursor, next), inheritedMarks);
+    cursor = next;
+  }
+
+  return nodes;
+};
+
+const buildLocalMarkdownParagraph = (value) => {
+  const content = buildLocalMarkdownInlineNodes(value);
+  return { type: "paragraph", ...(content.length > 0 ? { content } : {}) };
+};
+
+const splitLocalMarkdownTableRow = (line) => {
+  const source = String(line ?? "").trim().replace(/^\|/u, "").replace(/\|$/u, "");
+  const cells = [];
+  let cell = "";
+  let escaped = false;
+  for (const character of source) {
+    if (escaped) {
+      cell += character;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (character === "|") {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  if (escaped) cell += "\\";
+  cells.push(cell.trim());
+  return cells;
+};
+
+const isLocalMarkdownTableDelimiter = (line, columnCount) => {
+  const cells = splitLocalMarkdownTableRow(line);
+  return cells.length === columnCount && cells.every((cell) => /^:?-{3,}:?$/u.test(cell));
+};
+
+const buildLocalMarkdownTableCell = (type, value) => ({
+  type,
+  attrs: { colspan: 1, rowspan: 1, colwidth: null },
+  content: [buildLocalMarkdownParagraph(value)],
+});
+
 export const buildLocalMarkdownDocument = (value) => {
-  const lines = String(value ?? "").replace(/\r\n?/gu, "\n").split("\n");
+  const normalized = String(value ?? "").replace(/\r\n?/gu, "\n").trim();
+  const lines = normalized.split("\n");
   const content = [];
   let paragraph = [];
   let fenced = null;
   const flushParagraph = () => {
     if (paragraph.length === 0) return;
-    content.push(buildLocalPlainTextDocument(paragraph.join("\n")).content[0]);
+    content.push(buildLocalMarkdownParagraph(paragraph.join("\n")));
     paragraph = [];
   };
 
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     const fence = /^```([^\s`]*)\s*$/u.exec(line);
     if (fence) {
       if (fenced) {
@@ -1248,8 +1448,33 @@ export const buildLocalMarkdownDocument = (value) => {
       content.push({
         type: "heading",
         attrs: { level: heading[1].length <= 2 ? 2 : 3 },
-        content: [{ type: "text", text: heading[2] }],
+        content: buildLocalMarkdownInlineNodes(heading[2]),
       });
+      continue;
+    }
+    const headerCells = line.includes("|") ? splitLocalMarkdownTableRow(line) : [];
+    if (
+      headerCells.length > 1
+      && lineIndex + 1 < lines.length
+      && isLocalMarkdownTableDelimiter(lines[lineIndex + 1], headerCells.length)
+    ) {
+      flushParagraph();
+      const rows = [{
+        type: "tableRow",
+        content: headerCells.map((cell) => buildLocalMarkdownTableCell("tableHeader", cell)),
+      }];
+      lineIndex += 2;
+      while (lineIndex < lines.length && lines[lineIndex].includes("|")) {
+        const cells = splitLocalMarkdownTableRow(lines[lineIndex]);
+        if (cells.length !== headerCells.length) break;
+        rows.push({
+          type: "tableRow",
+          content: cells.map((cell) => buildLocalMarkdownTableCell("tableCell", cell)),
+        });
+        lineIndex += 1;
+      }
+      lineIndex -= 1;
+      content.push({ type: "table", content: rows });
       continue;
     }
     const bullet = /^\s*[-*+]\s+(.+)$/u.exec(line);
@@ -1262,7 +1487,7 @@ export const buildLocalMarkdownDocument = (value) => {
       if (list !== previous) content.push(list);
       list.content.push({
         type: "listItem",
-        content: [{ type: "paragraph", content: [{ type: "text", text: bullet[1] }] }],
+        content: [buildLocalMarkdownParagraph(bullet[1])],
       });
       continue;
     }
@@ -1276,7 +1501,23 @@ export const buildLocalMarkdownDocument = (value) => {
       if (list !== previous) content.push(list);
       list.content.push({
         type: "listItem",
-        content: [{ type: "paragraph", content: [{ type: "text", text: ordered[2] }] }],
+        content: [buildLocalMarkdownParagraph(ordered[2])],
+      });
+      continue;
+    }
+    const quote = /^\s*>\s?(.*)$/u.exec(line);
+    if (quote) {
+      flushParagraph();
+      const quoteLines = [quote[1]];
+      while (lineIndex + 1 < lines.length) {
+        const nextQuote = /^\s*>\s?(.*)$/u.exec(lines[lineIndex + 1]);
+        if (!nextQuote) break;
+        quoteLines.push(nextQuote[1]);
+        lineIndex += 1;
+      }
+      content.push({
+        type: "blockquote",
+        content: buildLocalMarkdownDocument(quoteLines.join("\n")).content,
       });
       continue;
     }
@@ -1298,6 +1539,147 @@ export const buildLocalMarkdownDocument = (value) => {
   }
   flushParagraph();
   return { type: "doc", content: content.length > 0 ? content : [{ type: "paragraph" }] };
+};
+
+const canonicalizeLocalProposalMentions = (value, mentionableMembers) => {
+  const memberByUsername = new Map((mentionableMembers ?? []).flatMap((member) => {
+    const memberId = String(member?.memberId ?? "").trim();
+    const username = String(member?.username ?? "").trim();
+    return memberId && username ? [[username.toLowerCase(), { ...member, memberId, username }]] : [];
+  }));
+  const mentionPattern = /(^|[\s(>[\],.;:!?'"`-])@([a-z0-9][a-z0-9_-]{1,63})/gimu;
+
+  const visit = (node) => {
+    if (Array.isArray(node)) return node.flatMap(visit);
+    if (!node || typeof node !== "object") return [node];
+    if (
+      node.type === "text"
+      && typeof node.text === "string"
+      && (!Array.isArray(node.marks) || node.marks.length === 0)
+    ) {
+      const replacements = [];
+      let copiedThrough = 0;
+      for (const match of node.text.matchAll(mentionPattern)) {
+        const member = memberByUsername.get(String(match[2] ?? "").toLowerCase());
+        if (!member || match.index === undefined) continue;
+        const mentionStart = match.index + String(match[1] ?? "").length;
+        const mentionEnd = mentionStart + String(match[2]).length + 1;
+        pushLocalMarkdownText(replacements, node.text.slice(copiedThrough, mentionStart));
+        replacements.push({
+          type: "mention",
+          attrs: {
+            id: member.memberId,
+            entityType: "member",
+            username: member.username,
+            label: String(member.displayName ?? "").trim() || `@${member.username}`,
+          },
+        });
+        copiedThrough = mentionEnd;
+      }
+      if (copiedThrough === 0) return [{ ...node }];
+      pushLocalMarkdownText(replacements, node.text.slice(copiedThrough));
+      return replacements;
+    }
+    return [{
+      ...node,
+      ...(Array.isArray(node.content) ? { content: node.content.flatMap(visit) } : {}),
+    }];
+  };
+
+  return visit(value)[0];
+};
+
+export const buildLocalProposalPublicationDocument = ({
+  bodyMarkdown,
+  publicationContext,
+  attachmentIds,
+}) => {
+  const companySlug = String(publicationContext?.companySlug ?? "").trim();
+  const projectSlug = String(publicationContext?.project?.slug ?? "").trim();
+  const taskNumber = Number(publicationContext?.task?.number);
+  const taskUrl = String(publicationContext?.task?.url ?? "").trim();
+  const attachments = Array.isArray(publicationContext?.attachments)
+    ? publicationContext.attachments
+    : [];
+  if (!companySlug || !projectSlug || !Number.isSafeInteger(taskNumber) || taskNumber < 1 || !taskUrl) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_MARKDOWN_CONTEXT_MISSING",
+      "Refresh the protected proposal card before publishing its Markdown body.",
+    );
+  }
+  let taskOrigin;
+  try {
+    taskOrigin = new URL(taskUrl).origin;
+  } catch {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_MARKDOWN_CONTEXT_MISSING",
+      "The protected proposal has no valid canonical task URL.",
+    );
+  }
+  const selectedIds = attachmentIds === undefined
+    ? attachments.map((attachment) => attachment.id)
+    : attachmentIds;
+  const selectedIdSet = new Set(selectedIds);
+  if (selectedIdSet.size !== selectedIds.length) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "payload.attachmentIds must contain unique proposal attachment ids.",
+    );
+  }
+  const attachmentById = new Map(attachments.map((attachment) => [attachment?.id, attachment]));
+  const unknownId = selectedIds.find((id) => !attachmentById.has(id));
+  if (unknownId) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_ATTACHMENT_REPLACED",
+      "One selected file is no longer part of the protected proposal card.",
+    );
+  }
+
+  const markdownDocument = canonicalizeLocalProposalMentions(
+    buildLocalMarkdownDocument(bodyMarkdown),
+    publicationContext?.mentionableMembers,
+  );
+  const attachmentParagraphs = selectedIds.map((attachmentId) => {
+    const attachment = attachmentById.get(attachmentId);
+    const fileName = String(attachment?.fileName ?? "").trim();
+    if (!fileName) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_PROPOSAL_ATTACHMENT_REPLACED",
+        "A selected file has no decrypted name in the protected proposal card.",
+      );
+    }
+    const href = new URL([
+      "/api/companies",
+      encodeURIComponent(companySlug),
+      "projects",
+      encodeURIComponent(projectSlug),
+      "tasks",
+      encodeURIComponent(String(taskNumber)),
+      "attachments",
+      encodeURIComponent(attachmentId),
+      "download",
+    ].join("/"), taskOrigin).toString();
+    return {
+      type: "paragraph",
+      content: [{
+        type: "text",
+        text: fileName,
+        marks: [{
+          type: "link",
+          attrs: {
+            href,
+            taskAttachmentKind: "file",
+            taskAttachmentId: attachmentId,
+            download: fileName,
+          },
+        }],
+      }],
+    };
+  });
+  return {
+    ...markdownDocument,
+    content: [...markdownDocument.content, ...attachmentParagraphs],
+  };
 };
 
 export const normalizeLocalActionRichTextInputs = (value) => {
@@ -6054,30 +6436,53 @@ const applyLocalProposalAction = async ({
     }
     if (action === "publish") {
       const bodyText = normalizeBoundedString(rawPayload?.bodyText, "payload.bodyText", 20_000);
+      const attachmentIds = rawPayload?.attachmentIds === undefined
+        ? undefined
+        : normalizeBoundedStringArray(
+            rawPayload.attachmentIds,
+            "payload.attachmentIds",
+            10,
+            36,
+          ).map((value, index) => normalizeUuid(
+            value,
+            `payload.attachmentIds[${index}]`,
+          ));
+      // Current proposal Apps bind this decrypted, immutable render context to
+      // their local capability. That lets the trusted host build the complete
+      // ProseMirror document, including mentions and selected file links,
+      // before the body crosses the E2EE boundary. Compatibility Apps without
+      // that context retain the historical body_text-only publication path.
+      const bodyJson = rawPayload?._localMarkdownPublicationContext
+        ? buildLocalProposalPublicationDocument({
+            bodyMarkdown: bodyText,
+            publicationContext: rawPayload._localMarkdownPublicationContext,
+            attachmentIds,
+          })
+        : null;
       const markers = await uploadProposalPayload({
         origin: dataPlaneOrigin,
         token,
         companyEncryption,
-        values: { body_text: bodyText },
+        values: {
+          body_text: bodyText,
+          ...(bodyJson
+            ? {
+                body_json: bodyJson,
+                // createTaskComment derives this exact sibling marker from
+                // body_json. Store the value in the same payload so local
+                // search, notifications and hydrated read models stay whole.
+                body_plain_text: extractLocalRichTextPlainText(bodyJson),
+              }
+            : {}),
+        },
         source: { kind: "agent_task_proposal", proposalKind: kind, action },
         signal,
       });
       body = {
         ...common,
         bodyText: markers.body_text,
-        ...(rawPayload?.attachmentIds === undefined
-          ? {}
-          : {
-              attachmentIds: normalizeBoundedStringArray(
-                rawPayload.attachmentIds,
-                "payload.attachmentIds",
-                10,
-                36,
-              ).map((value, index) => normalizeUuid(
-                value,
-                `payload.attachmentIds[${index}]`,
-              )),
-            }),
+        ...(markers.body_json ? { bodyJson: markers.body_json } : {}),
+        ...(attachmentIds === undefined ? {} : { attachmentIds }),
       };
     } else {
       body = common;
@@ -6544,9 +6949,17 @@ export const handleTrelioLocalProposalOperation = async (
     && kind === "comment"
     && String(rawPayload?.action ?? "").trim() === "publish"
   ) {
+    const expectedBodyJson = rawPayload?._localMarkdownPublicationContext
+      ? buildLocalProposalPublicationDocument({
+          bodyMarkdown: rawPayload?.bodyText,
+          publicationContext: rawPayload._localMarkdownPublicationContext,
+          attachmentIds: rawPayload?.attachmentIds,
+        })
+      : undefined;
     assertHydratedLocalProposalPublicationMatches({
       publication: hydrated,
       expectedBodyText: rawPayload?.bodyText,
+      expectedBodyJson,
     });
   }
   return buildProposalLocalResult(origin, hydrated);
