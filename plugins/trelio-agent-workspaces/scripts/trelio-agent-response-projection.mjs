@@ -202,13 +202,13 @@ const deferRegularWorkDetail = (value, args) => {
     const set = record(payload.set);
     const companySlug = company?.slug ?? args.companySlug;
     const projectSlug = project?.slug ?? args.projectSlug;
-    const setSlug = set?.slug ?? args.setSlug;
-    if (typeof companySlug !== "string" || typeof projectSlug !== "string" || typeof setSlug !== "string") {
+    const setId = set?.id ?? args.setId;
+    if (typeof companySlug !== "string" || typeof projectSlug !== "string" || typeof setId !== "string") {
         return payload;
     }
     return addDeferred(payload, ["history", "preparation", "options"], {
         tool: "get_regular_work",
-        arguments: { companySlug, projectSlug, setSlug, responseDetail: "full" },
+        arguments: { companySlug, projectSlug, setId, responseDetail: "full" },
     });
 };
 const projectCatalogSkill = (value) => {

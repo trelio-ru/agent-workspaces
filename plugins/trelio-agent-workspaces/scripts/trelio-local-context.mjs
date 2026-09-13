@@ -2076,15 +2076,7 @@ export const protectLocalActionArguments = async ({
       const statusDictionaryLabel = (field === "title" || field === "name" || field === "label")
         && Object.hasOwn(current, "code")
         && (Object.hasOwn(current, "color") || Object.hasOwn(current, "isFinal"));
-      // A regular-work set slug is content only while create_set introduces it.
-      // The same field is an opaque locator for every later operation, so
-      // protecting it unconditionally would make exact reads and revision CAS
-      // address a different set. Restrict the special case to the root object.
-      const regularWorkCreateSlug = nativeTool === "create_or_update_regular_work"
-        && normalizedArguments.operation === "create_set"
-        && objectPath === "$"
-        && field === "setSlug";
-      const protectedField = (LOCAL_ACTION_PROTECTED_FIELDS.has(field) || regularWorkCreateSlug)
+      const protectedField = LOCAL_ACTION_PROTECTED_FIELDS.has(field)
         && !statusDictionaryLabel
         && !isEmptyLocalActionValue(child)
         && !isEncryptedLocalActionMarker(child)
@@ -2100,9 +2092,7 @@ export const protectLocalActionArguments = async ({
         // They fail closed on the new field contract without sending plaintext.
         nativeTool === "delete_workspace" && field === "reason"
           ? "deletion_reason"
-          : regularWorkCreateSlug
-            ? "slug"
-            : LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
+          : LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
       else result[field] = await visit(child, `${objectPath}.${field}`);
     }
     if (protectedEntries.length === 0) return result;
@@ -2117,7 +2107,7 @@ export const protectLocalActionArguments = async ({
           values[itemField] = item;
           return buildCompanyEncryptedTextMarker(entityId, itemField);
         });
-      } else if ((field === "slug" || field === "setSlug") && typeof child === "string") {
+      } else if (field === "slug" && typeof child === "string") {
         values[canonicalField] = child;
         result[field] = `e-${entityId}`;
       } else {
@@ -5166,7 +5156,6 @@ const listRegularWorkFromMirror = (mirror, rawInput) => {
     const current = Array.isArray(payload.current) ? payload.current : [];
     return {
       id: set.id ?? document.id,
-      slug: set.slug,
       title: set.title ?? document.title,
       project: payload.project ?? projectById.get(document.projectId) ?? null,
       schedule: set.schedule ?? null,
@@ -5206,7 +5195,7 @@ const getRegularWorkFromMirror = (mirror, rawInput) => {
   const document = (mirror.contextDocuments ?? []).find((candidate) => (
     candidate.type === "regular_work"
     && matchesProjectScope(candidate)
-    && candidate.payload?.set?.slug === rawInput?.setSlug
+    && candidate.payload?.set?.id === rawInput?.setId
   ));
   if (!document) {
     throw new TrelioLocalContextError(

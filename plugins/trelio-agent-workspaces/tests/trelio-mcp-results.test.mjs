@@ -76,7 +76,7 @@ test("local regular-work detail uses the generated native response projection", 
   const payload = {
     company: { slug: "demo" },
     project: { slug: "mobile" },
-    set: { slug: "weekly", revision: 4 },
+    set: { id: "99999999-9999-4999-8999-999999999999", revision: 4 },
     items: [{ id: "item-1", revision: 2 }],
     current: [{ id: "occurrence-1", isDone: false }],
     history: { occurrences: Array.from({ length: 20 }, (_, index) => ({ id: `old-${index}` })) },
@@ -87,7 +87,7 @@ test("local regular-work detail uses the generated native response projection", 
   const compact = JSON.parse(compactLocalNativeMcpResult(
     "get_regular_work",
     envelope,
-    { companySlug: "demo", projectSlug: "mobile", setSlug: "weekly" },
+    { companySlug: "demo", projectSlug: "mobile", setId: "99999999-9999-4999-8999-999999999999" },
   ).content[0].text);
   assert.equal(compact.deferredData.tool, "get_regular_work");
   assert.deepEqual(compact.deferredData.fields, ["history", "preparation", "options"]);

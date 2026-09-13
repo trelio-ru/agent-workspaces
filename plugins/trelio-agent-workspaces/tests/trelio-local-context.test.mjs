@@ -692,12 +692,11 @@ test("native regular-work reads preserve catalog and exact-detail shapes from th
       project: regularMirror.projects[0],
       set: {
         id: setId,
-        slug: "e-99999999-9999-4999-8999-999999999999",
         title: "Еженедельная сверка",
         state: "active",
         revision: 4,
         schedule: { scheduleKind: "weekly", interval: 2, weekdays: ["mon", "thu"] },
-        publicPath: "/acme/mobile/routines/e-99999999-9999-4999-8999-999999999999/",
+        publicPath: `/acme/mobile/routines/${setId}/`,
         updatedAt: "2026-09-13T09:00:00.000Z",
       },
       items: [{
@@ -720,7 +719,7 @@ test("native regular-work reads preserve catalog and exact-detail shapes from th
     companySlug: "acme",
   });
   assert.equal(listed.sets.length, 1);
-  assert.equal(listed.sets[0].slug, "e-99999999-9999-4999-8999-999999999999");
+  assert.equal(listed.sets[0].id, setId);
   assert.deepEqual(listed.sets[0].current, { completed: 1, total: 1 });
   assert.deepEqual(listed.sets[0].responsible, ["Анна"]);
   assert.equal(listed.projects[0].canEdit, true);
@@ -729,7 +728,7 @@ test("native regular-work reads preserve catalog and exact-detail shapes from th
   const exact = handleNativeLocalContextRead(regularMirror, "get_regular_work", {
     companySlug: "acme",
     projectSlug: "mobile-legacy",
-    setSlug: "e-99999999-9999-4999-8999-999999999999",
+    setId,
   });
   assert.equal(exact.set.revision, 4);
   assert.equal(exact.items[0].title, "Проверить отчёт");
@@ -1202,7 +1201,7 @@ test("local action protects nested task content and converts Markdown before upl
   );
 });
 
-test("encrypted regular-work actions protect new content but preserve existing locators", async () => {
+test("encrypted regular-work actions protect new content but preserve structural set ids", async () => {
   const device = await createAgentEncryptionDevice();
   const companyEncryption = {
     runtime: {
@@ -1226,7 +1225,6 @@ test("encrypted regular-work actions protect new content but preserve existing l
       operation: "create_set",
       companySlug: "acme",
       projectSlug: "mobile",
-      setSlug: "weekly-finance",
       title: "Финансовая сверка",
       description: "Закрытый порядок проверки",
       schedule: { scheduleKind: "weekly", interval: 2, weekdays: ["mon", "thu"] },
@@ -1235,7 +1233,7 @@ test("encrypted regular-work actions protect new content but preserve existing l
     companyEncryption,
     mirror,
   });
-  assert.match(create.value.setSlug, /^e-[0-9a-f-]{36}$/u);
+  assert.equal(Object.hasOwn(create.value, "setId"), false);
   assert.match(create.value.title, /^~e1:/u);
   assert.match(create.value.description, /^~e1:/u);
   assert.deepEqual(create.value.schedule, {
@@ -1243,26 +1241,25 @@ test("encrypted regular-work actions protect new content but preserve existing l
     interval: 2,
     weekdays: ["mon", "thu"],
   });
-  assert.doesNotMatch(JSON.stringify(create.value), /weekly-finance|Финансовая|Закрытый/u);
+  assert.doesNotMatch(JSON.stringify(create.value), /Финансовая|Закрытый/u);
   const createPayload = await decryptCompanyPayload({
     encryptedPayload: create.payloads[0],
     scopePrivateKey: device.privateKeys.encryptionPrivateKey,
     scopePrivateJwk: device.privateBundle.encryptionPrivateJwk,
   });
   assert.deepEqual(createPayload.values, {
-    slug: "weekly-finance",
     title: "Финансовая сверка",
     description: "Закрытый порядок проверки",
   });
 
-  const existingSetSlug = "e-99999999-9999-4999-8999-999999999999";
+  const existingSetId = "99999999-9999-4999-8999-999999999999";
   const update = await protectLocalActionArguments({
     nativeTool: "create_or_update_regular_work",
     arguments: {
       operation: "update_set",
       companySlug: "acme",
       projectSlug: "mobile",
-      setSlug: existingSetSlug,
+      setId: existingSetId,
       title: "Новое название",
       description: "Новое описание",
       state: "active",
@@ -1273,7 +1270,7 @@ test("encrypted regular-work actions protect new content but preserve existing l
     companyEncryption,
     mirror,
   });
-  assert.equal(update.value.setSlug, existingSetSlug);
+  assert.equal(update.value.setId, existingSetId);
   assert.match(update.value.title, /^~e1:/u);
 
   const item = await protectLocalActionArguments({
@@ -1282,7 +1279,7 @@ test("encrypted regular-work actions protect new content but preserve existing l
       operation: "create_item",
       companySlug: "acme",
       projectSlug: "mobile",
-      setSlug: existingSetSlug,
+      setId: existingSetId,
       item: {
         mode: "task",
         title: "Подготовить закрытый отчёт",
@@ -1297,7 +1294,7 @@ test("encrypted regular-work actions protect new content but preserve existing l
     companyEncryption,
     mirror,
   });
-  assert.equal(item.value.setSlug, existingSetSlug);
+  assert.equal(item.value.setId, existingSetId);
   assert.match(item.value.item.title, /^~e1:/u);
   assert.equal(Object.hasOwn(item.value.item.task, "descriptionMarkdown"), false);
   assert.equal(item.value.item.task.descriptionJson.$trelioE2ee.v, 1);
