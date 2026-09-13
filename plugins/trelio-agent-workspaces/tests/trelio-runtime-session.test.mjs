@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -11,10 +20,19 @@ import { fileURLToPath } from "node:url";
 import { detectAgentRuntimeAttestation } from "../scripts/trelio-runtime-attestation.mjs";
 import {
   buildRuntimeSessionProof,
+  cleanupStaleRuntimeSessions,
   formatRuntimeHookFailure,
   isProtectedTrelioToolName,
   resolveTrelioMcpToolName,
 } from "../scripts/trelio-runtime-session.mjs";
+import {
+  RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS,
+  RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
+} from "../scripts/trelio-runtime-session-limits.mjs";
+import {
+  ensurePrivateDirectory,
+  writePrivateJsonFile,
+} from "../scripts/trelio-workspace.mjs";
 
 const hookScriptPath = fileURLToPath(
   new URL("../scripts/trelio-runtime-session.mjs", import.meta.url),
@@ -674,6 +692,18 @@ test("resume and compact preserve the pinned observation while clear starts a ne
   };
 
   try {
+    const staleStatePath = path.join(path.dirname(statePath), "expired-from-crash.json");
+    const { privateKey } = crypto.generateKeyPairSync("ed25519");
+    await ensurePrivateDirectory(path.dirname(statePath));
+    await writePrivateJsonFile(staleStatePath, {
+      schemaVersion: 1,
+      runtimeSessionId: "44444444-4444-4444-8444-444444444444",
+      expiresAt: "2025-01-01T00:00:00.000Z",
+      privateKeyPkcs8: privateKey.export({
+        type: "pkcs8",
+        format: "der",
+      }).toString("base64url"),
+    });
     const startup = await runHook({
       hook_event_name: "SessionStart",
       source: "startup",
@@ -681,6 +711,7 @@ test("resume and compact preserve the pinned observation while clear starts a ne
       model: "gpt-5.6-sol",
     }, environment);
     assert.deepEqual(startup, { exitCode: 0, stdout: "", stderr: "" });
+    await assert.rejects(readFile(staleStatePath), { code: "ENOENT" });
     const initial = JSON.parse(await readFile(statePath, "utf8"));
     assert.equal(initial.observation.modelId, "gpt-5.6-sol");
 
@@ -705,6 +736,114 @@ test("resume and compact preserve the pinned observation while clear starts a ne
     assert.deepEqual(cleared, { exitCode: 0, stdout: "", stderr: "" });
     const replaced = JSON.parse(await readFile(statePath, "utf8"));
     assert.equal(replaced.observation.modelId, "gpt-5.4");
+  } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
+test("bounded cleanup removes only provably stale runtime residue", async () => {
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-cleanup-"));
+  const configDirectory = path.join(temporaryHome, ".config", "trelio", "workspace-bridge");
+  const runtimeDirectory = path.join(configDirectory, "runtime-sessions");
+  const nowMilliseconds = Date.parse("2026-09-13T12:00:00.000Z");
+  const { privateKey } = crypto.generateKeyPairSync("ed25519");
+  const privateKeyPkcs8 = privateKey.export({
+    type: "pkcs8",
+    format: "der",
+  }).toString("base64url");
+  const statePath = (name) => path.join(runtimeDirectory, `${name}.json`);
+  const writeState = async (name, state) => {
+    const filePath = statePath(name);
+    await writePrivateJsonFile(filePath, state);
+    return filePath;
+  };
+  const registeredState = (runtimeSessionId, expiresAt) => ({
+    schemaVersion: 1,
+    runtimeSessionId,
+    expiresAt,
+    privateKeyPkcs8,
+  });
+
+  try {
+    await ensurePrivateDirectory(runtimeDirectory);
+    const activePath = await writeState("active", registeredState(
+      "11111111-1111-4111-8111-111111111111",
+      new Date(nowMilliseconds + 60_000).toISOString(),
+    ));
+    const expiredPath = await writeState("expired", registeredState(
+      "22222222-2222-4222-8222-222222222222",
+      new Date(nowMilliseconds - 60_000).toISOString(),
+    ));
+    const freshPendingPath = await writeState("pending-fresh", {
+      schemaVersion: 1,
+      pending: true,
+      observation: { modelId: "gpt-5.6-sol" },
+      createdAt: new Date(nowMilliseconds - 60_000).toISOString(),
+    });
+    const stalePendingPath = await writeState("pending-stale", {
+      schemaVersion: 1,
+      pending: true,
+      observation: { modelId: "gpt-5.6-sol" },
+      createdAt: new Date(
+        nowMilliseconds - RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS - 1_000,
+      ).toISOString(),
+    });
+    const invalidPath = await writeState("invalid", {
+      schemaVersion: 1,
+      pending: true,
+      observation: { modelId: "gpt-5.6-sol" },
+    });
+    const lockedExpiredPath = await writeState("expired-locked", registeredState(
+      "33333333-3333-4333-8333-333333333333",
+      new Date(nowMilliseconds - 60_000).toISOString(),
+    ));
+    const liveLockPath = `${lockedExpiredPath}.lock`;
+    await mkdir(liveLockPath, { mode: 0o700 });
+    const liveLockTime = new Date(nowMilliseconds);
+    await utimes(liveLockPath, liveLockTime, liveLockTime);
+    const staleLockPath = `${statePath("orphaned")}.lock`;
+    await mkdir(staleLockPath, { mode: 0o700 });
+    const staleLockTime = new Date(
+      nowMilliseconds - RUNTIME_STATE_LOCK_STALE_MILLISECONDS - 1_000,
+    );
+    await utimes(staleLockPath, staleLockTime, staleLockTime);
+
+    assert.deepEqual(await cleanupStaleRuntimeSessions({
+      configDirectory,
+      nowMilliseconds,
+    }), {
+      expiredRemoved: 1,
+      pendingRemoved: 1,
+      staleLocksRemoved: 1,
+    });
+    await Promise.all([
+      assert.rejects(readFile(expiredPath), { code: "ENOENT" }),
+      assert.rejects(readFile(stalePendingPath), { code: "ENOENT" }),
+      assert.rejects(stat(staleLockPath), { code: "ENOENT" }),
+    ]);
+    await Promise.all([
+      readFile(activePath),
+      readFile(freshPendingPath),
+      readFile(invalidPath),
+      readFile(lockedExpiredPath),
+      stat(liveLockPath),
+    ]);
+
+    // Once the exact live lock crosses the shared 45-second recovery fence,
+    // the next bounded sweep can reclaim both the lock and expired state.
+    await utimes(liveLockPath, staleLockTime, staleLockTime);
+    assert.deepEqual(await cleanupStaleRuntimeSessions({
+      configDirectory,
+      nowMilliseconds,
+    }), {
+      expiredRemoved: 1,
+      pendingRemoved: 0,
+      staleLocksRemoved: 1,
+    });
+    await Promise.all([
+      assert.rejects(readFile(lockedExpiredPath), { code: "ENOENT" }),
+      assert.rejects(stat(liveLockPath), { code: "ENOENT" }),
+    ]);
   } finally {
     await rm(temporaryHome, { recursive: true, force: true });
   }

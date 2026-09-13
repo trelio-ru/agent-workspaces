@@ -324,12 +324,16 @@ runtime позже не отзывает уже допущенную client sess
 
 Hook запускает `PreToolUse` только для Trelio MCP, защищает параллельную первую
 регистрацию локальной блокировкой и удаляет private key до bounded сетевого
-cleanup на `SessionEnd`. Lifecycle matcher остаётся wildcard: новые client event
-sources обрабатываются скриптом без изменения `hooks.json`. Сам hook не зависит
-от bare `node`: на macOS/Linux он использует bundled `launch-trelio-node`, а на
-Windows отдельный quote-free `commandWindows` передаёт запуск bundled `.cmd`
-launcher. Изменение hook definition может потребовать одно новое одобрение в
-клиенте; дальнейшие behavior-only исправления – нет.
+cleanup на `SessionEnd`. Если lifecycle завершился аварийно, следующий
+`SessionStart` bounded и без backend-запросов удаляет только истёкшие local
+states, `pending` старше 24 часов и пустые locks старше 45 секунд; свежий
+`pending` сам по себе не означает зависший процесс. Lifecycle matcher остаётся
+wildcard: новые client event sources обрабатываются скриптом без изменения
+`hooks.json`. Сам hook не зависит от bare `node`: на macOS/Linux он использует
+bundled `launch-trelio-node`, а на Windows отдельный quote-free `commandWindows`
+передаёт запуск bundled `.cmd` launcher. Изменение hook definition может
+потребовать одно новое одобрение в клиенте; дальнейшие behavior-only
+исправления – нет.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

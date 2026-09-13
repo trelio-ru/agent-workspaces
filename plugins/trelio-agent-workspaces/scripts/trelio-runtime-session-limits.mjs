@@ -10,6 +10,11 @@ export const PRE_TOOL_USE_TIMEOUT_SECONDS = 30;
 export const RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS = 11_000;
 export const RUNTIME_STATE_LOCK_WAIT_MILLISECONDS = 5_000;
 
+// A pending record exists before the first protected call creates a server
+// session. Preserve it for the same 24-hour lifecycle as a registered runtime
+// session, then let a later SessionStart observe the current client afresh.
+export const RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS = 24 * 60 * 60 * 1_000;
+
 // A lock can remain live while the hook writes and verifies private state
 // after registration. Reclaim it only beyond the complete host allowance,
 // with extra room for process teardown; otherwise a second call could

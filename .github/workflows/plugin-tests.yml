@@ -169,7 +169,7 @@ jobs:
       - name: Run Windows hook launcher regression
         run: >-
           node --test
-          --test-name-pattern="configured platform hook launcher"
+          --test-name-pattern="configured platform hook launcher|resume and compact|bounded cleanup"
           plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
 
       # Include actual private ACL work in the hook's configured wall-clock

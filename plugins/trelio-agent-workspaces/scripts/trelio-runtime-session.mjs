@@ -9,12 +9,14 @@
  * tool output, MCP arguments, Workspace or backend storage.
  */
 import crypto from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { detectAgentRuntimeAttestation } from "./trelio-runtime-attestation.mjs";
 import {
+  RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS,
   RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS,
   RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
   RUNTIME_STATE_LOCK_WAIT_MILLISECONDS,
@@ -55,6 +57,12 @@ const LOCAL_ACTION_HOST_TOOL_PATTERNS = [
   /^(?:mcp[:./-])?trelio-remote-skills[:./-]continue_trelio_local_action$/iu,
 ];
 const RUNTIME_END_TIMEOUT_MILLISECONDS = 1_500;
+const RUNTIME_STATE_EXPIRY_GRACE_MILLISECONDS = 30_000;
+// SessionStart has a ten-second host budget, including cold Node startup and
+// private ACL checks. A bounded sweep makes steady progress without letting a
+// large or damaged owner-only directory delay the lifecycle hook indefinitely.
+const RUNTIME_STATE_CLEANUP_SCAN_LIMIT = 256;
+const RUNTIME_STATE_CLEANUP_REMOVE_LIMIT = 64;
 let workspaceBridgeModulePromise;
 
 // PreToolUse вызывается и для нетрелиевских инструментов. Большой bridge
@@ -118,11 +126,16 @@ const resolveToolInput = (hookInput) => {
   }
 };
 
-const statePathFor = async (clientSessionId, origin) => {
+const resolveRuntimeStateDirectory = async (configDirectory = null) => {
+  if (configDirectory) return path.join(configDirectory, "runtime-sessions");
   const { resolveWorkspaceBridgeConfigDirectory } = await loadWorkspaceBridgeModule();
+  return path.join(resolveWorkspaceBridgeConfigDirectory(), "runtime-sessions");
+};
+
+const statePathFor = async (clientSessionId, origin) => {
+  const runtimeDirectory = await resolveRuntimeStateDirectory();
   return path.join(
-    resolveWorkspaceBridgeConfigDirectory(),
-    "runtime-sessions",
+    runtimeDirectory,
     `${crypto.createHash("sha256").update(`${origin}\n${clientSessionId}`).digest("hex")}.json`,
   );
 };
@@ -213,6 +226,153 @@ const readPendingObservation = async (filePath) => {
     && typeof state.observation === "object"
     ? state.observation
     : null;
+};
+
+const staleRuntimeStateReason = (state, nowMilliseconds) => {
+  if (
+    state?.schemaVersion === 1
+    && state.pending === true
+    && state.observation
+    && typeof state.observation === "object"
+  ) {
+    const createdAtMilliseconds = Date.parse(String(state.createdAt || ""));
+    return !Number.isNaN(createdAtMilliseconds)
+      && createdAtMilliseconds
+        <= nowMilliseconds - RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS
+      ? "pending"
+      : null;
+  }
+  if (
+    state?.schemaVersion === 1
+    && UUID_PATTERN.test(String(state.runtimeSessionId || ""))
+    && typeof state.privateKeyPkcs8 === "string"
+  ) {
+    const expiresAtMilliseconds = Date.parse(String(state.expiresAt || ""));
+    return !Number.isNaN(expiresAtMilliseconds)
+      && expiresAtMilliseconds
+        <= nowMilliseconds + RUNTIME_STATE_EXPIRY_GRACE_MILLISECONDS
+      ? "expired"
+      : null;
+  }
+  // Unknown or damaged records stay visible to doctor as invalid. Automatic
+  // cleanup only removes states whose safe lifecycle expiry can be proved.
+  return null;
+};
+
+const readRuntimeStateForCleanup = async (filePath) => {
+  // Cleanup never uses the record as authorization, but it still reads only a
+  // bounded regular file under the already-verified owner-only directory.
+  // Avoiding the normal per-file Windows ACL hardening is essential here: one
+  // SessionStart may inspect hundreds of old records within a ten-second host
+  // budget, while any malformed or widened file is simply preserved.
+  const flags = fsConstants.O_RDONLY
+    | (process.platform === "win32" ? 0 : (fsConstants.O_NOFOLLOW || 0));
+  let handle;
+  try {
+    handle = await fs.open(filePath, flags);
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size > 64 * 1_024) return null;
+    if (process.platform !== "win32") {
+      const currentUserId = typeof process.getuid === "function" ? process.getuid() : null;
+      if (
+        (currentUserId !== null && metadata.uid !== currentUserId)
+        || (metadata.mode & 0o777) !== 0o600
+      ) return null;
+    }
+    return JSON.parse(await handle.readFile("utf8"));
+  } catch {
+    return null;
+  } finally {
+    if (handle) await handle.close().catch(() => undefined);
+  }
+};
+
+const removeStaleRuntimeLock = async (lockPath, nowMilliseconds) => {
+  try {
+    const metadata = await fs.lstat(lockPath);
+    if (
+      !metadata.isDirectory()
+      || metadata.isSymbolicLink()
+      || nowMilliseconds - metadata.mtimeMs <= RUNTIME_STATE_LOCK_STALE_MILLISECONDS
+    ) return false;
+    // Runtime registration locks are empty by construction. rmdir therefore
+    // refuses a replaced or malformed non-empty directory instead of deleting
+    // arbitrary contents.
+    await fs.rmdir(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const removeStaleRuntimeState = async (filePath, nowMilliseconds) => {
+  const lockPath = `${filePath}.lock`;
+  try {
+    // Reuse the registration lock namespace, but never wait during global
+    // housekeeping: a live registration owns the state and must win.
+    await fs.mkdir(lockPath, { mode: 0o700 });
+    if (process.platform !== "win32") await fs.chmod(lockPath, 0o700);
+  } catch {
+    return null;
+  }
+
+  try {
+    const state = await readRuntimeStateForCleanup(filePath);
+    const reason = staleRuntimeStateReason(state, nowMilliseconds);
+    if (!reason) return null;
+    await fs.rm(filePath, { force: true });
+    return reason;
+  } catch {
+    return null;
+  } finally {
+    await fs.rmdir(lockPath).catch(() => undefined);
+  }
+};
+
+/**
+ * Recover lifecycle residue left when a client crashes or omits SessionEnd.
+ * The sweep is local, bounded and fail-closed: it never contacts the backend,
+ * waits for a live lock or removes a record without proving its expiry.
+ */
+export const cleanupStaleRuntimeSessions = async ({
+  configDirectory = null,
+  nowMilliseconds = Date.now(),
+} = {}) => {
+  const runtimeDirectory = await resolveRuntimeStateDirectory(configDirectory);
+  const { ensurePrivateDirectory } = await loadWorkspaceBridgeModule();
+  // One directory-level ACL verification gives the sweep a private namespace.
+  // State used to sign a proof still goes through the stricter per-file reader.
+  await ensurePrivateDirectory(runtimeDirectory);
+  const entries = await fs.readdir(runtimeDirectory, { withFileTypes: true });
+
+  const staleLockEntries = entries
+    .filter((entry) => entry.isDirectory() && entry.name.endsWith(".json.lock"))
+    .slice(0, RUNTIME_STATE_CLEANUP_SCAN_LIMIT);
+  let staleLocksRemoved = 0;
+  for (const entry of staleLockEntries) {
+    if (staleLocksRemoved >= RUNTIME_STATE_CLEANUP_REMOVE_LIMIT) break;
+    if (await removeStaleRuntimeLock(
+      path.join(runtimeDirectory, entry.name),
+      nowMilliseconds,
+    )) staleLocksRemoved += 1;
+  }
+
+  const stateEntries = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .slice(0, RUNTIME_STATE_CLEANUP_SCAN_LIMIT);
+  let expiredRemoved = 0;
+  let pendingRemoved = 0;
+  for (const entry of stateEntries) {
+    if (expiredRemoved + pendingRemoved >= RUNTIME_STATE_CLEANUP_REMOVE_LIMIT) break;
+    const reason = await removeStaleRuntimeState(
+      path.join(runtimeDirectory, entry.name),
+      nowMilliseconds,
+    );
+    if (reason === "expired") expiredRemoved += 1;
+    if (reason === "pending") pendingRemoved += 1;
+  }
+
+  return { expiredRemoved, pendingRemoved, staleLocksRemoved };
 };
 
 const isTransientError = (error) => (
@@ -397,6 +557,11 @@ const runSessionStart = async (hookInput) => {
   const filePath = await statePathFor(clientSessionId, origin);
   const source = typeof hookInput.source === "string" ? hookInput.source : "startup";
   let stateToEnd = null;
+
+  // SessionEnd is best-effort and can be skipped when the desktop client or OS
+  // terminates abruptly. Recover unrelated expired residue before establishing
+  // the current session; cleanup errors must not block an otherwise valid hook.
+  await cleanupStaleRuntimeSessions().catch(() => undefined);
 
   await withRuntimeStateLock(filePath, async () => {
     const existing = await readRuntimeState(filePath);

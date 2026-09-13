@@ -131,7 +131,12 @@ pending, expired и invalid runtime sessions. Поля с token, pairing ID,
 runtime-session ID или private key в отчёт не попадают. Doctor проверяет
 целостность hook-файла, но не может увидеть client trust; поэтому
 `approvalStatus=client_managed_unknown` нельзя трактовать как включённые или
-выключенные Hooks.
+выключенные Hooks. `pending` означает сохранённое наблюдение до первого
+protected call, а не автоматически зависший процесс. После пропущенного
+`SessionEnd` следующий `SessionStart` ограниченно удаляет локальные registered
+states с уже истёкшим сроком, `pending` старше 24 часов и пустые registration
+locks старше общего безопасного порога. Свежие и неизвестные записи остаются
+нетронутыми; invalid state по-прежнему виден в doctor для отдельной диагностики.
 
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 
@@ -251,7 +256,12 @@ review после обновления плагина.
 
 Параллельные первые protected calls разделяют одну регистрацию, а SessionEnd
 сначала удаляет локальный private key и только затем делает bounded best-effort
-server cleanup.
+server cleanup. Если desktop-клиент или ОС завершились без `SessionEnd`, каждый
+следующий `SessionStart` выполняет bounded local sweep: не ждёт живые locks,
+не обращается к backend и удаляет только доказанно истёкшие states. За один
+запуск удаляется не больше 64 states и 64 stale locks, поэтому cleanup не
+расходует весь десятисекундный lifecycle budget; оставшееся состояние
+убирается следующими запусками.
 
 Agent Run закрепляет snapshot и hook-observed runtime; exact open command
 передаёт bridge только `--runtime-session UUID`. Сессия живёт до SessionEnd или
