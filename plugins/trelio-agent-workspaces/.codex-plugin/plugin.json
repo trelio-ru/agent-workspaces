@@ -1,7 +1,7 @@
 {
   "name": "trelio-agent-workspaces",
-  "version": "2.0.15",
-  "description": "Production integration for private Trelio meetings, guided setup diagnostics, working-folder onboarding, guarded project and private-skill management, scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and backend-managed signed runtimes.",
+  "version": "2.1.0",
+  "description": "Production integration for private Trelio meetings and regular work, guided setup diagnostics, working-folder onboarding, guarded project and private-skill management, scoped Agent Workspaces, Agent Secrets, live skill catalogs, declarative Remote MCP, and backend-managed signed runtimes.",
   "author": {
     "name": "Trelio"
   },
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",
-    "longDescription": "Проверяет установку Trelio и состояние hooks, Node.js, Git, MCP и локального bridge без вывода секретов; помогает настроить Trelio в текущей рабочей папке Codex или Claude Code, подключает Trelio MCP, сохраняет private-встречи, безопасно управляет доступом к проектам, приватными навыками компаний, поиском задач и рабочими пространствами, закреплённым контекстом, одноразовой защищённой выдачей Agent Secrets и актуальными backend-managed навыками через декларативный Remote MCP и независимо выпускаемые signed runtimes.",
+    "longDescription": "Проверяет установку Trelio и состояние hooks, Node.js, Git, MCP и локального bridge без вывода секретов; помогает настроить Trelio в текущей рабочей папке Codex или Claude Code, подключает Trelio MCP, сохраняет private-встречи, безопасно управляет регулярными работами, доступом к проектам, приватными навыками компаний, поиском задач и рабочими пространствами, закреплённым контекстом, одноразовой защищённой выдачей Agent Secrets и актуальными backend-managed навыками через декларативный Remote MCP и независимо выпускаемые signed runtimes.",
     "developerName": "Trelio",
     "category": "Productivity",
     "capabilities": [],

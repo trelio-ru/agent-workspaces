@@ -2,7 +2,7 @@
 export const MCP_RESPONSE_PROJECTION_VERSION = 1;
 export const MCP_RESPONSE_DETAIL_TOOLS = new Set([
     "get_contact", "get_registry", "get_knowledge_base_page", "get_project_meta",
-    "get_task_create_meta", "list_recent_activity", "list_agent_skills",
+    "get_task_create_meta", "get_regular_work", "list_recent_activity", "list_agent_skills",
 ]);
 const record = (value) => (value !== null && typeof value === "object" && !Array.isArray(value)
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
@@ -98,6 +98,9 @@ const meetingTools = new Set([
     "get_meeting", "create_meeting", "set_meeting_access", "record_meeting_result",
     "plan_meeting_context_updates", "confirm_meeting_context_updates", "record_meeting_context_update_outcome",
 ]);
+const regularWorkTools = new Set([
+    "get_regular_work", "create_or_update_regular_work", "complete_regular_check",
+]);
 const peopleTools = new Set([
     "get_project_meta", "get_task_create_meta", "resolve_user", "resolve_company_member", "resolve_status",
 ]);
@@ -181,6 +184,32 @@ const projectTaskMutation = (payload, argumentsObject) => {
         delete result.descriptionJsonExample;
     }
     return result;
+};
+const projectRegularWorkDetail = (value) => mapFields(value, {
+    options: (item) => mapFields(item, {
+        availableMembers: persons,
+        availableMemberGroups: persons,
+        members: persons,
+        groups: persons,
+    }),
+});
+const deferRegularWorkDetail = (value, args) => {
+    const payload = record(projectRegularWorkDetail(value));
+    if (!payload)
+        return value;
+    const company = record(payload.company);
+    const project = record(payload.project);
+    const set = record(payload.set);
+    const companySlug = company?.slug ?? args.companySlug;
+    const projectSlug = project?.slug ?? args.projectSlug;
+    const setSlug = set?.slug ?? args.setSlug;
+    if (typeof companySlug !== "string" || typeof projectSlug !== "string" || typeof setSlug !== "string") {
+        return payload;
+    }
+    return addDeferred(payload, ["history", "preparation", "options"], {
+        tool: "get_regular_work",
+        arguments: { companySlug, projectSlug, setSlug, responseDetail: "full" },
+    });
 };
 const projectCatalogSkill = (value) => {
     const skill = record(value);
@@ -344,6 +373,12 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
             participants: list((item) => mapFields(item, { member: person })),
             additionalAccess: list(memberLink),
         });
+    if (regularWorkTools.has(toolName)) {
+        if (toolName === "get_regular_work")
+            return deferRegularWorkDetail(payload, args);
+        const detail = record(payload.regularWork);
+        return detail ? { ...payload, regularWork: deferRegularWorkDetail(detail, args) } : payload;
+    }
     if (toolName === "list_agent_skills" && Array.isArray(payload.skills)) {
         return { ...payload, skills: payload.skills.map(projectCatalogSkill), skillDetails: {
                 tool: "get_agent_skill", instruction: "Перед использованием загрузите точный skillId в той же компании/проекте: полный текст инструкций, схему подключения и декларацию исполнения.",

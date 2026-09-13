@@ -2076,7 +2076,15 @@ export const protectLocalActionArguments = async ({
       const statusDictionaryLabel = (field === "title" || field === "name" || field === "label")
         && Object.hasOwn(current, "code")
         && (Object.hasOwn(current, "color") || Object.hasOwn(current, "isFinal"));
-      const protectedField = LOCAL_ACTION_PROTECTED_FIELDS.has(field)
+      // A regular-work set slug is content only while create_set introduces it.
+      // The same field is an opaque locator for every later operation, so
+      // protecting it unconditionally would make exact reads and revision CAS
+      // address a different set. Restrict the special case to the root object.
+      const regularWorkCreateSlug = nativeTool === "create_or_update_regular_work"
+        && normalizedArguments.operation === "create_set"
+        && objectPath === "$"
+        && field === "setSlug";
+      const protectedField = (LOCAL_ACTION_PROTECTED_FIELDS.has(field) || regularWorkCreateSlug)
         && !statusDictionaryLabel
         && !isEmptyLocalActionValue(child)
         && !isEncryptedLocalActionMarker(child)
@@ -2090,7 +2098,11 @@ export const protectLocalActionArguments = async ({
       if (protectedField) protectedEntries.push([field, child,
         // The existing `reason` input is already encrypted by older hosts.
         // They fail closed on the new field contract without sending plaintext.
-        nativeTool === "delete_workspace" && field === "reason" ? "deletion_reason" : LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
+        nativeTool === "delete_workspace" && field === "reason"
+          ? "deletion_reason"
+          : regularWorkCreateSlug
+            ? "slug"
+            : LOCAL_ACTION_PROTECTED_FIELDS.get(field)]);
       else result[field] = await visit(child, `${objectPath}.${field}`);
     }
     if (protectedEntries.length === 0) return result;
@@ -2105,7 +2117,7 @@ export const protectLocalActionArguments = async ({
           values[itemField] = item;
           return buildCompanyEncryptedTextMarker(entityId, itemField);
         });
-      } else if (field === "slug" && typeof child === "string") {
+      } else if ((field === "slug" || field === "setSlug") && typeof child === "string") {
         values[canonicalField] = child;
         result[field] = `e-${entityId}`;
       } else {
@@ -4177,14 +4189,16 @@ export const listCompanyContextMirror = (
         projectSlug: workspace.project?.slug ?? null,
       })
     ));
-  } else if (["knowledge_pages", "contacts", "registries", "meetings"].includes(resource)) {
+  } else if (["knowledge_pages", "contacts", "registries", "meetings", "regular_work"].includes(resource)) {
     const expectedType = resource === "knowledge_pages"
       ? "knowledge_page"
       : resource === "contacts"
         ? "contact"
         : resource === "registries"
           ? "registry"
-          : "meeting";
+          : resource === "meetings"
+            ? "meeting"
+            : "regular_work";
     items = (mirror.contextDocuments ?? [])
       .filter((document) => (
         document.type === expectedType
@@ -4201,7 +4215,7 @@ export const listCompanyContextMirror = (
   } else {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
-      "resource must be projects, tasks, workspaces, knowledge_pages, contacts, registries or meetings.",
+      "resource must be projects, tasks, workspaces, knowledge_pages, contacts, registries, meetings or regular_work.",
     );
   }
 
@@ -5102,7 +5116,9 @@ const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
     title: document.title,
     projectSlug: document.projectSlug ?? null,
     revisionToken: document.revisionToken,
-    summary: document.payload?.[type === "knowledge_page" ? "page" : type] ?? null,
+    summary: document.payload?.[
+      type === "knowledge_page" ? "page" : type === "regular_work" ? "set" : type
+    ] ?? null,
   }));
   return {
     schemaVersion: 1,
@@ -5115,6 +5131,93 @@ const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
     hasMore: offset + limit < items.length,
     items: items.slice(offset, offset + limit),
   };
+};
+
+const listRegularWorkFromMirror = (mirror, rawInput) => {
+  if (String(rawInput?.companySlug || "").toLowerCase() !== mirror.company.slug.toLowerCase()) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_COMPANY_MISMATCH",
+      "The regular-work catalog belongs to another company.",
+    );
+  }
+  const documents = (mirror.contextDocuments ?? []).filter((document) => (
+    document.type === "regular_work"
+  ));
+  const projectById = new Map((mirror.projects ?? []).map((project) => [project.id, project]));
+  const canEditByProjectId = new Map(documents.map((document) => [
+    document.projectId,
+    Boolean(document.payload?.viewer?.canEdit),
+  ]));
+  const projects = [...projectById.values()].map((project) => ({
+      ...project,
+      // Company managers are authoritative for every visible project. For an
+      // ordinary member, exact set reads prove edit access only for projects
+      // already represented in this generation; unknown capability stays false.
+      canEdit: Boolean(mirror.viewer?.canManageCompany || canEditByProjectId.get(project.id)),
+      publicPath: project.publicPath
+        ?? `/${encodeURIComponent(mirror.company.slug)}/${encodeURIComponent(project.slug)}/`,
+  }));
+  const sets = documents.map((document) => {
+    const payload = document.payload ?? {};
+    const set = payload.set ?? {};
+    const items = Array.isArray(payload.items)
+      ? payload.items.filter((item) => item?.state !== "archived")
+      : [];
+    const current = Array.isArray(payload.current) ? payload.current : [];
+    return {
+      id: set.id ?? document.id,
+      slug: set.slug,
+      title: set.title ?? document.title,
+      project: payload.project ?? projectById.get(document.projectId) ?? null,
+      schedule: set.schedule ?? null,
+      state: set.state,
+      revision: set.revision,
+      itemCount: items.length,
+      responsible: [...new Set(items.map((item) => item?.responsibleName).filter(Boolean))],
+      current: {
+        completed: current.filter((occurrence) => occurrence?.isDone).length,
+        total: current.length,
+      },
+      hasProblem: current.some((occurrence) => occurrence?.state === "error")
+        || Boolean(payload.preparation?.missing?.length),
+      publicPath: set.publicPath,
+      updatedAt: set.updatedAt,
+    };
+  });
+  return {
+    company: documents[0]?.payload?.company ?? mirror.company,
+    projects,
+    sets,
+    viewer: {
+      memberId: documents[0]?.payload?.viewer?.memberId ?? mirror.viewer?.memberId ?? null,
+      canCreate: projects.some((project) => project.canEdit),
+    },
+  };
+};
+
+const getRegularWorkFromMirror = (mirror, rawInput) => {
+  if (String(rawInput?.companySlug || "").toLowerCase() !== mirror.company.slug.toLowerCase()) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_COMPANY_MISMATCH",
+      "The regular-work set belongs to another company.",
+    );
+  }
+  const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, rawInput?.projectSlug || null);
+  const document = (mirror.contextDocuments ?? []).find((candidate) => (
+    candidate.type === "regular_work"
+    && matchesProjectScope(candidate)
+    && candidate.payload?.set?.slug === rawInput?.setSlug
+  ));
+  if (!document) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "The regular-work set is absent from the current ACL-filtered local company generation.",
+    );
+  }
+  // Unlike generic fetch, the native exact tool returns the domain payload
+  // itself. The shared response projector can then defer history/options in
+  // precisely the same shape as the plain-company MCP response.
+  return document.payload;
 };
 
 const getDomainDocumentFromMirror = (mirror, type, predicate) => {
@@ -5318,6 +5421,8 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
   }
   if (nativeTool === "list_registries") return listDomainDocumentsFromMirror(mirror, "registry", input);
   if (nativeTool === "get_registry") return getRegistryFromMirror(mirror, input);
+  if (nativeTool === "list_regular_work") return listRegularWorkFromMirror(mirror, input);
+  if (nativeTool === "get_regular_work") return getRegularWorkFromMirror(mirror, input);
   if (nativeTool === "search_meetings") return listDomainDocumentsFromMirror(mirror, "meeting", input);
   if (nativeTool === "get_meeting") {
     return getDomainDocumentFromMirror(mirror, "meeting", (document) => document.id === input.meetingId);
@@ -9253,6 +9358,7 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
           "contacts",
           "registries",
           "meetings",
+          "regular_work",
         ],
       },
       offset: { type: "integer", minimum: 0 },

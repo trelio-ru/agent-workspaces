@@ -72,6 +72,36 @@ test("local exact reads restore deferred options without changing errors or huma
   }
 });
 
+test("local regular-work detail uses the generated native response projection", () => {
+  const payload = {
+    company: { slug: "demo" },
+    project: { slug: "mobile" },
+    set: { slug: "weekly", revision: 4 },
+    items: [{ id: "item-1", revision: 2 }],
+    current: [{ id: "occurrence-1", isDone: false }],
+    history: { occurrences: Array.from({ length: 20 }, (_, index) => ({ id: `old-${index}` })) },
+    preparation: { missing: [] },
+    options: { availableMembers: [{ memberId: "member", displayName: "Анна", avatarUrl: "image" }] },
+  };
+  const envelope = { content: [{ type: "text", text: JSON.stringify(payload) }] };
+  const compact = JSON.parse(compactLocalNativeMcpResult(
+    "get_regular_work",
+    envelope,
+    { companySlug: "demo", projectSlug: "mobile", setSlug: "weekly" },
+  ).content[0].text);
+  assert.equal(compact.deferredData.tool, "get_regular_work");
+  assert.deepEqual(compact.deferredData.fields, ["history", "preparation", "options"]);
+  assert.deepEqual(compact.items, payload.items);
+  assert.deepEqual(compact.current, payload.current);
+
+  const full = JSON.parse(compactLocalNativeMcpResult(
+    "get_regular_work",
+    envelope,
+    compact.deferredData.arguments,
+  ).content[0].text);
+  assert.deepEqual(full, payload);
+});
+
 test("local file read carries exactly one full copy with revision and coverage", () => {
   const payload = { text: "Большой файл\n".repeat(500), revisionHead: "exact-head", truncated: true, nextOffset: 500 };
   const original = { structuredContent: payload, content: [{ type: "text", text: payload.text }] };

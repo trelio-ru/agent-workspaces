@@ -677,6 +677,69 @@ test("native task refinement uses controls but not status or people in the local
   }
 });
 
+test("native regular-work reads preserve catalog and exact-detail shapes from the mirror", () => {
+  const regularMirror = structuredClone(mirror);
+  const setId = "99999999-9999-4999-8999-999999999999";
+  regularMirror.contextDocuments.push({
+    id: setId,
+    type: "regular_work",
+    title: "Еженедельная сверка",
+    revisionToken: "f".repeat(64),
+    projectId: "22222222-2222-4222-8222-222222222222",
+    projectSlug: "mobile",
+    payload: {
+      company: regularMirror.company,
+      project: regularMirror.projects[0],
+      set: {
+        id: setId,
+        slug: "e-99999999-9999-4999-8999-999999999999",
+        title: "Еженедельная сверка",
+        state: "active",
+        revision: 4,
+        schedule: { scheduleKind: "weekly", interval: 2, weekdays: ["mon", "thu"] },
+        publicPath: "/acme/mobile/routines/e-99999999-9999-4999-8999-999999999999/",
+        updatedAt: "2026-09-13T09:00:00.000Z",
+      },
+      items: [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        title: "Проверить отчёт",
+        mode: "check",
+        state: "active",
+        responsibleName: "Анна",
+        revision: 2,
+      }],
+      current: [{ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", isDone: true, state: "completed" }],
+      history: { occurrences: [], periodKeys: [] },
+      preparation: { missing: [] },
+      options: { availableMembers: [] },
+      viewer: { memberId: regularMirror.viewer.memberId, canEdit: true },
+    },
+  });
+
+  const listed = handleNativeLocalContextRead(regularMirror, "list_regular_work", {
+    companySlug: "acme",
+  });
+  assert.equal(listed.sets.length, 1);
+  assert.equal(listed.sets[0].slug, "e-99999999-9999-4999-8999-999999999999");
+  assert.deepEqual(listed.sets[0].current, { completed: 1, total: 1 });
+  assert.deepEqual(listed.sets[0].responsible, ["Анна"]);
+  assert.equal(listed.projects[0].canEdit, true);
+  assert.equal(listed.viewer.canCreate, true);
+
+  const exact = handleNativeLocalContextRead(regularMirror, "get_regular_work", {
+    companySlug: "acme",
+    projectSlug: "mobile-legacy",
+    setSlug: "e-99999999-9999-4999-8999-999999999999",
+  });
+  assert.equal(exact.set.revision, 4);
+  assert.equal(exact.items[0].title, "Проверить отчёт");
+  assert.equal(exact.current[0].isDone, true);
+
+  const inventory = listCompanyContextMirror(regularMirror, "regular_work", 0, 50, "mobile");
+  assert.equal(inventory.total, 1);
+  assert.equal(inventory.items[0].type, "regular_work");
+});
+
 test("local action schema stays provider-neutral and does not advertise crypto mechanics", () => {
   assert.equal(TRELIO_LOCAL_ACTION_TOOL.name, "continue_trelio_local_action");
   assert.deepEqual(TRELIO_LOCAL_ACTION_TOOL.inputSchema.required, [
@@ -1137,6 +1200,110 @@ test("local action protects nested task content and converts Markdown before upl
     }),
     (error) => error?.code === "LOCAL_ACTION_CUSTOM_FIELD_TYPE_UNKNOWN",
   );
+});
+
+test("encrypted regular-work actions protect new content but preserve existing locators", async () => {
+  const device = await createAgentEncryptionDevice();
+  const companyEncryption = {
+    runtime: {
+      company: { id: "11111111-1111-4111-8111-111111111111", slug: "acme" },
+      scope: {
+        id: "22222222-2222-4222-8222-222222222222",
+        epoch: 1,
+        publicEncryptionJwk: device.publicEncryptionJwk,
+      },
+      device: { id: "33333333-3333-4333-8333-333333333333" },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: device.privateKeys.encryptionPrivateKey,
+      privateJwk: device.privateBundle.encryptionPrivateJwk,
+    },
+  };
+  const create = await protectLocalActionArguments({
+    nativeTool: "create_or_update_regular_work",
+    arguments: {
+      operation: "create_set",
+      companySlug: "acme",
+      projectSlug: "mobile",
+      setSlug: "weekly-finance",
+      title: "Финансовая сверка",
+      description: "Закрытый порядок проверки",
+      schedule: { scheduleKind: "weekly", interval: 2, weekdays: ["mon", "thu"] },
+      clientRequestId: "regular-work-create-set",
+    },
+    companyEncryption,
+    mirror,
+  });
+  assert.match(create.value.setSlug, /^e-[0-9a-f-]{36}$/u);
+  assert.match(create.value.title, /^~e1:/u);
+  assert.match(create.value.description, /^~e1:/u);
+  assert.deepEqual(create.value.schedule, {
+    scheduleKind: "weekly",
+    interval: 2,
+    weekdays: ["mon", "thu"],
+  });
+  assert.doesNotMatch(JSON.stringify(create.value), /weekly-finance|Финансовая|Закрытый/u);
+  const createPayload = await decryptCompanyPayload({
+    encryptedPayload: create.payloads[0],
+    scopePrivateKey: device.privateKeys.encryptionPrivateKey,
+    scopePrivateJwk: device.privateBundle.encryptionPrivateJwk,
+  });
+  assert.deepEqual(createPayload.values, {
+    slug: "weekly-finance",
+    title: "Финансовая сверка",
+    description: "Закрытый порядок проверки",
+  });
+
+  const existingSetSlug = "e-99999999-9999-4999-8999-999999999999";
+  const update = await protectLocalActionArguments({
+    nativeTool: "create_or_update_regular_work",
+    arguments: {
+      operation: "update_set",
+      companySlug: "acme",
+      projectSlug: "mobile",
+      setSlug: existingSetSlug,
+      title: "Новое название",
+      description: "Новое описание",
+      state: "active",
+      schedule: { scheduleKind: "monthly", interval: 1, monthRule: "last_day" },
+      expectedRevision: 4,
+      clientRequestId: "regular-work-update-set",
+    },
+    companyEncryption,
+    mirror,
+  });
+  assert.equal(update.value.setSlug, existingSetSlug);
+  assert.match(update.value.title, /^~e1:/u);
+
+  const item = await protectLocalActionArguments({
+    nativeTool: "create_or_update_regular_work",
+    arguments: {
+      operation: "create_item",
+      companySlug: "acme",
+      projectSlug: "mobile",
+      setSlug: existingSetSlug,
+      item: {
+        mode: "task",
+        title: "Подготовить закрытый отчёт",
+        task: {
+          descriptionMarkdown: "## Данные\n\n- Проверить суммы",
+          urgency: 2,
+          checklists: [{ title: "Контроль", items: [{ content: "Сверить остатки" }] }],
+        },
+      },
+      clientRequestId: "regular-work-create-item",
+    },
+    companyEncryption,
+    mirror,
+  });
+  assert.equal(item.value.setSlug, existingSetSlug);
+  assert.match(item.value.item.title, /^~e1:/u);
+  assert.equal(Object.hasOwn(item.value.item.task, "descriptionMarkdown"), false);
+  assert.equal(item.value.item.task.descriptionJson.$trelioE2ee.v, 1);
+  assert.match(item.value.item.task.checklists[0].title, /^~e1:/u);
+  assert.match(item.value.item.task.checklists[0].items[0].content, /^~e1:/u);
+  assert.doesNotMatch(JSON.stringify(item.value), /закрытый отчёт|Проверить суммы|Сверить остатки/u);
 });
 
 test("encrypted registry actions preserve row identity and typed structure across chats", async () => {
