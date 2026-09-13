@@ -31,6 +31,7 @@ import {
 } from "../scripts/trelio-runtime-session-limits.mjs";
 import {
   ensurePrivateDirectory,
+  resolveWorkspaceBridgeConfigDirectory,
   writePrivateJsonFile,
 } from "../scripts/trelio-workspace.mjs";
 
@@ -674,22 +675,28 @@ test("resume and compact preserve the pinned observation while clear starts a ne
   const stateDigest = crypto.createHash("sha256")
     .update(`${origin}\n${threadId}`)
     .digest("hex");
-  const statePath = path.join(
-    temporaryHome,
-    ".config",
-    "trelio",
-    "workspace-bridge",
-    "runtime-sessions",
-    `${stateDigest}.json`,
-  );
   const environment = {
     HOME: temporaryHome,
     USERPROFILE: temporaryHome,
+    LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
+    CODEX_HOME: path.join(temporaryHome, ".codex"),
     CODEX_THREAD_ID: threadId,
     TRELIO_WORKSPACE_ORIGIN: origin,
     CLAUDE_CODE_ENTRYPOINT: "",
     CLAUDE_EFFORT: "",
   };
+  // Resolve the same platform-specific directory that the child hook will use.
+  // This keeps Windows runs inside the fixture instead of inheriting the runner's
+  // real LOCALAPPDATA while preserving the ordinary XDG path on POSIX hosts.
+  const configDirectory = resolveWorkspaceBridgeConfigDirectory({
+    environment,
+    homeDirectory: temporaryHome,
+  });
+  const statePath = path.join(
+    configDirectory,
+    "runtime-sessions",
+    `${stateDigest}.json`,
+  );
 
   try {
     const staleStatePath = path.join(path.dirname(statePath), "expired-from-crash.json");
