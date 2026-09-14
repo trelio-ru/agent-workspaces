@@ -73,7 +73,10 @@ Project-wide материал по умолчанию сохраняется в 
 напрямую. Иначе он отправляет одним каноническим `search` до пяти отдельных
 лексических вариантов в exact company scope. Один ответ объединяет проекты,
 активные и архивные задачи, task comments, именованные воркспейсы и accepted
-Workspace files с exact metadata. Архивный воркспейс остаётся в поиске с
+Workspace files с exact metadata, а также доступные наборы регулярных работ.
+Набор ищется по названию/описанию, активным пунктам, manual comments и именам
+закреплённых файлов; system events исключены. Результаты группируются по набору,
+а discussion evidence сохраняет exact comment anchor. Архивный воркспейс остаётся в поиске с
 меткой `[Архив]` и `workspaceState=archived`, но доступен только для чтения;
 обычный inventory скрывает его без `includeArchived=true`. Агент читает relevant
 документы, проверяет одну вероятную задачу через `get_task`, а 2-20 уже известных exact-задач –
@@ -495,6 +498,12 @@ local provider: регистр, ё/е, границы слов, полное п�
 точные references и сильнейшее совпадение поля, затем независимые формулировки.
 Повторные формы одного набора слов не увеличивают вес. Rank строится один раз,
 preview – только для top-N.
+
+Encrypted regular-work mirror получает отдельную bounded search projection со
+всеми доступными активными пунктами, ручными комментариями и закреплёнными
+именами вложений. Значения остаются protected markers до trusted local hydration;
+backend не строит plaintext index. Проекция входит в revision token, поэтому
+изменение комментария вне 50-entry detail page создаёт новое immutable generation.
 
 Local mirror schema 5 читает accepted browser manifest и bounded safe text;
 имена binary/external файлов индексируются без их скачивания. Только явно

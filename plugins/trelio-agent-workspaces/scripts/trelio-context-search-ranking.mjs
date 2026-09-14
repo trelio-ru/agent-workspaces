@@ -13,6 +13,7 @@ const PRIMARY_FIELD_SOURCES = new Set([
     "contact-name",
     "contact-alias",
     "registry-title",
+    "regular-work-title",
 ]);
 const STRUCTURED_FIELD_SOURCES = new Set([
     "task-number",
@@ -27,6 +28,7 @@ const STRUCTURED_FIELD_SOURCES = new Set([
     "registry-search-term",
     "registry-row-value",
     "registry-column",
+    "regular-work-item",
 ]);
 const PROSE_FIELD_SOURCES = new Set([
     "task-description",
@@ -35,12 +37,15 @@ const PROSE_FIELD_SOURCES = new Set([
     "contact-description",
     "registry-description",
     "registry-row-note",
+    "regular-work-description",
 ]);
 const DERIVED_FIELD_SOURCES = new Set([
     "task-attachment",
     "task-comment",
     "workspace-file",
     "workspace-artifact",
+    "regular-work-comment",
+    "regular-work-attachment",
 ]);
 const DIRECT_VALUE_SOURCES = new Set([
     "task-number",

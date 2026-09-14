@@ -445,6 +445,73 @@ test("local task corpus keeps useful controls but excludes status and people", (
   }
 });
 
+test("local regular-work search groups manual discussion evidence by set and keeps exact anchors", () => {
+  const regularWorkMirror = structuredClone(mirror);
+  const setId = "88888888-8888-4888-8888-888888888888";
+  const commentId = "99999999-9999-4999-8999-999999999998";
+  const setPath = `/acme/mobile/routines/${setId}/`;
+  regularWorkMirror.contextDocuments.push({
+    id: setId,
+    type: "regular_work",
+    title: "Проверка поисковых позиций",
+    revisionToken: "f".repeat(64),
+    projectId: "22222222-2222-4222-8222-222222222222",
+    projectSlug: "mobile",
+    payload: {
+      set: {
+        id: setId,
+        title: "Проверка поисковых позиций",
+        description: "Ежемесячный контроль видимости",
+        state: "active",
+        revision: 4,
+        publicPath: setPath,
+      },
+      comments: [{
+        id: "77777777-7777-4777-8777-777777777778",
+        type: "system",
+        summary: "systemuniquenoise",
+      }],
+    },
+    searchProjection: {
+      set: {
+        id: setId,
+        title: "Проверка поисковых позиций",
+        description: "Ежемесячный контроль видимости",
+        publicPath: setPath,
+      },
+      items: [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", title: "Снять позиции в поисковиках" }],
+      comments: [{ id: commentId, bodyPlainText: "Проверить просадку по брендовым запросам" }],
+      attachments: [{
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        commentId,
+        originalName: "позиции-сентябрь.xlsx",
+      }],
+    },
+  });
+
+  const discussion = searchCompanyContextMirror(
+    regularWorkMirror,
+    ["брендовым запросам", "позиции-сентябрь.xlsx"],
+    10,
+  ).results.filter((result) => result.type === "regular-work");
+  assert.equal(discussion.length, 1);
+  assert.equal(discussion[0].id, `context:regular_work:${setId}`);
+  assert.deepEqual(discussion[0].matchedQueries, ["брендовым запросам", "позиции-сентябрь.xlsx"]);
+  assert.equal(discussion[0].url, `${setPath}#regular-work-comment-${commentId}`);
+  assert.equal(
+    searchCompanyContextMirror(regularWorkMirror, ["снять позиции"], 10)
+      .results.some((result) => result.type === "regular-work" && result.url === setPath),
+    true,
+  );
+  assert.equal(
+    searchCompanyContextMirror(regularWorkMirror, ["systemuniquenoise"], 10)
+      .results.some((result) => result.type === "regular-work"),
+    false,
+  );
+  assert.equal(fetchMirrorResult(regularWorkMirror, discussion[0].id).document.id, setId);
+  assert.equal(fetchMirrorResult(regularWorkMirror, discussion[0].url).document.id, setId);
+});
+
 test("local mixed search gives contacts no implicit type priority", () => {
   const rankingMirror = structuredClone(mirror);
   rankingMirror.tasks[0].projectSlug = "a-mobile";

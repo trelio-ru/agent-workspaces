@@ -3572,6 +3572,7 @@ const buildSearchField = (source, value, options = {}) => {
     text: compactText,
     previewText: String(options.previewText ?? compactText),
     allowQueryContainsField: options.allowQueryContainsField === true,
+    ...(options.publicPath ? { publicPath: String(options.publicPath) } : {}),
   };
 };
 
@@ -3750,6 +3751,49 @@ const buildMeetingSearchFields = (payload) => {
   ]);
 };
 
+const buildRegularWorkSearchFields = (contextDocument) => {
+  const payload = contextDocument.payload ?? {};
+  const projection = contextDocument.searchProjection ?? {};
+  const set = projection.set ?? payload.set ?? {};
+  const setPath = String(set.publicPath ?? payload.set?.publicPath ?? "");
+  const items = Array.isArray(projection.items)
+    ? projection.items
+    : (payload.items ?? []).filter((item) => item?.state === "active");
+  const comments = Array.isArray(projection.comments)
+    ? projection.comments
+    : (payload.comments ?? []).filter((comment) => comment?.type === "manual");
+  const attachments = Array.isArray(projection.attachments)
+    ? projection.attachments
+    : comments.flatMap((comment) => comment?.attachments ?? []);
+  const commentPath = (commentId) => commentId && setPath
+    ? `${setPath}#regular-work-comment-${encodeURIComponent(commentId)}`
+    : setPath;
+
+  // A search result represents the set, never an individual discussion row.
+  // The winning field still carries the exact comment anchor so an agent can
+  // open the evidence it selected. System events are absent from the explicit
+  // projection and rejected again in the legacy-payload fallback above.
+  return compactSearchFields([
+    buildSearchField("regular-work-title", set.title, { publicPath: setPath }),
+    ...items.map((item) => buildSearchField(
+      "regular-work-item",
+      item?.title,
+      { publicPath: setPath },
+    )),
+    buildSearchField("regular-work-description", set.description, { publicPath: setPath }),
+    ...comments.map((comment) => buildSearchField(
+      "regular-work-comment",
+      comment?.bodyPlainText,
+      { publicPath: commentPath(comment?.id) },
+    )),
+    ...attachments.map((attachment) => buildSearchField(
+      "regular-work-attachment",
+      attachment?.originalName,
+      { publicPath: commentPath(attachment?.commentId) },
+    )),
+  ]);
+};
+
 const buildContextDocumentSearchFields = (contextDocument) => {
   if (contextDocument.type === "registry") {
     return buildRegistrySearchFields(contextDocument.payload);
@@ -3759,6 +3803,9 @@ const buildContextDocumentSearchFields = (contextDocument) => {
   }
   if (contextDocument.type === "knowledge_page") {
     return buildKnowledgePageSearchFields(contextDocument.payload);
+  }
+  if (contextDocument.type === "regular_work") {
+    return buildRegularWorkSearchFields(contextDocument);
   }
   return buildMeetingSearchFields(contextDocument.payload);
 };
@@ -3878,8 +3925,13 @@ const buildSearchDocuments = (mirror) => {
     }
     const resultType = contextDocument.type === "knowledge_page"
       ? "knowledge-page"
-      : contextDocument.type;
+      : contextDocument.type === "regular_work"
+        ? "regular-work"
+        : contextDocument.type;
     const fields = buildContextDocumentSearchFields(contextDocument);
+    const regularWorkSet = contextDocument.type === "regular_work"
+      ? contextDocument.payload?.set ?? {}
+      : null;
     documents.push({
       id: `context:${contextDocument.type}:${contextDocument.id}`,
       type: resultType,
@@ -3894,6 +3946,16 @@ const buildSearchDocuments = (mirror) => {
         projectId: contextDocument.projectId ?? null,
         projectSlug: contextDocument.projectSlug ?? null,
         revisionToken: contextDocument.revisionToken,
+        ...(regularWorkSet ? {
+          publicPath: regularWorkSet.publicPath ?? null,
+          regularWork: {
+            id: regularWorkSet.id ?? contextDocument.id,
+            title: regularWorkSet.title ?? contextDocument.title,
+            state: regularWorkSet.state ?? null,
+            revision: regularWorkSet.revision ?? null,
+            url: regularWorkSet.publicPath ?? null,
+          },
+        } : {}),
       },
     });
   }
@@ -3988,6 +4050,7 @@ const findStrongestLocalSearchMatch = (document, normalizedQuery, originalQuery)
       query: originalQuery,
       source: field.source,
       previewText: field.previewText,
+      ...(field.publicPath ? { publicPath: field.publicPath } : {}),
     };
     if (
       !strongestMatch
@@ -4074,7 +4137,13 @@ export const searchCompanyContextMirror = (
       // every candidate has received its single precomputed rank.
       const strongest = rankContextSearchCandidates(_matches,
         (match) => ({ ...result, stableKey: _stableKey, referenceValues: _referenceValues, matches: [match] }))[0];
-      return { ...result, preview: buildPreview(strongest.previewText, normalizeSearchText(strongest.query)) };
+      return {
+        ...result,
+        preview: buildPreview(strongest.previewText, normalizeSearchText(strongest.query)),
+        ...(strongest.publicPath || result.publicPath
+          ? { url: strongest.publicPath ?? result.publicPath }
+          : {}),
+      };
     }),
     hasMore: results.length > limit,
     freshness: { mirroredAt: mirror.createdAt, serverGeneration: mirror.serverGeneration },
@@ -5504,6 +5573,14 @@ const parseMirrorDocumentUrl = (resultId) => {
       taskNumber: Number(pathParts[3]),
     };
   }
+  if (pathParts.length >= 4 && pathParts[2] === "routines") {
+    return {
+      type: "regular_work",
+      companySlug: pathParts[0],
+      projectSlug: pathParts[1],
+      setId: pathParts[3],
+    };
+  }
   if (pathParts.length >= 2) {
     return {
       type: "project",
@@ -5559,6 +5636,13 @@ const fetchMirrorUrl = (mirror, locator) => {
       "contact",
       (document) => document.id === locator.contactId,
     );
+  }
+  if (locator.type === "regular_work") {
+    const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, locator.projectSlug);
+    return getDomainDocumentFromMirror(mirror, "regular_work", (document) => (
+      matchesProjectScope(document)
+      && (document.payload?.set?.id ?? document.id) === locator.setId
+    ));
   }
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context URL.");
 };
