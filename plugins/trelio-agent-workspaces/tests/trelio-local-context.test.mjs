@@ -390,10 +390,48 @@ const mirror = {
       sources: ["company"],
       integrationRouting: null,
       readiness: { company: "not_required", personal: "not_checked" },
-      connection: null,
+      connection: {
+        status: "ready",
+        configured: true,
+        config: { apiKey: "must-never-reach-guidance-search" },
+      },
     }],
     projects: [],
   },
+  agentProcedures: [{
+    kind: "procedure",
+    company: { id: "11111111-1111-4111-8111-111111111111", slug: "acme", name: "Acme" },
+    project: {
+      id: "22222222-2222-4222-8222-222222222222",
+      slug: "mobile",
+      name: "Mobile",
+    },
+    procedure: {
+      id: "77777777-7777-4777-8777-777777777777",
+      state: "published",
+      publicPath: "/acme/mobile/procedures/77777777-7777-4777-8777-777777777777/",
+      publishedRevisionId: "88888888-8888-4888-8888-888888888888",
+      publishedRevisionNumber: 3,
+      publishedContentSha256: "e".repeat(64),
+    },
+    revision: {
+      id: "88888888-8888-4888-8888-888888888888",
+      revisionNumber: 3,
+      title: "Согласование отпуска",
+      description: "Повторяемая проверка заявки на отпуск",
+      instructionsMarkdown: "# Порядок\n\nПроверь календарь и согласуй заявку.\n",
+      searchTerms: ["отпуск", "согласование", "заявка"],
+      contentSha256: "e".repeat(64),
+      requiredSkills: [{ id: "calendar" }],
+      secretBindings: [{ bindingKey: "hr_portal", secret: null, available: false }],
+    },
+    execution: {
+      kind: "instruction",
+      runIn: "task_or_agent_run",
+      scheduleOwnedByProcedure: false,
+      commentsAreInstructions: false,
+    },
+  }],
 };
 
 test("local mirror search ranks structured and workspace context without remote query data", () => {
@@ -614,18 +652,48 @@ test("local search exposes archived workspaces as marked read-only history outsi
   assert.equal(exactWorkspace.workspace.permissions.canWrite, false);
 });
 
-test("agent-skill routing searches hydrated catalog terms only in the local mirror", () => {
-  const result = handleNativeLocalContextRead(mirror, "search_agent_skills", {
+test("agent-guidance routing ranks skills and published procedures in one local result", () => {
+  const result = handleNativeLocalContextRead(mirror, "search_agent_guidance", {
     companySlug: "acme",
     query: "кто в отпуске",
-    hints: ["отсутствие"],
+    hints: ["согласование", "отсутствие"],
     limit: 5,
   });
 
-  assert.equal(result.skills.length, 1);
-  assert.equal(result.skills[0].id, "calendar");
-  assert.equal(result.skills[0].match.rank, 1);
-  assert.deepEqual(result.query, { text: "кто в отпуске", hints: ["отсутствие"] });
+  assert.deepEqual(result.guidance.map(({ kind }) => kind).sort(), ["procedure", "skill"]);
+  assert.equal(result.guidance[0].match.rank, 1);
+  assert.deepEqual(result.exactReadTools, {
+    skill: "get_agent_skill",
+    procedure: "get_agent_procedure",
+  });
+  assert.deepEqual(result.query, {
+    text: "кто в отпуске",
+    hints: ["согласование", "отсутствие"],
+  });
+  const skill = result.guidance.find(({ kind }) => kind === "skill");
+  assert.deepEqual(skill.connection, { status: "ready", configured: true });
+  assert.doesNotMatch(JSON.stringify(result), /must-never-reach-guidance-search/u);
+});
+
+test("exact local procedure read returns only immutable published authority", () => {
+  const result = handleNativeLocalContextRead(mirror, "get_agent_procedure", {
+    companySlug: "acme",
+    projectSlug: "mobile",
+    procedureId: "77777777-7777-4777-8777-777777777777",
+  });
+
+  assert.equal(result.kind, "procedure");
+  assert.equal(result.procedure.publishedRevisionNumber, 3);
+  assert.match(result.revision.instructionsMarkdown, /Проверь календарь/u);
+  assert.equal(Object.hasOwn(result, "draft"), false);
+  assert.equal(Object.hasOwn(result, "comments"), false);
+  assert.throws(
+    () => handleNativeLocalContextRead(mirror, "get_agent_procedure", {
+      projectSlug: "another-project",
+      procedureId: result.procedure.id,
+    }),
+    (error) => error?.code === "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+  );
 });
 
 test("native personal task reads keep the ordinary MCP list shape and local query", () => {
@@ -1266,6 +1334,83 @@ test("local action protects nested task content and converts Markdown before upl
     }),
     (error) => error?.code === "LOCAL_ACTION_CUSTOM_FIELD_TYPE_UNKNOWN",
   );
+});
+
+test("encrypted procedure plan and apply reconstruct the same exact content markers", async () => {
+  const device = await createAgentEncryptionDevice();
+  const companyEncryption = {
+    runtime: {
+      company: { id: "11111111-1111-4111-8111-111111111111", slug: "acme" },
+      scope: {
+        id: "22222222-2222-4222-8222-222222222222",
+        epoch: 1,
+        publicEncryptionJwk: device.publicEncryptionJwk,
+      },
+      device: { id: "33333333-3333-4333-8333-333333333333" },
+    },
+    device,
+    scopePrivateEncryptionKey: {
+      privateKey: device.privateKeys.encryptionPrivateKey,
+      privateJwk: device.privateBundle.encryptionPrivateJwk,
+    },
+  };
+  const draft = {
+    title: "Закрытие месяца",
+    description: "Сверить счета и подготовить итог",
+    instructionsMarkdown: "# Порядок\n\n1. Получить данные.\n2. Сверить остатки.\n",
+    searchTerms: ["закрытие", "сверка"],
+    requiredSkillIds: ["accounting"],
+    secretBindings: [{
+      bindingKey: "erp",
+      secretId: "99999999-9999-4999-8999-999999999999",
+      label: "Вход в ERP",
+    }],
+    changeSummary: "Создать процедуру закрытия",
+  };
+  const planned = await protectLocalActionArguments({
+    nativeTool: "plan_agent_procedure_change",
+    arguments: {
+      companySlug: "acme",
+      projectSlug: "mobile",
+      action: "create_draft",
+      draft,
+    },
+    companyEncryption,
+    mirror,
+  });
+  assert.match(planned.value.clientRequestId, /^[0-9a-f-]{36}$/u);
+  assert.doesNotMatch(JSON.stringify(planned.value), /Закрытие месяца|Вход в ERP/u);
+
+  const applied = await protectLocalActionArguments({
+    nativeTool: "apply_agent_procedure_change",
+    arguments: {
+      companySlug: "acme",
+      projectSlug: "mobile",
+      planHash: "f".repeat(64),
+      plan: {
+        schemaVersion: 1,
+        action: "create_draft",
+        companySlug: "acme",
+        projectSlug: "mobile",
+        procedureId: "77777777-7777-4777-8777-777777777777",
+        revisionId: "88888888-8888-4888-8888-888888888888",
+        expectedRevision: 0,
+        currentDraftRevisionId: null,
+        currentPublishedRevisionId: null,
+        clientRequestId: planned.value.clientRequestId,
+        draft,
+      },
+    },
+    companyEncryption,
+    mirror,
+  });
+
+  assert.deepEqual(applied.value.plan.draft, planned.value.draft);
+  assert.deepEqual(
+    applied.payloads.map(({ entityId }) => entityId),
+    planned.payloads.map(({ entityId }) => entityId),
+  );
+  assert.doesNotMatch(JSON.stringify(applied.value), /Сверить счета|Вход в ERP/u);
 });
 
 test("encrypted regular-work actions protect new content but preserve structural set ids", async () => {
@@ -2643,7 +2788,7 @@ test("encrypted mirror generations are schema-isolated while mutation coherence 
     companyId: "11111111-1111-4111-8111-111111111111",
   });
 
-  assert.equal(paths.root.endsWith("schema-5"), true);
+  assert.equal(paths.root.endsWith("schema-6"), true);
   assert.equal(paths.pointer.startsWith(paths.root), true);
   assert.equal(paths.lock.startsWith(paths.root), true);
   assert.equal(paths.generations.startsWith(paths.root), true);

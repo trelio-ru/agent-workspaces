@@ -382,7 +382,10 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Folder onboarding всегда сверяет компанию по metadata-only `list_companies`,
   сохраняет exact явно указанный slug и не подменяет его похожим именем либо
   названием папки. Для любого non-`plain` `encryptionState` он не вызывает
-  remote `get_agent_instructions`/`list_agent_skills`. Для exact `encrypted`
+  remote `get_agent_instructions`/`list_agent_skills`. Published Agent
+  Procedures входят только в локально расшифрованный manifest; единый
+  `search_agent_guidance` и exact `get_agent_procedure` не отправляют query,
+  snippets, draft или comments на backend. Для exact `encrypted`
   после binding/pairing он обязан выполнить отдельный `encryption setup` через
   bridge и считать доступ готовым только после открытого owner envelope и
   локального `TRELIOE1` self-test; transitional state блокирует content work.

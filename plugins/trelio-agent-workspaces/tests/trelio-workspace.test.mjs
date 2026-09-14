@@ -4213,7 +4213,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.1.0");
+  assert.equal(BRIDGE_VERSION, "2.2.0");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -4448,7 +4448,7 @@ test("compact protected runtime keeps the immutable Run safety kernel", () => {
   }
 
   for (const conditionalProcedure of [
-    "search_agent_skills",
+    "search_agent_guidance",
     "integrationRouting",
     "MCP_SEARCH_TIMEOUT",
     "prepare_agent_secret_browser_fill",
@@ -4484,6 +4484,7 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "task-run.md",
     "ocr-and-vision.md",
     "external-services.md",
+    "agent-procedures.md",
     "agent-secrets.md",
   ];
 
@@ -7087,7 +7088,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   const catalogSkillNormalized = catalogSkill.replace(/\s+/gu, " ");
 
   assert.match(workerSkill, /Полностью прочитай файл до использования подключённого сервиса/u);
-  assert.match(workerSkill, /`search_agent_skills` с задачей и краткими\s+hints/u);
+  assert.match(workerSkill, /`search_agent_guidance` с задачей и краткими\s+hints/u);
   assert.match(workerSkill, /`list_agent_skills` оставь для явной инвентаризации/u);
   for (const instruction of [
     workerSkillNormalized,
@@ -7147,12 +7148,13 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(workerSkill, /После обмена кратко сообщи о подключении\s+устройства и продолжай/u);
   assert.match(workerSkill, /никогда не\s+включают `mcp:agent-instructions:manage`/u);
   assert.match(workerSkill, /не начинай второй OAuth/u);
-  assert.match(catalogSkill, /Для обычной задачи вызови `search_agent_skills` один раз/u);
+  assert.match(catalogSkill, /вызови `search_agent_guidance` один раз/u);
   assert.match(catalogSkill, /`list_agent_skills` нужен только по явному запросу всего каталога/u);
+  assert.match(catalogSkill, /`kind=procedure` читай через exact\s+`get_agent_procedure`/u);
   assert.match(catalogSkill, /не вызывай `request_plugin_install`/u);
   assert.match(catalogSkill, /личный навык\/коннектор разрешён/u);
   assert.match(catalogSkill, /не считай неготовность разрешением другого\s+источника/u);
-  assert.match(catalogSkill, /Ответ проекта уже\s+объединяет назначения компании\/проекта/u);
+  assert.match(catalogSkill, /Ответ проекта уже объединяет опубликованные процедуры и эффективные\s+назначения skills/u);
   assert.match(catalogSkill, /Вызови точные server\/tool из `runtimeExecution\.localAction`/u);
   assert.match(catalogSkill, /Host проверяет подпись\s+package и file hashes при каждом запуске/u);
   assert.match(catalogSkill, /При `integrationRouting` используй только текущи(?:е поля|й контракт)/u);

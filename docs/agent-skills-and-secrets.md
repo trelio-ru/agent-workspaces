@@ -16,8 +16,10 @@
 свой. Отсутствие назначения не запрещает совместимый личный навык.
 
 Перед подключением или использованием внешнего сервиса агент сначала разрешает
-exact Trelio company/project context. Затем он вызывает `search_agent_skills`
-с кратким точным описанием задачи и только полезными semantic hints.
+exact Trelio company/project context. Затем он вызывает единый
+`search_agent_guidance` с кратким точным описанием задачи и только полезными
+semantic hints. Результат объединяет effective Agent Skills и опубликованные
+project Agent Procedures; `kind` и exact read tool не выводятся из названия.
 `list_agent_skills` используется для явной инвентаризации всего каталога и
 onboarding, а не как стандартный путь ordinary operation.
 
@@ -32,8 +34,11 @@ onboarding, а не как стандартный путь ordinary operation.
 Полная процедура и границы исполнения – в
 [onboarding](../plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md#offer-the-live-trelio-skills).
 
-Из compact ranked результатов агент выбирает релевантный навык и один раз до
-первого внешнего действия текущего пользовательского хода вызывает
+Из compact ranked результатов агент загружает procedure через
+`get_agent_procedure`, а skill – через `get_agent_skill`. Только immutable
+published procedure является instruction authority; draft/comments не входят
+в agent read и сама процедура не запускает фоновой runtime. Перед первым
+внешним действием текущего пользовательского хода агент один раз вызывает
 `get_agent_skill`. Успешное чтение покрывает связанную непрерывную
 последовательность с теми же company/project, skill, implementation и intent:
 его не повторяют сразу либо перед каждым `bootstrap`, `doctor`, `search`,

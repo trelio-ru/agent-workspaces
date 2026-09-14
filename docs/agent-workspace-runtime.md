@@ -317,8 +317,9 @@ clean Git и принятый head проверяются обычным preflig
    `workspaceId` либо canonical workspace точной задачи; Trelio создаёт Run с
    pinned base head, ACL, model policy, immutable
    instruction snapshots и related context. Native Trelio discovery не требует
-   `search_agent_skills` или `list_agent_skills`; catalog search нужен только
-   перед подключённым внешним сервисом, а full list – для явной инвентаризации.
+   `search_agent_guidance` или `list_agent_skills`; guidance search нужен только
+   при правдоподобной reusable procedure либо перед подключённым внешним
+   сервисом, а full skill list – для явной инвентаризации.
 2. Bridge открывает локальный Git root и защищённые runtime control files.
 3. Агент читает `agent-instructions.md`, `user-profile.md`, optional
    `run-checkpoint.json`, затем `WORKSPACE_CONTEXT.md`. Read-only

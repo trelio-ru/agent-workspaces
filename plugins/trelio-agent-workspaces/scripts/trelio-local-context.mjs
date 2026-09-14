@@ -63,9 +63,10 @@ import {
   materializeLocalAttachment,
 } from "./trelio-local-attachments.mjs";
 
-// Version 5 includes binary filenames from accepted file manifests. A schema-specific root means an older process can finish safely
-// without publishing an incompatible generation to a newly updated bridge.
-const MIRROR_SCHEMA_VERSION = 5;
+// Version 6 adds the ACL-filtered published Agent Procedure catalog. A
+// schema-specific root means an older process can finish safely without
+// publishing an incomplete generation to a newly updated bridge.
+const MIRROR_SCHEMA_VERSION = 6;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -794,6 +795,10 @@ const LOCAL_ACTION_CUSTOM_FIELD_VALUE_TOOLS = new Set([
   "plan_task_update",
   "apply_task_patch",
   "batch_update_tasks",
+]);
+const LOCAL_AGENT_PROCEDURE_CHANGE_TOOLS = new Set([
+  "plan_agent_procedure_change",
+  "apply_agent_procedure_change",
 ]);
 
 const isEmptyLocalActionValue = (value) => value === null
@@ -1861,7 +1866,19 @@ export const protectLocalActionArguments = async ({
   const payloads = [];
   const expectedPayloadValues = {};
   let objectSequence = 0;
-  const normalizedArguments = normalizeLocalActionRichTextInputs(rawArguments);
+  let normalizedArguments = normalizeLocalActionRichTextInputs(rawArguments);
+  if (
+    nativeTool === "plan_agent_procedure_change"
+    && !Object.hasOwn(normalizedArguments, "clientRequestId")
+  ) {
+    // The backend normally creates this id during plan. Encrypted authoring
+    // needs it one boundary earlier so plan and apply can independently derive
+    // identical opaque markers without retaining plaintext or server plans.
+    normalizedArguments = {
+      ...normalizedArguments,
+      clientRequestId: crypto.randomUUID(),
+    };
+  }
   if (nativeTool === "delete_workspace") {
     if (normalizedArguments.userRequestedDeletion !== true || typeof normalizedArguments.reason !== "string"
       || !normalizedArguments.reason.trim() || normalizedArguments.reason.trim().length > 2000) {
@@ -1884,13 +1901,29 @@ export const protectLocalActionArguments = async ({
   });
   const stableRequestId = typeof normalizedArguments.clientRequestId === "string"
     ? normalizedArguments.clientRequestId.trim()
-    : "";
-  const createEntityId = (objectPath, purpose = "content") => stableRequestId
-    ? deriveLocalActionEntityId(
+    : typeof normalizedArguments.plan?.clientRequestId === "string"
+      ? normalizedArguments.plan.clientRequestId.trim()
+      : "";
+  const createEntityId = (objectPath, purpose = "content") => {
+    if (!stableRequestId) return crypto.randomUUID();
+    if (LOCAL_AGENT_PROCEDURE_CHANGE_TOOLS.has(nativeTool)) {
+      // apply receives the exact plan nested under `plan`, while plan receives
+      // the draft at the top level. Map both shapes onto one logical path so
+      // the reconstructed markers still hash to the server-issued planHash.
+      const logicalPath = nativeTool === "apply_agent_procedure_change"
+        && objectPath.startsWith("$.plan")
+        ? `$${objectPath.slice("$.plan".length)}`
+        : objectPath;
+      return deriveLocalActionEntityId(
         companyEncryption,
-        `${nativeTool}\0${stableRequestId}\0${purpose}\0${objectPath}`,
-      )
-    : crypto.randomUUID();
+        `agent_procedure_change\0${stableRequestId}\0${purpose}\0${logicalPath}`,
+      );
+    }
+    return deriveLocalActionEntityId(
+      companyEncryption,
+      `${nativeTool}\0${stableRequestId}\0${purpose}\0${objectPath}`,
+    );
+  };
   const registryRowTool = nativeTool === "upsert_registry_rows" || nativeTool === "archive_registry_rows";
   const registryDocument = registryRowTool
     ? resolveLocalActionRegistryDocument(mirror, normalizedArguments)
@@ -3437,6 +3470,9 @@ const buildMirror = async ({
     registryRowLocators,
     instructions: manifest.instructions,
     agentSkills: manifest.agentSkills ?? null,
+    // Only exact published revisions are present in the server manifest.
+    // Drafts and discussion never enter the searchable local authority store.
+    agentProcedures: manifest.agentProcedures ?? [],
     tasks,
     workspaces,
   };
@@ -5072,13 +5108,18 @@ const resolveLocalAgentSkillScope = (mirror, rawProjectSlug) => {
   return { project, skills: scope?.skills ?? [] };
 };
 
-const searchAgentSkillsFromMirror = (mirror, rawInput) => {
+const searchAgentGuidanceFromMirror = (mirror, rawInput) => {
   const query = normalizeBoundedString(rawInput?.query, "query", 500);
   const hints = Array.isArray(rawInput?.hints)
     ? rawInput.hints.slice(0, 12).map((hint) => normalizeBoundedString(hint, "hint", 120))
     : [];
   const limit = Math.max(1, Math.min(10, Math.trunc(Number(rawInput?.limit) || 5)));
   const { project, skills } = resolveLocalAgentSkillScope(mirror, rawInput?.projectSlug);
+  const procedures = (mirror.agentProcedures ?? []).filter((procedure) => (
+    procedure?.kind === "procedure"
+    && procedure?.procedure?.state === "published"
+    && (!project || procedure?.project?.id === project.id)
+  ));
   const phrase = normalizeSearchText(query);
   const terms = [...new Set(
     [query, ...hints]
@@ -5086,12 +5127,21 @@ const searchAgentSkillsFromMirror = (mirror, rawInput) => {
       .filter((value) => value.length >= 2),
   )];
 
-  const ranked = skills.map((skill) => {
+  const documents = [
+    ...skills.map((skill) => ({ kind: "skill", source: skill })),
+    ...procedures.map((procedure) => ({ kind: "procedure", source: procedure })),
+  ];
+  const ranked = documents.map((document) => {
+    const searchable = document.kind === "procedure"
+      ? document.source.revision
+      : document.source;
     const fields = {
-      id: normalizeSearchText(`${skill.id || ""} ${skill.catalogSlug || ""}`),
-      title: normalizeSearchText(skill.title),
-      description: normalizeSearchText(skill.description),
-      search_terms: normalizeSearchText((skill.searchTerms ?? []).join(" ")),
+      id: normalizeSearchText(document.kind === "procedure"
+        ? document.source.procedure?.id
+        : `${document.source.id || ""} ${document.source.catalogSlug || ""}`),
+      title: normalizeSearchText(searchable?.title),
+      description: normalizeSearchText(searchable?.description),
+      search_terms: normalizeSearchText((searchable?.searchTerms ?? []).join(" ")),
     };
     const weights = { id: 5, title: 6, description: 2, search_terms: 4 };
     const matchedFields = Object.entries(fields)
@@ -5108,11 +5158,19 @@ const searchAgentSkillsFromMirror = (mirror, rawInput) => {
     const score = phraseScore + matchedFields.reduce((total, field) => (
       total + weights[field] * matchedTerms.length
     ), 0);
-    return { skill, score, matchedTerms, matchedFields };
+    return { document, score, matchedTerms, matchedFields };
   }).filter((candidate) => candidate.score > 0)
     .sort((left, right) => (
       right.score - left.score
-      || String(left.skill.title).localeCompare(String(right.skill.title), "ru")
+      || String(
+        left.document.kind === "procedure"
+          ? left.document.source.revision?.title
+          : left.document.source.title,
+      ).localeCompare(String(
+        right.document.kind === "procedure"
+          ? right.document.source.revision?.title
+          : right.document.source.title,
+      ), "ru")
     ))
     .slice(0, limit);
 
@@ -5120,25 +5178,77 @@ const searchAgentSkillsFromMirror = (mirror, rawInput) => {
     company: mirror.company,
     project: project ? { id: project.id, slug: project.slug, name: project.name } : null,
     query: { text: query, hints },
-    skills: ranked.map(({ skill, matchedTerms, matchedFields }, index) => ({
-      id: skill.id,
-      catalogSlug: skill.catalogSlug,
-      title: skill.title,
-      description: skill.description,
-      version: skill.version,
-      catalogVisibility: skill.catalogVisibility,
-      sources: skill.sources,
-      integrationRouting: skill.integrationRouting,
-      readiness: skill.readiness,
-      connection: skill.connection,
-      match: {
-        rank: index + 1,
-        matchedTerms,
-        matchedFields,
-      },
-    })),
+    guidance: ranked.map(({ document, matchedTerms, matchedFields }, index) => {
+      const match = { rank: index + 1, matchedTerms, matchedFields };
+      if (document.kind === "procedure") {
+        const procedure = document.source;
+        return {
+          kind: "procedure",
+          id: procedure.procedure.id,
+          title: procedure.revision.title,
+          description: procedure.revision.description,
+          project: procedure.project,
+          publishedRevisionNumber: procedure.procedure.publishedRevisionNumber,
+          publishedContentSha256: procedure.procedure.publishedContentSha256,
+          publicPath: procedure.procedure.publicPath,
+          match,
+        };
+      }
+      const skill = document.source;
+      return {
+        kind: "skill",
+        id: skill.id,
+        catalogSlug: skill.catalogSlug,
+        title: skill.title,
+        description: skill.description,
+        version: skill.version,
+        catalogVisibility: skill.catalogVisibility,
+        sources: skill.sources,
+        integrationRouting: skill.integrationRouting,
+        readiness: skill.readiness,
+        // The native snapshot already projects only readiness metadata. Keep
+        // this boundary defensive so a future mirror field cannot expose
+        // connection configuration or credentials to model-visible search.
+        connection: skill.connection
+          ? {
+              status: skill.connection.status,
+              configured: skill.connection.configured === true,
+            }
+          : null,
+        match,
+      };
+    }),
+    exactReadTools: {
+      skill: "get_agent_skill",
+      procedure: "get_agent_procedure",
+    },
     updatePolicy: "current",
   };
+};
+
+const getAgentProcedureFromMirror = (mirror, rawInput) => {
+  const procedureId = normalizeUuid(rawInput?.procedureId, "procedureId");
+  const projectSlug = normalizeBoundedString(rawInput?.projectSlug, "projectSlug", 120);
+  const project = resolveMirrorProjectBySlug(mirror, projectSlug);
+  if (!project) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Project was not found or is not available in the current local company snapshot.",
+    );
+  }
+  const procedure = (mirror.agentProcedures ?? []).find((candidate) => (
+    candidate?.kind === "procedure"
+    && candidate?.procedure?.id === procedureId
+    && candidate?.procedure?.state === "published"
+    && candidate?.project?.id === project.id
+  ));
+  if (!procedure) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_RESULT_NOT_FOUND",
+      "Published Agent Procedure was not found in the current local company snapshot.",
+    );
+  }
+  return structuredClone(procedure);
 };
 
 const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
@@ -5437,7 +5547,8 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
     );
   }
   if (nativeTool === "search_tasks") return searchTasksFromMirror(mirror, input);
-  if (nativeTool === "search_agent_skills") return searchAgentSkillsFromMirror(mirror, input);
+  if (nativeTool === "search_agent_guidance") return searchAgentGuidanceFromMirror(mirror, input);
+  if (nativeTool === "get_agent_procedure") return getAgentProcedureFromMirror(mirror, input);
   if (nativeTool === "search_agent_workspace_files") {
     return searchWorkspaceFilesFromMirror(
       mirror,

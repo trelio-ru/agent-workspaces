@@ -186,6 +186,7 @@ const projectTaskMutation = (payload, argumentsObject) => {
     return result;
 };
 const projectRegularWorkDetail = (value) => mapFields(value, {
+    mentionableMembers: persons,
     options: (item) => mapFields(item, {
         availableMembers: persons,
         availableMemberGroups: persons,
@@ -206,7 +207,7 @@ const deferRegularWorkDetail = (value, args) => {
     if (typeof companySlug !== "string" || typeof projectSlug !== "string" || typeof setId !== "string") {
         return payload;
     }
-    return addDeferred(payload, ["history", "preparation", "options"], {
+    return addDeferred(payload, ["history", "preparation", "options", "mentionableMembers"], {
         tool: "get_regular_work",
         arguments: { companySlug, projectSlug, setId, responseDetail: "full" },
     });

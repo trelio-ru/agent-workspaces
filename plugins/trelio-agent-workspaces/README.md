@@ -407,9 +407,9 @@ proposal или иной Trelio mutation, поэтому пользовател�
 1. Агент разрешает точную компанию, проект, воркспейс или задачу и повторно
    проверяет ACL.
 2. Он вызывает `prepare_agent_workspace_run` один раз; native Trelio discovery
-   не требует каталога, а `search_agent_skills` вызывается только перед
-   подключённым внешним сервисом. Полный `list_agent_skills` нужен только для
-   явной инвентаризации.
+   не требует каталога без правдоподобной reusable procedure или подключённого
+   сервиса. В этих случаях используется единый `search_agent_guidance`;
+   полный `list_agent_skills` нужен только для явной инвентаризации.
 3. Trelio обеспечивает workspace и создаёт Run с закреплёнными правилами,
    личным профилем, related context и base head.
 4. Bridge materialize-ит единственный writable workspace и выбранный
