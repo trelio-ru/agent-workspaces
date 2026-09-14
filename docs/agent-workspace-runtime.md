@@ -331,12 +331,17 @@ clean Git и принятый head проверяются обычным preflig
    worklog из handoff без ручной копии тех же фактов. Dirty blocker сохраняется
    одной `trelio-workspace pause`; чистый подготовительный вопрос не создаёт
    пустой draft.
-5. Агент завершает работу одной `trelio-workspace finish`: bridge проверяет и
-   печатает changed paths, создаёт handoff с итогом, evidence, материалами,
-   вопросами и одним следующим действием, продлевает lease, создаёт одну
+5. После `open` живой MCP-host автоматически продлевает lease каждые 20 минут.
+   Если компьютер проснулся уже после срока, exact `LEASE_EXPIRED` либо
+   `RUN_NOT_ACTIVE` запускает один повторный `open`/claim того же Run; stale
+   fencing и terminal Run не перехватываются автоматически. После restart
+   первый успешный workspace action снова подключает Run к renewer.
+6. Агент завершает работу одной `trelio-workspace finish`: bridge проверяет и
+   печатает changed paths, сначала продлевает lease, создаёт handoff с итогом,
+   evidence, материалами, вопросами и одним следующим действием, создаёт одну
    детерминированную запись `worklog/` и отправляет candidate. Повтор `finish`
    использует тот же путь, а manual entry старого клиента не дублируется.
-6. Trelio принимает candidate атомарно, только пока current accepted head
+7. Trelio принимает candidate атомарно, только пока current accepted head
    совпадает с pinned base head.
 
 `WORKSPACE_OUTDATED` не обходится force push: агент начинает новый Run от
@@ -452,6 +457,14 @@ blocker с exact summary/question/next action и `draftHead`. Только по�
 Другой компьютер может claim-нуть тот же Run и получить draft плюс read-only
 `context/run-checkpoint.json`. Полная переписка не переносится. Dirty или
 diverged локальное дерево никогда не перезаписывается автоматически.
+
+После перезапуска MCP-host structured `TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED`
+возвращает non-secret exact `workspaceId/runId` из owner-private metadata.
+`prepare_agent_workspace_run(runId)` возвращает новый runtime-bound open того же
+Run, bridge выполняет claim, после чего исходное сохранение повторяется один раз.
+Новый Run для этой ошибки не создаётся; завершать работу с несохранённой delta
+нельзя. Живой host возвращает `TRELIO_WORKSPACE_RUN_RECLAIMED`, когда claim уже
+выполнен и нужен только один повтор исходного действия.
 
 При storage billing blocker агент останавливает mutation без частых повторов,
 сохраняет локальный root и сообщает, кому нужно пополнить баланс. После

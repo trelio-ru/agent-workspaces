@@ -691,6 +691,35 @@ test("storage billing blocker preserves the current Run and gives one exact reco
     formatBridgeCommandError(error, "open"),
     /Автоматически повторять запрос не нужно/u,
   );
+  const leaseMessage = formatBridgeCommandError(
+    new TrelioApiError(409, "Run lease expired", null, "LEASE_EXPIRED", {
+      code: "LEASE_EXPIRED",
+      message: "Run lease expired",
+    }),
+    "checkpoint",
+  );
+  assert.match(leaseMessage, /^LEASE_EXPIRED:/u);
+  assert.match(leaseMessage, /Повторно откройте этот exact Run/u);
+  assert.match(
+    formatBridgeCommandError(
+      new TrelioApiError(409, "Run cannot be claimed", null, "RUN_NOT_CLAIMABLE", {
+        code: "RUN_NOT_CLAIMABLE",
+        message: "Run cannot be claimed",
+      }),
+      "open",
+    ),
+    /^RUN_NOT_CLAIMABLE:.*не повторяйте сохранение/u,
+  );
+  assert.match(
+    formatBridgeCommandError(
+      new TrelioApiError(409, "Stale fencing token", null, "STALE_FENCING_TOKEN", {
+        code: "STALE_FENCING_TOKEN",
+        message: "Stale fencing token",
+      }),
+      "checkpoint",
+    ),
+    /^STALE_FENCING_TOKEN:.*не выполняйте автоматический takeover/u,
+  );
   assert.equal(formatBridgeCommandError(new Error("обычная ошибка"), "finish"), "обычная ошибка");
 });
 
@@ -3548,7 +3577,7 @@ test("bridge finish accepts a clean non-empty candidate saved by draft checkpoin
     assert.match(finished.stdout, /Статус: принят автоматически/u);
     assert.deepEqual(handoffPayload?.filesChanged, ["artifacts/result.md"]);
     assert.equal(candidateAttempts, 1);
-    assert.equal(heartbeatAttempts, 2);
+    assert.equal(heartbeatAttempts, 3);
     assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -8554,7 +8583,12 @@ test("bridge finish checkpoints and submits an external object without hanging",
     assert.ifError(serverError);
     assert.equal(
       seenRequests.filter((request) => request.url?.endsWith("/heartbeat")).length,
-      2,
+      3,
+    );
+    assert.ok(
+      seenRequests.findIndex((request) => request.url?.endsWith("/heartbeat"))
+        < seenRequests.findIndex((request) => request.url?.endsWith("/checkpoints")),
+      "finish must renew the lease before its handoff checkpoint",
     );
     assert.equal(
       registerAttempts,

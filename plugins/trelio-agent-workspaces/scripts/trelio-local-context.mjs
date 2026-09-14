@@ -122,6 +122,20 @@ const LOCAL_ACTION_MAX_STREAM_UPLOAD_BYTES = 64 * 1024 * 1024;
 const LOCAL_ACTION_STREAM_UPLOAD_RETRY_DELAYS_MS = [250, 750, 1_500];
 const LOCAL_ACTION_STREAM_UPLOAD_RECOVERY_DELAYS_MS = [1_000, 3_000, 8_000];
 const TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION = 1;
+export const WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS = 20 * 60 * 1000;
+const WORKSPACE_RUN_AUTO_HEARTBEAT_BUSY_RETRY_MS = 30 * 1000;
+const WORKSPACE_RUN_AUTO_HEARTBEAT_RETRY_DELAYS_MS = [
+  60 * 1000,
+  2 * 60 * 1000,
+  5 * 60 * 1000,
+  10 * 60 * 1000,
+];
+const WORKSPACE_RUN_LEASE_FAILURE_CODES = [
+  "LEASE_EXPIRED",
+  "RUN_NOT_ACTIVE",
+  "RUN_NOT_CLAIMABLE",
+  "STALE_FENCING_TOKEN",
+];
 const TRELIO_WORKSPACE_ACTION_OPERATIONS = new Set([
   "doctor",
   "login",
@@ -8188,10 +8202,298 @@ const truncateWorkspaceActionOutput = (value) => {
     : `${output.slice(0, 64 * 1024)}\n[output truncated]`;
 };
 
+export const classifyWorkspaceRunLeaseFailure = (error) => {
+  const errorText = [
+    error?.code,
+    error?.message,
+    error?.stderr,
+    error?.details?.stderr,
+  ].filter(Boolean).join("\n");
+  return WORKSPACE_RUN_LEASE_FAILURE_CODES.find((code) => (
+    new RegExp(`(?:^|[^A-Z0-9_])${code}(?:$|[^A-Z0-9_])`, "u").test(errorText)
+  )) ?? null;
+};
+
+const createWorkspaceRunStoppedError = (entry, operation) => {
+  const reasonCode = entry.recovery?.reasonCode || "CLAIM_FAILED";
+  if (reasonCode === "STALE_FENCING_TOKEN") {
+    return new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_RUN_FENCED",
+      "Другой host уже владеет свежей lease этого Run. Не делайте автоматический takeover; продолжайте exact Run только после осознанного выбора владельца.",
+      {
+        requiredAction: "resolve_run_owner_before_takeover",
+        workspaceId: entry.workspaceId,
+        runId: entry.runId,
+        operation,
+        reasonCode,
+      },
+    );
+  }
+  if (reasonCode === "RUN_NOT_CLAIMABLE") {
+    return new TrelioLocalContextError(
+      "TRELIO_WORKSPACE_RUN_NOT_CLAIMABLE",
+      "Run уже находится в terminal/review состоянии и не допускает claim. Не повторяйте сохранение в нём.",
+      {
+        requiredAction: "inspect_terminal_run",
+        workspaceId: entry.workspaceId,
+        runId: entry.runId,
+        operation,
+        reasonCode,
+      },
+    );
+  }
+  return new TrelioLocalContextError(
+    "TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED",
+    "Lease Run больше не действует, а автоматический claim не завершился. Повторно подготовьте и откройте этот exact Run через Trelio, затем повторите исходное действие один раз.",
+    {
+      requiredAction: "prepare_and_open_existing_run",
+      workspaceId: entry.workspaceId,
+      runId: entry.runId,
+      operation,
+      reasonCode,
+    },
+  );
+};
+
+const defaultWorkspaceRunHeartbeatTimer = (callback, delayMilliseconds) => {
+  const timer = setTimeout(() => {
+    void callback();
+  }, delayMilliseconds);
+  // An otherwise idle Codex/Claude MCP host may exit normally. A forgotten
+  // Run must never keep the client process alive solely for another renewal.
+  timer.unref?.();
+  return timer;
+};
+
+/**
+ * Keep an opened Run leased while the exact local MCP host is alive.
+ *
+ * The manager deliberately retains the original, server-built `open` argv in
+ * memory. If a sleeping computer wakes after the lease boundary, only exact
+ * `LEASE_EXPIRED` or expiry-worker `RUN_NOT_ACTIVE` responses may trigger one
+ * claim of that same Run. Fencing and non-claimable terminal-state failures
+ * never auto-claim: another client may legitimately own the Run, and fighting
+ * it with a background takeover would be unsafe.
+ */
+export const createWorkspaceRunHeartbeatManager = ({
+  runBridge,
+  resolveOpenedDirectory,
+  heartbeatIntervalMs = WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS,
+  busyRetryMs = WORKSPACE_RUN_AUTO_HEARTBEAT_BUSY_RETRY_MS,
+  retryDelaysMs = WORKSPACE_RUN_AUTO_HEARTBEAT_RETRY_DELAYS_MS,
+  scheduleTimer = defaultWorkspaceRunHeartbeatTimer,
+  cancelTimer = clearTimeout,
+} = {}) => {
+  if (typeof runBridge !== "function" || typeof resolveOpenedDirectory !== "function") {
+    throw new TypeError("Workspace Run heartbeat manager requires bridge and directory resolvers.");
+  }
+
+  const entries = new Map();
+  const entryKey = (workspaceDirectory) => path.resolve(String(workspaceDirectory || ""));
+
+  const clearScheduledTimer = (entry) => {
+    if (entry.timer !== null) {
+      cancelTimer(entry.timer);
+      entry.timer = null;
+    }
+  };
+
+  const stopEntry = (entry, { retainRecovery = false } = {}) => {
+    clearScheduledTimer(entry);
+    entry.stopped = true;
+    if (!retainRecovery && entries.get(entry.key) === entry) entries.delete(entry.key);
+  };
+
+  const scheduleEntry = (entry, delayMilliseconds) => {
+    if (entry.stopped || entries.get(entry.key) !== entry) return;
+    clearScheduledTimer(entry);
+    entry.timer = scheduleTimer(async () => {
+      entry.timer = null;
+      await renewEntry(entry);
+    }, delayMilliseconds);
+  };
+
+  const markRecoveryRequired = (entry, error, reasonCode = null) => {
+    entry.recovery = {
+      reasonCode: reasonCode || classifyWorkspaceRunLeaseFailure(error) || "CLAIM_FAILED",
+    };
+    stopEntry(entry, { retainRecovery: true });
+  };
+
+  const replaceEntryDirectory = (entry, workspaceDirectory) => {
+    const nextKey = entryKey(workspaceDirectory);
+    if (nextKey === entry.key) {
+      entry.workspaceDirectory = nextKey;
+      return;
+    }
+    if (entries.get(entry.key) === entry) entries.delete(entry.key);
+    const displaced = entries.get(nextKey);
+    if (displaced && displaced !== entry) stopEntry(displaced);
+    entry.key = nextKey;
+    entry.workspaceDirectory = nextKey;
+    entries.set(nextKey, entry);
+  };
+
+  const reclaimEntry = async (entry) => {
+    if (!entry.openArguments) {
+      markRecoveryRequired(entry, null, "LEASE_EXPIRED");
+      return { status: "required", entry, error: null };
+    }
+    try {
+      const opened = await runBridge(entry.origin, entry.openArguments, {
+        ...(entry.openWorkingDirectory ? { cwd: entry.openWorkingDirectory } : {}),
+      });
+      const workspaceDirectory = await resolveOpenedDirectory(opened.stdout);
+      replaceEntryDirectory(entry, workspaceDirectory);
+      entry.retryIndex = 0;
+      entry.recovery = null;
+      entry.stopped = false;
+      scheduleEntry(entry, heartbeatIntervalMs);
+      return { status: "reclaimed", entry };
+    } catch (error) {
+      markRecoveryRequired(entry, error);
+      return { status: "required", entry, error };
+    }
+  };
+
+  async function renewEntry(entry) {
+    if (entry.stopped || entries.get(entry.key) !== entry) return;
+    if (entry.activeActionCount > 0 || entry.renewalPromise) {
+      scheduleEntry(entry, busyRetryMs);
+      return;
+    }
+
+    entry.renewalPromise = (async () => {
+      try {
+        await runBridge(entry.origin, ["heartbeat"], { cwd: entry.workspaceDirectory });
+        entry.retryIndex = 0;
+        scheduleEntry(entry, heartbeatIntervalMs);
+      } catch (error) {
+        const leaseFailure = classifyWorkspaceRunLeaseFailure(error);
+        if (leaseFailure === "LEASE_EXPIRED" || leaseFailure === "RUN_NOT_ACTIVE") {
+          await reclaimEntry(entry);
+        } else if (leaseFailure) {
+          markRecoveryRequired(entry, error, leaseFailure);
+        } else {
+          // Heartbeat is idempotent and starts twenty minutes into a one-hour
+          // lease. Bounded increasing retries survive a short network outage
+          // without turning the background worker into a tight status poll.
+          const retryDelay = retryDelaysMs[Math.min(entry.retryIndex, retryDelaysMs.length - 1)];
+          entry.retryIndex += 1;
+          scheduleEntry(entry, retryDelay);
+        }
+      }
+    })();
+    try {
+      await entry.renewalPromise;
+    } finally {
+      entry.renewalPromise = null;
+    }
+  }
+
+  const start = ({
+    origin,
+    workspaceId,
+    runId,
+    workspaceDirectory,
+    openArguments = null,
+    openWorkingDirectory = null,
+  }) => {
+    const key = entryKey(workspaceDirectory);
+    const previous = entries.get(key);
+    if (previous) stopEntry(previous);
+    const entry = {
+      key,
+      origin,
+      workspaceId,
+      runId,
+      workspaceDirectory: key,
+      openArguments: openArguments ? [...openArguments] : null,
+      openWorkingDirectory,
+      activeActionCount: 0,
+      renewalPromise: null,
+      retryIndex: 0,
+      recovery: null,
+      stopped: false,
+      timer: null,
+    };
+    entries.set(key, entry);
+    scheduleEntry(entry, heartbeatIntervalMs);
+    return entry;
+  };
+
+  const beginAction = async (workspaceDirectory, operation) => {
+    const entry = entries.get(entryKey(workspaceDirectory));
+    if (!entry) return null;
+    // If the timer already entered heartbeat/claim, wait for that exact
+    // renewal before the child reads metadata. This prevents a foreground
+    // command from racing a fencing-token rotation after laptop wake.
+    if (entry.renewalPromise) await entry.renewalPromise;
+    if (entry.recovery) {
+      throw createWorkspaceRunStoppedError(entry, operation);
+    }
+    entry.activeActionCount += 1;
+    return entry;
+  };
+
+  const endAction = (entry) => {
+    if (!entry) return;
+    entry.activeActionCount = Math.max(0, entry.activeActionCount - 1);
+  };
+
+  const recoverActionFailure = async (entry, error) => {
+    if (!entry) return { status: "not_applicable" };
+    const leaseFailure = classifyWorkspaceRunLeaseFailure(error);
+    if (leaseFailure === "LEASE_EXPIRED" || leaseFailure === "RUN_NOT_ACTIVE") {
+      return reclaimEntry(entry);
+    }
+    if (leaseFailure) {
+      markRecoveryRequired(entry, error, leaseFailure);
+      return { status: "required", entry, error };
+    }
+    return { status: "not_applicable" };
+  };
+
+  const markActionSuccess = (entry, operation, parameters = {}) => {
+    if (!entry) return;
+    if (
+      operation === "finish"
+      || operation === "submit"
+      || operation === "pause"
+      || (operation === "checkpoint" && parameters.type === "blocker")
+    ) {
+      stopEntry(entry);
+      return;
+    }
+    if (operation === "heartbeat") {
+      entry.retryIndex = 0;
+      scheduleEntry(entry, heartbeatIntervalMs);
+    }
+  };
+
+  return {
+    start,
+    beginAction,
+    endAction,
+    recoverActionFailure,
+    markActionSuccess,
+    stop: (workspaceDirectory) => {
+      const entry = entries.get(entryKey(workspaceDirectory));
+      if (entry) stopEntry(entry);
+    },
+    inspect: (workspaceDirectory) => entries.get(entryKey(workspaceDirectory)) ?? null,
+  };
+};
+
+const workspaceRunHeartbeatManager = createWorkspaceRunHeartbeatManager({
+  runBridge: runWorkspaceBridge,
+  resolveOpenedDirectory: (stdout) => resolveOpenedWorkspaceDirectory(stdout),
+});
+
 export const handleTrelioWorkspaceActionOperation = async (
   origin,
   rawInput,
-  { signal, runBridge = runWorkspaceBridge } = {},
+  { signal, runBridge = runWorkspaceBridge, runHeartbeatManager } = {},
 ) => {
   const invocation = buildTrelioWorkspaceActionInvocation(rawInput);
   if (invocation.operation === "download_file") {
@@ -8200,11 +8502,61 @@ export const handleTrelioWorkspaceActionOperation = async (
   const recoveryWorkspaceId = invocation.operation === "open"
     ? normalizeWorkspaceActionUuid(rawInput.parameters.workspaceId, "parameters.workspaceId")
     : null;
+  const heartbeatManager = runHeartbeatManager
+    ?? (runBridge === runWorkspaceBridge ? workspaceRunHeartbeatManager : null);
+  let activeHeartbeatEntry = null;
   try {
+    if (heartbeatManager && invocation.workingDirectory) {
+      activeHeartbeatEntry = await heartbeatManager.beginAction(
+        invocation.workingDirectory,
+        invocation.operation,
+      );
+    }
     const result = await runBridge(origin, invocation.argumentsList, {
       ...(invocation.workingDirectory ? { cwd: invocation.workingDirectory } : {}),
       signal,
     });
+    if (heartbeatManager && invocation.operation === "open") {
+      const workspaceDirectory = await resolveOpenedWorkspaceDirectory(result.stdout);
+      const identity = await readOpenedWorkspaceRunIdentity(workspaceDirectory, origin);
+      heartbeatManager.start({
+        origin,
+        workspaceId: identity.workspaceId,
+        runId: identity.runId,
+        workspaceDirectory,
+        openArguments: invocation.argumentsList,
+        openWorkingDirectory: invocation.workingDirectory,
+      });
+    } else if (heartbeatManager) {
+      if (!activeHeartbeatEntry && invocation.workingDirectory) {
+        // A host may restart while the local Run and lease remain valid. The
+        // first successful foreground action proves that metadata is usable;
+        // adopt it for future heartbeat even though the old proof-bearing open
+        // action is no longer available for an automatic claim. Adoption is
+        // best-effort because successful compatibility actions may run from a
+        // caller-owned directory without persistent Run metadata.
+        try {
+          const identity = await readOpenedWorkspaceRunIdentity(
+            path.resolve(invocation.workingDirectory),
+            origin,
+          );
+          activeHeartbeatEntry = heartbeatManager.start({
+            origin,
+            workspaceId: identity.workspaceId,
+            runId: identity.runId,
+            workspaceDirectory: path.resolve(invocation.workingDirectory),
+          });
+        } catch {
+          // The completed foreground action remains authoritative; absence of
+          // adoptable metadata only disables background renewal for this cwd.
+        }
+      }
+      heartbeatManager.markActionSuccess(
+        activeHeartbeatEntry,
+        invocation.operation,
+        rawInput.parameters,
+      );
+    }
     return {
       schemaVersion: TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION,
       operation: invocation.operation,
@@ -8213,9 +8565,71 @@ export const handleTrelioWorkspaceActionOperation = async (
     };
   } catch (error) {
     if (signal?.aborted) throw error;
-    // Preserve the recovery code for MCP clients; a generic action error would
-    // hide that this host must reload its plugin before any retry can succeed.
-    if (error instanceof TrelioLocalContextError && error.code === "TRELIO_PLUGIN_RESTART_REQUIRED") {
+    const runRecovery = activeHeartbeatEntry
+      ? await heartbeatManager.recoverActionFailure(activeHeartbeatEntry, error)
+      : { status: "not_applicable" };
+    if (runRecovery.status === "reclaimed") {
+      throw new TrelioLocalContextError(
+        "TRELIO_WORKSPACE_RUN_RECLAIMED",
+        "Lease Run истекла во время действия. Bridge уже повторно claim-нул этот exact Run; повторите исходное действие один раз.",
+        {
+          requiredAction: "retry_workspace_action",
+          workspaceId: runRecovery.entry.workspaceId,
+          runId: runRecovery.entry.runId,
+          operation: invocation.operation,
+        },
+      );
+    }
+    if (runRecovery.status === "required") {
+      throw createWorkspaceRunStoppedError(runRecovery.entry, invocation.operation);
+    }
+    const leaseFailure = classifyWorkspaceRunLeaseFailure(error);
+    if (
+      !activeHeartbeatEntry
+      && invocation.workingDirectory
+      && (leaseFailure === "LEASE_EXPIRED" || leaseFailure === "RUN_NOT_ACTIVE")
+    ) {
+      // A restarted MCP host has no in-memory timer or original proof-bearing
+      // open action. Recover the non-secret exact identity from owner-private
+      // metadata so the remote MCP can prepare a fresh runtime session and
+      // return a claim action. The failed mutation itself is never replayed.
+      try {
+        const identity = await readOpenedWorkspaceRunIdentity(
+          path.resolve(invocation.workingDirectory),
+          origin,
+        );
+        throw new TrelioLocalContextError(
+          "TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED",
+          "Lease Run истекла после перезапуска локального host. Подготовьте этот exact Run через prepare_agent_workspace_run(runId), выполните возвращённый open/claim и повторите исходное сохранение один раз; не завершайте работу с несохранённой дельтой.",
+          {
+            requiredAction: "prepare_and_open_existing_run",
+            workspaceId: identity.workspaceId,
+            runId: identity.runId,
+            operation: invocation.operation,
+            reasonCode: leaseFailure,
+          },
+        );
+      } catch (recoveryError) {
+        if (
+          recoveryError instanceof TrelioLocalContextError
+          && recoveryError.code === "TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED"
+        ) {
+          throw recoveryError;
+        }
+        // Corrupt or missing private metadata cannot authorize guessing a Run;
+        // preserve the original bridge error below for explicit diagnosis.
+      }
+    }
+    // Preserve actionable host/run recovery codes for MCP clients. A generic
+    // action wrapper would hide the exact next call and let the agent finish
+    // with an unsaved delta.
+    if (
+      error instanceof TrelioLocalContextError
+      && (
+        error.code === "TRELIO_PLUGIN_RESTART_REQUIRED"
+        || error.code.startsWith("TRELIO_WORKSPACE_RUN_")
+      )
+    ) {
       throw error;
     }
     const stderr = truncateWorkspaceActionOutput(error?.stderr).trim();
@@ -8241,6 +8655,8 @@ export const handleTrelioWorkspaceActionOperation = async (
         ...(stderr ? { stderr } : {}),
       },
     );
+  } finally {
+    heartbeatManager?.endAction(activeHeartbeatEntry);
   }
 };
 
@@ -8865,6 +9281,39 @@ const resolveOpenedWorkspaceDirectory = async (stdout) => {
     "LOCAL_WORKSPACE_OPEN_FAILED",
     "The local bridge did not return a materialized Workspace directory.",
   );
+};
+
+const readOpenedWorkspaceRunIdentity = async (workspaceDirectory, expectedOrigin) => {
+  const metadata = await readPrivateJsonFile(
+    path.join(path.dirname(workspaceDirectory), ".trelio-run.json"),
+  );
+  let recordedOrigin;
+  let requestedOrigin;
+  try {
+    recordedOrigin = new URL(String(metadata.origin || "")).origin;
+    requestedOrigin = new URL(String(expectedOrigin || "")).origin;
+  } catch {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RUN_MISMATCH",
+      "The opened local Run contains an invalid Trelio origin.",
+    );
+  }
+  if (
+    metadata.schemaVersion !== 3
+    || !UUID_PATTERN.test(String(metadata.workspaceId || ""))
+    || !UUID_PATTERN.test(String(metadata.runId || ""))
+    || path.resolve(String(metadata.workspaceDirectory || "")) !== workspaceDirectory
+    || recordedOrigin !== requestedOrigin
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_WORKSPACE_RUN_MISMATCH",
+      "The opened local directory does not contain the expected Trelio Run metadata.",
+    );
+  }
+  return {
+    workspaceId: metadata.workspaceId,
+    runId: metadata.runId,
+  };
 };
 
 const readRestoreRunMetadata = async (workspaceDirectory, input) => {

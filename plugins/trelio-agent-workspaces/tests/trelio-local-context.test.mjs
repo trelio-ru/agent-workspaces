@@ -20,6 +20,7 @@ import {
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   TRELIO_WORKSPACE_ACTION_TOOL,
+  WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS,
   buildEncryptedRestoreHandoffArguments,
   buildLocalTaskAttachmentStreamRequest,
   buildLocalMarkdownDocument,
@@ -27,6 +28,8 @@ import {
   buildProposalValueMarkers,
   buildTrelioWorkspaceActionInvocation,
   buildWorkspaceBridgeProcessArguments,
+  classifyWorkspaceRunLeaseFailure,
+  createWorkspaceRunHeartbeatManager,
   fetchMirrorResult,
   findPreparedEncryptedRestoreRun,
   getWorkspaceFileFromMirror,
@@ -244,6 +247,242 @@ test("bridge origin stays before child argv and the local handler uses the exact
   });
   assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.name, "continue_trelio_workspace_action");
   assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.inputSchema.additionalProperties, false);
+});
+
+test("live MCP host renews an opened Run every twenty minutes", async () => {
+  const scheduled = [];
+  const calls = [];
+  const manager = createWorkspaceRunHeartbeatManager({
+    runBridge: async (origin, argumentsList, options) => {
+      calls.push({ origin, argumentsList, options });
+      return { stdout: "Heartbeat отправлен\n", stderr: "" };
+    },
+    resolveOpenedDirectory: async () => actionWorkingDirectory,
+    scheduleTimer: (callback, delayMilliseconds) => {
+      const timer = { callback, delayMilliseconds, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancelTimer: (timer) => { timer.canceled = true; },
+  });
+
+  manager.start({
+    origin: "https://trelio.example",
+    workspaceId: actionWorkspaceId,
+    runId: actionRunId,
+    workspaceDirectory: actionWorkingDirectory,
+    openArguments: ["open", "--workspace", actionWorkspaceId, "--run", actionRunId],
+  });
+  assert.equal(WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS, 20 * 60 * 1000);
+  assert.equal(scheduled[0].delayMilliseconds, WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS);
+
+  await scheduled[0].callback();
+
+  assert.deepEqual(calls, [{
+    origin: "https://trelio.example",
+    argumentsList: ["heartbeat"],
+    options: { cwd: actionWorkingDirectory },
+  }]);
+  assert.equal(scheduled[1].delayMilliseconds, WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS);
+});
+
+test("expired background heartbeat claims the same Run with the original open action", async () => {
+  const scheduled = [];
+  const calls = [];
+  const openArguments = [
+    "open", "--workspace", actionWorkspaceId, "--run", actionRunId,
+    "--runtime-session", actionReleaseId,
+  ];
+  const manager = createWorkspaceRunHeartbeatManager({
+    runBridge: async (origin, argumentsList, options) => {
+      calls.push({ origin, argumentsList, options });
+      if (argumentsList[0] === "heartbeat") {
+        throw Object.assign(new Error("bridge failed"), {
+          stderr: "LEASE_EXPIRED: Run lease expired",
+        });
+      }
+      return { stdout: `${actionWorkingDirectory}\n`, stderr: "" };
+    },
+    resolveOpenedDirectory: async (stdout) => stdout.trim(),
+    scheduleTimer: (callback, delayMilliseconds) => {
+      const timer = { callback, delayMilliseconds, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancelTimer: (timer) => { timer.canceled = true; },
+  });
+
+  manager.start({
+    origin: "https://trelio.example",
+    workspaceId: actionWorkspaceId,
+    runId: actionRunId,
+    workspaceDirectory: actionWorkingDirectory,
+    openArguments,
+    openWorkingDirectory: path.dirname(actionWorkingDirectory),
+  });
+  await scheduled[0].callback();
+
+  assert.deepEqual(calls.map((call) => call.argumentsList), [
+    ["heartbeat"],
+    openArguments,
+  ]);
+  assert.deepEqual(calls[1].options, { cwd: path.dirname(actionWorkingDirectory) });
+  assert.equal(manager.inspect(actionWorkingDirectory)?.recovery, null);
+  assert.equal(scheduled.at(-1).delayMilliseconds, WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS);
+});
+
+test("stale fencing stops renewal without claiming over another host", async () => {
+  const scheduled = [];
+  const calls = [];
+  const manager = createWorkspaceRunHeartbeatManager({
+    runBridge: async (_origin, argumentsList) => {
+      calls.push(argumentsList);
+      throw Object.assign(new Error("bridge failed"), {
+        stderr: "STALE_FENCING_TOKEN: another host owns the Run",
+      });
+    },
+    resolveOpenedDirectory: async () => actionWorkingDirectory,
+    scheduleTimer: (callback, delayMilliseconds) => {
+      const timer = { callback, delayMilliseconds, canceled: false };
+      scheduled.push(timer);
+      return timer;
+    },
+    cancelTimer: (timer) => { timer.canceled = true; },
+  });
+  manager.start({
+    origin: "https://trelio.example",
+    workspaceId: actionWorkspaceId,
+    runId: actionRunId,
+    workspaceDirectory: actionWorkingDirectory,
+    openArguments: ["open", "--workspace", actionWorkspaceId, "--run", actionRunId],
+  });
+
+  await scheduled[0].callback();
+
+  assert.deepEqual(calls, [["heartbeat"]]);
+  assert.equal(manager.inspect(actionWorkingDirectory)?.recovery?.reasonCode, "STALE_FENCING_TOKEN");
+  await assert.rejects(
+    manager.beginAction(actionWorkingDirectory, "checkpoint"),
+    (error) => (
+      error?.code === "TRELIO_WORKSPACE_RUN_FENCED"
+      && error.details?.requiredAction === "resolve_run_owner_before_takeover"
+    ),
+  );
+  await assert.rejects(handleTrelioWorkspaceActionOperation("https://trelio.example", {
+    schemaVersion: 1,
+    operation: "checkpoint",
+    parameters: { type: "draft", summary: "Не перехватывать чужую lease" },
+    workingDirectory: actionWorkingDirectory,
+  }, {
+    runBridge: async () => assert.fail("fenced Run must fail before child launch"),
+    runHeartbeatManager: manager,
+  }), (error) => error?.code === "TRELIO_WORKSPACE_RUN_FENCED");
+  assert.equal(classifyWorkspaceRunLeaseFailure({ stderr: "prefix LEASE_EXPIRED: suffix" }), "LEASE_EXPIRED");
+});
+
+test("successful open registers exact persisted Run identity with the renewer", async (t) => {
+  const rootDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-heartbeat-open-"));
+  const workspaceDirectory = path.join(rootDirectory, "workspace");
+  t.after(() => fs.rm(rootDirectory, { recursive: true, force: true }));
+  await fs.mkdir(workspaceDirectory);
+  await fs.writeFile(
+    path.join(rootDirectory, ".trelio-run.json"),
+    JSON.stringify({
+      schemaVersion: 3,
+      origin: "https://trelio.example",
+      workspaceId: actionWorkspaceId,
+      runId: actionRunId,
+      workspaceDirectory,
+    }),
+    { mode: 0o600 },
+  );
+  let registered = null;
+  const runHeartbeatManager = {
+    beginAction: async () => null,
+    endAction: () => undefined,
+    markActionSuccess: () => undefined,
+    recoverActionFailure: async () => ({ status: "not_applicable" }),
+    start: (entry) => { registered = entry; },
+  };
+
+  await handleTrelioWorkspaceActionOperation("https://trelio.example", {
+    schemaVersion: 1,
+    operation: "open",
+    parameters: {
+      workspaceId: actionWorkspaceId,
+      runId: actionRunId,
+      runtimeSessionId: actionReleaseId,
+    },
+  }, {
+    runBridge: async () => ({ stdout: `Run claimed\n${workspaceDirectory}\n`, stderr: "" }),
+    runHeartbeatManager,
+  });
+
+  assert.deepEqual(registered, {
+    origin: "https://trelio.example",
+    workspaceId: actionWorkspaceId,
+    runId: actionRunId,
+    workspaceDirectory,
+    openArguments: [
+      "open", "--workspace", actionWorkspaceId, "--run", actionRunId,
+      "--runtime-session", actionReleaseId,
+    ],
+    openWorkingDirectory: null,
+  });
+
+  let adopted = null;
+  let marked = null;
+  const adoptedEntry = { source: "persisted_metadata" };
+  await handleTrelioWorkspaceActionOperation("https://trelio.example", {
+    schemaVersion: 1,
+    operation: "status",
+    parameters: {},
+    workingDirectory: workspaceDirectory,
+  }, {
+    runBridge: async () => ({ stdout: "Run active\n", stderr: "" }),
+    runHeartbeatManager: {
+      beginAction: async () => null,
+      endAction: () => undefined,
+      recoverActionFailure: async () => ({ status: "not_applicable" }),
+      start: (entry) => {
+        adopted = entry;
+        return adoptedEntry;
+      },
+      markActionSuccess: (...argumentsValue) => { marked = argumentsValue; },
+    },
+  });
+  assert.deepEqual(adopted, {
+    origin: "https://trelio.example",
+    workspaceId: actionWorkspaceId,
+    runId: actionRunId,
+    workspaceDirectory,
+  });
+  assert.deepEqual(marked, [adoptedEntry, "status", {}]);
+
+  await assert.rejects(handleTrelioWorkspaceActionOperation("https://trelio.example", {
+    schemaVersion: 1,
+    operation: "checkpoint",
+    parameters: { type: "draft", summary: "Сохранить результат" },
+    workingDirectory: workspaceDirectory,
+  }, {
+    runBridge: async () => {
+      throw Object.assign(new Error("bridge failed"), {
+        stderr: "LEASE_EXPIRED: Run lease expired",
+      });
+    },
+    runHeartbeatManager: {
+      beginAction: async () => null,
+      endAction: () => undefined,
+      markActionSuccess: () => undefined,
+      recoverActionFailure: async () => ({ status: "not_applicable" }),
+      start: () => undefined,
+    },
+  }), (error) => (
+    error?.code === "TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED"
+    && error.details?.workspaceId === actionWorkspaceId
+    && error.details?.runId === actionRunId
+    && error.details?.requiredAction === "prepare_and_open_existing_run"
+  ));
 });
 
 test("encrypted local rule publications enforce company/project UTF-8 limits before encryption", () => {

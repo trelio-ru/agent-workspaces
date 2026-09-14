@@ -1181,6 +1181,12 @@ export class TrelioApiError extends Error {
 }
 
 export const COMPANY_STORAGE_BALANCE_REQUIRED_CODE = "COMPANY_STORAGE_BALANCE_REQUIRED";
+const RUN_LEASE_RECOVERY_CODES = new Set([
+  "LEASE_EXPIRED",
+  "RUN_NOT_ACTIVE",
+  "RUN_NOT_CLAIMABLE",
+  "STALE_FENCING_TOKEN",
+]);
 const RUN_STORAGE_CONTINUATION_COMMANDS = new Set([
   "checkpoint",
   "pause",
@@ -1191,6 +1197,23 @@ const RUN_STORAGE_CONTINUATION_COMMANDS = new Set([
 export const formatBridgeCommandError = (error, command = "") => {
   if (error instanceof WorkspaceDirectoryRequiredError) {
     return JSON.stringify(error);
+  }
+  if (
+    error instanceof TrelioApiError
+    && RUN_LEASE_RECOVERY_CODES.has(error.code)
+  ) {
+    // The local MCP host uses the stable code to distinguish an expired lease
+    // from a transport failure. Keeping the code in CLI stderr also gives a
+    // direct bridge caller one safe recovery path instead of encouraging a
+    // blind retry with stale fencing credentials.
+    const detail = error.payload?.message || error.message;
+    if (error.code === "STALE_FENCING_TOKEN") {
+      return `${error.code}: ${detail} Другой host владеет свежей lease; не выполняйте автоматический takeover.`;
+    }
+    if (error.code === "RUN_NOT_CLAIMABLE") {
+      return `${error.code}: ${detail} Run находится в terminal/review состоянии; не повторяйте сохранение.`;
+    }
+    return `${error.code}: ${detail} Повторно откройте этот exact Run через Trelio, чтобы получить новую lease, затем повторите исходное действие один раз.`;
   }
   if (
     !(error instanceof TrelioApiError)
@@ -12015,6 +12038,10 @@ const pause = async (options) => {
 
 const finish = async (options) => {
   await assertRunHasMeaningfulChanges("finish");
+  // Handoff checkpoint is itself lease-guarded. Renew before creating it: a
+  // heartbeat hidden inside submit would run too late and leave a still-valid
+  // Run failing at the first finalization mutation near the lease boundary.
+  await heartbeat();
   await checkpoint({ ...options, type: "handoff" });
   // `submit` сам продлевает lease до и после подготовки candidate. Отдельный
   // model-facing heartbeat здесь не нужен и только создавал лишнее состояние.

@@ -45,9 +45,12 @@
   непустой серверный draft с актуальной базой. Открытие возвращённого действия
   забирает этот Run и блокирует старую lease. `startNewRun=true` используй
   только для намеренно независимой параллельной ветки.
-- При `LEASE_EXPIRED` или устаревшем fencing не меняй данные со старыми
-  идентификаторами. Повторно забери нужный существующий Run либо начни новый
-  от текущего принятого head и перенеси только проверенные изменения.
+- `TRELIO_WORKSPACE_RUN_RECLAIMED`: host claim-нул exact Run; повтори save один раз.
+- `TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED`: возьми IDs из structured error,
+  вызови `prepare_agent_workspace_run` с exact `runId`, returned open и один retry.
+  Без `startNewRun=true`; не завершай ответ до accepted/blocker.
+- `TRELIO_WORKSPACE_RUN_FENCED`/`STALE_FENCING_TOKEN`: без фонового takeover – Run может быть жив на другом host.
+  Claim только осознанно; terminal `RUN_NOT_CLAIMABLE` не обходи.
 - При `WORKSPACE_OUTDATED` сохрани отклонённый candidate, начни новый Run от
   текущего принятого head, сравни параллельные изменения и объедини/перенеси
   свои без принудительной перезаписи канонической истории.

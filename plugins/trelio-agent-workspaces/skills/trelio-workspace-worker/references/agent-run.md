@@ -104,19 +104,14 @@
    delta, отправляет draft с external objects и фиксирует блокировку. Спроси
    лишь после успеха. Для чистого Run и подготовительного вопроса не создавай
    пустой Git draft.
-4. Длительная локальная работа может использовать heartbeat, но не отдельный
-   heartbeat сразу до завершения: его выполняет `finish`.
-5. Заверши один раз через `finish` в точном каталоге с `summary`, `evidence`,
-   `filePaths`, `questions`, `nextAction` и нужным `taskOutcome`. Он вычисляет
-   и печатает полный manifest изменённых candidate paths от закреплённой базы,
-   включая сохранённый draft, создаёт handoff checkpoint, heartbeat,
-   создаёт одну детерминированную запись `worklog/`, подготавливает candidate и
-   отправляет. Действительно пустой Run отклоняется.
-   Для задачи передай один `taskOutcome` из `prepare_agent_workspace_run`.
-6. Trelio проверяет ACL, структуру, размеры, секреты и точный base-head CAS.
-   При ошибке handoff/delta остаются восстанавливаемыми. Дождись одного
-   отложенного encrypted retry bridge; не отправляй submit параллельно или повторно и не
-   перезаписывай историю принудительно.
+4. После `open` live MCP-host сам делает heartbeat/20m и один exact claim при
+   `LEASE_EXPIRED`/`RUN_NOT_ACTIVE`. Не таймерь вручную; stale fence не перехватывай.
+5. Один `finish` в точном каталоге принимает итог, evidence, paths, вопросы,
+   next action и task outcome из prepare. Он печатает полный candidate manifest,
+   обновляет lease до handoff, создаёт `worklog/` и отправляет; пустой Run отклоняет.
+6. Trelio проверяет ACL, структуру, размеры, секреты и base-head CAS. Handoff/delta
+   восстанавливаемы; дождись одного encrypted retry, без параллельного submit и force.
+   При expiry выполни `run-recovery.md`; финал с unsaved delta запрещён.
 7. После принятия task Run выполни `task-run.md`: общий review и независимые
    процедуры комментария, статуса, чек-листа и набора карточек.
 8. Сообщай по порядку: результат, важные выводы/проверки, сохранённые материалы,
