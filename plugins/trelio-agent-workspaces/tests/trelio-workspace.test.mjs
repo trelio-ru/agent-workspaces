@@ -5135,6 +5135,33 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(workerSkill, /используй trelio-diagnostics/u);
 });
 
+test("diagnostics asks before preparing a public report for a verified Trelio defect", async () => {
+  const diagnosticsSkill = await readFile(
+    path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
+    "utf8",
+  );
+  const consentIndex = diagnosticsSkill.indexOf("Только после явного согласия пользователя");
+  const duplicateSearchIndex = diagnosticsSkill.indexOf("search_public_product_feedback");
+  const proposalIndex = diagnosticsSkill.indexOf("render_public_product_feedback_proposal");
+
+  assert.match(diagnosticsSkill, /непосредственно воспроизвела или доказала реальный дефект/u);
+  assert.match(diagnosticsSkill, /кратко предложи пользователю оформить и отправить багрепорт/u);
+  assert.match(diagnosticsSkill, /На этом шаге не\s+вызывай feedback tools, не готовь карточку/u);
+  assert.ok(consentIndex >= 0, "diagnostics must require explicit user consent");
+  assert.ok(
+    duplicateSearchIndex > consentIndex,
+    "diagnostics must search public feedback only after explicit user consent",
+  );
+  assert.ok(
+    proposalIndex > duplicateSearchIndex,
+    "diagnostics must render a proposal only after duplicate search",
+  );
+  assert.match(diagnosticsSkill, /пользователь сам проверяет публичный текст/u);
+  assert.match(diagnosticsSkill, /никогда не вызывает прямую\s+публикацию/u);
+  assert.match(diagnosticsSkill, /Не предлагай оформить багрепорт[\s\S]{0,120}`npm failed`/u);
+  assert.match(diagnosticsSkill, /вероятный публичный дубль[\s\S]{0,100}вместо\s+подготовки новой карточки/u);
+});
+
 test("bundled skills distinguish missing proof from disabled hook trust", async () => {
   const recoveryFiles = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
