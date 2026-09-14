@@ -244,6 +244,15 @@ persistent root одновременно открывается только о�
 начатый legacy Run из `<workspace-id>/<run-id>/workspace` продолжается на месте;
 после его безопасного завершения новые Run переходят на общий root.
 
+`context/company`, `context/project` и UUID-каталоги `context/related/`
+являются exact snapshot `contextHeadsJson` текущего Run. После успешной
+materialization нового набора bridge удаляет исчезнувшие dependency-каталоги;
+authority snapshots (`agent-instructions.md`, `user-profile.md`, worklog format,
+checkpoint и index) этим reconcile не затрагиваются. Поэтому переиспользование
+persistent root не сохраняет неактуальный pinned-контекст предыдущего Run;
+metadata ссылок на hydrated objects также сохраняется только для exact текущих
+workspace/head и больше не защищает старые cache blobs от LRU.
+
 Корень onboarding-папки остаётся только control-plane entrypoint: агент не
 создаёт рядом с `AGENTS.md` рабочие `tmp/`, `output/`, исходники или результаты.
 После `open` он работает в напечатанном `workspace/` и при необходимости создаёт внутренние
@@ -451,13 +460,22 @@ blocker, новый Run или cancellation для этого не создаю�
 ## Restore и cleanup
 
 `trelio-workspace clean --dry-run` показывает exact persistent Workspace roots
-и reclaimable bytes. Root становится кандидатом после 30 дней без локальной
+и reclaimable bytes, а для сохранённых roots выводит стабильную причину пропуска.
+Root становится кандидатом после 30 дней без локальной
 или server Run-активности, только если связанный локальный Run terminal, в
 Workspace нет другого открытого Run, Git чист и root сейчас не открывается.
-Active, unknown и dirty roots сохраняются;
+Открытыми считаются `running`, `waiting_for_human` и совместимый `review`;
+истёкший sibling Run не блокирует terminal root, но root собственного
+`expired` Run сохраняется для возможного claim. Active, unknown и dirty roots сохраняются;
 backend outage делает auto-prune no-op. Настройка
 `workspaceRetentionDays` меняет срок в пределах 1–365 дней; старый
 `terminalRunRetentionDays` читается как совместимый alias.
+
+Обычные ограниченные системные metadata-файлы `.DS_Store`, `Thumbs.db` и
+`desktop.ini` не считаются пользовательским содержимым root. Каталог, symlink
+или файл больше 1 МиБ с таким именем остаётся unmanaged и блокирует удаление.
+Best-effort auto-clean запускается после `open`, успешного `finish` и локального
+`cancel_run`, но не чаще одного успешного прохода в сутки для одного origin.
 
 Object cache очищается по возрасту/LRU/лимиту, signed runtime packages – только
 целыми проверенными digest-каталогами. Очистка удаляет лишь локальную копию;

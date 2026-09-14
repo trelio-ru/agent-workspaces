@@ -37,6 +37,7 @@ import {
   resolveBridgeDataPlaneRouting,
   resolveCompanyEncryptionRequestOrigin,
   resolveCompanyContextMirrorDirectory,
+  runAutomaticLocalCleanup,
   runGit,
   writeAndDecryptCompanyWorkspaceBundle,
   writePrivateJsonFile,
@@ -9328,13 +9329,22 @@ export const handleTrelioLocalWorkspaceOperation = async (
       });
     }
     if (!raw) throw lastError;
-    return hydrateAgentCompanyEncryptedJson({
+    const hydratedResult = await hydrateAgentCompanyEncryptedJson({
       value: { run: raw },
       origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
       signal,
     });
+
+    // Cancellation уже подтверждена backend. Best-effort cleanup может убрать
+    // другие просроченные persistent roots, но его недоступность не меняет
+    // успешный semantic result cancel_run и будет повторена после cooldown.
+    await runAutomaticLocalCleanup({
+      origin,
+      token: provider.token,
+    }).catch(() => undefined);
+    return hydratedResult;
   }
   if (operation === "restore_revision") {
     const expectedHead = normalizeGitHead(rawInput?.expectedHead, "expectedHead");

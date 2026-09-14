@@ -256,6 +256,7 @@ const PAIRING_FILE = path.join(CONFIG_DIRECTORY, "pairings.json");
 const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "credentials.json");
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
+const AUTOMATIC_CLEANUP_STATE_FILE = path.join(CONFIG_DIRECTORY, "automatic-cleanup.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
 const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
@@ -8655,6 +8656,82 @@ const replaceMaterializedContext = async ({
   }
 };
 
+const removeBridgeOwnedContextEntry = async (entryPath) => {
+  try {
+    const entryStat = await fs.lstat(entryPath);
+
+    if (entryStat.isDirectory() && !entryStat.isSymbolicLink()) {
+      await makeWritable(entryPath);
+      await fs.rm(entryPath, { recursive: true, force: true });
+      return;
+    }
+
+    // Company/project/related slots целиком принадлежат bridge. Если локальная
+    // запись была подменена файлом или symlink, удаляем только сам exact entry
+    // и никогда не следуем к цели за пределами persistent root.
+    await fs.rm(entryPath, { force: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+};
+
+export const reconcileMaterializedContextDirectories = async (
+  rootDirectory,
+  specifications,
+) => {
+  const dependencyKinds = new Set(specifications.map((item) => item.dependencyKind));
+
+  // Persistent root является snapshot текущего Run, а не накопительной
+  // историей всех прежних Run. Fixed slots удаляются только после успешной
+  // materialization всех новых dependency, поэтому ошибка загрузки сохраняет
+  // предыдущий пригодный context и не оставляет частично очищенный snapshot.
+  for (const dependencyKind of ["company", "project"]) {
+    if (!dependencyKinds.has(dependencyKind)) {
+      await removeBridgeOwnedContextEntry(path.join(
+        rootDirectory,
+        "context",
+        dependencyKind,
+      ));
+    }
+  }
+
+  const expectedRelatedWorkspaceIds = new Set(
+    specifications
+      .filter((item) => item.dependencyKind === "related")
+      .map((item) => item.workspaceId),
+  );
+  const relatedDirectory = path.join(rootDirectory, "context", "related");
+
+  if (expectedRelatedWorkspaceIds.size === 0) {
+    await removeBridgeOwnedContextEntry(relatedDirectory);
+    return;
+  }
+
+  let relatedEntries;
+
+  try {
+    const relatedStat = await fs.lstat(relatedDirectory);
+
+    if (!relatedStat.isDirectory() || relatedStat.isSymbolicLink()) {
+      throw new Error(`Путь контекста ${relatedDirectory} не является обычным каталогом.`);
+    }
+    relatedEntries = await fs.readdir(relatedDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  for (const entry of relatedEntries) {
+    if (!expectedRelatedWorkspaceIds.has(entry.name)) {
+      await removeBridgeOwnedContextEntry(path.join(relatedDirectory, entry.name));
+    }
+  }
+};
+
 const materializeRunContexts = async ({
   origin,
   token,
@@ -8679,6 +8756,7 @@ const materializeRunContexts = async ({
         companyEncryption,
       }));
     }
+    await reconcileMaterializedContextDirectories(rootDirectory, specifications);
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -8694,6 +8772,19 @@ const serializeMaterializedContexts = (contexts) => contexts.map((context) => ({
   scopeKey: context.scopeKey,
   directory: context.directory,
 }));
+
+export const retainCurrentContextObjects = (contextObjects, contexts) => {
+  const currentContextRevisions = new Set(contexts.map(
+    (context) => `${context.workspaceId}:${context.head}`,
+  ));
+
+  // Hydrated object bytes принадлежат exact pinned revision. После context
+  // sync старые metadata entries не должны бессрочно защищать cache blobs,
+  // которых уже нет ни в одном доступном dependency-каталоге текущего Run.
+  return (Array.isArray(contextObjects) ? contextObjects : []).filter((object) => (
+    currentContextRevisions.has(`${object?.workspaceId}:${object?.workspaceHead}`)
+  ));
+};
 
 const writeRunMetadata = async (metadataPath, metadata) => {
   const temporaryPath = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
@@ -9149,6 +9240,10 @@ export const ensureBridgeCompatibility = async (
 };
 
 const TERMINAL_RUN_STATUSES = new Set(["accepted", "cancelled"]);
+// Backend считает открытыми только состояния, которые удерживают текущую
+// работу/ревью. `expired` можно claim-нуть повторно, но он не должен навечно
+// блокировать cleanup другого terminal Run того же Workspace.
+const OPEN_RUN_STATUSES = new Set(["running", "waiting_for_human", "review"]);
 
 const readOptionalRunMetadata = async (rootDirectory) => {
   try {
@@ -10347,12 +10442,7 @@ const openWorkspace = async (origin, options) => {
   // Run. Поэтому текущий persistent root уже non-terminal и не может попасть
   // в кандидаты, даже если перед open он был старше retention-порога.
   const token = await requireToken(origin);
-  await cleanLocalRuns({
-    origin,
-    token,
-    dryRun: false,
-    automatic: true,
-  }).catch(() => undefined);
+  await runAutomaticLocalCleanup({ origin, token }).catch(() => undefined);
 };
 
 const validateWorkspaceReadSnapshot = (rawSnapshot, workspaceId) => {
@@ -11102,6 +11192,7 @@ const synchronizeRunContext = async ({
     userProfileSnapshot: agentRun.userProfileSnapshotJson,
     draftHead: agentRun.draftHead || null,
     contexts: serializeMaterializedContexts(contexts),
+    contextObjects: retainCurrentContextObjects(metadata.contextObjects, contexts),
     contextSyncedAt: new Date().toISOString(),
   });
   const changedCount = contexts.filter((context) => context.changed).length;
@@ -11928,6 +12019,11 @@ const finish = async (options) => {
   // `submit` сам продлевает lease до и после подготовки candidate. Отдельный
   // model-facing heartbeat здесь не нужен и только создавал лишнее состояние.
   await submit(options);
+
+  // После terminal transition можно убрать другие давно неактивные roots.
+  // Ошибка best-effort retention не превращает уже принятый результат Run в
+  // ошибку finish; следующий запуск bridge повторит cleanup после cooldown.
+  await runAutomaticLocalCleanupForCurrentRun().catch(() => undefined);
 };
 
 const registerWorkspaceObject = async ({
@@ -14489,7 +14585,7 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
           Math.max(latestRunActivityByWorkspaceId.get(workspaceId) || 0, activityAt),
         );
       }
-      if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+      if (OPEN_RUN_STATUSES.has(run.status)) {
         workspacesWithOpenRuns.add(workspaceId);
       }
     }
@@ -14778,6 +14874,42 @@ const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
   }
 };
 
+const BENIGN_WORKSPACE_ROOT_FILE_NAMES = new Set([
+  ".DS_Store",
+  "Thumbs.db",
+  "desktop.ini",
+]);
+const MAX_BENIGN_WORKSPACE_ROOT_FILE_BYTES = 1024 * 1024;
+
+const hasUnmanagedWorkspaceRootEntries = async (rootDirectory) => {
+  const rootEntries = await fs.readdir(rootDirectory, { withFileTypes: true });
+
+  for (const entry of rootEntries) {
+    if ([".trelio-run.json", "context", "workspace"].includes(entry.name)) {
+      continue;
+    }
+
+    if (!BENIGN_WORKSPACE_ROOT_FILE_NAMES.has(entry.name)) {
+      return true;
+    }
+
+    const entryStat = await fs.lstat(path.join(rootDirectory, entry.name));
+
+    // Finder/Explorer metadata is not user Workspace content, but имя само по
+    // себе недостаточно: каталог, symlink или аномально большой файл с таким
+    // именем остаётся fail-closed и не делает весь root удаляемым.
+    if (
+      !entryStat.isFile()
+      || entryStat.isSymbolicLink()
+      || entryStat.size > MAX_BENIGN_WORKSPACE_ROOT_FILE_BYTES
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
 const planWorkspaceCleanup = async ({
   origin,
   token,
@@ -14792,6 +14924,17 @@ const planWorkspaceCleanup = async ({
   } = await readRunStatusMap({ origin, token, roots });
   const retentionMs = settings.workspaceRetentionDays * 24 * 60 * 60 * 1000;
   const candidates = [];
+  const skippedRoots = [];
+
+  const skipRoot = (root, reason, runState = null) => {
+    skippedRoots.push({
+      rootDirectory: root.rootDirectory,
+      workspaceId: root.metadata.workspaceId,
+      runId: root.metadata.runId,
+      status: runState?.status || null,
+      reason,
+    });
+  };
 
   for (const root of roots) {
     if (normalizeOrigin(root.metadata.origin || DEFAULT_ORIGIN) !== origin) {
@@ -14800,11 +14943,18 @@ const planWorkspaceCleanup = async ({
 
     const runState = statusByRunId.get(root.metadata.runId);
 
-    if (!runState || !TERMINAL_RUN_STATUSES.has(runState.status)) {
+    if (!runState) {
+      skipRoot(root, "run_status_unknown");
+      continue;
+    }
+
+    if (!TERMINAL_RUN_STATUSES.has(runState.status)) {
+      skipRoot(root, "run_not_terminal", runState);
       continue;
     }
 
     if (workspacesWithOpenRuns.has(root.metadata.workspaceId)) {
+      skipRoot(root, "workspace_has_open_run", runState);
       continue;
     }
 
@@ -14827,6 +14977,7 @@ const planWorkspaceCleanup = async ({
     );
 
     if (!Number.isFinite(inactiveSince) || Date.now() - inactiveSince < retentionMs) {
+      skipRoot(root, "retention_period_active", runState);
       continue;
     }
 
@@ -14834,25 +14985,21 @@ const planWorkspaceCleanup = async ({
       !ignoredOpenLockWorkspaceIds.has(root.metadata.workspaceId)
       && await isWorkspaceOpenLocked(root.metadata.workspaceId)
     ) {
+      skipRoot(root, "workspace_open_locked", runState);
       continue;
     }
 
-    const rootEntries = await fs.readdir(root.rootDirectory, { withFileTypes: true });
-    const containsUnmanagedRootEntry = rootEntries.some((entry) => ![
-      ".trelio-run.json",
-      "context",
-      "workspace",
-    ].includes(entry.name));
-
-    if (containsUnmanagedRootEntry) {
+    if (await hasUnmanagedWorkspaceRootEntries(root.rootDirectory)) {
       // При rolling migration persistent root может временно соседствовать со
       // старыми `<workspaceId>/<runId>` roots. Родителя нельзя удалить вместе
       // с ними. Любой другой неизвестный top-level path также может содержать
       // пользовательские данные и поэтому делает весь root non-reclaimable.
+      skipRoot(root, "unmanaged_root_entry", runState);
       continue;
     }
 
     if (await isWritableWorkspaceDirty(root)) {
+      skipRoot(root, "workspace_dirty", runState);
       continue;
     }
 
@@ -14865,7 +15012,7 @@ const planWorkspaceCleanup = async ({
     });
   }
 
-  return { roots, candidates };
+  return { roots, candidates, skippedRoots };
 };
 
 const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
@@ -14902,6 +15049,13 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     for (const candidate of cleanupPlan.candidates) {
       process.stdout.write(
         `- ${candidate.rootDirectory} · ${candidate.status} · ${formatBytes(candidate.sizeBytes)}\n`,
+      );
+    }
+    process.stdout.write(`Skipped Workspace roots: ${cleanupPlan.skippedRoots.length}\n`);
+    for (const skippedRoot of cleanupPlan.skippedRoots) {
+      process.stdout.write(
+        `- ${skippedRoot.rootDirectory} · ${skippedRoot.reason}`
+        + `${skippedRoot.status ? ` · ${skippedRoot.status}` : ""}\n`,
       );
     }
     process.stdout.write(`Cache objects: ${cacheCandidates.length}\n`);
@@ -15013,6 +15167,62 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
     deletedSkillRuntimePackages: skillRuntimeCacheCandidates.length,
     reclaimableBytes,
   };
+};
+
+const AUTOMATIC_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+export const runAutomaticLocalCleanup = async ({ origin, token }) => {
+  let state = {};
+
+  try {
+    state = await readPrivateJsonFile(AUTOMATIC_CLEANUP_STATE_FILE, {
+      maximumBytes: 64 * 1024,
+    });
+  } catch {
+    // Повреждённый owner-private marker не расширяет право на удаление: сам
+    // cleanup всё равно заново доказывает terminal status, Git и locks.
+    state = {};
+  }
+
+  const normalizedOrigin = normalizeOrigin(origin);
+  const lastSuccessfulAt = Date.parse(String(state.lastSuccessfulAtByOrigin?.[normalizedOrigin] || ""));
+
+  if (
+    Number.isFinite(lastSuccessfulAt)
+    && Date.now() - lastSuccessfulAt < AUTOMATIC_CLEANUP_INTERVAL_MS
+  ) {
+    return { skipped: true, reason: "automatic_cleanup_interval_active" };
+  }
+
+  const result = await cleanLocalRuns({
+    origin: normalizedOrigin,
+    token,
+    dryRun: false,
+    automatic: true,
+  });
+
+  // Backend outage и любое недоказанное состояние остаются no-op без marker:
+  // следующий подходящий запуск сможет безопасно повторить проверку.
+  if (!result.skipped) {
+    await writePrivateJsonFile(AUTOMATIC_CLEANUP_STATE_FILE, {
+      schemaVersion: 1,
+      lastSuccessfulAtByOrigin: {
+        ...(state.lastSuccessfulAtByOrigin && typeof state.lastSuccessfulAtByOrigin === "object"
+          ? state.lastSuccessfulAtByOrigin
+          : {}),
+        [normalizedOrigin]: new Date().toISOString(),
+      },
+    });
+  }
+
+  return result;
+};
+
+const runAutomaticLocalCleanupForCurrentRun = async () => {
+  const { metadata } = await findRunMetadata();
+  const origin = normalizeOrigin(metadata.origin || DEFAULT_ORIGIN);
+  const token = await requireToken(origin);
+  return runAutomaticLocalCleanup({ origin, token });
 };
 
 const printHelp = () => {

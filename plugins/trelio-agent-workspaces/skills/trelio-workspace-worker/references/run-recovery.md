@@ -60,6 +60,17 @@
 - Не удаляй корни Workspace вручную. Сначала выполни `clean` с явным
   `dryRun=true`: план включает только неиспользуемые 30 дней, завершённые на
   backend, локально чистые и не открывающиеся сейчас корни, а также объём cache.
+  Для сохранённых текущих roots команда выводит стабильную причину:
+  `run_status_unknown`, `run_not_terminal`, `workspace_has_open_run`,
+  `retention_period_active`, `workspace_open_locked`, `unmanaged_root_entry`
+  или `workspace_dirty`. Открытыми считаются `running`, `waiting_for_human` и
+  совместимый `review`: `expired` sibling не блокирует terminal root, но root
+  собственного `expired` Run сохраняется для claim. Обычный небольшой
+  `.DS_Store`, `Thumbs.db` или `desktop.ini` в корне не считается unmanaged;
+  каталог, symlink или файл больше 1 МиБ с таким именем остаётся блокировкой.
   Последующий явный `dryRun=false` удаляет только этот локальный план, никогда
   серверную ревизию. При недоступном backend ничего не удаляется; активные,
-  неизвестные и изменённые корни сохраняются.
+  неизвестные и изменённые корни сохраняются. Автоматическая best-effort
+  проверка после `open`, успешного `finish` или локального `cancel_run` не чаще
+  раза в сутки не заменяет этот явный dry-run и не удаляет legacy-каталоги без
+  текущей `.trelio-run.json` metadata.

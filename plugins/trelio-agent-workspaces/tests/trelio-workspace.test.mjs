@@ -90,6 +90,7 @@ import {
   restoreRetainedCodexPluginInstallations,
   retainLoadedCodexPluginInstallation,
   readBoundedResponseBuffer,
+  reconcileMaterializedContextDirectories,
   request,
   renderAgentSkillDeviceConsentPage,
   renderCompanyEncryptionKeyPage,
@@ -103,6 +104,7 @@ import {
   shouldFallbackFromEncryptedDerivedArtifactStaging,
   shouldUploadEncryptedDerivedArtifactPayloads,
   resolveWorkspaceBridgeConfigDirectory,
+  retainCurrentContextObjects,
   updateCodexPluginMarketplace,
   validateHandoffTaskOutcome,
   validateEncryptedAgentWorkspaceDerivedArtifacts,
@@ -2219,6 +2221,95 @@ test("bridge rejects duplicate workspace ids and malformed pinned heads", () => 
   }), /Git head/);
 });
 
+test("persistent root removes only stale dependency contexts from the previous Run", async () => {
+  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-context-reconcile-"));
+  const contextDirectory = path.join(temporaryDirectory, "context");
+  const projectDirectory = path.join(contextDirectory, "project");
+  const currentRelatedDirectory = path.join(contextDirectory, "related", relatedWorkspaceId);
+  const staleRelatedWorkspaceId = "44444444-4444-4444-8444-444444444444";
+  const staleRelatedDirectory = path.join(contextDirectory, "related", staleRelatedWorkspaceId);
+
+  try {
+    await Promise.all([
+      mkdir(path.join(contextDirectory, "company"), { recursive: true }),
+      mkdir(projectDirectory, { recursive: true }),
+      mkdir(currentRelatedDirectory, { recursive: true }),
+      mkdir(staleRelatedDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(path.join(contextDirectory, "company", "old.md"), "old company\n"),
+      writeFile(path.join(projectDirectory, "current.md"), "current project\n"),
+      writeFile(path.join(currentRelatedDirectory, "current.md"), "current related\n"),
+      writeFile(path.join(staleRelatedDirectory, "old.md"), "old related\n"),
+      writeFile(path.join(contextDirectory, "agent-instructions.md"), "authority\n"),
+      writeFile(path.join(contextDirectory, "index.json"), "{}\n"),
+    ]);
+
+    if (process.platform !== "win32") {
+      await Promise.all([
+        chmod(path.join(contextDirectory, "company", "old.md"), 0o444),
+        chmod(path.join(contextDirectory, "company"), 0o555),
+        chmod(path.join(staleRelatedDirectory, "old.md"), 0o444),
+        chmod(staleRelatedDirectory, 0o555),
+      ]);
+    }
+
+    const specifications = buildRunContextSpecifications(runId, {
+      project: {
+        workspaceId: companyWorkspaceId,
+        head: companyHead,
+        scopeType: "project",
+        scopeKey: "project",
+      },
+      related: [{
+        workspaceId: relatedWorkspaceId,
+        head: relatedHead,
+        scopeType: "task",
+        scopeKey: "task:current",
+      }],
+    });
+    await reconcileMaterializedContextDirectories(temporaryDirectory, specifications);
+
+    assert.equal(await pathExists(path.join(contextDirectory, "company")), false);
+    assert.equal(await pathExists(staleRelatedDirectory), false);
+    assert.equal(await pathExists(projectDirectory), true);
+    assert.equal(await pathExists(currentRelatedDirectory), true);
+    assert.equal(await pathExists(path.join(contextDirectory, "agent-instructions.md")), true);
+    assert.equal(await pathExists(path.join(contextDirectory, "index.json")), true);
+  } finally {
+    if (process.platform !== "win32") {
+      await execFileAsync("chmod", ["-R", "u+w", temporaryDirectory]).catch(() => undefined);
+    }
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("context sync retains object-cache references only for current pinned revisions", () => {
+  const currentContexts = [{
+    workspaceId: relatedWorkspaceId,
+    head: relatedHead,
+  }];
+  const currentObject = {
+    workspaceId: relatedWorkspaceId,
+    workspaceHead: relatedHead,
+    filePath: "sources/current.pdf",
+  };
+
+  assert.deepEqual(retainCurrentContextObjects([
+    currentObject,
+    {
+      workspaceId: relatedWorkspaceId,
+      workspaceHead: companyHead,
+      filePath: "sources/old-head.pdf",
+    },
+    {
+      workspaceId: companyWorkspaceId,
+      workspaceHead: companyHead,
+      filePath: "sources/removed-context.pdf",
+    },
+  ], currentContexts), [currentObject]);
+});
+
 test("bridge open keeps a large parent context pointer-first and downloads zero object bytes", {
   timeout: 15_000,
 }, async () => {
@@ -3653,6 +3744,10 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
   const ignoredRunId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
   const busyTerminalRunId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
   const busyActiveRunId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+  const expiredSiblingTerminalRunId = "12121212-1212-4212-8212-121212121212";
+  const expiredSiblingRunId = "13131313-1313-4313-8313-131313131313";
+  const expiredLocalRunId = "14141414-1414-4414-8414-141414141414";
+  const unsafeSystemMetadataRunId = "15151515-1515-4515-8515-151515151515";
   const runStates = new Map([
     [acceptedRunId, "accepted"],
     [dirtyRunId, "accepted"],
@@ -3662,6 +3757,9 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     [committedRunId, "accepted"],
     [ignoredRunId, "accepted"],
     [busyTerminalRunId, "accepted"],
+    [expiredSiblingTerminalRunId, "accepted"],
+    [expiredLocalRunId, "expired"],
+    [unsafeSystemMetadataRunId, "accepted"],
   ]);
   const workspaceIdByRunId = new Map(
     [...runStates.keys(), unknownRunId].map((currentRunId, index) => [
@@ -3682,6 +3780,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
       ignored = false,
       lastUsedAt = null,
       unmanaged = false,
+      unsafeSystemMetadata = false,
     } = {},
   ) => {
     const rootDirectory = path.join(temporaryDirectory, name);
@@ -3712,6 +3811,9 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     }
     if (unmanaged) {
       await writeFile(path.join(rootDirectory, "keep-me.txt"), "Unknown user data\n", "utf8");
+    }
+    if (unsafeSystemMetadata) {
+      await mkdir(path.join(rootDirectory, ".DS_Store"));
     }
 
     await writeFile(
@@ -3768,6 +3870,9 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         if (currentRunId === busyTerminalRunId) {
           currentRuns.push({ id: busyActiveRunId, status: "running", updatedAt: oldTimestamp });
         }
+        if (currentRunId === expiredSiblingTerminalRunId) {
+          currentRuns.push({ id: expiredSiblingRunId, status: "expired", updatedAt: oldTimestamp });
+        }
         response.end(JSON.stringify({ runs: currentRuns }));
         return;
       }
@@ -3792,6 +3897,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     const origin = `http://127.0.0.1:${serverAddress.port}`;
     await writeTestCredential(homeDirectory, origin);
     const acceptedRoot = await createLocalRunRoot(origin, "accepted-clean", acceptedRunId);
+    await writeFile(path.join(acceptedRoot, ".DS_Store"), "finder metadata\n", "utf8");
     const dirtyRoot = await createLocalRunRoot(origin, "accepted-dirty", dirtyRunId, { dirty: true });
     const activeRoot = await createLocalRunRoot(origin, "active", activeRunId);
     const unknownRoot = await createLocalRunRoot(origin, "unknown", unknownRunId);
@@ -3808,6 +3914,22 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
       ignored: true,
     });
     const busyRoot = await createLocalRunRoot(origin, "workspace-with-active-run", busyTerminalRunId);
+    const expiredSiblingRoot = await createLocalRunRoot(
+      origin,
+      "workspace-with-expired-sibling",
+      expiredSiblingTerminalRunId,
+    );
+    const expiredLocalRoot = await createLocalRunRoot(
+      origin,
+      "expired-local-run",
+      expiredLocalRunId,
+    );
+    const unsafeSystemMetadataRoot = await createLocalRunRoot(
+      origin,
+      "unsafe-system-metadata",
+      unsafeSystemMetadataRunId,
+      { unsafeSystemMetadata: true },
+    );
     await mkdir(configDirectory, { recursive: true });
     await writeFile(
       path.join(configDirectory, "settings.json"),
@@ -3832,6 +3954,9 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
           committedRoot,
           ignoredRoot,
           busyRoot,
+          expiredSiblingRoot,
+          expiredLocalRoot,
+          unsafeSystemMetadataRoot,
         ],
       }, null, 2)}\n`,
       { mode: 0o600 },
@@ -3846,9 +3971,14 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         env: { ...process.env, HOME: homeDirectory },
       },
     );
-    assert.match(preview.stdout, /Inactive Workspace roots: 1/);
+    assert.match(preview.stdout, /Inactive Workspace roots: 2/);
     assert.match(preview.stdout, /accepted-clean/);
-    assert.doesNotMatch(preview.stdout, /accepted-dirty/);
+    assert.match(preview.stdout, /workspace-with-expired-sibling/);
+    assert.match(preview.stdout, /accepted-dirty · workspace_dirty · accepted/);
+    assert.match(preview.stdout, /workspace-with-active-run · workspace_has_open_run · accepted/);
+    assert.match(preview.stdout, /expired-local-run · run_not_terminal · expired/);
+    assert.match(preview.stdout, /unmanaged · unmanaged_root_entry · accepted/);
+    assert.match(preview.stdout, /unsafe-system-metadata · unmanaged_root_entry · accepted/);
     assert.equal(await pathExists(acceptedRoot), true, "dry-run must not delete candidates");
 
     const cleaned = await execFileAsync(
@@ -3862,6 +3992,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     );
     assert.match(cleaned.stdout, /Очистка завершена/);
     assert.equal(await pathExists(acceptedRoot), false);
+    assert.equal(await pathExists(expiredSiblingRoot), false);
     assert.equal(await pathExists(dirtyRoot), true);
     assert.equal(await pathExists(activeRoot), true);
     assert.equal(await pathExists(unknownRoot), true);
@@ -3870,6 +4001,12 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     assert.equal(await pathExists(committedRoot), true, "unpublished clean commits are never deleted");
     assert.equal(await pathExists(ignoredRoot), true, "ignored user files are never deleted");
     assert.equal(await pathExists(busyRoot), true, "any open Run keeps the Workspace root active");
+    assert.equal(await pathExists(expiredLocalRoot), true, "an expired local Run remains resumable");
+    assert.equal(
+      await pathExists(unsafeSystemMetadataRoot),
+      true,
+      "a directory disguised as system metadata is never deleted",
+    );
     assert.ifError(serverError);
   } finally {
     await new Promise((resolve) => server.close(resolve));

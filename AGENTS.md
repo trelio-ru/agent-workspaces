@@ -404,6 +404,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   заново проверяет bounds, paths, file types, protected control files и
   очевидные private-key/credential patterns. Server bundle/search/object path
   fallback для encrypted workspace запрещён.
+- В переиспользуемом persistent root dependency-каталоги `context/company`,
+  `context/project` и `context/related/*` всегда соответствуют exact
+  `contextHeadsJson` текущего Run: исчезнувшие slots удаляются только после
+  успешной materialization нового набора, без затрагивания authority snapshots.
+  Retention считает открытыми только `running`, `waiting_for_human` и `review`;
+  `expired` sibling не блокирует terminal root, но собственный expired root
+  сохраняется для claim. Не расширяй cleanup на legacy-каталоги без текущей
+  `.trelio-run.json` metadata.
 - Новая initial revision содержит только `WORKSPACE_CONTEXT.md`; технический
   README, `.trelio/workspace.json` и пустые category markers не создаются.
   Корневой `README.md`, если его создали пользователь или агент, остаётся
