@@ -21,6 +21,11 @@ import {
   RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
   RUNTIME_STATE_LOCK_WAIT_MILLISECONDS,
 } from "./trelio-runtime-session-limits.mjs";
+import {
+  LOCAL_PROPOSAL_ROUTE_MARKER_MAX_BYTES,
+  isActiveLocalProposalRouteMarker,
+  resolveNativeProposalRouteMarkerPaths,
+} from "./trelio-proposal-route-guard.mjs";
 
 const DISCOVERY_TOOLS = new Set([
   "list_knowledge_base_pages", "list_contacts", "list_registries",
@@ -498,12 +503,54 @@ const writeUpdatedInput = (toolInput, proof) => {
   })}\n`);
 };
 
+const writeDeniedLocalProposalRenderer = () => {
+  process.stdout.write(`${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: "Bridge уже выбрал local proposal provider для этой цели. Native renderer остановлен до запуска, чтобы хост не смонтировал лишнюю App-карточку. Используй уже полученный get_trelio_local_proposal_context или вызови его для exact цели, затем следуй его nextCall к trelio-remote-skills.render_trelio_local_proposal с целью внутри payload.target.",
+    },
+  })}\n`);
+};
+
+const shouldDenyNativeProposalRenderer = async ({ origin, toolName, toolInput }) => {
+  const {
+    readPrivateJsonFile,
+    resolveWorkspaceBridgeConfigDirectory,
+  } = await loadWorkspaceBridgeModule();
+  const markerPaths = resolveNativeProposalRouteMarkerPaths({
+    configDirectory: resolveWorkspaceBridgeConfigDirectory(),
+    origin,
+    toolName,
+    toolInput,
+  });
+
+  for (const markerPath of markerPaths) {
+    const marker = await readPrivateJsonFile(markerPath, {
+      maximumBytes: LOCAL_PROPOSAL_ROUTE_MARKER_MAX_BYTES,
+    });
+    if (isActiveLocalProposalRouteMarker({ marker, markerPath })) return true;
+    if (Object.keys(marker).length > 0) {
+      // Expired/unknown marker state has no authority. Removing this exact
+      // hashed file prevents stale local routing from affecting later plain
+      // company calls after an encryption transition or plugin upgrade.
+      await fs.rm(markerPath, { force: true });
+    }
+  }
+  return false;
+};
+
 const runPreToolUse = async (hookInput) => {
   const toolName = resolveTrelioMcpToolName(hookInput);
   if (!isProtectedTrelioToolName(toolName)) return;
+  const origin = process.env.TRELIO_WORKSPACE_ORIGIN || "https://trelio.ru";
+  const toolInput = resolveToolInput(hookInput);
+  if (await shouldDenyNativeProposalRenderer({ origin, toolName, toolInput })) {
+    writeDeniedLocalProposalRenderer();
+    return;
+  }
   const clientSessionId = resolveClientSessionId(hookInput);
   if (!clientSessionId) throw new Error("клиент не передал session_id");
-  const origin = process.env.TRELIO_WORKSPACE_ORIGIN || "https://trelio.ru";
   const filePath = await statePathFor(clientSessionId, origin);
   let state = await readRuntimeState(filePath);
   if (!state) {
@@ -547,7 +594,7 @@ const runPreToolUse = async (hookInput) => {
       return;
     }
   }
-  writeUpdatedInput(resolveToolInput(hookInput), buildRuntimeSessionProof({ state, toolName }));
+  writeUpdatedInput(toolInput, buildRuntimeSessionProof({ state, toolName }));
 };
 
 const runSessionStart = async (hookInput) => {

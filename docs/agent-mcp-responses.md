@@ -33,6 +33,9 @@ MCP App не изменяются. Поля пользовательских д�
   удаляется только из доказанной второй копии; revision, coverage, диапазоны,
   hash и media остаются. Errors, самостоятельный текст и hidden `_meta`
   сохраняются. Проекция не запускается над arbitrary provider JSON.
+- Headless local proposal context сохраняет полный proposal DTO и добавляет
+  компактный `nextCall` с exact local tool и `payload.target`. Это routing
+  metadata, а не App result; UI metadata появляется только после local `save`.
 
 `doctor_remote_agent_skill` по умолчанию возвращает каталог допустимых tools
 с назначениями, annotations и policy mismatches. Перед вызовом выбранного

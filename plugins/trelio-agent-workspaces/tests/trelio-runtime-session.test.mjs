@@ -30,6 +30,11 @@ import {
   RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
 } from "../scripts/trelio-runtime-session-limits.mjs";
 import {
+  buildLocalProposalRouteMarker,
+  resolveNativeProposalRouteMarkerPaths,
+  resolveSelectedLocalProposalRouteMarkerPaths,
+} from "../scripts/trelio-proposal-route-guard.mjs";
+import {
   ensurePrivateDirectory,
   resolveWorkspaceBridgeConfigDirectory,
   writePrivateJsonFile,
@@ -137,6 +142,183 @@ test("active hook formatting reserves the missing-proof code for Trelio", () => 
 
   assert.match(formatted, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
   assert.doesNotMatch(formatted, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
+});
+
+test("route guard covers every native proposal renderer and both target forms", () => {
+  const configDirectory = "/private/trelio-test";
+  const origin = "https://trelio.example";
+  const companySlug = "protected-company";
+  const companyMarkerPaths = resolveSelectedLocalProposalRouteMarkerPaths({
+    configDirectory,
+    origin,
+    companySlug,
+    target: null,
+  });
+  const directInput = { companySlug, projectSlug: "energy", taskNumber: 33 };
+  for (const toolName of [
+    "propose_task_comment",
+    "render_task_comment_proposal",
+    "render_task_status_proposal",
+    "render_task_control_clear_proposal",
+    "render_task_checklist_proposal",
+  ]) {
+    assert.deepEqual(resolveNativeProposalRouteMarkerPaths({
+      configDirectory,
+      origin,
+      toolName,
+      toolInput: directInput,
+    }), companyMarkerPaths, toolName);
+  }
+  for (const [toolName, type] of [
+    ["render_task_comment_proposals", "commentProposal"],
+    ["render_task_proposals", "controlClearProposal"],
+  ]) {
+    assert.deepEqual(resolveNativeProposalRouteMarkerPaths({
+      configDirectory,
+      origin,
+      toolName,
+      toolInput: { blocks: [{ type, ...directInput }] },
+    }), companyMarkerPaths, toolName);
+  }
+
+  const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const runMarkerPaths = resolveSelectedLocalProposalRouteMarkerPaths({
+    configDirectory,
+    origin,
+    companySlug: null,
+    target: { runId },
+  });
+  assert.deepEqual(resolveNativeProposalRouteMarkerPaths({
+    configDirectory,
+    origin,
+    toolName: "render_task_status_proposal",
+    toolInput: { runId },
+  }), runMarkerPaths);
+});
+
+test("a confirmed local proposal route denies the native App before execution", async () => {
+  const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-proposal-route-"));
+  const configDirectory = path.join(temporaryHome, ".config", "trelio", "workspace-bridge");
+  const origin = "https://trelio.example";
+  const threadId = "019f9fcd-899a-72b3-91f6-fdf3134381bb";
+  const runtimeSessionId = "11111111-1111-4111-8111-111111111111";
+  const target = { projectSlug: "energy", taskNumber: 33 };
+  const { privateKey } = crypto.generateKeyPairSync("ed25519");
+
+  try {
+    const markerPaths = resolveSelectedLocalProposalRouteMarkerPaths({
+      configDirectory,
+      origin,
+      companySlug: "protected-company",
+      target,
+    });
+    assert.equal(markerPaths.length, 1);
+    await writePrivateJsonFile(
+      markerPaths[0],
+      buildLocalProposalRouteMarker({ markerPath: markerPaths[0] }),
+    );
+
+    const runtimeStateDigest = crypto.createHash("sha256")
+      .update(`${origin}\n${threadId}`)
+      .digest("hex");
+    await writePrivateJsonFile(
+      path.join(configDirectory, "runtime-sessions", `${runtimeStateDigest}.json`),
+      {
+        schemaVersion: 1,
+        runtimeSessionId,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        privateKeyPkcs8: privateKey.export({
+          type: "pkcs8",
+          format: "der",
+        }).toString("base64url"),
+      },
+    );
+
+    const environment = {
+      HOME: temporaryHome,
+      USERPROFILE: temporaryHome,
+      CODEX_HOME: temporaryHome,
+      CODEX_THREAD_ID: threadId,
+      TRELIO_WORKSPACE_ORIGIN: origin,
+      TRELIO_WORKSPACE_DISABLE_KEYCHAIN: "1",
+      CLAUDE_CODE_ENTRYPOINT: "",
+      CLAUDE_EFFORT: "",
+    };
+    const blocked = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      tool_name: "mcp__trelio__render_task_control_clear_proposal",
+      tool_input: {
+        companySlug: "protected-company",
+        projectSlug: target.projectSlug,
+        taskNumber: target.taskNumber,
+        expectedStateRevision: 4,
+        controls: [],
+      },
+    }, environment);
+
+    assert.equal(blocked.exitCode, 0);
+    assert.equal(blocked.stderr, "");
+    const blockedOutput = JSON.parse(blocked.stdout).hookSpecificOutput;
+    assert.equal(blockedOutput.permissionDecision, "deny");
+    assert.equal(blockedOutput.updatedInput, undefined);
+    assert.match(blockedOutput.permissionDecisionReason, /остановлен до запуска/u);
+    assert.match(blockedOutput.permissionDecisionReason, /render_trelio_local_proposal/u);
+
+    // A marker for another company must not change the ordinary native path.
+    // With a pre-existing runtime state the hook can prove that path without
+    // any network request, so this assertion isolates provider routing itself.
+    const allowed = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      tool_name: "mcp__trelio__render_task_control_clear_proposal",
+      tool_input: {
+        companySlug: "plain-company",
+        projectSlug: target.projectSlug,
+        taskNumber: target.taskNumber,
+        expectedStateRevision: 4,
+        controls: [],
+      },
+    }, environment);
+    assert.equal(allowed.exitCode, 0);
+    assert.equal(allowed.stderr, "");
+    const allowedOutput = JSON.parse(allowed.stdout).hookSpecificOutput;
+    assert.equal(allowedOutput.permissionDecision, "allow");
+    assert.equal(allowedOutput.updatedInput.companySlug, "plain-company");
+    assert.ok(allowedOutput.updatedInput.runtimeSessionProof);
+
+    await writePrivateJsonFile(
+      markerPaths[0],
+      buildLocalProposalRouteMarker({
+        markerPath: markerPaths[0],
+        nowMs: Date.now() - 20 * 60 * 1_000,
+      }),
+    );
+    const expired = await runHook({
+      hook_event_name: "PreToolUse",
+      session_id: threadId,
+      tool_name: "mcp__trelio__render_task_control_clear_proposal",
+      tool_input: {
+        companySlug: "protected-company",
+        projectSlug: target.projectSlug,
+        taskNumber: target.taskNumber,
+        expectedStateRevision: 4,
+        controls: [],
+      },
+    }, environment);
+    assert.equal(expired.exitCode, 0);
+    assert.equal(JSON.parse(expired.stdout).hookSpecificOutput.permissionDecision, "allow");
+    await assert.rejects(readFile(markerPaths[0], "utf8"), { code: "ENOENT" });
+
+    assert.equal(resolveNativeProposalRouteMarkerPaths({
+      configDirectory,
+      origin,
+      toolName: "get_task_control_clear_proposal_context",
+      toolInput: { companySlug: "protected-company" },
+    }).length, 0);
+  } finally {
+    await rm(temporaryHome, { recursive: true, force: true });
+  }
 });
 
 test("hook proof is Ed25519-bound to session, tool, timestamp and nonce", () => {

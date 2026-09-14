@@ -17,17 +17,17 @@
     },
     "get_trelio_local_proposal_context": {
       "modelVisible": true,
-      "baselineBytes": 411,
-      "maxBytes": 512,
-      "baselineTokens": 94,
-      "maxTokens": 128
+      "baselineBytes": 750,
+      "maxBytes": 832,
+      "baselineTokens": 171,
+      "maxTokens": 192
     },
     "render_trelio_local_proposal": {
       "modelVisible": true,
-      "baselineBytes": 682,
-      "maxBytes": 832,
-      "baselineTokens": 163,
-      "maxTokens": 192
+      "baselineBytes": 1055,
+      "maxBytes": 1088,
+      "baselineTokens": 248,
+      "maxTokens": 256
     },
     "continue_trelio_local_workspace": {
       "modelVisible": true,

@@ -123,10 +123,16 @@ controls скрыты. Не воспроизводи шаги bridge и не п�
 не делай preflight native proposal tool. Маршруты:
 
 - `get_trelio_local_proposal_context`: headless `kind` и `payload.target`,
-  где либо `runId`, либо `projectSlug` и `taskNumber`.
+  где либо `runId`, либо `projectSlug` и `taskNumber`. Его `nextCall` уже
+  фиксирует local renderer и правильную вложенность цели.
 - `render_trelio_local_proposal`, `operation=save`: та же цель, plaintext
   draft/reasons и точные revision/snapshot из контекста. Host отправляет
   только локально зашифрованный подписанный ciphertext.
+
+Local route приоритетнее generic native-имени даже после compaction. Первый
+подтверждённый local company read уже сохраняет выбор коротким owner-private
+хэшем без содержимого, proposal context обновляет его; ошибочный native render
+блокируется до MCP/App, а не маскируется пустой карточкой.
 
 Кнопки App используют скрытые tools. Текстовый `operation=action` требует
 решение и точные `proposalId`, `expectedRevision`, `action`,

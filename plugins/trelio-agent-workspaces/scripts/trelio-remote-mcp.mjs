@@ -74,6 +74,10 @@ import {
   sealSkillAdmission,
   skillAdmissionKey,
 } from "./trelio-skill-admission.mjs";
+import {
+  buildLocalProposalRouteMarker,
+  resolveSelectedLocalProposalRouteMarkerPaths,
+} from "./trelio-proposal-route-guard.mjs";
 
 // One stdio server belongs to one client session. Remote declarations stay in
 // memory only and disappear when that client restarts; PAT bytes are excluded.
@@ -3706,18 +3710,69 @@ export const buildLocalProposalRenderResult = ({
   });
 };
 
-const buildLocalProposalChildResult = ({ result, companySlug, kind }) => {
+const buildLocalProposalChildResult = ({
+  result,
+  companySlug,
+  kind,
+  continuationTarget = null,
+}) => {
   if (!result?.proposal) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_PROPOSAL_INVALID",
       "The local proposal action did not return the expected payload.",
     );
   }
-  const structuredContent = localizeProposalPayload(result.proposal, companySlug, kind);
+  const structuredContent = {
+    ...localizeProposalPayload(result.proposal, companySlug, kind),
+    ...(continuationTarget
+      ? {
+          nextCall: {
+            server: "trelio-remote-skills",
+            tool: "render_trelio_local_proposal",
+            arguments: {
+              operation: "save",
+              companySlug,
+              kind,
+              payload: { target: continuationTarget },
+            },
+            instruction: "Добавь draft и revision-поля этого контекста внутрь payload; native proposal renderer не вызывай.",
+          },
+        }
+      : {}),
+  };
   return compactLocalMcpResult({
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
   });
+};
+
+export const persistLocalProposalProviderSelection = async ({
+  origin,
+  companySlug,
+  target,
+  provider,
+  configDirectory = resolveWorkspaceBridgeConfigDirectory(),
+  nowMs = Date.now(),
+}) => {
+  const markerPaths = resolveSelectedLocalProposalRouteMarkerPaths({
+    configDirectory,
+    origin,
+    companySlug,
+    target,
+  });
+  if (provider === "local_company_context") {
+    // Only opaque hashes and a short expiry cross the MCP-process boundary.
+    // The hook needs no proposal text, project name or decrypted company data
+    // to stop the already-disproved native renderer before its App is mounted.
+    await Promise.all(markerPaths.map((markerPath) => writePrivateJsonFile(
+      markerPath,
+      buildLocalProposalRouteMarker({ markerPath, nowMs }),
+    )));
+    return;
+  }
+  if (provider === "native_trelio") {
+    await Promise.all(markerPaths.map((markerPath) => fs.rm(markerPath, { force: true })));
+  }
 };
 
 const resolveLocalProposalContextCompany = (kind, rawArguments) => {
@@ -4028,16 +4083,28 @@ export const handleToolCall = async (
   rawArguments,
   {
     signal,
+    localContextOperation = handleTrelioLocalContextOperation,
     proposalOperation = handleTrelioLocalProposalOperation,
+    proposalProviderSelectionRecorder = null,
   } = {},
 ) => {
   throwIfAborted(signal);
   if (name === TRELIO_LOCAL_CONTEXT_TOOL.name) {
-    const result = buildTextResult(await handleTrelioLocalContextOperation(
+    const providerResult = await localContextOperation(
       origin,
       rawArguments,
       { signal },
-    ));
+    );
+    // The first bridge-selected local company read is already authoritative
+    // provider evidence. Persisting its opaque company selector protects even
+    // a later model that skips the dedicated proposal context after compaction.
+    await proposalProviderSelectionRecorder?.({
+      origin,
+      companySlug: rawArguments?.companySlug,
+      target: null,
+      provider: providerResult?.provider,
+    });
+    const result = buildTextResult(providerResult);
     const nativeTool = rawArguments?.operation === "native_read"
       ? rawArguments.nativeTool : rawArguments?.operation === "get_task" ? "get_task" : "";
     return compactLocalNativeMcpResult(nativeTool, result, rawArguments?.arguments ?? rawArguments);
@@ -4061,12 +4128,20 @@ export const handleToolCall = async (
       },
       { signal },
     );
+    const target = rawArguments?.payload?.target;
+    await proposalProviderSelectionRecorder?.({
+      origin,
+      companySlug: rawArguments?.companySlug,
+      target,
+      provider: result?.provider,
+    });
     return result?.provider === "native_trelio"
       ? buildTextResult(result)
       : buildLocalProposalChildResult({
           result,
           companySlug: rawArguments?.companySlug,
           kind: rawArguments?.kind,
+          continuationTarget: target,
         });
   }
   if (name === TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.name) {
@@ -4202,6 +4277,7 @@ export const handleLocalMcpMessage = async (
     origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
     callTool = handleToolCall,
     readResource = readLocalProposalAppResource,
+    proposalProviderSelectionRecorder = persistLocalProposalProviderSelection,
     signal,
   } = {},
 ) => {
@@ -4289,7 +4365,7 @@ export const handleLocalMcpMessage = async (
           origin,
           String(message.params?.name || ""),
           message.params?.arguments,
-          { signal },
+          { signal, proposalProviderSelectionRecorder },
         )),
       };
     } catch (error) {

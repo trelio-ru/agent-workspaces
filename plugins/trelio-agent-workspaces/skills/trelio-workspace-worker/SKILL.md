@@ -58,7 +58,8 @@ Git, комментарии, checkpoint, handoff и логи. Не проси cr
 - **Native-ответ выбрал локальный `providerSelection` либо точная задача вернула
   локальный `proposalProvider`:**
   [локальный контекст компании](references/local-company-context.md).
-  Следуй выбранному сервером маршруту; сам не выводи этот provider.
+  Даже после compaction этот маршрут и его `nextCall` приоритетнее generic
+  native renderer из references; сам не выводи provider и не делай preflight.
 - **Получение оригинального файла или чтение/ревью принятого Workspace без изменений:**
   [чтение принятых материалов](references/accepted-workspace-read.md).
   Область/контекст читай, только если цель ещё не точная. Не начинай Run ради

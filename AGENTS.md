@@ -445,8 +445,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   через verified bridge и возвращает success лишь после local plaintext
   comparison с фактически сохранённым hydrated comment.
   Local proposal ABI разделён: `get_trelio_local_proposal_context` – headless
-  read без UI metadata; только `render_trelio_local_proposal` монтирует v8 App
-  после `save`. Hidden App capability действует 3 часа от render без продления
+  read без UI metadata и с exact local `nextCall`; только
+  `render_trelio_local_proposal` монтирует current App после `save`. Короткий
+  owner-private route marker первого подтверждённого local company read
+  останавливает ошибочный native renderer до MCP/App и не содержит company
+  content. Hidden App capability действует 3 часа от render без продления
   при reconcile, хранится только в памяти процесса и теряется при его restart;
   каждое действие сохраняет live provider/ACL/CAS проверки.
   Успешное решение расходует только право записи exact карточки: чтение её

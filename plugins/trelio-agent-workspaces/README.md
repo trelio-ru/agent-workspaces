@@ -128,14 +128,17 @@ proposal flow. URL разбирается только как структурн
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Headless
 `get_trelio_local_proposal_context` не объявляет UI resource, поэтому служебное
-чтение вообще не создаёт карточку; только `render_trelio_local_proposal`
-прикрепляет App к готовому draft. Плагин шифрует текст и причины
+чтение вообще не создаёт карточку и возвращает точный local `nextCall`; только
+`render_trelio_local_proposal` прикрепляет App к готовому draft. Первый
+подтверждённый local company read сохраняет короткий owner-private route
+marker, по которому hook останавливает случайный native renderer до запуска
+MCP/App. Плагин шифрует текст и причины
 до HTTP, backend применяет прежние ACL/revisions/locks, а final action требует
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v8 resource metadata, а
-v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
+полноценный App result со `structuredContent` и exact v9 resource metadata, а
+v8/v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
 Bundle использует sandboxed `srcdoc`-frames без `data:` frame permission;
 защищённая review-карточка появляется только после `save` и вызывает только
 app-only продолжения.

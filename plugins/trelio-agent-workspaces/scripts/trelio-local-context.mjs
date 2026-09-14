@@ -9365,13 +9365,46 @@ const TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA = {
   enum: ["comment", "status", "control_clear", "checklist"],
 };
 
-const TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA = {
+const TRELIO_LOCAL_PROPOSAL_TARGET_SCHEMA = {
   type: "object",
+  properties: {
+    runId: { type: "string" },
+    projectSlug: { type: "string" },
+    taskNumber: { type: "integer" },
+  },
+  oneOf: [
+    { required: ["runId"] },
+    { required: ["projectSlug", "taskNumber"] },
+  ],
+};
+
+const TRELIO_LOCAL_PROPOSAL_CONTEXT_PAYLOAD_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["target"],
+  properties: { target: TRELIO_LOCAL_PROPOSAL_TARGET_SCHEMA },
+};
+
+const TRELIO_LOCAL_PROPOSAL_RENDER_PAYLOAD_SCHEMA = {
+  type: "object",
+  properties: {
+    target: { type: "object" },
+    blocks: { type: "array" },
+    proposalId: { type: "string" },
+    expectedRevision: { type: "integer" },
+    action: { type: "string" },
+    confirmed: { const: true },
+  },
+  anyOf: [
+    { required: ["target"] },
+    { required: ["blocks"] },
+    { required: ["proposalId", "expectedRevision", "action", "confirmed"] },
+  ],
 };
 
 export const TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL = {
   name: "get_trelio_local_proposal_context",
-  description: "Headless proposal read.",
+  description: "Read local proposal context without an App; follow nextCall instead of a native renderer.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -9379,7 +9412,7 @@ export const TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL = {
     properties: {
       companySlug: { type: "string", minLength: 1, maxLength: 120 },
       kind: TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA,
-      payload: TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA,
+      payload: TRELIO_LOCAL_PROPOSAL_CONTEXT_PAYLOAD_SCHEMA,
     },
   },
   annotations: {
@@ -9389,7 +9422,7 @@ export const TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL = {
 
 export const TRELIO_LOCAL_PROPOSAL_RENDER_TOOL = {
   name: "render_trelio_local_proposal",
-  description: "Render proposal.",
+  description: "Render only after local context; save locators belong in payload.target.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -9401,7 +9434,7 @@ export const TRELIO_LOCAL_PROPOSAL_RENDER_TOOL = {
         ...TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA,
         enum: [...TRELIO_LOCAL_PROPOSAL_KIND_SCHEMA.enum, "bundle"],
       },
-      payload: TRELIO_LOCAL_PROPOSAL_PAYLOAD_SCHEMA,
+      payload: TRELIO_LOCAL_PROPOSAL_RENDER_PAYLOAD_SCHEMA,
     },
   },
   annotations: {

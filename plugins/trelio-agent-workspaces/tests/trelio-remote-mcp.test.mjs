@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 
 import {
   AGENT_SKILL_ROUTING_INSTRUCTIONS,
@@ -22,6 +23,7 @@ import {
   handleLocalMcpMessage,
   handleToolCall,
   openCredentialFormInBrowser,
+  persistLocalProposalProviderSelection,
   readLocalProposalAppResource,
   remoteMcpHttpRequest,
   resolveAgentSkillPackageMinimumHostVersion,
@@ -32,6 +34,9 @@ import {
   validateResolvedRemoteMcp,
   validateRemoteMcpPublicationConfig,
 } from "../scripts/trelio-remote-mcp.mjs";
+import {
+  resolveSelectedLocalProposalRouteMarkerPaths,
+} from "../scripts/trelio-proposal-route-guard.mjs";
 
 test("large private packages raise their exact runtime host floor", () => {
   assert.equal(resolveAgentSkillPackageMinimumHostVersion({
@@ -1912,13 +1917,15 @@ test("local proposal render returns a real MCP App result instead of JSON text o
 
 test("local proposal context returns structured data without App metadata", async () => {
   const calls = [];
+  const providerSelections = [];
+  const target = { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
   const result = await handleToolCall(
     "https://trelio.example",
     "get_trelio_local_proposal_context",
     {
       companySlug: "protected-company",
       kind: "status",
-      payload: { target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
+      payload: { target },
     },
     {
       proposalOperation: async (_origin, input) => {
@@ -1932,6 +1939,9 @@ test("local proposal context returns structured data without App metadata", asyn
           },
         };
       },
+      proposalProviderSelectionRecorder: async (selection) => {
+        providerSelections.push(selection);
+      },
     },
   );
 
@@ -1941,9 +1951,92 @@ test("local proposal context returns structured data without App metadata", asyn
     payload: { target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" } },
     operation: "context",
   }]);
+  assert.deepEqual(providerSelections, [{
+    origin: "https://trelio.example",
+    companySlug: "protected-company",
+    target,
+    provider: "local_company_context",
+  }]);
   assert.equal(result.structuredContent.task.title, "Проверить результат");
+  assert.deepEqual(result.structuredContent.nextCall, {
+    server: "trelio-remote-skills",
+    tool: "render_trelio_local_proposal",
+    arguments: {
+      operation: "save",
+      companySlug: "protected-company",
+      kind: "status",
+      payload: { target },
+    },
+    instruction: "Добавь draft и revision-поля этого контекста внутрь payload; native proposal renderer не вызывай.",
+  });
   assert.equal(result._meta, undefined);
   assert.doesNotMatch(JSON.stringify(result), /ui:\/\/trelio|outputTemplate/u);
+});
+
+test("the first bridge-selected local company read records proposal routing", async () => {
+  const providerSelections = [];
+  const result = await handleToolCall(
+    "https://trelio.example",
+    "continue_trelio_local_context",
+    {
+      operation: "get_task",
+      companySlug: "protected-company",
+      projectSlug: "energy",
+      taskNumber: 33,
+    },
+    {
+      localContextOperation: async () => ({
+        schemaVersion: 1,
+        provider: "local_company_context",
+        task: { number: 33 },
+      }),
+      proposalProviderSelectionRecorder: async (selection) => {
+        providerSelections.push(selection);
+      },
+    },
+  );
+
+  assert.equal(JSON.parse(result.content[0].text).task.number, 33);
+  assert.deepEqual(providerSelections, [{
+    origin: "https://trelio.example",
+    companySlug: "protected-company",
+    target: null,
+    provider: "local_company_context",
+  }]);
+});
+
+test("local proposal provider persistence contains only opaque short-lived routing state", async () => {
+  const configDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-proposal-provider-"));
+  const selection = {
+    origin: "https://trelio.example",
+    companySlug: "protected-company",
+    target: { runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" },
+    configDirectory,
+  };
+
+  try {
+    await persistLocalProposalProviderSelection({
+      ...selection,
+      provider: "local_company_context",
+    });
+    const markerPaths = resolveSelectedLocalProposalRouteMarkerPaths(selection);
+    assert.equal(markerPaths.length, 2);
+    for (const markerPath of markerPaths) {
+      const markerText = await readFile(markerPath, "utf8");
+      assert.doesNotMatch(markerText, /protected-company|bbbbbbbb/u);
+      assert.match(markerText, /"provider": "local_company_context"/u);
+    }
+
+    await persistLocalProposalProviderSelection({
+      ...selection,
+      provider: "native_trelio",
+    });
+    for (const markerPath of markerPaths) {
+      await assert.rejects(readFile(markerPath, "utf8"), { code: "ENOENT" });
+    }
+  } finally {
+    await rm(configDirectory, { recursive: true, force: true });
+  }
 });
 
 test("local proposal render rejects a forged context operation before dispatch", async () => {

@@ -2059,7 +2059,7 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
     TRELIO_LOCAL_WORKSPACE_TOOL,
   ]);
 
-  assert.equal(Buffer.byteLength(schemas, "utf8") <= 3_500, true);
+  assert.equal(Buffer.byteLength(schemas, "utf8") <= 4_500, true);
   assert.doesNotMatch(schemas, /encrypt|e2ee|cipher|private key/iu);
   assert.deepEqual(TRELIO_LOCAL_CONTEXT_TOOL.inputSchema.properties.operation.enum, [
     "native_read",
@@ -2073,6 +2073,10 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
   assert.equal(TRELIO_LOCAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
   assert.equal(TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL.annotations.readOnlyHint, true);
   assert.equal(TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL._meta, undefined);
+  assert.deepEqual(
+    TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL.inputSchema.properties.payload.required,
+    ["target"],
+  );
   assert.equal(TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.annotations.readOnlyHint, false);
   assert.deepEqual(TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.inputSchema.properties.kind.enum, [
     "comment",
@@ -2084,6 +2088,14 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
   assert.deepEqual(
     TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.inputSchema.properties.operation.enum,
     ["save", "action"],
+  );
+  assert.deepEqual(
+    TRELIO_LOCAL_PROPOSAL_RENDER_TOOL.inputSchema.properties.payload.anyOf,
+    [
+      { required: ["target"] },
+      { required: ["blocks"] },
+      { required: ["proposalId", "expectedRevision", "action", "confirmed"] },
+    ],
   );
   assert.equal(
     TRELIO_LOCAL_PROPOSAL_RENDER_TOOL._meta.ui.resourceUri,

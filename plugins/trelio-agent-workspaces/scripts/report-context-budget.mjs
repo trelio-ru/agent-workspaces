@@ -64,15 +64,16 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   taskRunWithProposalBundleBytes: 81_000,
   requiredTaskRunPluginLayerBytes: 85_000,
   taskRunWithProposalBundlePluginLayerBytes: 90_000,
-  // The added schema is a compact typed dispatcher; it replaces launcher
-  // resolution prose in every operational Run and signed-runtime prompt.
-  localProviderToolSchemasBytes: 3_800,
+  // The proposal schemas spend a bounded extra discriminator on target,
+  // bundle and final-action shapes. This prevents an invalid render attempt
+  // from becoming a host-level App surface after local provider selection.
+  localProviderToolSchemasBytes: 4_500,
   plainCompanyTaskRunPluginLayerBytes: 89_000,
-  encryptedCompanyTaskRunPluginLayerBytes: 105_000,
+  encryptedCompanyTaskRunPluginLayerBytes: 105_500,
   localMcpInstructionsBytes: 4_000,
-  modelVisibleLocalToolSchemasBytes: 13_500,
+  modelVisibleLocalToolSchemasBytes: 14_100,
   // +schemaToolName lets doctor load one exact schema instead of every schema.
-  clientPrefixedLocalToolSchemasBytes: 69_300,
+  clientPrefixedLocalToolSchemasBytes: 70_200,
   clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
@@ -87,11 +88,11 @@ export const PLUGIN_CONTEXT_TOKEN_LIMITS = Object.freeze({
   taskRunWithProposalBundle: 13_000,
   requiredTaskRunPluginLayer: 13_750,
   taskRunWithProposalBundlePluginLayer: 14_500,
-  plainCompanyTaskRunPluginLayer: 14_650,
-  encryptedCompanyTaskRunPluginLayer: 17_300,
-  localProviderToolSchemas: 950,
+  plainCompanyTaskRunPluginLayer: 14_800,
+  encryptedCompanyTaskRunPluginLayer: 17_600,
+  localProviderToolSchemas: 1_100,
   localMcpInstructions: 650,
-  modelVisibleLocalToolSchemas: 3_200,
+  modelVisibleLocalToolSchemas: 3_300,
   clientPrefixedLocalToolSchemas: 11_800,
   clientPrefixedTaskRunLocalToolSchemas: 750,
   representativeLocalProposalResult: 1_650,

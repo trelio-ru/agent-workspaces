@@ -388,11 +388,15 @@ context/render-flow.
 
 Для encrypted company exact task read дополнительно возвращает компактный
 `proposalProvider=local_company_context` с canonical task target и двумя exact
-маршрутами: `get_trelio_local_proposal_context` читает данные без App metadata,
-а `render_trelio_local_proposal` создаёт review-карточку только после `save`.
+маршрутами: `get_trelio_local_proposal_context` читает данные без App metadata
+и возвращает `nextCall` с целью внутри `payload.target`, а
+`render_trelio_local_proposal` создаёт review-карточку только после `save`.
 Агент использует их сразу и не вызывает native proposal tool как отдельный
-preflight. Для plain company поля нет, поэтому обычный one-call
-`propose_task_comment` и его model context не меняются. Local proposal App v8
+preflight. Первый подтверждённый local company read сохраняет короткий
+owner-private marker без company content; он позволяет
+`PreToolUse` остановить ошибочный native renderer до MCP/App. Для plain company
+поля нет, поэтому обычный one-call `propose_task_comment` и его model context
+не меняются. Local proposal App v9
 выдаёт capability только в hidden metadata на 3 часа от подготовки карточки.
 Обновление состояния не продлевает срок, а права, актуальность proposal и
 provider/E2EE границы проверяются при каждом действии. Успешная публикация,
