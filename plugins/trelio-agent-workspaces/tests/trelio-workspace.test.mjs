@@ -48,6 +48,7 @@ import {
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
   buildCompanyE2eeAgentSecretWrite,
+  buildCompleteAgentSecretValues,
   buildEncryptedDerivedArtifactsDigest,
   buildAgentSkillPackage,
   buildAgentSkillRuntimePath,
@@ -6298,9 +6299,17 @@ test("company-E2EE Agent Secret is signed, opaque and opened only for granted fi
   const plaintextValues = {
     username: "synthetic-e2ee-login",
     password: "synthetic-e2ee-password",
-    // RFC 6238 SHA-1 seed: the six-digit code at Unix time 59 is 287082.
-    totp: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+    // RFC 6238 SHA-256 seed: the eight-digit code at Unix time 59 is 46119246.
+    totp: "otpauth://totp/Example?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQGEZA&algorithm=SHA256&digits=8&period=30",
   };
+
+  assert.throws(
+    () => buildCompleteAgentSecretValues({
+      context,
+      valuePayload: { values: { ...plaintextValues, totp: "otpauth://totp?secret=JBSWY3DPEHPK3PXP&algorithm=MD5" } },
+    }),
+    /SHA1, SHA256 или SHA512/u,
+  );
 
   const write = await buildCompanyE2eeAgentSecretWrite({
     context,
@@ -6341,7 +6350,7 @@ test("company-E2EE Agent Secret is signed, opaque and opened only for granted fi
   });
   assert.deepEqual({ ...opened }, {
     username: plaintextValues.username,
-    totp: "287082",
+    totp: "46119246",
   });
   assert.equal("password" in opened, false);
 
@@ -6363,7 +6372,7 @@ test("company-E2EE Agent Secret is signed, opaque and opened only for granted fi
   });
   assert.deepEqual({ ...browserWrittenOpened }, {
     username: plaintextValues.username,
-    totp: "287082",
+    totp: "46119246",
   });
 
   await assert.rejects(

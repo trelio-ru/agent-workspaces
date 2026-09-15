@@ -13955,6 +13955,9 @@ export const buildCompleteAgentSecretValues = ({ valuePayload, context }) => {
     if (field.required && typeof values[field.key] !== "string") {
       throw new Error(`Обязательное поле Agent Secret «${field.key}» не задано.`);
     }
+    if (field.type === "totp" && typeof values[field.key] === "string") {
+      parseAgentSecretTotpValue(values[field.key]);
+    }
   }
   if (Object.keys(values).length === 0) {
     throw new Error("Новая версия Agent Secret должна содержать хотя бы одно поле.");
@@ -14158,6 +14161,9 @@ const setSecretValue = async (options, positional) => withRun(async ({
   );
 });
 
+const AGENT_SECRET_TOTP_MAX_VALUE_LENGTH = 4096;
+const AGENT_SECRET_TOTP_MAX_PERIOD_SECONDS = 86_400;
+
 const decodeAgentSecretBase32 = (rawValue) => {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
   const normalized = rawValue.toUpperCase().replace(/=+$/u, "").replace(/[\s-]/gu, "");
@@ -14173,19 +14179,105 @@ const decodeAgentSecretBase32 = (rawValue) => {
   return Buffer.from(bytes);
 };
 
+const readSingleAgentSecretTotpParameter = (uri, name) => {
+  const values = uri.searchParams.getAll(name);
+  if (values.length > 1) {
+    throw new Error(`Параметр ${name} в TOTP-ссылке должен встречаться не более одного раза.`);
+  }
+  return values[0] ?? null;
+};
+
+const parseAgentSecretTotpValue = (rawValue) => {
+  const value = rawValue.trim();
+  if (!value || value.length > AGENT_SECRET_TOTP_MAX_VALUE_LENGTH) {
+    throw new Error("Значение TOTP пустое или слишком длинное.");
+  }
+
+  let encodedSecret = value;
+  let algorithm = "sha1";
+  let digits = 6;
+  let periodSeconds = 30;
+
+  if (/^otpauth:\/\//iu.test(value)) {
+    let uri;
+    try {
+      uri = new URL(value);
+    } catch {
+      throw new Error("TOTP-ссылка имеет некорректный формат.");
+    }
+    if (
+      uri.protocol.toLowerCase() !== "otpauth:"
+      || uri.hostname.toLowerCase() !== "totp"
+      || uri.username
+      || uri.password
+      || uri.port
+      || uri.hash
+    ) {
+      throw new Error("TOTP-ссылка должна использовать формат otpauth://totp.");
+    }
+
+    const secretParameter = readSingleAgentSecretTotpParameter(uri, "secret");
+    if (!secretParameter) throw new Error("TOTP-ссылка должна содержать один параметр secret.");
+    encodedSecret = secretParameter;
+
+    const algorithmParameter = readSingleAgentSecretTotpParameter(uri, "algorithm");
+    if (algorithmParameter) {
+      const normalizedAlgorithm = algorithmParameter.toLowerCase();
+      if (!["sha1", "sha256", "sha512"].includes(normalizedAlgorithm)) {
+        throw new Error("TOTP поддерживает только SHA1, SHA256 или SHA512.");
+      }
+      algorithm = normalizedAlgorithm;
+    }
+
+    const digitsParameter = readSingleAgentSecretTotpParameter(uri, "digits");
+    if (digitsParameter !== null) {
+      if (digitsParameter !== "6" && digitsParameter !== "8") {
+        throw new Error("TOTP поддерживает только коды из 6 или 8 цифр.");
+      }
+      digits = Number(digitsParameter);
+    }
+
+    const periodParameter = readSingleAgentSecretTotpParameter(uri, "period");
+    if (periodParameter !== null) {
+      if (!/^\d+$/u.test(periodParameter)) {
+        throw new Error("Период TOTP должен быть целым числом секунд.");
+      }
+      const parsedPeriod = Number(periodParameter);
+      if (
+        !Number.isSafeInteger(parsedPeriod)
+        || parsedPeriod < 1
+        || parsedPeriod > AGENT_SECRET_TOTP_MAX_PERIOD_SECONDS
+      ) {
+        throw new Error(`Период TOTP должен быть от 1 до ${AGENT_SECRET_TOTP_MAX_PERIOD_SECONDS} секунд.`);
+      }
+      periodSeconds = parsedPeriod;
+    }
+  }
+
+  return {
+    secret: decodeAgentSecretBase32(encodedSecret),
+    algorithm,
+    digits,
+    periodSeconds,
+  };
+};
+
 // Для company E2EE одноразовый код вычисляется после локального открытия
-// ciphertext. Сервер не получает seed и видит только opaque payload.
-const deriveAgentSecretTotp = (seed, nowMs = Date.now()) => {
-  const counter = Math.floor(nowMs / 30_000);
+// ciphertext. Raw Base32 сохраняет legacy defaults, а otpauth-ссылка переносит
+// алгоритм, длину и период; исходное значение сервер не получает.
+const deriveAgentSecretTotp = (value, nowMs = Date.now()) => {
+  const config = parseAgentSecretTotpValue(value);
+  const counter = Math.floor(nowMs / (config.periodSeconds * 1000));
   const message = Buffer.alloc(8);
   message.writeBigUInt64BE(BigInt(counter));
-  const digest = crypto.createHmac("sha1", decodeAgentSecretBase32(seed)).update(message).digest();
+  const digest = crypto.createHmac(config.algorithm, config.secret).update(message).digest();
   const offset = digest[digest.length - 1] & 0x0f;
   const binary = ((digest[offset] & 0x7f) << 24)
     | (digest[offset + 1] << 16)
     | (digest[offset + 2] << 8)
     | digest[offset + 3];
-  return String(binary % 1_000_000).padStart(6, "0");
+  const divisor = 10 ** config.digits;
+  return String(binary % divisor).padStart(config.digits, "0");
 };
 
 /**
