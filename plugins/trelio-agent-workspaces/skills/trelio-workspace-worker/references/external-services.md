@@ -69,8 +69,9 @@ personal connection сообщи о текущей недоступности, �
 
 ## Исполни структурированное локальное действие
 
-Для подписанного runtime вызови точные server/tool из
-`runtimeExecution.localAction` с возвращёнными аргументами. В
+Для команды, прямо объявленной навыком read-only, вызови exact server/tool из
+`runtimeExecution.readOnlyLocalAction`; иначе используй
+`runtimeExecution.localAction`. В
 `parameters.arguments` добавляй лишь разрешённые текущими инструкциями
 аргументы навыка. Не меняй identity, release, runtime-session и другие поля.
 Локальный dispatcher выбирает bridge загруженного плагина и Node без shell/PATH.

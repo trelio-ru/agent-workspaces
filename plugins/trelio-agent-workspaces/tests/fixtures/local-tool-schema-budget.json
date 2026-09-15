@@ -43,6 +43,13 @@
       "baselineTokens": 101,
       "maxTokens": 128
     },
+    "continue_trelio_read_only_skill_action": {
+      "modelVisible": true,
+      "baselineBytes": 535,
+      "maxBytes": 640,
+      "baselineTokens": 115,
+      "maxTokens": 144
+    },
     "get_task_proposal_app_state": {
       "modelVisible": false,
       "baselineBytes": 646,

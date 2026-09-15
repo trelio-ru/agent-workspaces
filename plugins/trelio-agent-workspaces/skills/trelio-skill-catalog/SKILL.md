@@ -123,9 +123,10 @@ maintainer-режим. Для обычной операции компании �
    `AGENT_SKILL_DEVICE_CONSENT_DECLINED` и timeout окончательно останавливают
    эту попытку. Новая публикация, rollback или reactivation могут требовать
    нового объяснения и локального решения даже с прежними package bytes.
-7. Вызови точные server/tool из `runtimeExecution.localAction` с возвращёнными
-   аргументами. В `parameters.arguments` добавляй только разрешённые текущими
-   инструкциями аргументы навыка; другие поля не меняй. Plugin валидирует typed
+7. Для команды, которую инструкция навыка прямо относит к read-only, вызови
+   точный server/tool из `runtimeExecution.readOnlyLocalAction`; иначе используй
+   `runtimeExecution.localAction`. В `parameters.arguments` добавляй только
+   разрешённые текущими инструкциями аргументы навыка; другие поля не меняй. Plugin валидирует typed
    action и запускает свой текущий bridge без shell/PATH. При admission/expiry
    bridge разрешает ожидаемый релиз, скачивает лишь отсутствующий точный package,
    проверяет Ed25519-подпись доставки и digest каждого файла, необходимое

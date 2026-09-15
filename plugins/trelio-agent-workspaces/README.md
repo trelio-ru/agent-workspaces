@@ -82,9 +82,9 @@ accepted-история при этом сохраняется. `clean --dry-run
 
 Trelio сам возвращает для выбранной компании authoritative `contentProvider`.
 Обычная компания продолжает использовать native MCP. Для зашифрованной exact
-route ведёт к пяти компактным model-visible local tools: чтение/поиск,
-обычные действия, headless proposal context, proposal render и история
-Workspace. Агент не решает сам, какой
+route ведёт к шести компактным model-visible local tools: чтение/поиск,
+обычные действия, отдельный проверяемый read-only запуск подписанного навыка,
+headless proposal context, proposal render и история Workspace. Агент не решает сам, какой
 provider выбрать, а local host повторно проверяет live state. Служебные tools
 кнопок proposal видны только MCP App и не попадают в обычный контекст модели.
 
@@ -421,6 +421,13 @@ accepted head и текущие instruction/profile snapshots в private read-on
 расшифровывается локально. Операция не создаёт Run, lease, checkpoint, status
 proposal или иной Trelio mutation, поэтому пользователь не должен вручную
 открывать задачу и запускать Run только ради чтения.
+
+Для platform-verified signed runtime backend может вернуть
+`runtimeExecution.readOnlyLocalAction`. Его нужно передавать только
+`continue_trelio_read_only_skill_action`: bridge сверяет exact argv с подписанным
+package policy и не принимает через этот facade setup, secret checkout или
+company-unverified код. Обычный `runtimeExecution.localAction` остаётся
+единственным маршрутом для mutations и любых неразмеченных команд.
 
 ## Первый Agent Run
 
