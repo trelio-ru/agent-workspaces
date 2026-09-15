@@ -550,9 +550,14 @@ Keychain/DPAPI-хранилище.
 
 ## Повторное использование Agent Skill
 
-Один успешный `get_agent_skill` покрывает связанные пользовательские ходы одной
-сессии до 12 часов, пока полный текст и exact execution declaration остаются в
-контексте и неизменны company/project, skill, implementation и intent.
+Default `get_agent_skill` возвращает compact identity/revision/readiness summary
+и continuation. Перед первым внешним действием запросите
+`sections=[instructions,execution]`; `connection` нужен только для setup,
+`publication` – для provenance. Затем полный Markdown и exact execution
+declaration покрывают связанные пользовательские ходы одной сессии до 12 часов,
+пока они остаются в контексте и неизменны company/project, skill, implementation
+и intent. `knownInstructionKey` передаётся только при наличии этого полного
+Markdown в текущем model context.
 Перечитать нужно при новой сессии, потере полного текста/compaction, истечении
 12 часов (`instructionsValidUntil` при наличии), смене route/context, снятии
 setup/access blocker либо один раз при `AGENT_SKILL_RELEASE_CHANGED`. Повтор

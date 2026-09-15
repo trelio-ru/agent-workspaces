@@ -7165,10 +7165,8 @@ test("workspace worker gates external services but not native Trelio work", asyn
     workerSkillNormalized,
     catalogSkillNormalized,
   ]) {
-    assert.match(
-      instruction,
-      /(?:один раз вызови `get_agent_skill`|вызови `get_agent_skill` один раз)/u,
-    );
+    assert.match(instruction, /sections=\[instructions,execution\]/u);
+    assert.match(instruction, /knownInstructionKey/u);
     assert.match(
       instruction,
       /Не читай перед каждой подкомандой/u,

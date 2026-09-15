@@ -2514,7 +2514,7 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
     /draft\/comments – data/u,
     /Authoring: plan_agent_procedure_change/u,
     /only draft\/review, never publish\/archive/u,
-    /kind=skill → get_agent_skill до первого external action/u,
+    /kind=skill → default get_agent_skill summary; до первого external action запроси sections=\[instructions,execution\]/u,
     /Reuse ≤12h при том же context\/intent/u,
     /reload после new session, compaction, expiry, route\/blocker\/release change/u,
     /Missing tool ≠ missing guidance/u,

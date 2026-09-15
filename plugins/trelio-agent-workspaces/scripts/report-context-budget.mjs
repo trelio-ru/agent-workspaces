@@ -73,11 +73,12 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   localProviderToolSchemasBytes: 4_600,
   plainCompanyTaskRunPluginLayerBytes: 89_000,
   encryptedCompanyTaskRunPluginLayerBytes: 105_500,
-  localMcpInstructionsBytes: 4_000,
+  localMcpInstructionsBytes: 4_200,
   modelVisibleLocalToolSchemasBytes: 14_200,
-  // +schemaToolName lets doctor load one exact schema instead of every schema.
-  clientPrefixedLocalToolSchemasBytes: 70_200,
-  clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
+  // +schemaToolName lets doctor load one exact schema instead of every schema;
+  // skill section routing adds one bounded initialize prefix, not response data.
+  clientPrefixedLocalToolSchemasBytes: 72_500,
+  clientPrefixedTaskRunLocalToolSchemasBytes: 4_700,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
   representativeReusedInstructionResultBytes: 2_200,
@@ -97,7 +98,7 @@ export const PLUGIN_CONTEXT_TOKEN_LIMITS = Object.freeze({
   localProviderToolSchemas: 1_100,
   localMcpInstructions: 650,
   modelVisibleLocalToolSchemas: 3_300,
-  clientPrefixedLocalToolSchemas: 11_800,
+  clientPrefixedLocalToolSchemas: 12_300,
   clientPrefixedTaskRunLocalToolSchemas: 750,
   representativeLocalProposalResult: 1_650,
   representativeLocalAttachmentResult: 200,

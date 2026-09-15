@@ -3,7 +3,18 @@ export const MCP_RESPONSE_PROJECTION_VERSION = 1;
 export const MCP_RESPONSE_DETAIL_TOOLS = new Set([
     "get_contact", "get_registry", "get_knowledge_base_page", "get_project_meta",
     "get_task_create_meta", "get_regular_work", "list_recent_activity", "list_agent_skills",
+    "get_agent_skill",
 ]);
+export const MCP_RESPONSE_FIELD_TOOLS = {
+    get_contact: ["options"],
+    get_registry: ["history", "comments", "commentsPagination", "mentionableMembers"],
+    get_knowledge_base_page: ["pages"],
+    get_regular_work: ["history", "preparation", "options", "mentionableMembers"],
+    list_recent_activity: ["feeds", "filterOptions"],
+};
+export const MCP_AGENT_SKILL_SECTION_NAMES = [
+    "instructions", "connection", "execution", "publication",
+];
 const record = (value) => (value !== null && typeof value === "object" && !Array.isArray(value)
     && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
     ? value : null);
@@ -22,6 +33,7 @@ const mapFields = (value, fields) => {
 };
 const list = (project) => (value) => mapArray(value, project);
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const stringArray = (value) => (Array.isArray(value) ? value.filter((item) => typeof item === "string") : []);
 // Явный набор смысловых полей человека/группы. Если service добавит неизвестное
 // поле, сохраняем весь объект: новый смысл нельзя потерять молча. Budget fixtures
 // на настоящих builders заметят возврат оформления и потребуют классификации.
@@ -117,29 +129,40 @@ const projectTaskPayload = (payload) => mapFields(payload, {
         return Object.fromEntries(Object.entries(sections).map(([name, section]) => [name, task(section)]));
     },
 });
-const addDeferred = (payload, fields, readBack) => {
+const addDeferred = (payload, fields, readBack, rawArguments = {}) => {
     if (own(payload, "deferredData"))
         return payload;
     const present = fields.filter((field) => own(payload, field));
-    if (!present.length)
+    const requested = new Set(stringArray(rawArguments.responseFields));
+    const deferredFields = present.filter((field) => !requested.has(field));
+    if (!deferredFields.length)
         return payload;
     const result = { ...payload };
-    for (const field of present)
+    for (const field of deferredFields)
         delete result[field];
     const deferred = {
         ...result,
         deferredData: {
-            fields: present,
-            ...readBack,
-            instruction: "Поля отложены. При необходимости выполните указанное точное read-only чтение; повторная mutation для получения подробностей запрещена.",
+            fields: deferredFields,
+            tool: readBack.tool,
+            arguments: {
+                ...readBack.arguments,
+                responseFields: deferredFields,
+            },
+            instruction: "Поля отложены. Запросите через responseFields только нужный subset; повторная mutation для получения подробностей запрещена.",
         },
     };
     // Пустой/короткий справочник дешевле передать сразу, чем объявлять отложенное
     // чтение. Это также не заставляет агента делать второй call ради пары записей.
     // Сравниваем только изменённую часть: повторная сериализация всех registry
     // rows ради маленького history/sidebar не должна удваивать память ответа.
-    const omitted = Object.fromEntries(present.map((field) => [field, payload[field]]));
-    return JSON.stringify({ deferredData: deferred.deferredData }).length < JSON.stringify(omitted).length ? deferred : payload;
+    const omitted = Object.fromEntries(deferredFields.map((field) => [field, payload[field]]));
+    // Explicit selection is a semantic projection, not merely a size hint:
+    // never reintroduce a small unrequested field because it serialized cheaply.
+    // The default path may still inline a tiny collection to avoid a net increase.
+    return requested.size > 0
+        || JSON.stringify({ deferredData: deferred.deferredData }).length < JSON.stringify(omitted).length
+        ? deferred : payload;
 };
 const taskLocator = (payload, argumentsObject) => {
     const document = record(payload.document);
@@ -152,6 +175,71 @@ const taskLocator = (payload, argumentsObject) => {
         && (typeof taskNumber === "number" || typeof taskNumber === "string")
         && Number.isSafeInteger(Number(taskNumber)) && Number(taskNumber) > 0
         ? { companySlug, projectSlug, taskNumber: Number(taskNumber) } : null;
+};
+const TASK_SECTION_FIELDS = {
+    rich_description: ["descriptionJson"],
+    comments: ["commentsIncluded", "comments", "commentsUnread", "commentsPagination", "subscriptions", "viewerSubscription"],
+    checklists: ["checklists"],
+    attachments: ["attachments", "deletedAttachments"],
+    controls: ["controls"],
+    relationships: ["parentTask", "subtasks"],
+    workflow: ["statuses", "absenceConflicts"],
+    people: ["availableMembers", "availableMemberGroups", "mentionableMembers"],
+    templates: ["templates"],
+    custom_fields: ["customFields"],
+};
+const TASK_SECTION_NAMES = Object.keys(TASK_SECTION_FIELDS);
+const TASK_DEFERRED_FIELDS = new Set([
+    ...TASK_SECTION_NAMES.flatMap((name) => [...TASK_SECTION_FIELDS[name]]),
+    // This is the derived plain copy of `descriptionJson`. A bounded prefix in
+    // summary keeps the receipt useful without returning the whole document.
+    "descriptionPlainText",
+]);
+const arrayLength = (value) => Array.isArray(value) ? value.length : 0;
+const nestedArrayLength = (value, field) => arrayLength(record(value)?.[field]);
+const taskSectionItemCount = (currentTask, section) => {
+    switch (section) {
+        case "rich_description": return String(currentTask.descriptionPlainText ?? "").trim() ? 1 : 0;
+        case "comments": {
+            if (currentTask.commentsIncluded !== true)
+                return null;
+            const total = record(currentTask.commentsPagination)?.total;
+            return typeof total === "number" && Number.isSafeInteger(total) && total >= 0
+                ? total : arrayLength(currentTask.comments);
+        }
+        case "checklists": return arrayLength(currentTask.checklists);
+        case "attachments": return arrayLength(currentTask.attachments) + arrayLength(currentTask.deletedAttachments);
+        case "controls": return arrayLength(currentTask.controls);
+        case "relationships": return (currentTask.parentTask ? 1 : 0) + arrayLength(currentTask.subtasks);
+        case "workflow": return arrayLength(currentTask.statuses) + arrayLength(currentTask.absenceConflicts);
+        case "people": return arrayLength(currentTask.availableMembers) + arrayLength(currentTask.availableMemberGroups);
+        case "templates": return Array.isArray(currentTask.templates)
+            ? currentTask.templates.length
+            : nestedArrayLength(currentTask.templates, "description") + nestedArrayLength(currentTask.templates, "checklist");
+        case "custom_fields": return Array.isArray(currentTask.customFields)
+            ? currentTask.customFields.length : nestedArrayLength(currentTask.customFields, "fields");
+    }
+};
+const projectTaskMutationCore = (currentTask, locator) => {
+    if (own(currentTask, "deferredSections"))
+        return currentTask;
+    const core = Object.fromEntries(Object.entries(currentTask).filter(([field]) => !TASK_DEFERRED_FIELDS.has(field)));
+    const description = typeof currentTask.descriptionPlainText === "string"
+        ? Array.from(currentTask.descriptionPlainText) : null;
+    return {
+        ...core,
+        ...(!own(core, "summary") && description ? { summary: {
+                descriptionPreview: description.slice(0, 320).join(""),
+                descriptionTruncated: description.length > 320,
+                fullDescriptionSection: "rich_description",
+            } } : {}),
+        deferredSections: {
+            tool: "get_task_sections",
+            arguments: { ...locator, sections: TASK_SECTION_NAMES },
+            available: TASK_SECTION_NAMES.map((name) => ({ name, itemCount: taskSectionItemCount(currentTask, name) })),
+            instruction: "После mutation загружайте одним get_task_sections только нужные sections; повторять mutation или полное чтение задачи для этого запрещено.",
+        },
+    };
 };
 const projectTaskMutation = (payload, argumentsObject) => {
     let result = projectTaskPayload(payload);
@@ -166,17 +254,7 @@ const projectTaskMutation = (payload, argumentsObject) => {
     // прежний locator. Остальные domain поля, явные effects и replayed не трогаем.
     const { text: _text, ...documentIdentity } = document;
     result = { ...result, document: documentIdentity };
-    const deferredFields = ["availableMembers", "availableMemberGroups", "mentionableMembers", "templates"];
-    const fields = deferredFields.filter((field) => own(currentTask, field));
-    if (fields.length) {
-        const sections = [
-            ...(fields.some((field) => field !== "templates") ? ["people"] : []),
-            ...(fields.includes("templates") ? ["templates"] : []),
-        ];
-        result.task = addDeferred(currentTask, fields, {
-            tool: "get_task_sections", arguments: { ...locator, sections },
-        });
-    }
+    result.task = projectTaskMutationCore(currentTask, locator);
     // imageNode является полным каноническим результатом вставки. Примеры имеют
     // право исчезнуть только при наличии этого узла; legacy replay без него цел.
     if (record(result.imageNode)) {
@@ -209,8 +287,8 @@ const deferRegularWorkDetail = (value, args) => {
     }
     return addDeferred(payload, ["history", "preparation", "options", "mentionableMembers"], {
         tool: "get_regular_work",
-        arguments: { companySlug, projectSlug, setId, responseDetail: "full" },
-    });
+        arguments: { companySlug, projectSlug, setId },
+    }, args);
 };
 const projectCatalogSkill = (value) => {
     const skill = record(value);
@@ -288,12 +366,143 @@ const projectWorkspaceOverview = (payload) => {
     return JSON.stringify({ runs: projected.runs, runSnapshots: projected.runSnapshots }).length
         < JSON.stringify({ runs: payload.runs }).length ? projected : payload;
 };
+const projectAgentSkillDetail = (payload, args) => {
+    const skill = record(payload.skill);
+    if (!skill || typeof skill.id !== "string" || own(payload, "deferredData"))
+        return payload;
+    const runtimeRelease = record(skill.runtimeRelease);
+    const executionKind = runtimeRelease
+        ? "signed_runtime"
+        : record(skill.remoteMcp) ? "remote_mcp" : "instructions_only";
+    const releaseIdentity = typeof skill.currentReleaseId === "string"
+        ? skill.currentReleaseId
+        : typeof runtimeRelease?.releaseId === "string"
+            ? runtimeRelease.releaseId
+            : typeof skill.version === "string" ? skill.version : "unversioned";
+    // Project scope is part of the structural key: the same catalog skill and
+    // release may resolve to different effective instructions per assignment.
+    // Intent remains a caller-side reuse condition and is never inferred here.
+    const instructionKey = `agent-skill:${String(payload.companySlug ?? args.companySlug ?? "unknown")}:${String(payload.projectSlug ?? args.projectSlug ?? "company")}:${skill.id}:${releaseIdentity}`;
+    const requested = new Set(stringArray(args.sections).filter((section) => (MCP_AGENT_SKILL_SECTION_NAMES.includes(section))));
+    const available = [
+        ...(own(skill, "instructionsMarkdown") ? ["instructions"] : []),
+        ...(own(skill, "connectionDefinition") || own(skill, "connection") || own(payload, "localIdentity")
+            ? ["connection"] : []),
+        ...(own(skill, "runtimeRequirements") || own(skill, "runtimeRelease") || own(skill, "remoteMcp")
+            || own(payload, "runtimeExecution") || own(payload, "remoteMcpExecution") ? ["execution"] : []),
+        ...(runtimeRelease && own(runtimeRelease, "publication")
+            && runtimeRelease.publication !== null && runtimeRelease.publication !== undefined
+            ? ["publication"] : []),
+    ];
+    const reuseInstructions = requested.has("instructions")
+        && args.knownInstructionKey === instructionKey;
+    const { instructionsMarkdown, connectionDefinition, connection, runtimeRequirements, runtimeRelease: _runtimeRelease, remoteMcp, ...skillSummary } = skill;
+    let projectedSkill = {
+        ...skillSummary,
+        instructionKey,
+        executionSummary: {
+            kind: executionKind,
+            releaseId: releaseIdentity,
+            trustLevel: runtimeRelease?.trustLevel ?? null,
+            minimumHostVersion: runtimeRelease?.minimumHostVersion
+                ?? record(remoteMcp)?.minimumHostVersion ?? skill.minPluginVersion ?? null,
+            contentProtection: runtimeRelease?.contentProtection
+                ?? record(remoteMcp)?.contentProtection ?? null,
+        },
+    };
+    if (requested.has("instructions") && !reuseInstructions) {
+        projectedSkill = { ...projectedSkill, instructionsMarkdown };
+    }
+    if (requested.has("connection")) {
+        projectedSkill = { ...projectedSkill, connectionDefinition, connection };
+    }
+    if (requested.has("execution")) {
+        let projectedRuntimeRelease = _runtimeRelease;
+        if (runtimeRelease && !requested.has("publication")) {
+            const { publication: _publication, ...withoutPublication } = runtimeRelease;
+            projectedRuntimeRelease = withoutPublication;
+        }
+        projectedSkill = {
+            ...projectedSkill,
+            runtimeRequirements,
+            runtimeRelease: projectedRuntimeRelease,
+            remoteMcp,
+        };
+    }
+    else if (requested.has("publication") && runtimeRelease) {
+        projectedSkill = {
+            ...projectedSkill,
+            runtimeRelease: {
+                releaseId: runtimeRelease.releaseId ?? releaseIdentity,
+                publication: runtimeRelease.publication,
+            },
+        };
+    }
+    let runtimeExecution = payload.runtimeExecution;
+    if (requested.has("execution")) {
+        const execution = record(runtimeExecution);
+        if (execution) {
+            const trust = record(execution.trust);
+            const { command: _legacyCommand, ...modernExecution } = execution;
+            runtimeExecution = {
+                // Remove the legacy duplicate only when the typed route is actually
+                // present. Older hydrated server payloads may still be command-only.
+                ...(own(execution, "localAction") ? modernExecution : execution),
+                ...(trust ? { trust: {
+                        ...Object.fromEntries(Object.entries(trust).filter(([key]) => key !== "publication")),
+                        ...(own(trust, "publication") && trust.publication !== null
+                            && trust.publication !== undefined ? { publicationSection: "publication" } : {}),
+                    } } : {}),
+            };
+        }
+    }
+    const includedSections = available.filter((section) => (requested.has(section) && !(section === "instructions" && reuseInstructions)));
+    const deferredSections = available.filter((section) => (!requested.has(section) && !(section === "instructions" && reuseInstructions)));
+    const projected = {
+        ...Object.fromEntries(Object.entries(payload).filter(([key]) => (!["skill", "localIdentity", "runtimeExecution", "remoteMcpExecution"].includes(key)))),
+        schemaVersion: 2,
+        skill: projectedSkill,
+        responseProjection: {
+            includedSections,
+            reusedSections: reuseInstructions ? ["instructions"] : [],
+            revision: {
+                skillId: skill.id,
+                version: skill.version ?? null,
+                releaseId: releaseIdentity,
+            },
+        },
+        ...(requested.has("connection") ? { localIdentity: payload.localIdentity } : {}),
+        ...(requested.has("execution") ? {
+            runtimeExecution,
+            remoteMcpExecution: payload.remoteMcpExecution,
+        } : {}),
+    };
+    if (!deferredSections.length)
+        return projected;
+    return {
+        ...projected,
+        deferredData: {
+            sections: deferredSections,
+            tool: "get_agent_skill",
+            arguments: {
+                companySlug: payload.companySlug ?? args.companySlug,
+                ...(payload.projectSlug ?? args.projectSlug
+                    ? { projectSlug: payload.projectSlug ?? args.projectSlug } : {}),
+                skillId: skill.id,
+                sections: deferredSections,
+            },
+            instruction: "Загрузите только нужные sections. Перед первым внешним действием нужны instructions и execution; connection – только для настройки, publication – для проверки происхождения релиза.",
+        },
+    };
+};
 /** Полный обход только известных domain positions; errors/Apps обрабатывает caller. */
 export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
     const payload = record(value);
     const args = record(rawArguments) ?? {};
     if (!payload || (MCP_RESPONSE_DETAIL_TOOLS.has(toolName) && args.responseDetail === "full"))
         return value;
+    if (toolName === "get_agent_skill")
+        return projectAgentSkillDetail(payload, args);
     if (toolName === "get_agent_workspace" || toolName === "get_agent_workspace_by_scope")
         return projectWorkspaceOverview(payload);
     if (taskMutationTools.has(toolName))
@@ -343,8 +552,8 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
         const company = record(result.company);
         if (contactRecord && typeof contactRecord.id === "string" && typeof company?.slug === "string") {
             result = addDeferred(result, ["options"], { tool: "get_contact", arguments: {
-                    companySlug: company.slug, contactId: contactRecord.id, responseDetail: "full",
-                } });
+                    companySlug: company.slug, contactId: contactRecord.id,
+                } }, args);
         }
         return result;
     }
@@ -357,14 +566,14 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
             const readArgs = {
                 ...args, companySlug: company.slug,
                 ...(typeof project?.slug === "string" ? { projectSlug: project.slug } : {}),
-                registrySlug: registry.slug, responseDetail: "full",
+                registrySlug: registry.slug,
             };
             // Не переносим mutation fields в read hint. Контекст выбранной страницы
             // сохраняет только реально поддерживаемые read filters/limits.
             const readFields = new Set(["companySlug", "projectSlug", "registrySlug", "query", "filters", "sortKey", "sortDirection", "offset", "limit", "includeArchivedRows", "historyLimit", "responseDetail"]);
             result = addDeferred(result, ["history", "comments", "commentsPagination", "mentionableMembers"], {
                 tool: "get_registry", arguments: Object.fromEntries(Object.entries(readArgs).filter(([key]) => readFields.has(key))),
-            });
+            }, args);
         }
         return result;
     }
@@ -391,8 +600,8 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
         let result = mapFields(payload, { page: (item) => mapFields(item, { createdBy: person, updatedBy: person }) });
         if (typeof page?.slug === "string" && typeof company?.slug === "string")
             result = addDeferred(result, ["pages"], {
-                tool: "get_knowledge_base_page", arguments: { companySlug: company.slug, pageSlug: page.slug, responseDetail: "full" },
-            });
+                tool: "get_knowledge_base_page", arguments: { companySlug: company.slug, pageSlug: page.slug },
+            }, args);
         return result;
     }
     if (toolName === "list_recent_activity") {
@@ -400,9 +609,9 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
         if (typeof args.companySlug === "string")
             result = addDeferred(result, ["feeds", "filterOptions"], {
                 tool: "list_recent_activity", arguments: {
-                    ...Object.fromEntries(Object.entries(args).filter(([key]) => ["companySlug", "feedId", "cursor", "limit"].includes(key))), responseDetail: "full",
+                    ...Object.fromEntries(Object.entries(args).filter(([key]) => ["companySlug", "feedId", "cursor", "limit"].includes(key))),
                 },
-            });
+            }, args);
         return result;
     }
     if (toolName === "list_company_activity")

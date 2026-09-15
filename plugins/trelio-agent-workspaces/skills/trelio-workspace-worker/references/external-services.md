@@ -21,9 +21,13 @@ Native-чтения Trelio, discovery и управляющие операции
    hints; `list_agent_skills` оставь для явной инвентаризации. Если результат
    `kind=procedure`, сначала прочитай `agent-procedures.md` и загрузи exact
    `get_agent_procedure`; этот файл продолжает определять внешние зависимости.
-2. До первого внешнего действия сессии один раз вызови `get_agent_skill`.
-   Переиспользуй полный текст и точную execution declaration между ходами
+2. Default `get_agent_skill` даёт compact summary. До первого внешнего действия
+   вызови его с `sections=[instructions,execution]`; `connection` добавляй для
+   setup, `publication` – для provenance. Переиспользуй полный текст и точную
+   execution declaration между ходами
    до 12 часов при неизменных company/project, skill, implementation и intent.
+   Передавай `knownInstructionKey` только пока полный Markdown exact scope/release
+   остаётся в текущем model context.
    Перечитай при новой сессии, потере/compaction текста, через 12 часов,
    смене маршрута/контекста, снятии setup/access blocker или один раз при
    `AGENT_SKILL_RELEASE_CHANGED`. Не читай перед каждой подкомандой.

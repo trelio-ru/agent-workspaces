@@ -97,9 +97,13 @@ maintainer-режим. Для обычной операции компании �
    У каждого навыка собственные config, Agent Secret bindings, connection id,
    local credentials, session и policy; переход не разрешает переносить их.
    Не настраивай credentials и не выполняй внешние записи без просьбы пользователя.
-5. Перед первым внешним действием в сессии вызови `get_agent_skill` один раз.
-   Переиспользуй полные инструкции и точную execution declaration между ходами
+5. Default `get_agent_skill` используй для compact summary. Перед первым внешним
+   действием вызови его с `sections=[instructions,execution]`; `connection`
+   добавляй только для setup, `publication` – для provenance. Переиспользуй
+   полные инструкции и точную execution declaration между ходами
    до 12 часов, пока компания/проект, навык, реализация и намерение неизменны.
+   `knownInstructionKey` передавай только пока полный Markdown exact scope/release
+   всё ещё находится в текущем model context.
    Перечитай при новой сессии, потере/compaction полного текста, через 12 часов,
    смене маршрута/контекста, снятии setup/access blocker или один раз при
    `AGENT_SKILL_RELEASE_CHANGED`. Не читай перед каждой подкомандой. Ограниченным

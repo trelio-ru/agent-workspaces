@@ -169,9 +169,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   общего primitive, который нельзя безопасно доставить независимым runtime.
 - Provider API/DOM, provider-команда, parser, dependency, instruction или тест
   одного provider не являются основанием менять plugin.
-- Полный `get_agent_skill` и exact action переиспользуются между связанными
-  ходами одной сессии до 12 часов. Перечитать при compaction/утрате полного
-  текста, expiry, смене контекста, снятии blocker либо RELEASE_CHANGED.
+- Default `get_agent_skill` возвращает compact scope/release/readiness summary.
+  До первого external action запросить `sections=[instructions,execution]`;
+  connection/publication – только для setup/provenance. `knownInstructionKey`
+  переиспользует полный Markdown между связанными ходами до 12 часов лишь пока
+  exact company/project/skill/release и текст остаются в текущем context.
+  Перечитать при compaction/утрате текста, expiry, смене контекста, снятии
+  blocker либо RELEASE_CHANGED.
   Host владеет отдельным non-sliding admission cache; его bindings, задержка
   отзыва и исключения заданы в
   [README](plugins/trelio-agent-workspaces/README.md#повторное-использование-agent-skill).

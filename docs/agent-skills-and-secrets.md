@@ -35,11 +35,13 @@ onboarding, а не как стандартный путь ordinary operation.
 [onboarding](../plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md#offer-the-live-trelio-skills).
 
 Из compact ranked результатов агент загружает procedure через
-`get_agent_procedure`, а skill – через `get_agent_skill`. Только immutable
-published procedure является instruction authority; draft/comments не входят
+`get_agent_procedure`, а skill – через default compact `get_agent_skill`.
+Только immutable published procedure является instruction authority; draft/comments не входят
 в agent read и сама процедура не запускает фоновой runtime. Перед первым
-внешним действием текущего пользовательского хода агент один раз вызывает
-`get_agent_skill`. Успешное чтение покрывает связанную непрерывную
+внешним действием агент вызывает `get_agent_skill` с
+`sections=[instructions,execution]`; connection/publication добавляются только
+для setup/provenance. `knownInstructionKey` допустим лишь пока полный Markdown
+exact company/project/skill/release находится в model context. Успешное чтение покрывает связанную непрерывную
 последовательность с теми же company/project, skill, implementation и intent:
 его не повторяют сразу либо перед каждым `bootstrap`, `doctor`, `search`,
 `export` или другим subcommand. Навык читается заново в следующем
