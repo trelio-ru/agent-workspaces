@@ -9657,6 +9657,100 @@ test("bridge creates one deterministic worklog entry from handoff", async () => 
   }
 });
 
+test("bridge repairs a legacy automatic worklog pointer inherited from the previous Run", async () => {
+  const runDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-legacy-automatic-worklog-"));
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  const metadataPath = path.join(runDirectory, ".trelio-run.json");
+  const previousRunId = "11111111-1111-4111-8111-111111111111";
+  const currentRunId = "22222222-2222-4222-8222-222222222222";
+  const previousPath = `worklog/2026-09-12-run-${previousRunId}.md`;
+
+  try {
+    await mkdir(path.join(workspaceDirectory, "worklog"), { recursive: true });
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await writeFile(path.join(workspaceDirectory, previousPath), "# Предыдущий Run\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Accepted previous Run"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+    const metadata = {
+      workspaceDirectory,
+      baseHead,
+      runId: currentRunId,
+      clientKind: "workspace-bridge",
+      automaticWorklogPath: previousPath,
+    };
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+
+    const currentPath = await ensureAutomaticRunWorklog({
+      metadata,
+      metadataPath,
+      summary: "Исправлен совместимый Run.",
+      evidence: ["Путь перепривязан"],
+      candidatePaths: ["result.md"],
+      openQuestions: [],
+      nextActionInstruction: "Проверить результат.",
+      now: new Date("2026-09-15T12:00:00.000Z"),
+    });
+
+    assert.equal(currentPath, `worklog/2026-09-15-run-${currentRunId}.md`);
+    assert.equal(
+      JSON.parse(await readFile(metadataPath, "utf8")).automaticWorklogPath,
+      currentPath,
+    );
+    assert.equal(
+      await readFile(path.join(workspaceDirectory, previousPath), "utf8"),
+      "# Предыдущий Run\n",
+      "the accepted journal of the previous Run must stay untouched",
+    );
+  } finally {
+    await rm(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge rejects an unproven mismatched automatic worklog pointer", async () => {
+  const runDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-invalid-automatic-worklog-"));
+  const workspaceDirectory = path.join(runDirectory, "workspace");
+  const metadataPath = path.join(runDirectory, ".trelio-run.json");
+  const currentRunId = "22222222-2222-4222-8222-222222222222";
+
+  try {
+    await mkdir(workspaceDirectory);
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Initial workspace"]);
+    const baseHead = (await runGit(workspaceDirectory, ["rev-parse", "HEAD"])).stdout.trim();
+    const metadata = {
+      workspaceDirectory,
+      baseHead,
+      runId: currentRunId,
+      clientKind: "workspace-bridge",
+      automaticWorklogPath: "worklog/2026-09-12-run-11111111-1111-4111-8111-111111111111.md",
+    };
+    await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+
+    await assert.rejects(
+      ensureAutomaticRunWorklog({
+        metadata,
+        metadataPath,
+        summary: "Итог.",
+        evidence: [],
+        candidatePaths: [],
+        openQuestions: [],
+        nextActionInstruction: "Проверить результат.",
+      }),
+      /metadata содержит некорректный путь автоматического worklog/u,
+    );
+  } finally {
+    await rm(runDirectory, { recursive: true, force: true });
+  }
+});
+
 test("bridge preserves the leading status column for the first changed path", async () => {
   const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-status-columns-"));
 

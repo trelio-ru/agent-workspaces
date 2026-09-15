@@ -11521,7 +11521,7 @@ export const ensureAutomaticRunWorklog = async ({
     return null;
   }
 
-  const existingAutomaticPath = typeof metadata.automaticWorklogPath === "string"
+  let existingAutomaticPath = typeof metadata.automaticWorklogPath === "string"
     ? metadata.automaticWorklogPath
     : null;
   const expectedSuffix = `-run-${metadata.runId}.md`;
@@ -11533,7 +11533,36 @@ export const ensureAutomaticRunWorklog = async ({
       || !existingAutomaticPath.endsWith(expectedSuffix)
     )
   ) {
-    throw new Error("Локальная metadata содержит некорректный путь автоматического worklog.");
+    const legacyAutomaticPathMatch = existingAutomaticPath.match(
+      /^worklog\/(?:\d{4}-\d{2}-\d{2})-run-([0-9a-f-]+)\.md$/iu,
+    );
+    const legacyRunId = legacyAutomaticPathMatch?.[1] || "";
+    const legacyBaseEntry = UUID_PATTERN.test(legacyRunId)
+      && legacyRunId !== metadata.runId
+      ? await readGitTreeEntry(
+        metadata.workspaceDirectory,
+        metadata.baseHead,
+        existingAutomaticPath,
+      )
+      : null;
+
+    if (
+      !legacyBaseEntry
+      || legacyBaseEntry.objectType !== "blob"
+      || legacyBaseEntry.mode !== "100644"
+    ) {
+      throw new Error("Локальная metadata содержит некорректный путь автоматического worklog.");
+    }
+
+    // The first persistent-root implementation could copy the previous Run's
+    // automatic pointer into a newly opened Run. Repair only that provable
+    // shape: an exact bridge-generated path for another UUID that is already a
+    // regular file in the pinned base. The accepted journal remains untouched;
+    // arbitrary or missing paths still fail closed instead of being overwritten.
+    const { automaticWorklogPath: _staleAutomaticWorklogPath, ...repairedMetadata } = metadata;
+    await writeRunMetadata(metadataPath, repairedMetadata);
+    metadata = repairedMetadata;
+    existingAutomaticPath = null;
   }
 
   // A manually prepared journal entry remains valid for older clients and
