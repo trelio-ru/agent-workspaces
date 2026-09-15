@@ -1,8 +1,11 @@
 import path from "node:path";
 
 export const WORKSPACE_DIRECTORY_REQUIRED = "TRELIO_WORKSPACE_DIRECTORY_REQUIRED";
+export const WORKSPACE_LOCAL_RECOVERY_REQUIRED = "TRELIO_WORKSPACE_LOCAL_RECOVERY_REQUIRED";
 const MAX_CANDIDATES = 10;
+const MAX_RECOVERY_CHANGES = 200;
 const MAX_DIRECTORY_LENGTH = 4096;
+const MAX_CHANGE_LENGTH = 4096;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const MESSAGE = "Для этого Agent Workspace зарегистрировано несколько локальных папок. "
   + "Повторите тот же open, указав выбранный корень в parameters.directory "
@@ -26,6 +29,54 @@ export class WorkspaceDirectoryRequiredError extends Error {
       parameter: "parameters.directory",
       candidates: visible,
       omittedCandidateCount: candidates.length - visible.length,
+    };
+  }
+
+  toJSON() {
+    return { code: this.code, message: this.message, details: this.details };
+  }
+}
+
+const LOCAL_RECOVERY_MESSAGE = "Локальная папка содержит несохранённые изменения завершённого Agent Run. "
+  + "Bridge не перезапишет и не переместит их автоматически. Откройте целевой Run "
+  + "в suggestedDirectory, сравните перечисленную дельту, перенесите только выбранные "
+  + "материалы и сразу сохраните их через checkpoint, pause или finish.";
+
+// Terminal Run не может принять новый checkpoint, а молчаливая очистка теряет
+// данные. Этот bounded envelope даёт host точный безопасный маршрут в новый
+// root, не передавая credentials и закрытые поля локального metadata.
+export class WorkspaceLocalRecoveryRequiredError extends Error {
+  constructor({
+    workspaceId,
+    sourceRunId,
+    targetRunId,
+    sourceRunStatus,
+    sourceDirectory,
+    sourceWorkspaceDirectory,
+    suggestedDirectory,
+    lastSavedDraftHead,
+    changes,
+  }) {
+    super(LOCAL_RECOVERY_MESSAGE);
+    this.code = WORKSPACE_LOCAL_RECOVERY_REQUIRED;
+    const visibleChanges = changes
+      .filter((change) => typeof change === "string" && change.length <= MAX_CHANGE_LENGTH)
+      .slice(0, MAX_RECOVERY_CHANGES);
+    this.details = {
+      workspaceId,
+      sourceRunId,
+      targetRunId: targetRunId || null,
+      sourceRunStatus,
+      sourceDirectory,
+      sourceWorkspaceDirectory,
+      suggestedDirectory,
+      lastSavedDraftHead: lastSavedDraftHead || null,
+      changes: visibleChanges,
+      omittedChangeCount: changes.length - visibleChanges.length,
+      requiredAction: "open_recovery_directory_and_transfer_selected_changes",
+      directoryParameter: "parameters.directory",
+      sourceFilesMustRemainUntouched: true,
+      nextSaveActions: ["checkpoint", "pause", "finish"],
     };
   }
 
@@ -67,5 +118,68 @@ export const parseWorkspaceDirectoryRequiredError = (stderr, workspaceId) => {
   ) return null;
   const result = new WorkspaceDirectoryRequiredError(workspaceId, details.candidates);
   result.details.omittedCandidateCount = details.omittedCandidateCount;
+  return result;
+};
+
+export const parseWorkspaceLocalRecoveryRequiredError = (
+  stderr,
+  workspaceId,
+  targetRunId = null,
+) => {
+  if (typeof stderr !== "string" || stderr.length > 256 * 1024) return null;
+  const text = stderr.trim();
+  if (!text.startsWith("Ошибка: {")) return null;
+  let payload;
+  try { payload = JSON.parse(text.slice("Ошибка: ".length)); }
+  catch { return null; }
+  const details = payload?.details;
+  const expectedTargetRunId = targetRunId || null;
+  if (
+    payload?.code !== WORKSPACE_LOCAL_RECOVERY_REQUIRED
+    || details?.workspaceId !== workspaceId
+    || !UUID_PATTERN.test(workspaceId)
+    || !UUID_PATTERN.test(String(details?.sourceRunId || ""))
+    || details.targetRunId !== expectedTargetRunId
+    || (details.targetRunId !== null && !UUID_PATTERN.test(details.targetRunId))
+    || !["accepted", "cancelled"].includes(details.sourceRunStatus)
+    || details.requiredAction !== "open_recovery_directory_and_transfer_selected_changes"
+    || details.directoryParameter !== "parameters.directory"
+    || details.sourceFilesMustRemainUntouched !== true
+    || !Array.isArray(details.nextSaveActions)
+    || details.nextSaveActions.join("\0") !== "checkpoint\0pause\0finish"
+    || ![details.sourceDirectory, details.sourceWorkspaceDirectory, details.suggestedDirectory]
+      .every((directory) => (
+        typeof directory === "string"
+        && path.isAbsolute(directory)
+        && !directory.includes("\0")
+        && directory.length <= MAX_DIRECTORY_LENGTH
+      ))
+    || path.resolve(details.sourceWorkspaceDirectory)
+      !== path.join(path.resolve(details.sourceDirectory), "workspace")
+    || path.resolve(details.suggestedDirectory) === path.resolve(details.sourceDirectory)
+    || !Array.isArray(details.changes)
+    || details.changes.length > MAX_RECOVERY_CHANGES
+    || details.changes.some((change) => (
+      typeof change !== "string"
+      || change.length === 0
+      || change.length > MAX_CHANGE_LENGTH
+    ))
+    || !Number.isSafeInteger(details.omittedChangeCount)
+    || details.omittedChangeCount < 0
+    || (details.lastSavedDraftHead !== null
+      && !/^[0-9a-f]{40,64}$/u.test(details.lastSavedDraftHead))
+  ) return null;
+  const result = new WorkspaceLocalRecoveryRequiredError({
+    workspaceId,
+    sourceRunId: details.sourceRunId,
+    targetRunId: details.targetRunId,
+    sourceRunStatus: details.sourceRunStatus,
+    sourceDirectory: details.sourceDirectory,
+    sourceWorkspaceDirectory: details.sourceWorkspaceDirectory,
+    suggestedDirectory: details.suggestedDirectory,
+    lastSavedDraftHead: details.lastSavedDraftHead,
+    changes: details.changes,
+  });
+  result.details.omittedChangeCount = details.omittedChangeCount;
   return result;
 };

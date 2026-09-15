@@ -1,5 +1,8 @@
 import { downloadAcceptedWorkspaceFile, validateWorkspaceFileLocator } from "./trelio-workspace-files.mjs";
-import { parseWorkspaceDirectoryRequiredError } from "./trelio-workspace-directory.mjs";
+import {
+  parseWorkspaceDirectoryRequiredError,
+  parseWorkspaceLocalRecoveryRequiredError,
+} from "./trelio-workspace-directory.mjs";
 import { compileContextSearchQuery, normalizeContextSearchQueries, normalizeContextSearchReference } from "./trelio-context-search-matching.mjs";
 /**
  * Encrypted-company context provider for the static local MCP facade.
@@ -8618,6 +8621,9 @@ export const handleTrelioWorkspaceActionOperation = async (
   const recoveryWorkspaceId = invocation.operation === "open"
     ? normalizeWorkspaceActionUuid(rawInput.parameters.workspaceId, "parameters.workspaceId")
     : null;
+  const recoveryRunId = invocation.operation === "open" && rawInput.parameters.runId !== undefined
+    ? normalizeWorkspaceActionUuid(rawInput.parameters.runId, "parameters.runId")
+    : null;
   const heartbeatManager = runHeartbeatManager
     ?? (runBridge === runWorkspaceBridge ? workspaceRunHeartbeatManager : null);
   let activeHeartbeatEntry = null;
@@ -8750,16 +8756,23 @@ export const handleTrelioWorkspaceActionOperation = async (
     }
     const stderr = truncateWorkspaceActionOutput(error?.stderr).trim();
     const stdout = truncateWorkspaceActionOutput(error?.stdout).trim();
-    const directoryRecovery = invocation.operation === "open"
+    const openRecovery = invocation.operation === "open"
       ? parseWorkspaceDirectoryRequiredError(error?.stderr, recoveryWorkspaceId)
+        || parseWorkspaceLocalRecoveryRequiredError(
+          error?.stderr,
+          recoveryWorkspaceId,
+          recoveryRunId,
+        )
       : null;
-    if (directoryRecovery) {
+    if (openRecovery) {
       // Не повторяем open и не выбираем первый root за вызывающего агента.
-      // Structured recovery сохраняет exact пути без второй копии stderr.
+      // Structured recovery сохраняет exact пути без второй копии stderr. Для
+      // dirty terminal Run suggestedDirectory открывается отдельным повторным
+      // action; source root остаётся нетронутым до осознанного переноса файлов.
       throw new TrelioLocalContextError(
-        directoryRecovery.code,
-        directoryRecovery.message,
-        directoryRecovery.details,
+        openRecovery.code,
+        openRecovery.message,
+        openRecovery.details,
       );
     }
     throw new TrelioLocalContextError(

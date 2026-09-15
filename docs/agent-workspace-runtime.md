@@ -340,6 +340,11 @@ clean Git и принятый head проверяются обычным preflig
 4. Завершённая дельта сохраняется до дальнейшей работы, ожидания, compaction,
    передачи и границы хода. Если она сразу завершается, достаточно `finish`:
    он уже создаёт handoff checkpoint; отдельный draft перед ним не нужен.
+   Непосредственно перед финальным ответом агент выполняет returned
+   `bridge.actions.turnCheck` (`status`) из opened directory. `dirty=true`
+   требует `checkpoint`, `pause` либо `finish`; ошибка сохранения становится
+   явным blocker и не разрешает очистить локальные файлы. Это проверяемая
+   model-facing граница, а не фоновый filesystem autosave хоста.
    Короткое уточнение обновляет канонический материал; bridge строит краткий
    worklog из handoff без ручной копии тех же фактов. Dirty blocker сохраняется
    одной `trelio-workspace pause`; чистый подготовительный вопрос не создаёт
@@ -471,6 +476,15 @@ blocker с exact summary/question/next action и `draftHead`. Только по�
 `context/run-checkpoint.json`. Полная переписка не переносится. Dirty или
 diverged локальное дерево никогда не перезаписывается автоматически.
 
+Если новый exact Run открывается поверх root завершённого Run с локальной
+дельтой, bridge возвращает structured
+`TRELIO_WORKSPACE_LOCAL_RECOVERY_REQUIRED`: source/target Run, bounded Git
+changes и отдельный `suggestedDirectory`. Повторный `open` целевого Run в этом
+root не трогает source. Агент сравнивает дельту, переносит только выбранные
+материалы и сразу сохраняет их через `checkpoint`, `pause` либо `finish`.
+Автоматически перемещать `.DS_Store` или очищать старую папку для обхода ошибки
+запрещено.
+
 После перезапуска MCP-host structured `TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED`
 возвращает non-secret exact `workspaceId/runId` из owner-private metadata.
 `prepare_agent_workspace_run(runId)` возвращает новый runtime-bound open того же
@@ -498,9 +512,11 @@ backend outage делает auto-prune no-op. Настройка
 `workspaceRetentionDays` меняет срок в пределах 1–365 дней; старый
 `terminalRunRetentionDays` читается как совместимый alias.
 
-Обычные ограниченные системные metadata-файлы `.DS_Store`, `Thumbs.db` и
-`desktop.ini` не считаются пользовательским содержимым root. Каталог, symlink
-или файл больше 1 МиБ с таким именем остаётся unmanaged и блокирует удаление.
+Обычные ограниченные untracked metadata-файлы `.DS_Store`, `Thumbs.db` и
+`desktop.ini` не считаются пользовательским содержимым ни рядом с `workspace/`,
+ни внутри Git-worktree. Tracked-файл, каталог, symlink или файл больше 1 МиБ с
+таким именем остаётся содержательной дельтой и блокирует замену/удаление.
+Одинаковый local preflight выполняется до выбора plaintext или E2EE transport.
 Best-effort auto-clean запускается после `open`, успешного `finish` и локального
 `cancel_run`, но не чаще одного успешного прохода в сутки для одного origin.
 

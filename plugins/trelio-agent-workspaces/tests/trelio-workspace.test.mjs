@@ -2958,7 +2958,7 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
     await writeFile(path.join(expectedWorkspaceDirectory, "local-only.md"), "do not overwrite\n");
     await assert.rejects(
       execFileAsync(process.execPath, command, executionOptions),
-      /несохранённые изменения предыдущего Run/u,
+      /TRELIO_WORKSPACE_LOCAL_RECOVERY_REQUIRED[\s\S]*несохранённые изменения завершённого Agent Run/u,
     );
     assert.equal(startCount, 2, "dirty reuse must fail before creating another server Run");
     assert.equal(
@@ -3151,10 +3151,9 @@ test("blocker checkpoint transfers the exact draft and continuation state to ano
         } else {
           assert.equal(checkpointPayload.checkpointType, "draft");
           assert.deepEqual(checkpointPayload.openQuestions, undefined);
-          // Git reports an untracked directory as one changed path until the
-          // draft snapshot commits it; the uploaded tree below proves the
-          // exact file bytes are nevertheless preserved.
-          assert.deepEqual(checkpointPayload.filesChanged, ["artifacts/"]);
+          // NUL-delimited porcelain expands untracked directories so the
+          // checkpoint and recovery envelope identify exact transferable files.
+          assert.deepEqual(checkpointPayload.filesChanged, ["artifacts/decision.md"]);
           draftCheckpointPayload = checkpointPayload;
           assert.equal(currentStatus, "running");
         }
@@ -9665,6 +9664,74 @@ test("bridge preserves the leading status column for the first changed path", as
       " M WORKSPACE_CONTEXT.md",
       "the first short-status line must retain both positional status columns",
     );
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge ignores only safe untracked OS metadata inside the Git workspace", async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-os-metadata-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "WORKSPACE_CONTEXT.md"), "# Контекст\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "--all"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Initial workspace context"]);
+
+    await mkdir(path.join(workspaceDirectory, "nested folder"));
+    await writeFile(path.join(workspaceDirectory, ".DS_Store"), Buffer.alloc(6 * 1024));
+    await writeFile(path.join(workspaceDirectory, "nested folder", "Thumbs.db"), "metadata", "utf8");
+    await writeFile(path.join(workspaceDirectory, "desktop.ini"), "metadata", "utf8");
+    assert.equal(
+      await getGitStatus(workspaceDirectory),
+      "",
+      "plain and encrypted preflight share this transport-neutral status filter",
+    );
+
+    await writeFile(path.join(workspaceDirectory, "nested folder", "result.md"), "meaningful\n", "utf8");
+    assert.equal(await getGitStatus(workspaceDirectory), "?? nested folder/result.md");
+    await rm(path.join(workspaceDirectory, "nested folder", "result.md"));
+
+    await writeFile(
+      path.join(workspaceDirectory, ".DS_Store"),
+      Buffer.alloc(1024 * 1024 + 1),
+    );
+    assert.equal(
+      await getGitStatus(workspaceDirectory),
+      "?? .DS_Store",
+      "an anomalously large same-named file must remain fail-closed",
+    );
+
+    await writeFile(path.join(workspaceDirectory, ".DS_Store"), "tracked metadata\n", "utf8");
+    await runGit(workspaceDirectory, ["add", ".DS_Store"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Track deliberate same-named file"]);
+    await writeFile(path.join(workspaceDirectory, ".DS_Store"), "changed deliberately\n", "utf8");
+    assert.equal(
+      await getGitStatus(workspaceDirectory),
+      " M .DS_Store",
+      "tracked content must never be hidden by the untracked metadata exception",
+    );
+  } finally {
+    await rm(workspaceDirectory, { recursive: true, force: true });
+  }
+});
+
+test("bridge keeps an untracked metadata symlink dirty", {
+  skip: process.platform === "win32" ? "Creating symlinks requires separate Windows privileges" : false,
+}, async () => {
+  const workspaceDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-os-metadata-link-"));
+
+  try {
+    await runGit(workspaceDirectory, ["init", "--initial-branch=main"]);
+    await runGit(workspaceDirectory, ["config", "user.name", "Trelio Test"]);
+    await runGit(workspaceDirectory, ["config", "user.email", "trelio@example.test"]);
+    await writeFile(path.join(workspaceDirectory, "target"), "metadata\n", "utf8");
+    await runGit(workspaceDirectory, ["add", "target"]);
+    await runGit(workspaceDirectory, ["commit", "-m", "Track symlink target"]);
+    await symlink("target", path.join(workspaceDirectory, ".DS_Store"));
+    assert.match(await getGitStatus(workspaceDirectory), /^\?\? \.DS_Store$/mu);
   } finally {
     await rm(workspaceDirectory, { recursive: true, force: true });
   }

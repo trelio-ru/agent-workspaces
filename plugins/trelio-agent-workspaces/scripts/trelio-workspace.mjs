@@ -9,7 +9,10 @@
  * текущего Run.
  */
 import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "./trelio-skill-secret-setup.mjs";
-import { WorkspaceDirectoryRequiredError } from "./trelio-workspace-directory.mjs";
+import {
+  WorkspaceDirectoryRequiredError,
+  WorkspaceLocalRecoveryRequiredError,
+} from "./trelio-workspace-directory.mjs";
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
 import crypto from "node:crypto";
@@ -125,6 +128,7 @@ export const buildAgentWorkspaceRuntimeAgentsMarkdown = (
   "- До финального ответа выполни references/workspace-context-review.md навыка trelio-workspace-worker: проверь фиксацию результата по pinned rules, затем независимые task decisions.",
   "- Реальные источники храни в `sources/`, промежуточные материалы в `work/`, результаты в `artifacts/`. Для короткого уточнения обнови канонический материал; bridge перенесёт краткий итог handoff в worklog. Не создавай отдельные файлы с повтором тех же фактов.",
   "- После coherent file change сохрани action `checkpoint` с `type=draft`, opened directory и `summary` до дальнейшей работы, ожидания, границы реплики/сессии, compaction или передачи. При немедленном завершении вместо draft вызывай `finish`: он сам делает handoff checkpoint и submit. Не сохраняй незавершённый или пустой checkpoint.",
+  "- Перед финалом вызови `bridge.actions.turnCheck`; dirty требует `checkpoint`/`pause`/`finish`. Это не filesystem autosave.",
   "- Перед блокирующим вопросом с полезными изменениями выполни action `pause` с exact папкой, `summary`, `questions` и `nextAction`; подготовительный вопрос не требует draft.",
   "- Комментарий, статус, checklist и control задачи являются отдельными user-decision flows. Примени exact reference и свежий proposal context (можно из `get_task_review_context`) и не публикуй, не применяй и не отклоняй proposal без действия пользователя в MCP App либо его явной команды. Accepted Run, вывод агента и inferred progress сами не разрешают immediate mutation.",
   "- Заверши Run action `finish` из exact папки с результатом, evidence, файлами, вопросами и `nextAction`. Для task scope оцени всю задачу и передай returned `taskOutcome`; он только рекомендует status proposal.",
@@ -212,6 +216,12 @@ export const AGENT_WORKSPACE_WORKLOG_FORMAT_MARKDOWN = [
 ].join("\n");
 const LEGACY_WORKLOG_FILE_NAME = "WORKLOG.md";
 const WORKLOG_FORMAT_CONTEXT_FILE_NAME = "worklog-format.md";
+const BENIGN_WORKSPACE_FILE_NAMES = new Set([
+  ".DS_Store",
+  "Thumbs.db",
+  "desktop.ini",
+]);
+const MAX_BENIGN_WORKSPACE_FILE_BYTES = 1024 * 1024;
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const PRODUCTION_ENCRYPTED_DATA_PLANE_ORIGIN = "https://e2ee.trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
@@ -1195,7 +1205,10 @@ const RUN_STORAGE_CONTINUATION_COMMANDS = new Set([
 ]);
 
 export const formatBridgeCommandError = (error, command = "") => {
-  if (error instanceof WorkspaceDirectoryRequiredError) {
+  if (
+    error instanceof WorkspaceDirectoryRequiredError
+    || error instanceof WorkspaceLocalRecoveryRequiredError
+  ) {
     return JSON.stringify(error);
   }
   if (
@@ -9789,13 +9802,26 @@ const preflightWorkspaceDirectory = async ({
         );
       }
 
-      if (await getGitStatus(
+      const localStatus = await getGitStatus(
         existingMetadata.workspaceDirectory,
         existingMetadata.objects || [],
-      )) {
-        throw new Error(
-          "Локальная папка содержит несохранённые изменения предыдущего Run. Bridge не будет перезаписывать их новым запуском.",
-        );
+      );
+      if (localStatus) {
+        // Новый MCP Run уже существует, но bridge ещё ничего не записал в его
+        // local root. Возвращаем bounded recovery envelope: host может открыть
+        // exact Run в отдельной папке и перенести только выбранную дельту, не
+        // перемещая и не очищая файлы завершённого Run за пользователя.
+        throw new WorkspaceLocalRecoveryRequiredError({
+          workspaceId,
+          sourceRunId: existingMetadata.runId,
+          targetRunId: requestedRunId,
+          sourceRunStatus: localRunState.status,
+          sourceDirectory: rootDirectory,
+          sourceWorkspaceDirectory: existingMetadata.workspaceDirectory,
+          suggestedDirectory: `${rootDirectory}-recovery-${String(requestedRunId || "new-run").slice(0, 8)}`,
+          lastSavedDraftHead: existingMetadata.draftHead || null,
+          changes: localStatus.split("\n"),
+        });
       }
     }
 
@@ -11437,21 +11463,11 @@ const getOptionValues = (options, key) => {
     .filter(Boolean);
 };
 
-const getChangedPaths = async (workspaceDirectory, knownObjects = []) => {
-  const gitStatus = await getGitStatus(workspaceDirectory, knownObjects);
-
-  if (!gitStatus) {
-    return [];
-  }
-
-  // `git status --short` начинает строку двухсимвольным статусом и пробелом.
-  // Для rename человеку полезен итоговый путь справа от ` -> `.
-  return gitStatus
-    .split("\n")
-    .map((line) => line.slice(3).trim())
-    .map((changedPath) => changedPath.split(" -> ").at(-1)?.trim() || changedPath)
-    .filter(Boolean);
-};
+const getChangedPaths = async (workspaceDirectory, knownObjects = []) => (
+  (await getGitStatusEntries(workspaceDirectory, knownObjects))
+    .map(({ filePath }) => filePath)
+    .filter(Boolean)
+);
 
 const getCandidateChangedPaths = async (metadata) => {
   const [committedResult, localPaths] = await Promise.all([
@@ -11963,18 +11979,51 @@ const checkpoint = async (options) => withRun(async ({
   process.stdout.write(`Checkpoint сохранён: ${checkpointPayload.id}.\n`);
 });
 
-export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
-  const result = await runGit(["status", "--short"], { cwd: workspaceDirectory });
-  // Первые два символа porcelain short-status — позиционные колонки index и
-  // worktree. Поэтому нельзя trim-ить весь stdout: у первой unstaged-строки
-  // ведущий пробел является данными, а его потеря затем съедает первую букву
-  // пути при line.slice(3). Убираем только завершающую пустую строку и CR от
-  // Windows-переноса, сохраняя каждую status-строку byte-for-byte по смыслу.
-  let statusLines = result.stdout
-    .split(/\r?\n/u)
-    .filter((line) => line.length > 0);
+const isBenignUntrackedWorkspaceFile = async (workspaceDirectory, entry) => {
+  if (entry.status !== "??" || !BENIGN_WORKSPACE_FILE_NAMES.has(path.basename(entry.filePath))) {
+    return false;
+  }
 
-  if (statusLines.includes(`?? ${LEGACY_WORKLOG_FILE_NAME}`)) {
+  try {
+    const fileStat = await fs.lstat(path.join(workspaceDirectory, entry.filePath));
+
+    // Имя Finder/Explorer само по себе не даёт права скрыть локальную дельту.
+    // Symlink, каталог, special file и аномально большой объект остаются dirty,
+    // поэтому одинаковый preflight безопасен и для plain, и для E2EE transport.
+    return fileStat.isFile()
+      && !fileStat.isSymbolicLink()
+      && fileStat.size <= MAX_BENIGN_WORKSPACE_FILE_BYTES;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+};
+
+const renderGitStatusEntry = ({ status: entryStatus, filePath }) => {
+  const visiblePath = /[\0\r\n]/u.test(filePath) ? JSON.stringify(filePath) : filePath;
+  return `${entryStatus} ${visiblePath}`;
+};
+
+const getGitStatusEntries = async (workspaceDirectory, knownObjects = []) => {
+  const result = await runGit([
+    "status",
+    "--porcelain=v1",
+    "-z",
+    "--untracked-files=all",
+    "--no-renames",
+  ], { cwd: workspaceDirectory });
+  // NUL-delimited porcelain сохраняет exact path даже для пробелов, кавычек и
+  // переводов строки. --no-renames оставляет одну запись на record, поэтому
+  // model-facing text можно строить отдельно, не используя его как parser.
+  let statusEntries = result.stdout
+    .split("\0")
+    .filter((record) => record.length > 0)
+    .map((record) => ({ status: record.slice(0, 2), filePath: record.slice(3) }));
+
+  const legacyWorklogEntry = statusEntries.find((entry) => (
+    entry.status === "??" && entry.filePath === LEGACY_WORKLOG_FILE_NAME
+  ));
+  if (legacyWorklogEntry) {
     const worklog = await inspectLegacyWorkspaceWorklog(workspaceDirectory);
 
     if (worklog.exists && worklog.isDefault) {
@@ -11982,12 +12031,14 @@ export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
       // Run dirty и запрещать безопасную retention-очистку. Как только агент
       // изменил шаблон или добавил запись worklog, обычный Git status снова
       // показывает содержательную дельту, а submit сохранит оба файла.
-      statusLines = statusLines.filter((line) => line !== `?? ${LEGACY_WORKLOG_FILE_NAME}`);
+      statusEntries = statusEntries.filter((entry) => entry !== legacyWorklogEntry);
     }
   }
-  const listedPaths = new Set(
-    statusLines.map((line) => line.slice(3).split(" -> ").at(-1)?.trim()).filter(Boolean),
+  const benignFlags = await Promise.all(
+    statusEntries.map((entry) => isBenignUntrackedWorkspaceFile(workspaceDirectory, entry)),
   );
+  statusEntries = statusEntries.filter((entry, index) => !benignFlags[index]);
+  const listedPaths = new Set(statusEntries.map(({ filePath }) => filePath));
 
   // Hydrated object-файлы помечены skip-worktree, чтобы Git не показывал
   // обычные рабочие bytes как отличие от pointer в index. Для status/handoff
@@ -12006,18 +12057,23 @@ export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
         || inspection.sha256 !== object.sha256;
 
       if (changed) {
-        statusLines.push(` M ${object.filePath}`);
+        statusEntries.push({ status: " M", filePath: object.filePath });
       }
     } catch (error) {
       if (error.code === "ENOENT") {
-        statusLines.push(` D ${object.filePath}`);
+        statusEntries.push({ status: " D", filePath: object.filePath });
       } else {
         throw error;
       }
     }
   }
 
-  return statusLines.join("\n");
+  return statusEntries;
+};
+
+export const getGitStatus = async (workspaceDirectory, knownObjects = []) => {
+  const entries = await getGitStatusEntries(workspaceDirectory, knownObjects);
+  return entries.map(renderGitStatusEntry).join("\n");
 };
 
 const status = async () => withRun(async ({ metadata }) => {
@@ -14933,13 +14989,6 @@ const assertSafeRegisteredRunRoot = (root, registeredRoots) => {
   }
 };
 
-const BENIGN_WORKSPACE_ROOT_FILE_NAMES = new Set([
-  ".DS_Store",
-  "Thumbs.db",
-  "desktop.ini",
-]);
-const MAX_BENIGN_WORKSPACE_ROOT_FILE_BYTES = 1024 * 1024;
-
 const hasUnmanagedWorkspaceRootEntries = async (rootDirectory) => {
   const rootEntries = await fs.readdir(rootDirectory, { withFileTypes: true });
 
@@ -14948,7 +14997,7 @@ const hasUnmanagedWorkspaceRootEntries = async (rootDirectory) => {
       continue;
     }
 
-    if (!BENIGN_WORKSPACE_ROOT_FILE_NAMES.has(entry.name)) {
+    if (!BENIGN_WORKSPACE_FILE_NAMES.has(entry.name)) {
       return true;
     }
 
@@ -14960,7 +15009,7 @@ const hasUnmanagedWorkspaceRootEntries = async (rootDirectory) => {
     if (
       !entryStat.isFile()
       || entryStat.isSymbolicLink()
-      || entryStat.size > MAX_BENIGN_WORKSPACE_ROOT_FILE_BYTES
+      || entryStat.size > MAX_BENIGN_WORKSPACE_FILE_BYTES
     ) {
       return true;
     }

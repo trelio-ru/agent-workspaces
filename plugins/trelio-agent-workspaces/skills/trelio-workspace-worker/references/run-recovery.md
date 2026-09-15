@@ -27,6 +27,23 @@ exact managed working-folder binding. Эта автоматизация не в�
 и не удаляй roots или registry. Обычный preflight проверит live Run и Git до
 записи. Ошибка preflight не разрешает обход или отмену Run.
 
+## Локальная дельта завершённого Run
+
+`TRELIO_WORKSPACE_LOCAL_RECOVERY_REQUIRED` означает, что persistent root хранит
+изменения уже terminal Run и не может быть заменён целевым Run. Используй exact
+`details.suggestedDirectory` как `parameters.directory` повторного `open` с теми
+же `workspaceId`, `runId` и runtime arguments. Source root и перечисленные в
+`details.changes` файлы не перемещай и не очищай автоматически.
+
+После успешного открытия сравни base/accepted целевого Run с bounded source
+дельтой, перенеси только нужные пользовательские материалы, выполни проверки и
+сразу сохрани новый root через `checkpoint`, `pause` либо `finish`. Системный
+untracked `.DS_Store`, `Thumbs.db` или `desktop.ini` размером не больше 1 МиБ
+bridge исключает сам; tracked-файл, каталог, symlink и большой одноимённый файл
+остаются dirty. Этот local recovery общий для plain и encrypted компаний:
+plaintext fallback не появляется, а последующее сохранение использует штатный
+transport целевого Run.
+
 <a id="blockers-restore-concurrency-and-cleanup"></a>
 
 ## Блокировки, восстановление, конкуренция и очистка

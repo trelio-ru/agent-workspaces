@@ -14,8 +14,11 @@ import {
 } from "../scripts/trelio-workspace.mjs";
 import {
   WorkspaceDirectoryRequiredError,
+  WorkspaceLocalRecoveryRequiredError,
   WORKSPACE_DIRECTORY_REQUIRED,
+  WORKSPACE_LOCAL_RECOVERY_REQUIRED,
   parseWorkspaceDirectoryRequiredError,
+  parseWorkspaceLocalRecoveryRequiredError,
 } from "../scripts/trelio-workspace-directory.mjs";
 import {
   buildTrelioWorkspaceActionInvocation,
@@ -169,6 +172,50 @@ test("directory recovery serializes a bounded exact envelope for CLI and MCP", (
     mutate(copy);
     assert.equal(parseWorkspaceDirectoryRequiredError(`Ошибка: ${JSON.stringify(copy)}`, workspaceId), null);
   }
+});
+
+test("local change recovery preserves bounded source evidence and an exact safe next root", async () => {
+  const sourceDirectory = path.resolve(os.tmpdir(), "source terminal run");
+  const suggestedDirectory = path.resolve(os.tmpdir(), "target recovery run");
+  const changes = Array.from({ length: 250 }, (_, index) => `?? artifacts/file-${index}.md`);
+  const error = new WorkspaceLocalRecoveryRequiredError({
+    workspaceId,
+    sourceRunId: firstRun,
+    targetRunId: newRun,
+    sourceRunStatus: "accepted",
+    sourceDirectory,
+    sourceWorkspaceDirectory: path.join(sourceDirectory, "workspace"),
+    suggestedDirectory,
+    lastSavedDraftHead: "a".repeat(40),
+    changes,
+  });
+  assert.equal(error.details.changes.length, 200);
+  assert.equal(error.details.omittedChangeCount, 50);
+  assert.equal(JSON.stringify(error).includes("privateMetadata"), false);
+  const stderr = `Ошибка: ${formatBridgeCommandError(error, "open")}\n`;
+  assert.deepEqual(
+    parseWorkspaceLocalRecoveryRequiredError(stderr, workspaceId, newRun)?.toJSON(),
+    error.toJSON(),
+  );
+  assert.equal(parseWorkspaceLocalRecoveryRequiredError(stderr, workspaceId, secondRun), null);
+
+  let calls = 0;
+  await assert.rejects(handleTrelioWorkspaceActionOperation(origin, {
+    schemaVersion: 1,
+    operation: "open",
+    parameters: { workspaceId, runId: ` ${newRun} ` },
+  }, {
+    runBridge: async () => {
+      calls += 1;
+      throw Object.assign(new Error("child failed"), { stderr });
+    },
+  }), (actual) => {
+    assert.equal(actual.code, WORKSPACE_LOCAL_RECOVERY_REQUIRED);
+    assert.deepEqual(actual.details, error.details);
+    assert.equal(Object.hasOwn(actual.details, "stderr"), false);
+    return true;
+  });
+  assert.equal(calls, 1, "recovery must not move files or retry open automatically");
 });
 
 test("MCP preserves directory recovery once and accepts its exact directory field", async (t) => {
