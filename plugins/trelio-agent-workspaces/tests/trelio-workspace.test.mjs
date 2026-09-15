@@ -2914,6 +2914,17 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
     firstRunStatus = "accepted";
     acceptedHead = secondExport.head;
     secondRunStatus = "running";
+    const firstMetadataPath = path.join(
+      homeDirectory,
+      "Trelio Workspaces",
+      workspaceId,
+      ".trelio-run.json",
+    );
+    const firstMetadata = JSON.parse(await readFile(firstMetadataPath, "utf8"));
+    await writeFile(firstMetadataPath, JSON.stringify({
+      ...firstMetadata,
+      automaticWorklogPath: `worklog/2026-09-14-run-${runId}.md`,
+    }));
     const eventOffset = events.length;
     const secondOpen = await execFileAsync(process.execPath, command, executionOptions);
     assert.equal(secondOpen.stdout.trim(), expectedWorkspaceDirectory);
@@ -2936,6 +2947,11 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
     ));
     assert.equal(metadata.runId, secondRunId);
     assert.equal(metadata.baseHead, secondExport.head);
+    assert.equal(
+      Object.hasOwn(metadata, "automaticWorklogPath"),
+      false,
+      "a new Run in the persistent root must not inherit the previous Run worklog path",
+    );
     assert.ok(Number.isFinite(Date.parse(metadata.lastUsedAt)));
 
     secondRunStatus = "accepted";

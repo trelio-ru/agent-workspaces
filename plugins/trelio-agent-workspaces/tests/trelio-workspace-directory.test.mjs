@@ -89,6 +89,30 @@ test("directory recovery selects only a unique containing root, never an onboard
   await assert.rejects(f.resolve({ startDirectory: path.join(f.root, "missing") }), { code: WORKSPACE_DIRECTORY_REQUIRED });
 });
 
+test("directory recovery selects the canonical root of an exact managed working-folder binding", async (t) => {
+  const f = await fixture(t);
+  await fs.writeFile(path.join(f.root, "AGENTS.md"), [
+    "<!-- trelio-agent-workspaces:start -->",
+    "## Trelio",
+    "",
+    "Папка привязана к тестовой компании.",
+    "<!-- trelio-agent-workspaces:end -->",
+    "",
+  ].join("\n"));
+  const canonical = await f.add(path.join("workspaces", workspaceId), newRun);
+
+  assert.equal(
+    await f.resolve({ runId: null, startDirectory: f.root }),
+    canonical,
+    "a new Run should not need one failed open to discover its canonical managed root",
+  );
+  assert.equal(
+    await f.resolve({ runId: firstRun, startDirectory: f.root }),
+    f.first,
+    "an exact existing Run remains stronger than the canonical new-Run root",
+  );
+});
+
 test("directory recovery preserves duplicate-Run and nested-root ambiguity", async (t) => {
   const f = await fixture(t);
   const duplicate = await f.add("same run", firstRun);

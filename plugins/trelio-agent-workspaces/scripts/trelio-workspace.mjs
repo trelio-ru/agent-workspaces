@@ -9554,6 +9554,31 @@ export const resolveRegisteredWorkspaceRootDirectory = async (
       }
     }
     if (currentCandidates.length === 1) return currentCandidates[0].rootDirectory;
+
+    // A managed working-folder binding defines one canonical persistent path
+    // for each Workspace. Recovery copies may remain registered deliberately,
+    // but opening a new Run from that exact binding must reuse the canonical
+    // `<binding>/workspaces/<workspace-id>` instead of forcing the model to
+    // repeat `open` with a path it can only learn from an error. Exact Run
+    // continuation above remains stronger: duplicate copies of the same draft
+    // are still ambiguous and never get resolved by this convenience path.
+    if (exactRunCandidates.length === 0) {
+      const workingFolderRoot = await findTrelioWorkingFolderRoot(startDirectory);
+      const canonicalRoot = workingFolderRoot
+        ? path.join(workingFolderRoot, WORKING_FOLDER_WORKSPACES_DIRECTORY_NAME, workspaceId)
+        : null;
+      const realCanonicalRoot = canonicalRoot
+        ? await fs.realpath(canonicalRoot).catch(() => null)
+        : null;
+      if (realCanonicalRoot) {
+        const canonicalCandidates = [];
+        for (const candidate of selectedCandidates) {
+          const realRoot = await fs.realpath(candidate.rootDirectory).catch(() => null);
+          if (realRoot === realCanonicalRoot) canonicalCandidates.push(candidate);
+        }
+        if (canonicalCandidates.length === 1) return canonicalCandidates[0].rootDirectory;
+      }
+    }
     throw new WorkspaceDirectoryRequiredError(
       workspaceId,
       selectedCandidates.map(({ rootDirectory, runId: localRunId }) => ({
@@ -10274,6 +10299,13 @@ const openWorkspaceLocked = async (origin, options, workspaceId) => {
       terminalStatus: undefined,
       terminalAt: undefined,
       cleanupEligibleAfterDays: undefined,
+      // automaticWorklogPath is scoped to one exact Run because its filename
+      // includes that Run UUID. Reusing a persistent Workspace root for a new
+      // Run must not carry the previous path forward; continuation of the same
+      // Run keeps it so a crashed finish remains idempotent.
+      automaticWorklogPath: continuingSameRun
+        ? existingMetadata.automaticWorklogPath
+        : undefined,
       claimedAt: now,
       lastUsedAt: now,
     };

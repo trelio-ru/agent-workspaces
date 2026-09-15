@@ -333,8 +333,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   скрывать требование restart после удаления файлов загруженного плагина.
 - Неоднозначные зарегистрированные roots обрабатываются по
   [контракту выбора папки](docs/agent-workspace-runtime.md#выбор-локальной-папки):
-  exact Run и однозначный текущий root сохраняют приоритет; structured recovery
-  использует `parameters.directory` и не отменяет live/Git preflight.
+  exact Run и однозначный текущий root сохраняют приоритет, а новый Run из
+  exact managed binding может выбрать только его единственный канонический
+  `<binding>/workspaces/<workspace-id>`; structured recovery использует
+  `parameters.directory` и не отменяет live/Git preflight.
 - Agent Secret, TOTP, browser-fill и recovery/setup credential передаются
   только exact executable через scoped one-use delivery. Стабильный
   installation-managed API key/client secret может повторно использоваться

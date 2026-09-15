@@ -10144,7 +10144,7 @@ export const TRELIO_LOCAL_WORKSPACE_TOOL = {
 
 export const TRELIO_WORKSPACE_ACTION_TOOL = {
   name: "continue_trelio_workspace_action",
-  description: "Run one structured Trelio action through the bundled bridge.",
+  description: "Run one exact server-returned Trelio bridge action; keep operation and parameters unchanged.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

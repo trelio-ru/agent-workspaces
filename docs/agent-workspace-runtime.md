@@ -293,6 +293,14 @@ Control paths не раскрываются, а backend не получает fi
 сравниваются через realpath. Root-symlink и записи с чужими Workspace/origin,
 повреждёнными metadata либо невалидным Run не становятся кандидатами.
 
+Для нового Run exact managed working-folder binding является отдельным
+доказательством канонического persistent root: если среди зарегистрированных
+кандидатов существует ровно один
+`<binding>/workspaces/<workspace-id>`, bridge выбирает его без предварительной
+ошибки. Exact Run и уникальный root, содержащий текущий `cwd`, сохраняют
+приоритет. Это правило не выбирает recovery-копию, duplicate exact Run или
+каталог из произвольной непривязанной папки.
+
 Оставшаяся неоднозначность до start/claim возвращает
 `TRELIO_WORKSPACE_DIRECTORY_REQUIRED`. MCP сохраняет этот код и
 `details.workspaceId`, `requiredAction=select_directory`,

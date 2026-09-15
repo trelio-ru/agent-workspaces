@@ -16,6 +16,12 @@
 `parameters.directory`. Не используй `parameters.dir`: `--dir` – CLI-флаг.
 Сохрани Workspace/Run/runtime arguments и рабочую папку клиента.
 
+Для нового Run bridge сам переиспользует ровно один канонический root
+`<binding>/workspaces/<workspace-id>`, когда `workingDirectory` находится в
+exact managed working-folder binding. Эта автоматизация не выбирает recovery-
+копию или duplicate exact Run. Если ошибка всё же возвращена, безопасного
+однозначного канонического выбора нет – используй правила ниже.
+
 Используй уже подтверждённую папку текущей работы; при нескольких равноправных
 копиях уточни выбор. Не выбирай первую по порядку, не придумывай recovery-папку
 и не удаляй roots или registry. Обычный preflight проверит live Run и Git до
