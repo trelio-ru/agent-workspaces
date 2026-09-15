@@ -18,6 +18,7 @@ import {
 
 const SOURCE_DIRECTORY = fileURLToPath(new URL("./native-secret-browser/", import.meta.url));
 const MAX_PROTOCOL_BYTES = 8 * 1024 * 1024;
+const MACOS_COMMAND_LINE_TOOLS_DIRECTORY = "/Library/Developer/CommandLineTools";
 const NATIVE_UNAVAILABLE = new Set([
   "platform_unsupported", "client_unsupported", "helper_unavailable",
   "access_required", "application_unavailable", "accessibility_unavailable",
@@ -136,6 +137,25 @@ const runCompiler = (executable, args, options) => new Promise((resolve, reject)
   });
 });
 
+const compileMacOsNativeSecretBrowser = async ({ sourceFile, temporary, env, cwd }) => {
+  try {
+    await runCompiler("/usr/bin/swiftc", ["-O", sourceFile, "-o", temporary], { env, cwd });
+    return;
+  } catch {
+    // `/usr/bin/swiftc` follows the active Xcode selected by xcode-select and
+    // refuses to run while a newly installed full Xcode waits for its licence.
+    // An independently installed Command Line Tools toolchain is still a valid
+    // system compiler. Use only its fixed Apple-owned paths and explicit SDK;
+    // never fall back to PATH, Homebrew or a downloaded executable.
+    const compiler = path.join(MACOS_COMMAND_LINE_TOOLS_DIRECTORY, "usr/bin/swiftc");
+    const sdk = path.join(MACOS_COMMAND_LINE_TOOLS_DIRECTORY, "SDKs/MacOSX.sdk");
+    await runCompiler(compiler, ["-O", sourceFile, "-o", temporary], {
+      env: { ...env, SDKROOT: sdk },
+      cwd,
+    });
+  }
+};
+
 const regularPrivateFile = async (file, platform) => {
   const stat = await fs.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || (platform !== "win32" && (stat.mode & 0o077))) {
@@ -184,7 +204,12 @@ export const buildNativeSecretBrowserHelper = async ({
     const env = safeNativeEnvironment(platform);
     const sourceFile = path.join(SOURCE_DIRECTORY, sourceName);
     if (platform === "darwin") {
-      await runCompiler("/usr/bin/swiftc", ["-O", sourceFile, "-o", temporary], { env, cwd: buildDirectory });
+      await compileMacOsNativeSecretBrowser({
+        sourceFile,
+        temporary,
+        env,
+        cwd: buildDirectory,
+      });
     } else {
       const framework = path.win32.join(env.SystemRoot, "Microsoft.NET", "Framework64", "v4.0.30319");
       const compiler = path.win32.join(framework, "csc.exe");

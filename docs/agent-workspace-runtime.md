@@ -119,6 +119,11 @@ mismatch завершается обновлением вместо fallback к 
 контекста или смены сценария. История правил запрашивается отдельно через
 `get_agent_instructions(includeHistory=true)`.
 
+Encrypted local `fetch`, совместимый `get_task` и native exact reads применяют
+тот же schema-v3 envelope. Если ответ вернул `nextReadArguments`, следующий
+exact read той же области передаёт их только при сохранённых полных слоях;
+изменённый key и чтение после compaction снова возвращают Markdown целиком.
+
 После результата `get_task_review_context` объединяет свежие core/дедлайн,
 видимые controls/checklists и только выбранные `proposalKinds`. Общие коллекции
 не дублируются внутри proposal contexts; optimistic revisions и authoring

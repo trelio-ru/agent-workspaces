@@ -56,6 +56,7 @@ test("typical task Run plugin context stays inside explicit regression ceilings"
     const measurement = layers[name] ?? scenarios[name] ?? {
       representativeLocalProposalResult: report.localResponses.proposalRender.compact,
       representativeLocalAttachmentResult: report.localResponses.attachmentDownload.localFile,
+      representativeReusedInstructionResult: report.localResponses.instructionReuse.warm,
     }[name];
     assert.ok(measurement.tokensO200kBase <= limit,
       `${name} grew to ${measurement.tokensO200kBase} o200k_base tokens (ceiling: ${limit})`);
@@ -159,6 +160,7 @@ test("local initialize, visible schemas and actual compact results have regressi
   }
   const attachment = report.localResponses.attachmentDownload;
   const doctor = report.localResponses.remoteDoctor;
+  const instructionReuse = report.localResponses.instructionReuse;
   assert.equal(doctor.tools, 12);
   assert.ok(doctor.catalog.tokensO200kBase < 1200);
   assert.ok(doctor.selected.tokensO200kBase < 2200);
@@ -170,6 +172,13 @@ test("local initialize, visible schemas and actual compact results have regressi
   assert.ok(attachment.localFile.tokensO200kBase <= PLUGIN_CONTEXT_TOKEN_LIMITS.representativeLocalAttachmentResult);
   assert.ok(attachment.duplicatedBase64.tokensO200kBase > 2_000_000,
     "The binary fixture must count its base64 text; it cannot silently become an empty attachment");
+  assert.equal(instructionReuse.layerCount, 2);
+  assert.ok(instructionReuse.warm.bytesUtf8
+    <= PLUGIN_CONTEXT_BUDGET_LIMITS.representativeReusedInstructionResultBytes);
+  assert.ok(instructionReuse.warm.tokensO200kBase
+    <= PLUGIN_CONTEXT_TOKEN_LIMITS.representativeReusedInstructionResult);
+  assert.ok(instructionReuse.warm.tokensO200kBase < instructionReuse.cold.tokensO200kBase * 0.12,
+    "same-context keys must remove complete unchanged instruction Markdown from the repeated exact read");
   for (const conditional of ["run-recovery.md", "workspace-relations.md"]) {
     assert.ok(!TASK_RUN_REQUIRED_SKILL_PATHS.some((file) => file.endsWith(conditional)));
   }

@@ -199,6 +199,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   полным discussion history: без authoritative `commentsPagination.total`
   compact `deferredSections.comments.itemCount` обязан быть `null`, а не длиной
   этого subset.
+- Encrypted local exact `fetch`, legacy `get_task` и native exact reads,
+  возвращающие `effectiveInstructions.nextReadArguments`, используют те же
+  same-context layer keys. Полный Markdown возвращается при первом чтении,
+  изменении revision и после compaction; один hash без доступных model bytes
+  не считается authority.
 - Новый task control по умолчанию `shared`, когда он фиксирует объективную
   контрольную точку задачи; `personal` допустим только для явно частной проверки.
   Update сохраняет текущую visibility без прямой команды изменить аудиторию, а

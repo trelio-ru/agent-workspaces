@@ -2204,7 +2204,8 @@ test("local mirror includes first-class company documents in search, list and fe
   assert.equal(listed.total, 1);
   const fetched = fetchMirrorResult(mirror, registry.id);
   assert.equal(fetched.document.payload.rows[0].rowKey, "Север");
-  assert.equal(fetched.effectiveInstructions.agentInstructionsSnapshot, null);
+  assert.equal(fetched.effectiveInstructions.status, "loaded");
+  assert.deepEqual(fetched.effectiveInstructions.layers, []);
 });
 
 test("archived contacts and registry rows require the same explicit native flags locally", () => {
@@ -2349,7 +2350,8 @@ test("native workspace reads preserve project links and unambiguous result ids",
 
   assert.equal(listed.workspaces.length, 1);
   assert.equal(fetched.workspace.title, "Архитектура локального индекса");
-  assert.equal(fetched.effectiveInstructions.agentInstructionsSnapshot, null);
+  assert.equal(fetched.effectiveInstructions.status, "loaded");
+  assert.deepEqual(fetched.effectiveInstructions.layers, []);
   assert.match(fileSearch.results[0].id, /^workspace-file:/u);
   assert.equal(
     fetchMirrorResult(mirror, fileSearch.results[0].id).file.path,
@@ -3188,6 +3190,38 @@ test("encrypted same-context task reads reuse complete authority and reload chan
   assert.equal(changed.effectiveInstructions.layers[0].markdown, "Новое полное правило.\n");
   const afterCompaction = handleNativeLocalContextRead(fixture, "get_task", target);
   assert.deepEqual(afterCompaction.effectiveInstructions.layers, changed.effectiveInstructions.layers);
+
+  fixture.instructions.company.company = { revisionId: "company-r3", version: 3 };
+  fixture.instructions.company.compiledMarkdown = "Большое правило для Workspace. ".repeat(1_000);
+  const workspaceId = "44444444-4444-4444-8444-444444444444";
+  const workspaceCold = fetchMirrorResult(fixture, `workspace:${workspaceId}`);
+  const workspaceWarm = fetchMirrorResult(
+    fixture,
+    `workspace:${workspaceId}`,
+    workspaceCold.effectiveInstructions.nextReadArguments.knownInstructionLayerKeys,
+  );
+  assert.deepEqual(workspaceWarm.effectiveInstructions.layers, []);
+  assert.deepEqual(
+    workspaceWarm.effectiveInstructions.reusedLayerKeys,
+    workspaceCold.effectiveInstructions.orderedLayerKeys,
+  );
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(workspaceWarm.effectiveInstructions))
+      < Buffer.byteLength(JSON.stringify(workspaceCold.effectiveInstructions)) / 4,
+  );
+
+  const taskUrl = "https://trelio.ru/acme/mobile/tasks/17/";
+  const urlCold = fetchMirrorResult(fixture, taskUrl);
+  const urlWarm = fetchMirrorResult(
+    fixture,
+    taskUrl,
+    urlCold.effectiveInstructions.nextReadArguments.knownInstructionLayerKeys,
+  );
+  assert.deepEqual(urlWarm.effectiveInstructions.layers, []);
+  assert.deepEqual(
+    urlWarm.effectiveInstructions.reusedLayerKeys,
+    urlCold.effectiveInstructions.orderedLayerKeys,
+  );
 });
 
 

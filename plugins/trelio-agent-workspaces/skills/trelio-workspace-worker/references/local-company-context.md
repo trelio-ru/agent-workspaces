@@ -67,6 +67,14 @@ set result; ищутся active items/manual comments/files, не system events.
 правила/профиль и разрешает точный старый slug до шифрования/переименования,
 возвращая только текущий канонический.
 
+Если exact local `fetch`, `get_task` или `native_read` вернул
+`effectiveInstructions.nextReadArguments`, передай эти поля в следующее exact
+local чтение той же области только пока полный Markdown соответствующих layers
+остаётся в текущем model context. Разреши `orderedLayerKeys` через новые
+`layers` и `reusedLayerKeys`. После compaction, утраты текста или сомнения
+опусти known keys: один hash не заменяет authority, а изменённый слой host
+вернёт полностью.
+
 Результат поиска принятого Workspace содержит точную native-цель
 `prepare_agent_workspace_read`; её чтение остаётся read-only.
 Для записи task/named Workspace используются обычные

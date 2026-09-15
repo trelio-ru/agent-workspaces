@@ -4343,14 +4343,6 @@ export const listCompanyContextMirror = (
   };
 };
 
-const selectTaskInstructions = (mirror, task) => ({
-  agentInstructionsSnapshot:
-    mirror.instructions?.projects?.find((entry) => entry.projectId === task.projectId)?.snapshot
-    ?? mirror.instructions?.company
-    ?? null,
-  userProfileSnapshot: mirror.instructions?.userProfile ?? null,
-});
-
 const buildLocalTaskProposalProvider = (mirror, task) => ({
   automatic: true,
   provider: "local_company_context",
@@ -4364,7 +4356,7 @@ const buildLocalTaskProposalProvider = (mirror, task) => ({
   },
 });
 
-const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
+const getTaskFromMirror = (mirror, { projectSlug, taskNumber, knownInstructionLayerKeys = [] }) => {
   const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
   const task = (mirror.tasks ?? []).find((candidate) => (
     matchesProjectScope(candidate) && candidate.number === taskNumber
@@ -4384,7 +4376,11 @@ const getTaskFromMirror = (mirror, { projectSlug, taskNumber }) => {
     // ordinary native task result stays byte-for-byte free of local routing,
     // while the agent can skip a doomed native proposal render immediately.
     proposalProvider: buildLocalTaskProposalProvider(mirror, task),
-    effectiveInstructions: selectTaskInstructions(mirror, task),
+    effectiveInstructions: buildLocalScopedEffectiveInstructions(
+      mirror,
+      { id: task.projectId, slug: task.projectSlug, name: task.payload?.project?.name ?? null },
+      knownInstructionLayerKeys,
+    ),
   };
 };
 
@@ -4500,20 +4496,20 @@ const buildLocalInstructionLayer = ({ kind, scope, revision, markdown }) => {
 };
 
 const buildLocalTaskInstructionSnapshot = (mirror, record) => {
-  const project = (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
-    ?? record.payload?.project
-    ?? { id: record.projectId, slug: record.projectSlug, name: null };
+  const project = record?.projectId
+    ? (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
+      ?? record.payload?.project
+      ?? { id: record.projectId, slug: record.projectSlug, name: null }
+    : null;
   const scope = {
     company: {
       id: mirror.company.id,
       slug: mirror.company.slug,
       name: mirror.company.name,
     },
-    project: {
-      id: project.id,
-      slug: project.slug,
-      name: project.name,
-    },
+    project: project
+      ? { id: project.id, slug: project.slug, name: project.name }
+      : null,
   };
   if (!mirror.instructions) {
     return {
@@ -4525,15 +4521,18 @@ const buildLocalTaskInstructionSnapshot = (mirror, record) => {
       layers: [],
     };
   }
-  const workingRules = mirror.instructions.projects?.find((candidate) => (
-    candidate.projectId === record.projectId
-  ))?.snapshot ?? mirror.instructions.company;
+  const workingRules = project
+    ? mirror.instructions.projects?.find((candidate) => candidate.projectId === project.id)?.snapshot
+      ?? mirror.instructions.company
+    : mirror.instructions.company;
   const personalProfile = mirror.instructions.userProfile;
   const layers = [];
   if (workingRules?.compiledMarkdown) {
     layers.push(buildLocalInstructionLayer({
-      kind: "project_rules",
-      scope: { type: "project", companyId: mirror.company.id, projectId: project.id },
+      kind: project ? "project_rules" : "company_rules",
+      scope: project
+        ? { type: "project", companyId: mirror.company.id, projectId: project.id }
+        : { type: "company", companyId: mirror.company.id },
       revision: {
         id: workingRules.project?.revisionId
           ?? workingRules.company?.revisionId
@@ -4570,13 +4569,55 @@ const buildLocalTaskInstructionSnapshot = (mirror, record) => {
       effectiveRevisionKey: sha256LocalInstruction(JSON.stringify({
         schemaVersion: 3,
         companyId: mirror.company.id,
-        projectId: project.id,
+        projectId: project?.id ?? null,
         memberId: mirror.viewer.memberId,
         orderedLayerKeys,
       })),
       orderedLayerKeys,
     },
     layers,
+  };
+};
+
+const buildLocalScopedEffectiveInstructions = (
+  mirror,
+  project,
+  knownInstructionLayerKeys = [],
+) => {
+  const snapshot = buildLocalTaskInstructionSnapshot(mirror, {
+    projectId: project?.id ?? null,
+    projectSlug: project?.slug ?? null,
+    payload: { project },
+  });
+  if (snapshot.reference.status !== "loaded") {
+    return {
+      schemaVersion: 3,
+      ...snapshot.reference,
+      instruction: "Authorize mcp:workspaces:read before substantive work so company, project and personal agent instructions can be loaded.",
+      layers: [],
+      reusedLayerKeys: [],
+    };
+  }
+  const knownKeys = new Set(
+    Array.isArray(knownInstructionLayerKeys) ? knownInstructionLayerKeys : [],
+  );
+  // A key only suppresses Markdown that the caller explicitly says is still
+  // present in the current model context. Unknown and changed keys are ignored,
+  // so a revision change or a read after compaction naturally restores the
+  // complete authoritative layer instead of trusting a hash by itself.
+  const reusedLayerKeys = snapshot.layers
+    .map((layer) => layer.key)
+    .filter((key) => knownKeys.has(key));
+  return {
+    schemaVersion: 3,
+    status: "loaded",
+    authority: "Apply orderedLayerKeys to this exact read using complete layers from this response and same-context reusedLayerKeys. Inside a prepared Run, its pinned instructions remain authoritative.",
+    scope: snapshot.reference.scope,
+    effectiveRevisionKey: snapshot.reference.effectiveRevisionKey,
+    orderedLayerKeys: snapshot.reference.orderedLayerKeys,
+    layers: snapshot.layers.filter((layer) => !knownKeys.has(layer.key)),
+    reusedLayerKeys,
+    nextReadArguments: { knownInstructionLayerKeys: snapshot.reference.orderedLayerKeys },
   };
 };
 
@@ -5403,7 +5444,12 @@ const getRegularWorkFromMirror = (mirror, rawInput) => {
   return document.payload;
 };
 
-const getDomainDocumentFromMirror = (mirror, type, predicate) => {
+const getDomainDocumentFromMirror = (
+  mirror,
+  type,
+  predicate,
+  knownInstructionLayerKeys = [],
+) => {
   const document = (mirror.contextDocuments ?? []).find((candidate) => (
     candidate.type === type && predicate(candidate)
   ));
@@ -5413,7 +5459,11 @@ const getDomainDocumentFromMirror = (mirror, type, predicate) => {
       "The requested object is absent from the current ACL-filtered local company generation.",
     );
   }
-  return fetchMirrorResult(mirror, `context:${document.type}:${document.id}`);
+  return fetchMirrorResult(
+    mirror,
+    `context:${document.type}:${document.id}`,
+    knownInstructionLayerKeys,
+  );
 };
 
 const getRegistryFromMirror = (mirror, rawInput) => {
@@ -5421,13 +5471,18 @@ const getRegistryFromMirror = (mirror, rawInput) => {
     ? rawInput
     : {};
   const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, input.projectSlug || null);
-  const result = getDomainDocumentFromMirror(mirror, "registry", (document) => (
-    matchesProjectScope(document)
-    && (
-      document.payload?.registry?.slug === input.registrySlug
-      || document.payload?.registry?.slugAliases?.includes?.(input.registrySlug)
-    )
-  ));
+  const result = getDomainDocumentFromMirror(
+    mirror,
+    "registry",
+    (document) => (
+      matchesProjectScope(document)
+      && (
+        document.payload?.registry?.slug === input.registrySlug
+        || document.payload?.registry?.slugAliases?.includes?.(input.registrySlug)
+      )
+    ),
+    input.knownInstructionLayerKeys,
+  );
   const payload = result.document.payload ?? {};
   const columns = Array.isArray(payload.registry?.columns) ? payload.registry.columns : [];
   const columnsByKey = new Map(columns.map((column) => [String(column?.key || ""), column]));
@@ -5570,7 +5625,9 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
       input.limit,
     );
   }
-  if (nativeTool === "fetch") return fetchMirrorResult(mirror, input.id);
+  if (nativeTool === "fetch") {
+    return fetchMirrorResult(mirror, input.id, input.knownInstructionLayerKeys);
+  }
   if (nativeTool === "list_projects") {
     return listCompanyContextMirror(mirror, "projects", 0, 100);
   }
@@ -5589,19 +5646,35 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
     return buildLocalExactTaskRead(mirror, input.tasks, input.knownInstructionLayerKeys);
   }
   if (nativeTool === "list_workspaces") return listWorkspacesFromMirror(mirror, input);
-  if (nativeTool === "get_workspace") return fetchMirrorResult(mirror, `workspace:${input.workspaceId}`);
+  if (nativeTool === "get_workspace") {
+    return fetchMirrorResult(
+      mirror,
+      `workspace:${input.workspaceId}`,
+      input.knownInstructionLayerKeys,
+    );
+  }
   if (nativeTool === "list_knowledge_base_pages") {
     return listDomainDocumentsFromMirror(mirror, "knowledge_page", input);
   }
   if (nativeTool === "get_knowledge_base_page") {
-    return getDomainDocumentFromMirror(mirror, "knowledge_page", (document) => (
-      document.payload?.page?.slug === input.pageSlug
-      || document.payload?.page?.slugAliases?.includes?.(input.pageSlug)
-    ));
+    return getDomainDocumentFromMirror(
+      mirror,
+      "knowledge_page",
+      (document) => (
+        document.payload?.page?.slug === input.pageSlug
+        || document.payload?.page?.slugAliases?.includes?.(input.pageSlug)
+      ),
+      input.knownInstructionLayerKeys,
+    );
   }
   if (nativeTool === "list_contacts") return listDomainDocumentsFromMirror(mirror, "contact", input);
   if (nativeTool === "get_contact") {
-    return getDomainDocumentFromMirror(mirror, "contact", (document) => document.id === input.contactId);
+    return getDomainDocumentFromMirror(
+      mirror,
+      "contact",
+      (document) => document.id === input.contactId,
+      input.knownInstructionLayerKeys,
+    );
   }
   if (nativeTool === "list_registries") return listDomainDocumentsFromMirror(mirror, "registry", input);
   if (nativeTool === "get_registry") return getRegistryFromMirror(mirror, input);
@@ -5609,7 +5682,12 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
   if (nativeTool === "get_regular_work") return getRegularWorkFromMirror(mirror, input);
   if (nativeTool === "search_meetings") return listDomainDocumentsFromMirror(mirror, "meeting", input);
   if (nativeTool === "get_meeting") {
-    return getDomainDocumentFromMirror(mirror, "meeting", (document) => document.id === input.meetingId);
+    return getDomainDocumentFromMirror(
+      mirror,
+      "meeting",
+      (document) => document.id === input.meetingId,
+      input.knownInstructionLayerKeys,
+    );
   }
   if (nativeTool === "get_agent_workspace_file") {
     return getWorkspaceFileFromMirror(mirror, input);
@@ -5726,54 +5804,77 @@ const fetchMirrorProject = (mirror, companySlug, projectSlug) => {
   return { schemaVersion: 1, provider: "local_company_context", project };
 };
 
-const fetchMirrorRegistry = (mirror, { companySlug, projectSlug, registrySlug }) => {
+const fetchMirrorRegistry = (
+  mirror,
+  { companySlug, projectSlug, registrySlug },
+  knownInstructionLayerKeys = [],
+) => {
   assertMirrorDocumentCompany(mirror, companySlug);
   const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, projectSlug);
-  return getDomainDocumentFromMirror(mirror, "registry", (document) => (
-    matchesProjectScope(document)
-    && (
-      document.payload?.registry?.slug === registrySlug
-      || document.payload?.registry?.slugAliases?.includes?.(registrySlug)
-    )
-  ));
+  return getDomainDocumentFromMirror(
+    mirror,
+    "registry",
+    (document) => (
+      matchesProjectScope(document)
+      && (
+        document.payload?.registry?.slug === registrySlug
+        || document.payload?.registry?.slugAliases?.includes?.(registrySlug)
+      )
+    ),
+    knownInstructionLayerKeys,
+  );
 };
 
-const fetchMirrorUrl = (mirror, locator) => {
+const fetchMirrorUrl = (mirror, locator, knownInstructionLayerKeys = []) => {
   assertMirrorDocumentCompany(mirror, locator.companySlug);
   if (locator.type === "task") {
     return getTaskFromMirror(mirror, {
       projectSlug: locator.projectSlug,
       taskNumber: locator.taskNumber,
+      knownInstructionLayerKeys,
     });
   }
   if (locator.type === "project") {
     return fetchMirrorProject(mirror, locator.companySlug, locator.projectSlug);
   }
-  if (locator.type === "registry") return fetchMirrorRegistry(mirror, locator);
+  if (locator.type === "registry") {
+    return fetchMirrorRegistry(mirror, locator, knownInstructionLayerKeys);
+  }
   if (locator.type === "knowledge_page") {
-    return getDomainDocumentFromMirror(mirror, "knowledge_page", (document) => (
-      document.payload?.page?.slug === locator.pageSlug
-      || document.payload?.page?.slugAliases?.includes?.(locator.pageSlug)
-    ));
+    return getDomainDocumentFromMirror(
+      mirror,
+      "knowledge_page",
+      (document) => (
+        document.payload?.page?.slug === locator.pageSlug
+        || document.payload?.page?.slugAliases?.includes?.(locator.pageSlug)
+      ),
+      knownInstructionLayerKeys,
+    );
   }
   if (locator.type === "contact") {
     return getDomainDocumentFromMirror(
       mirror,
       "contact",
       (document) => document.id === locator.contactId,
+      knownInstructionLayerKeys,
     );
   }
   if (locator.type === "regular_work") {
     const matchesProjectScope = buildMirrorProjectScopeMatcher(mirror, locator.projectSlug);
-    return getDomainDocumentFromMirror(mirror, "regular_work", (document) => (
-      matchesProjectScope(document)
-      && (document.payload?.set?.id ?? document.id) === locator.setId
-    ));
+    return getDomainDocumentFromMirror(
+      mirror,
+      "regular_work",
+      (document) => (
+        matchesProjectScope(document)
+        && (document.payload?.set?.id ?? document.id) === locator.setId
+      ),
+      knownInstructionLayerKeys,
+    );
   }
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context URL.");
 };
 
-export const fetchMirrorResult = (mirror, rawResultId) => {
+export const fetchMirrorResult = (mirror, rawResultId, knownInstructionLayerKeys = []) => {
   const resultId = normalizeBoundedString(rawResultId, "resultId", 4_096);
   if (resultId.startsWith("context:")) {
     const contextDocument = (mirror.contextDocuments ?? []).find((document) => (
@@ -5790,14 +5891,14 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
       provider: "local_company_context",
       generation: mirror.generation,
       document: contextDocument,
-      effectiveInstructions: {
-        agentInstructionsSnapshot: contextDocument.projectId
-          ? mirror.instructions?.projects?.find(
-              (entry) => entry.projectId === contextDocument.projectId,
-            )?.snapshot ?? null
-          : mirror.instructions?.company ?? null,
-        userProfileSnapshot: mirror.instructions?.userProfile ?? null,
-      },
+      effectiveInstructions: buildLocalScopedEffectiveInstructions(
+        mirror,
+        contextDocument.projectId
+          ? (mirror.projects ?? []).find((project) => project.id === contextDocument.projectId)
+            ?? { id: contextDocument.projectId, slug: contextDocument.projectSlug ?? null, name: null }
+          : null,
+        knownInstructionLayerKeys,
+      ),
     };
   }
   if (resultId.startsWith("task:")) {
@@ -5811,6 +5912,7 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     return getTaskFromMirror(mirror, {
       projectSlug,
       taskNumber: Number(taskNumberText),
+      knownInstructionLayerKeys,
     });
   }
   if (resultId.startsWith("knowledge-page:")) {
@@ -5819,7 +5921,11 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     if (encodedParts.length !== 2) {
       throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid page result id.");
     }
-    return fetchMirrorUrl(mirror, { type: "knowledge_page", companySlug, pageSlug });
+    return fetchMirrorUrl(
+      mirror,
+      { type: "knowledge_page", companySlug, pageSlug },
+      knownInstructionLayerKeys,
+    );
   }
   if (resultId.startsWith("contact:")) {
     const encodedParts = resultId.slice("contact:".length).split(":");
@@ -5827,7 +5933,11 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     if (encodedParts.length !== 2) {
       throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid contact result id.");
     }
-    return fetchMirrorUrl(mirror, { type: "contact", companySlug, contactId });
+    return fetchMirrorUrl(
+      mirror,
+      { type: "contact", companySlug, contactId },
+      knownInstructionLayerKeys,
+    );
   }
   if (resultId.startsWith("registry:")) {
     const encodedParts = resultId.slice("registry:".length).split(":");
@@ -5837,14 +5947,14 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
         companySlug: parts[0],
         projectSlug: null,
         registrySlug: parts[2],
-      });
+      }, knownInstructionLayerKeys);
     }
     if (parts.length === 4 && parts[1] === "project") {
       return fetchMirrorRegistry(mirror, {
         companySlug: parts[0],
         projectSlug: parts[2],
         registrySlug: parts[3],
-      });
+      }, knownInstructionLayerKeys);
     }
     throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Invalid registry result id.");
   }
@@ -5854,6 +5964,7 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
       mirror,
       "meeting",
       (document) => document.id === meetingId,
+      knownInstructionLayerKeys,
     );
   }
   if (resultId.startsWith("workspace-file:")) {
@@ -5885,14 +5996,11 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
       schemaVersion: 1,
       provider: "local_company_context",
       generation: mirror.generation,
-      effectiveInstructions: {
-        agentInstructionsSnapshot: workspace.project?.id
-          ? mirror.instructions?.projects?.find(
-              (entry) => entry.projectId === workspace.project.id,
-            )?.snapshot ?? null
-          : mirror.instructions?.company ?? null,
-        userProfileSnapshot: mirror.instructions?.userProfile ?? null,
-      },
+      effectiveInstructions: buildLocalScopedEffectiveInstructions(
+        mirror,
+        workspace.project ?? null,
+        knownInstructionLayerKeys,
+      ),
       workspace,
       acceptedWorkspace: acceptedWorkspace
         ? {
@@ -5921,7 +6029,7 @@ export const fetchMirrorResult = (mirror, rawResultId) => {
     return fetchMirrorProject(mirror, companySlug, projectSlug);
   }
   const urlLocator = parseMirrorDocumentUrl(resultId);
-  if (urlLocator) return fetchMirrorUrl(mirror, urlLocator);
+  if (urlLocator) return fetchMirrorUrl(mirror, urlLocator, knownInstructionLayerKeys);
   throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "Unknown local context result id.");
 };
 
@@ -7106,10 +7214,18 @@ export const handleTrelioLocalContextOperation = async (
     if (!Number.isSafeInteger(taskNumber) || taskNumber <= 0) {
       throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "taskNumber must be positive.");
     }
-    return getTaskFromMirror(ready.mirror, { projectSlug, taskNumber });
+    return getTaskFromMirror(ready.mirror, {
+      projectSlug,
+      taskNumber,
+      knownInstructionLayerKeys: rawInput?.knownInstructionLayerKeys,
+    });
   }
   if (operation === "fetch") {
-    return fetchMirrorResult(ready.mirror, rawInput?.resultId);
+    return fetchMirrorResult(
+      ready.mirror,
+      rawInput?.resultId,
+      rawInput?.knownInstructionLayerKeys,
+    );
   }
   if (operation === "get_workspace_file") {
     return getWorkspaceFileFromMirror(ready.mirror, {
@@ -9988,6 +10104,11 @@ export const TRELIO_LOCAL_CONTEXT_TOOL = {
       },
       limit: { type: "integer", minimum: 1, maximum: MAX_SEARCH_RESULTS },
       resultId: { type: "string", minLength: 1, maxLength: 4096 },
+      knownInstructionLayerKeys: {
+        type: "array",
+        maxItems: 8,
+        items: { type: "string", minLength: 1, maxLength: 160 },
+      },
       workspaceId: { type: "string", minLength: 36, maxLength: 36 },
       workspaceHead: { type: "string", minLength: 40, maxLength: 64 },
       filePath: { type: "string", minLength: 1, maxLength: 2048 },

@@ -396,8 +396,11 @@ web documents/iframes не допускаются. Focus, clipboard, universal b
 literal-text action, secret в argv/env/stdout и чтение значения поля запрещены.
 
 Native helper собирается из bundled source системным компилятором в отдельном
-owner-only bridge cache с проверкой source/binary SHA-256. macOS требует
-Command Line Tools (`/usr/bin/swiftc`) и выданное пользователем системное
+owner-only bridge cache с проверкой source/binary SHA-256. macOS сначала
+использует `/usr/bin/swiftc`; если активный full Xcode заблокирован непринятой
+лицензией, допустим только системный compiler и SDK из фиксированного
+`/Library/Developer/CommandLineTools`. Произвольный `PATH` и загруженный
+compiler запрещены. Также требуется выданное пользователем системное
 Accessibility-разрешение; Windows – системный .NET Framework 4 с WPF/UIA.
 Установщик/компилятор не скачивается, elevation и автоматической выдачи
 Accessibility permission нет. Правила browser tool, site approvals и запреты

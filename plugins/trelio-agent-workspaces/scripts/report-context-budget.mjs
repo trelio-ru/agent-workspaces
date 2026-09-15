@@ -14,6 +14,7 @@ import {
   TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_WORKSPACE_TOOL,
   TRELIO_WORKSPACE_ACTION_TOOL,
+  fetchMirrorResult,
 } from "./trelio-local-context.mjs";
 
 export const PLUGIN_CONTEXT_BUDGET_SCHEMA_VERSION = 1;
@@ -67,16 +68,19 @@ export const PLUGIN_CONTEXT_BUDGET_LIMITS = Object.freeze({
   // The proposal schemas spend a bounded extra discriminator on target,
   // bundle and final-action shapes. This prevents an invalid render attempt
   // from becoming a host-level App surface after local provider selection.
-  localProviderToolSchemasBytes: 4_500,
+  // One bounded layer-key array costs 46 bytes across the provider subset and
+  // removes tens of KiB from each repeated exact read in the measured fixture.
+  localProviderToolSchemasBytes: 4_600,
   plainCompanyTaskRunPluginLayerBytes: 89_000,
   encryptedCompanyTaskRunPluginLayerBytes: 105_500,
   localMcpInstructionsBytes: 4_000,
-  modelVisibleLocalToolSchemasBytes: 14_100,
+  modelVisibleLocalToolSchemasBytes: 14_200,
   // +schemaToolName lets doctor load one exact schema instead of every schema.
   clientPrefixedLocalToolSchemasBytes: 70_200,
   clientPrefixedTaskRunLocalToolSchemasBytes: 4_600,
   representativeLocalProposalResultBytes: 14_500,
   representativeLocalAttachmentResultBytes: 1_400,
+  representativeReusedInstructionResultBytes: 2_200,
 });
 
 // Эти независимые потолки фиксируют токенизацию текущего русского текста.
@@ -97,6 +101,7 @@ export const PLUGIN_CONTEXT_TOKEN_LIMITS = Object.freeze({
   clientPrefixedTaskRunLocalToolSchemas: 750,
   representativeLocalProposalResult: 1_650,
   representativeLocalAttachmentResult: 200,
+  representativeReusedInstructionResult: 520,
 });
 
 export const measureContextText = (text) => {
@@ -192,6 +197,41 @@ const buildLocalResponseMeasurements = async () => {
   };
   const doctorArgs = { companySlug: "demo", skillId: "generic-skill" };
   const measureDoctor = (payload) => measureModelResult({ content: [{ type: "text", text: JSON.stringify(payload) }] });
+  const instructionMirror = {
+    company: { id: "11111111-1111-4111-8111-111111111111", slug: "demo", name: "Demo" },
+    viewer: { memberId: "22222222-2222-4222-8222-222222222222" },
+    projects: [{ id: "33333333-3333-4333-8333-333333333333", slug: "project", name: "Проект" }],
+    instructions: {
+      company: {
+        compiledMarkdown: "Правило компании с проверенной полной формулировкой. ".repeat(320),
+        company: { revisionId: "44444444-4444-4444-8444-444444444444", version: 7 },
+      },
+      projects: [],
+      userProfile: {
+        compiledMarkdown: "Предпочтение пользователя. ".repeat(120),
+        profile: { revisionId: "55555555-5555-4555-8555-555555555555", version: 3 },
+      },
+    },
+    workspaceEntries: [{
+      id: "66666666-6666-4666-8666-666666666666",
+      title: "Workspace",
+      state: "active",
+      project: { id: "33333333-3333-4333-8333-333333333333", slug: "project", name: "Проект" },
+    }],
+    workspaces: [],
+  };
+  const coldInstructions = fetchMirrorResult(
+    instructionMirror,
+    "workspace:66666666-6666-4666-8666-666666666666",
+  );
+  const warmInstructions = fetchMirrorResult(
+    instructionMirror,
+    "workspace:66666666-6666-4666-8666-666666666666",
+    coldInstructions.effectiveInstructions.nextReadArguments.knownInstructionLayerKeys,
+  );
+  const measureLocalPayload = (payload) => measureModelResult({
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+  });
   return {
     note: "Synthetic fixtures through production result builders; hidden App _meta and local file bytes are excluded. Baselines repeat the identical structured payload in text.",
     attachmentFileBytes: attachmentPayload.sizeBytes,
@@ -206,6 +246,11 @@ const buildLocalResponseMeasurements = async () => {
       full: measureDoctor(doctorPayload),
       catalog: measureDoctor(compactRemoteDoctorPayload(doctorPayload, doctorArgs)),
       selected: measureDoctor(compactRemoteDoctorPayload(doctorPayload, { ...doctorArgs, schemaToolName: "read_domain_0" })),
+    },
+    instructionReuse: {
+      cold: measureLocalPayload(coldInstructions),
+      warm: measureLocalPayload(warmInstructions),
+      layerCount: coldInstructions.effectiveInstructions.layers.length,
     },
   };
 };
@@ -350,6 +395,8 @@ export const formatPluginContextBudgetReport = (report) => [
   formatMeasurement("Proposal card · compact", report.localResponses.proposalRender.compact),
   formatMeasurement("1 MiB attachment · duplicated base64", report.localResponses.attachmentDownload.duplicatedBase64),
   formatMeasurement("1 MiB attachment · local file", report.localResponses.attachmentDownload.localFile),
+  formatMeasurement("Exact read · instruction layers", report.localResponses.instructionReuse.cold),
+  formatMeasurement("Exact read · reused layer keys", report.localResponses.instructionReuse.warm),
   "",
   "Local catalog excludes App-only tools. Prefixes describe a client serialization scenario, not every host.",
   "Local file bytes and these optional result fixtures are not added to a normal task Run total.",
