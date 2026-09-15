@@ -1704,6 +1704,8 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     "get_task_checklist_proposal_context",
     "apply_task_checklist_proposal",
     "dismiss_task_checklist_proposal",
+    "plan_codex_trelio_hook_routing",
+    "apply_codex_trelio_hook_routing",
     "plan_company_private_agent_skill_create",
     "create_company_private_agent_skill",
     "plan_company_private_agent_skill_release",
@@ -1769,7 +1771,64 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   );
   assert.equal(genericAction.annotations.destructiveHint, true);
   assert.equal(genericAction._meta["trelio/sensitiveInput"], true);
+  const routingPlanTool = response.result.tools.find(
+    ({ name }) => name === "plan_codex_trelio_hook_routing",
+  );
+  const routingApplyTool = response.result.tools.find(
+    ({ name }) => name === "apply_codex_trelio_hook_routing",
+  );
+  assert.equal(routingPlanTool.annotations.readOnlyHint, true);
+  assert.equal(routingPlanTool.inputSchema.additionalProperties, false);
+  assert.equal(routingApplyTool.annotations.readOnlyHint, false);
+  assert.equal(routingApplyTool.inputSchema.properties.confirmed.const, true);
+  assert.match(routingApplyTool.description, /полный перезапуск Codex\/ChatGPT/u);
   assert.doesNotMatch(JSON.stringify(response), /personal-test-token/u);
+});
+
+test("local MCP keeps Codex routing behind a separate plan/apply confirmation", async () => {
+  const planned = {
+    schemaVersion: 1,
+    status: "action_required",
+    planHash: "a".repeat(64),
+  };
+  const planResult = await handleToolCall(
+    "https://trelio.ru",
+    "plan_codex_trelio_hook_routing",
+    {},
+    {
+      codexRoutingPlan: async () => planned,
+      codexRoutingApply: async () => {
+        throw new Error("Apply must not run during plan.");
+      },
+    },
+  );
+  assert.deepEqual(JSON.parse(planResult.content[0].text), planned);
+
+  const appliedInputs = [];
+  const applyResult = await handleToolCall(
+    "https://trelio.ru",
+    "apply_codex_trelio_hook_routing",
+    { planHash: planned.planHash, confirmed: true },
+    {
+      codexRoutingPlan: async () => planned,
+      codexRoutingApply: async (input) => {
+        appliedInputs.push(input);
+        return { schemaVersion: 1, status: "applied", restartRequired: true };
+      },
+    },
+  );
+  assert.deepEqual(appliedInputs, [{ planHash: planned.planHash, confirmed: true }]);
+  assert.equal(JSON.parse(applyResult.content[0].text).status, "applied");
+
+  await assert.rejects(
+    handleToolCall(
+      "https://trelio.ru",
+      "apply_codex_trelio_hook_routing",
+      { planHash: planned.planHash, confirmed: true, configPath: "C:\\unsafe" },
+      { codexRoutingApply: async () => ({ status: "applied" }) },
+    ),
+    (error) => error.code === "TRELIO_CODEX_ROUTING_INVALID_INPUT",
+  );
 });
 
 test("local MCP exposes the proposal App resource without adding its HTML to tool context", async () => {
@@ -2876,7 +2935,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /Для старых command-ответов – его процедура совместимости/u);
   assert.match(frames[0].result.instructions, /Native Trelio не требует каталога/u);
-  assert.equal(frames[1].result.tools.length, 28);
+  assert.equal(frames[1].result.tools.length, 30);
 });
 
 test("Remote MCP admission expires absolutely and never caches protected wire declarations", { timeout: 15000 }, async () => {

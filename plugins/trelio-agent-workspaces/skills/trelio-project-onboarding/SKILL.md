@@ -191,8 +191,38 @@ proof. При подтверждённом доверии не повторяй 
    Если `trelio-agent-workspaces@trelio-plugins` не установлен/не включён,
    выполни `codex plugin add trelio-agent-workspaces@trelio-plugins`.
    `INSTALLED_BY_DEFAULT` – лишь оптимизация host, не повод пропустить проверку.
-2. В Codex не останавливай настройку заранее только потому, что approval hooks
-   неизвестен или точный `PreToolUse` ещё не наблюдался в текущей задаче.
+2. В Codex до первого protected read вызови read-only
+   `plan_codex_trelio_hook_routing` без аргументов. Эта проверка не читает
+   Trelio content и не меняет hook trust. Она проверяет user-level default, в
+   котором Code Mode оставляет namespaces `mcp__trelio` и
+   `mcp__trelio_remote_skills` прямыми
+   model tools: nested MCP-вызов через Code Mode может не получить
+   client `PreToolUse`, даже если definition включена и доверена.
+   - При `status=ready` продолжай в текущей задаче.
+   - При `status=action_required` покажи только возвращённые table/key,
+     добавляемые namespaces и exact `planHash`; объясни, что существующие
+     namespaces и остальные настройки сохраняются. Если plan сообщает
+     `migratesLegacyBoolean=true`, отдельно объясни, что legacy
+     `[features] code_mode = true|false` станет `[features.code_mode] enabled`
+     с тем же boolean: Code Mode не включается и не выключается. Получи
+     отдельное явное подтверждение именно этой локальной правки. До него не
+     вызывай apply и не выдавай общую просьбу «настроить Trelio» за согласие
+     изменить пользовательский config Codex.
+   - После подтверждения вызови `apply_codex_trelio_hook_routing` с exact
+     `planHash` и `confirmed=true`. При stale plan заново выполни plan и покажи
+     изменившийся результат; прежнее подтверждение не переносится. После
+     `status=applied` не проверяй protected read в старом owning process:
+     пользователю нужно полностью завершить все процессы Codex/ChatGPT,
+     открыть приложение, создать новую задачу и повторить onboarding. Закрытие
+     окна или новая задача в прежнем App Server не применяют эту настройку.
+   - При отказе пользователя не меняй config. Останови protected onboarding и
+     назови direct routing нерешённой предпосылкой; не подменяй её повторным
+     включением Hooks. При unsupported/unsafe config не переписывай файл:
+     сообщи exact code и предложи ручное объединение той же table/key.
+
+   После готовности direct routing не останавливай настройку заранее только потому,
+   что approval hooks неизвестен или точный `PreToolUse` ещё не
+   наблюдался в текущей задаче.
    Установка/включение плагина не создают доверие автоматически. После OAuth и
    точного выбора компании выполни обязательный read-only
    `get_agent_instructions` по шагу 5 как live-проверку. Если текущая hook
@@ -215,8 +245,12 @@ proof. При подтверждённом доверии не повторяй 
    поэтому повторный checkpoint не нужен. Последующий
    `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся сквозным отказом из-за отсутствия
    proof, но не доказывает выключенное доверие: при подтверждённом доверии
-   переходи к точной диагностике клиента.
-3. До `get_agent_instructions` и любой локальной записи точно выбери компанию.
+   переходи к точной диагностике клиента. После применённого user-level plan
+   отдельно исключи более приоритетный project/profile/CLI override; не меняй
+   этот слой автоматически.
+3. До `get_agent_instructions` и записи company-scoped привязки точно выбери
+   компанию. Codex routing preflight выше не зависит от компании и является
+   единственным локальным config-исключением до её выбора.
    Вызови `list_companies`, если реальный ответ текущего хода ещё не вернул
    доступные компании. Прочитай metadata-only `encryptionState`; старый
    элемент без поля допустимо считать `plain`.

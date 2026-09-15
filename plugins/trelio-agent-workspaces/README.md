@@ -248,6 +248,18 @@ Hooks и включите её. В Codex CLI откройте `/hooks`, выбе
 новую либо изменённую definition до такого review; bypass-флаг для онбординга
 не используется.
 
+До первого protected read onboarding вызывает local read-only
+`plan_codex_trelio_hook_routing`. Если
+`features.code_mode.direct_only_tool_namespaces` не содержит `mcp__trelio` и
+`mcp__trelio_remote_skills`, агент показывает только точную добавку и
+CAS-bound `planHash`, а затем отдельно спрашивает разрешение изменить
+пользовательский `config.toml`. Apply сохраняет остальные настройки и
+существующие namespaces. Legacy `[features] code_mode = true|false` от CLI
+Codex 0.154 переносится в `[features.code_mode] enabled` без изменения boolean.
+Apply не включает Hooks и не одобряет их за пользователя;
+после записи требуется полный restart Codex/ChatGPT и новая задача. Диагностика
+использует тот же plan/apply flow и остаётся read-only без отдельного согласия.
+
 Codex CLI регистрирует marketplace и устанавливает plugin разными операциями,
 поэтому сообщение об успешно добавленном источнике ещё не означает готовую
 установку. Policy `INSTALLED_BY_DEFAULT` остаётся ускорением для host-ов,
@@ -323,6 +335,9 @@ hook contract, Node.js 22+, локальное pairing-состояние и т�
 private keys. Значение `plugin.hooks.approvalStatus=client_managed_unknown`
 означает, что целостность definition подтверждена, но его одобрение нужно
 проверять в самом клиенте.
+Отдельный routing plan проверяет Code Mode без вывода пути или содержимого
+`config.toml`; stale `planHash`, symlink и неоднозначный TOML fail-closed не
+перезаписываются.
 Если standalone Git отсутствует,
 onboarding сразу запускает `brew install git` либо `xcode-select --install` на
 macOS и `winget install --id Git.Git -e` на Windows. Обычное системное
@@ -347,6 +362,11 @@ bundled `launch-trelio-node`, а на Windows отдельный quote-free `com
 передаёт запуск bundled `.cmd` launcher. Изменение hook definition может
 потребовать одно новое одобрение в клиенте; дальнейшие behavior-only
 исправления – нет.
+
+Codex Code Mode может выполнять обычные MCP через nested tool runner, для
+которого клиент не dispatch-ит `PreToolUse`. Поэтому onboarding закрепляет оба
+Trelio server namespaces как direct-only. Это routing-совместимость клиента,
+не замена hook trust и не обход runtime proof.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

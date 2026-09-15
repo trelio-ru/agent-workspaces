@@ -323,6 +323,20 @@ provider-tag workflow или внутренние release playbooks в этот 
   процессы Codex/ChatGPT, открыть приложение заново и проверить один protected
   read в новой задаче; закрытие окна или новая задача в прежнем owner-процессе
   restart-ом не считаются.
+- Codex Code Mode routing проверяется до первого protected read общим local
+  `plan_codex_trelio_hook_routing` в onboarding и diagnostics. План value-free
+  и добавляет только отсутствующие `mcp__trelio` и
+  `mcp__trelio_remote_skills` в
+  `features.code_mode.direct_only_tool_namespaces`, сохраняя остальные
+  namespaces/config. Legacy `[features] code_mode = true|false`, который ещё
+  пишет CLI Codex 0.154, мигрируется в `[features.code_mode]` с тем же
+  `enabled`; состояние feature не меняется.
+  `apply_codex_trelio_hook_routing` требует отдельного явного подтверждения
+  exact CAS-bound `planHash`; общий запрос настройки или исправления его не
+  заменяет. Stale/unsafe/неоднозначный TOML fail closed.
+  После apply нужен полный restart owning Codex/ChatGPT App Server и новая
+  задача. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
+  не включает Hooks, не меняет trust и не создаёт runtime proof.
 - Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

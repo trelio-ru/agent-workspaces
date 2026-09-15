@@ -141,6 +141,20 @@
       "baselineTokens": 123,
       "maxTokens": 160
     },
+    "plan_codex_trelio_hook_routing": {
+      "modelVisible": true,
+      "baselineBytes": 786,
+      "maxBytes": 896,
+      "baselineTokens": 138,
+      "maxTokens": 176
+    },
+    "apply_codex_trelio_hook_routing": {
+      "modelVisible": true,
+      "baselineBytes": 1073,
+      "maxBytes": 1152,
+      "baselineTokens": 192,
+      "maxTokens": 224
+    },
     "plan_company_private_agent_skill_create": {
       "modelVisible": true,
       "baselineBytes": 2171,

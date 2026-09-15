@@ -41,6 +41,7 @@
         "CODEX_BROWSER_USE_NODE_PATH",
         "CODEX_ELECTRON_RESOURCES_PATH",
         "CODEX_CLI_PATH",
+        "CODEX_HOME",
         "XDG_CACHE_HOME",
         "HOME",
         "USERPROFILE",

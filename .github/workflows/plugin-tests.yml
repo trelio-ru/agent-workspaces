@@ -84,6 +84,7 @@ jobs:
       - name: Run generic plugin host Node tests
         run: |
           node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs
+          node plugins/trelio-agent-workspaces/tests/trelio-codex-routing.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-mcp-results.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
           node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs

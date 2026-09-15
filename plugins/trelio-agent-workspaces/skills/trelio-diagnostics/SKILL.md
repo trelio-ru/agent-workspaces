@@ -129,6 +129,31 @@ cache и не выбирай другую версию. POSIX:
 2. Через `codex mcp list --json` оцени удалённый `trelio` отдельно от локального
    `trelio-remote-skills`. `auth_status: "o_auth"` описывает схему; только успешное
    реальное чтение доказывает пригодный bearer у текущего процесса.
+3. До protected read вызови read-only `plan_codex_trelio_hook_routing` без
+   аргументов. `status=ready` подтверждает только direct routing двух Trelio MCP
+   namespaces, не hook trust и не успешный proof. `status=action_required`
+   объясняет случай, когда Code Mode выполняет MCP как nested call и клиент не
+   dispatch-ит `PreToolUse`, хотя hook включён и доверен.
+
+   Покажи возвращённые table/key, добавляемые namespaces и exact `planHash`.
+   Если пользователь просил только диагностику, на этом не меняй config и
+   предложи применить план. Даже при общей просьбе исправить настройку получи
+   отдельное явное подтверждение показанной правки. Только после него вызови
+   `apply_codex_trelio_hook_routing` с тем же `planHash` и `confirmed=true`.
+   Stale plan требует нового plan и нового подтверждения. Apply сохраняет
+   остальные настройки и существующие namespaces, не включает Hooks и не
+   меняет их trust. При `migratesLegacyBoolean=true` явно сообщи, что legacy
+   `[features] code_mode = true|false` будет перенесён в
+   `[features.code_mode] enabled` с тем же значением.
+
+   После `status=applied` полностью заверши все процессы Codex/ChatGPT, открой
+   приложение заново, создай новую задачу и повтори один protected read. Не
+   проверяй исправление в прежнем App Server. При отказе пользователя не меняй
+   config; при unsupported/unsafe config сохрани exact code и предложи ручное
+   объединение `features.code_mode.direct_only_tool_namespaces`.
+   Если после restart proof всё ещё отсутствует, read-only проверь более
+   приоритетный project/profile/CLI override той же настройки. Не переписывай
+   такой слой автоматически и не объявляй user-level `ready` effective proof.
 
 В Claude Code используй `claude mcp list` и его менеджер плагинов. Команды Codex
 не диагностируют credential store другого клиента. Имена серверов имеют
@@ -155,8 +180,9 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
   Он не отличает выключенные hooks от доверенного определения, которое
   владеющий процесс не загрузил или не вызвал. Останови защищённую работу.
   Если просмотр определения не подтверждён, назови штатное включение/одобрение
-  Hooks. Иначе не повторяй совет: проверь загруженное определение, точный matcher
-  и хронологию установки, записи доверия, запуска App Server и задачи.
+  Hooks. Иначе не повторяй совет: сначала проверь Codex direct routing через
+  plan выше, затем загруженное определение, точный matcher и хронологию
+  установки, записи доверия, запуска App Server и задачи.
 - Core/App Server Codex до `0.154.0-alpha.2` не перечитывает config после локальной
   установки. Если такой процесс старше плагина/доверия или обратное не доказано,
   нужно завершить все процессы Codex/ChatGPT, открыть приложение, создать одну
@@ -201,6 +227,10 @@ lifecycle matchers с будущими версиями. Оно запускае
   затем проверь плагин.
 - Плагин отсутствует/выключен: установи/включи
   `trelio-agent-workspaces@trelio-plugins`; наличие marketplace не доказывает установку.
+- Codex routing plan вернул `action_required`: применяй его только после
+  отдельного подтверждения exact `planHash`; затем требуется полный restart
+  owning App Server и protected read в новой задаче. Это исправляет dispatch
+  для Code Mode, но не одобряет hook за пользователя.
 - Удалённый Trelio явно вернул HTTP 401 или отсутствие bearer: выполни вход
   MCP Trelio один раз в точном клиенте. Codex: `codex mcp login trelio`;
   Claude Code: `claude mcp login plugin:trelio-agent-workspaces:trelio`

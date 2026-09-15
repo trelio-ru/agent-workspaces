@@ -78,6 +78,22 @@ Hooks. В Codex Desktop откройте настройки `Trelio Agent Worksp
 автоматически и пропускает новую либо изменённую definition до такого review;
 bypass-флаг для онбординга не используется.
 
+До первого protected read onboarding также вызывает локальный read-only
+`plan_codex_trelio_hook_routing`. Если в
+`features.code_mode.direct_only_tool_namespaces` нет `mcp__trelio` или
+`mcp__trelio_remote_skills`, агент показывает точную добавку и `planHash`, а
+затем отдельно спрашивает разрешение изменить пользовательский `config.toml`.
+Так Trelio MCP остаются direct tools, и Codex вызывает `PreToolUse` даже когда
+остальные инструменты идут через Code Mode. Если CLI Codex 0.154 ранее записал
+legacy `[features] code_mode = true|false`, apply переносит то же значение в
+`[features.code_mode] enabled`, не включая и не выключая feature. Остальные
+настройки и существующие namespaces сохраняются; Hooks не включаются и не
+одобряются за пользователя.
+После подтверждения `apply_codex_trelio_hook_routing` применяет exact plan.
+После этого нужен полный перезапуск Codex/ChatGPT и продолжение в новой задаче.
+Диагностика использует тот же plan/apply flow и без подтверждения ничего не
+меняет.
+
 Codex CLI регистрирует marketplace и устанавливает plugin разными операциями,
 поэтому сообщение об успешно добавленном источнике ещё не означает готовую
 установку. Policy `INSTALLED_BY_DEFAULT` остаётся ускорением для host-ов,
@@ -163,6 +179,8 @@ prompt:
 ошибку внутри уже запущенного `PreToolUse` за выключенные Hooks. Runtime hooks
 запускаются через bundled Node launcher и не зависят от наличия команды `node`
 в PATH процесса Codex; для Windows используется отдельный `commandWindows`.
+При доверенных Hooks и отсутствующем proof она отдельно проверяет direct routing
+Trelio в Code Mode, а не предлагает включить Hooks повторно.
 
 ## Установка в Claude Code и Claude Cowork
 

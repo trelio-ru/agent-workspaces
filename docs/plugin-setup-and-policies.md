@@ -37,6 +37,26 @@ codex plugin add trelio-agent-workspaces@trelio-plugins
 hooks автоматически и пропускает новую либо изменённую definition до review;
 onboarding не автоматизирует trust и не использует bypass-флаг.
 
+Перед первым protected read Codex-onboarding отдельно вызывает локальный
+read-only `plan_codex_trelio_hook_routing`. Проверка не читает данные Trelio и
+не делает вывод о доверии к Hooks. Она проверяет user-level default, в котором
+`mcp__trelio` и `mcp__trelio_remote_skills` присутствуют в
+`features.code_mode.direct_only_tool_namespaces`: иначе Code Mode может
+выполнить MCP как nested call без client `PreToolUse`, несмотря на включённую и
+доверенную hook definition. При отсутствующей настройке агент показывает только
+table/key, добавляемые namespaces и CAS-bound `planHash`, а затем отдельно
+спрашивает разрешение на правку пользовательского `config.toml`. Apply сохраняет
+все остальные настройки и существующие namespaces. Legacy
+`[features] code_mode = true|false`, который ещё пишет CLI Codex 0.154,
+преобразуется в `[features.code_mode] enabled` с неизменным boolean. После apply
+нужен полный restart Codex/ChatGPT и новая задача; включение или trust Hooks за
+пользователя не выполняются. Диагностический starter использует тот же
+plan/apply flow.
+Project/profile/CLI override имеет более высокий приоритет, поэтому окончательным
+доказательством effective routing остаётся protected read после restart. Если он
+снова приходит без proof при доверенной hook definition, diagnostics проверяет
+активные config layers и не переписывает более высокий слой автоматически.
+
 Codex CLI добавляет marketplace и устанавливает plugin разными операциями.
 `INSTALLED_BY_DEFAULT` может ускорить установку в host UI, но сообщение только
 о добавленном marketplace не подтверждает её: основной CLI-flow всегда
@@ -137,6 +157,13 @@ protected call, а не автоматически зависший процес
 states с уже истёкшим сроком, `pending` старше 24 часов и пустые registration
 locks старше общего безопасного порога. Свежие и неизвестные записи остаются
 нетронутыми; invalid state по-прежнему виден в doctor для отдельной диагностики.
+
+Отдельный local MCP plan проверяет Codex Code Mode routing без вывода пути или
+содержимого `config.toml`. Если пользователь просил только диагностику, plan
+остаётся read-only. Даже при просьбе исправить настройку apply требует отдельное
+подтверждение exact `planHash`, повторно сверяет hash текущего файла и отказывает
+при stale plan. Неподдерживаемые inline/неоднозначные формы TOML и symlink
+fail-closed не переписываются.
 
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 
@@ -272,7 +299,8 @@ owning client process не загрузил или не запустил. Protec
 останавливается. Если review текущей definition не подтверждён, пользователь
 включает/разрешает её в настройках плагина или `/hooks`; при подтверждённом
 trust повторять эту инструкцию нельзя. Тогда проверяются exact matcher,
-наличие `PreToolUse` для этого вызова и хронология установки/записи trust
+direct routing обоих Trelio namespaces, наличие `PreToolUse` для этого вызова
+и хронология установки/записи trust
 относительно owning App Server. Только при отсутствии dispatch применяется
 проверка устаревшей конфигурации: Codex
 core/App Server до `0.154.0-alpha.2` не перечитывает user config после локальной

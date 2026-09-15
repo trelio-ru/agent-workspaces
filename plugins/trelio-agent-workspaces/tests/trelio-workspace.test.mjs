@@ -4316,6 +4316,7 @@ test("bridge release version stays synchronized across executable and manifests"
       "CODEX_BROWSER_USE_NODE_PATH",
       "CODEX_ELECTRON_RESOURCES_PATH",
       "CODEX_CLI_PATH",
+      "CODEX_HOME",
       "XDG_CACHE_HOME",
       "HOME",
       "USERPROFILE",
@@ -4821,7 +4822,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
     "не останавливай настройку заранее только потому",
   );
   const companyResolutionIndex = onboardingSkill.indexOf(
-    "До `get_agent_instructions` и любой локальной записи точно выбери компанию.",
+    "До `get_agent_instructions` и записи company-scoped привязки точно выбери",
   );
 
   // The first required read is the live hook probe. A previously approved
@@ -4984,6 +4985,13 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /Откройте \/hooks/u);
   assert.match(onboardingSkill, /`--dangerously-bypass-hook-trust`/u);
   assert.match(onboardingSkill, /approvalStatus=client_managed_unknown/u);
+  assert.match(onboardingSkill, /`plan_codex_trelio_hook_routing`/u);
+  assert.match(onboardingSkill, /`mcp__trelio` и\s+`mcp__trelio_remote_skills`/u);
+  assert.match(onboardingSkill, /nested MCP-вызов через Code Mode/u);
+  assert.match(onboardingSkill, /отдельное явное\s+подтверждение именно этой локальной правки/u);
+  assert.match(onboardingSkill, /`apply_codex_trelio_hook_routing` с exact/u);
+  assert.match(onboardingSkill, /прежнее подтверждение не переносится/u);
+  assert.match(onboardingSkill, /полностью завершить все процессы Codex\/ChatGPT/u);
   assert.match(
     onboardingSkill,
     /обязательный read-only\s+`get_agent_instructions` по шагу 5 как live-проверку/u,
@@ -5003,7 +5011,7 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.doesNotMatch(onboardingSkill, /обязательно дай пользователю проверить hooks/u);
   assert.match(
     onboardingSkill,
-    /До `get_agent_instructions` и любой локальной записи точно выбери компанию\./u,
+    /До `get_agent_instructions` и записи company-scoped привязки точно выбери/u,
   );
   assert.match(onboardingSkill, /Явный slug[\s\S]{0,100}точный selector/u);
   assert.match(
@@ -5097,6 +5105,10 @@ test("Codex installation reuses approved hooks and gates missing proof before st
     assert.match(instructions, /reason=missing/u);
     assert.match(instructions, /не доверяет\s+plugin-bundled\s+hooks\s+автоматически/u);
     assert.match(instructions, /bypass-флаг/u);
+    assert.match(instructions, /plan_codex_trelio_hook_routing/u);
+    assert.match(instructions, /features\.code_mode\.direct_only_tool_namespaces/u);
+    assert.match(instructions, /отдельно\s+спрашивает разрешение/u);
+    assert.match(instructions, /полный\s+(?:restart|перезапуск) Codex\/ChatGPT/u);
   }
 });
 
@@ -5144,6 +5156,11 @@ test("plugin exposes focused value-free diagnostics for setup and hook failures"
   assert.match(diagnosticsSkill, /один раз одобрить изменение/u);
   assert.match(diagnosticsSkill, /`commandWindows` без кавычек/u);
   assert.match(diagnosticsSkill, /исправления\s+поведения runtime-скрипта не требуют изменения/u);
+  assert.match(diagnosticsSkill, /`plan_codex_trelio_hook_routing`/u);
+  assert.match(diagnosticsSkill, /Code Mode выполняет MCP как nested call/u);
+  assert.match(diagnosticsSkill, /отдельное явное подтверждение показанной правки/u);
+  assert.match(diagnosticsSkill, /`apply_codex_trelio_hook_routing`/u);
+  assert.match(diagnosticsSkill, /не включает Hooks и не\s+меняет их trust/u);
   assert.match(diagnosticsSkill, /без ID сессий и ключей/u);
   assert.match(diagnosticsAgentMetadata, /Диагностика Trelio/u);
   assert.match(diagnosticsAgentMetadata, /\$trelio-diagnostics/u);

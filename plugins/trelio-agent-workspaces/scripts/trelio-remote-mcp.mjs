@@ -20,6 +20,13 @@ import readline from "node:readline";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 import { compactLocalMcpResult, compactLocalNativeMcpResult, compactRemoteDoctorPayload } from "./trelio-mcp-results.mjs";
+import {
+  CODEX_ROUTING_APPLY_TOOL_NAME,
+  CODEX_ROUTING_PLAN_TOOL_NAME,
+  CodexRoutingConfigError,
+  applyCodexTrelioHookRouting,
+  planCodexTrelioHookRouting,
+} from "./trelio-codex-routing.mjs";
 
 import {
   AGENT_SKILL_LARGE_PACKAGE_HOST_MINIMUM_VERSION,
@@ -161,6 +168,10 @@ const COMPANY_SKILL_MANAGEMENT_TOOL_NAMES = new Set([
   "create_company_private_agent_skill",
   "plan_company_private_agent_skill_release",
   "publish_company_private_agent_skill_release",
+]);
+const CODEX_ROUTING_TOOL_NAMES = new Set([
+  CODEX_ROUTING_PLAN_TOOL_NAME,
+  CODEX_ROUTING_APPLY_TOOL_NAME,
 ]);
 const AGENT_SKILL_PACKAGE_FORMAT = "trelio-agent-skill-package/v1";
 const AGENT_SKILL_ENCRYPTED_PACKAGE_FORMAT = "trelio-company-encrypted-skill-package/v1";
@@ -3274,6 +3285,44 @@ const LOCAL_TOOLS = [
   TRELIO_WORKSPACE_ACTION_TOOL,
   ...LOCAL_PROPOSAL_APP_TOOLS,
   {
+    name: CODEX_ROUTING_PLAN_TOOL_NAME,
+    title: "Проверить direct routing Trelio в Codex",
+    description: "Read-only: проверьте пользовательский config.toml Codex и подготовьте exact planHash для добавления только отсутствующих Trelio MCP namespaces в features.code_mode.direct_only_tool_namespaces. Legacy boolean Code Mode переносится в table без изменения enabled. Содержимое и путь config не возвращаются. Если нужна правка, покажите план пользователю и запросите отдельное явное подтверждение до apply.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: CODEX_ROUTING_APPLY_TOOL_NAME,
+    title: "Применить подтверждённый direct routing Trelio в Codex",
+    description: "Добавьте только отсутствующие Trelio MCP namespaces в пользовательский config.toml Codex по exact CAS-bound planHash. Вызывайте confirmed=true лишь после отдельного явного подтверждения показанного плана пользователем. После успеха нужен полный перезапуск Codex/ChatGPT и проверка protected read в новой задаче.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["planHash", "confirmed"],
+      properties: {
+        planHash: { type: "string", pattern: "^[0-9a-f]{64}$" },
+        confirmed: {
+          type: "boolean",
+          const: true,
+          description: "Только после отдельного явного подтверждения exact planHash пользователем.",
+        },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
     name: "plan_company_private_agent_skill_create",
     title: "Plan a company-private Agent Skill",
     description: "Owner/admin only. Validate one Markdown, Remote MCP, or local .skillpkg skill, prepare a no-assignment initial release, encrypt protected content locally when company E2EE is enabled, and return an exact expiring planHash. This does not publish; ask for separate explicit confirmation before apply.",
@@ -4086,6 +4135,8 @@ export const handleToolCall = async (
     localContextOperation = handleTrelioLocalContextOperation,
     proposalOperation = handleTrelioLocalProposalOperation,
     proposalProviderSelectionRecorder = null,
+    codexRoutingPlan = planCodexTrelioHookRouting,
+    codexRoutingApply = applyCodexTrelioHookRouting,
   } = {},
 ) => {
   throwIfAborted(signal);
@@ -4201,6 +4252,34 @@ export const handleToolCall = async (
       { signal },
     );
   }
+  if (CODEX_ROUTING_TOOL_NAMES.has(name)) {
+    if (
+      rawArguments !== undefined
+      && rawArguments !== null
+      && (typeof rawArguments !== "object" || Array.isArray(rawArguments))
+    ) {
+      throw new CodexRoutingConfigError(
+        "TRELIO_CODEX_ROUTING_INVALID_INPUT",
+        "Аргументы настройки Codex должны быть object.",
+      );
+    }
+    const input = rawArguments || {};
+    const allowedKeys = name === CODEX_ROUTING_PLAN_TOOL_NAME
+      ? new Set()
+      : new Set(["planHash", "confirmed"]);
+    if (Object.keys(input).some((key) => !allowedKeys.has(key))) {
+      throw new CodexRoutingConfigError(
+        "TRELIO_CODEX_ROUTING_INVALID_INPUT",
+        "Инструмент настройки Codex получил неподдерживаемое поле.",
+      );
+    }
+    return buildTextResult(name === CODEX_ROUTING_PLAN_TOOL_NAME
+      ? await codexRoutingPlan()
+      : await codexRoutingApply({
+          planHash: input.planHash,
+          confirmed: input.confirmed,
+        }));
+  }
   const resolved = await resolveRemoteMcpDeclaration(
     origin,
     rawArguments,
@@ -4260,7 +4339,9 @@ export const handleToolCall = async (
 };
 
 const safeErrorPayload = (error) => ({
-  code: error instanceof RemoteMcpHostError || error instanceof TrelioLocalContextError
+  code: error instanceof RemoteMcpHostError
+    || error instanceof TrelioLocalContextError
+    || error instanceof CodexRoutingConfigError
     ? error.code
     : String(error?.message || "").includes("TRELIO_BRIDGE_PAIRING_REQUIRED")
       ? "TRELIO_BRIDGE_PAIRING_REQUIRED"
