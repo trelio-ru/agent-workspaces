@@ -19,7 +19,6 @@ import {
   TRELIO_LOCAL_PROPOSAL_RENDER_TOOL,
   TRELIO_LOCAL_PROPOSAL_RESOURCE_URI,
   TRELIO_LOCAL_WORKSPACE_TOOL,
-  TRELIO_READ_ONLY_SKILL_ACTION_TOOL,
   TRELIO_WORKSPACE_ACTION_TOOL,
   WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS,
   buildEncryptedRestoreHandoffArguments,
@@ -35,7 +34,6 @@ import {
   findPreparedEncryptedRestoreRun,
   getWorkspaceFileFromMirror,
   handleNativeLocalContextRead,
-  handleTrelioReadOnlySkillActionOperation,
   handleTrelioWorkspaceActionOperation,
   hydrateChangedCompanyMirrorRecords,
   isLocalTaskSectionRevisionConflict,
@@ -134,12 +132,6 @@ test("typed Workspace dispatcher covers every public bridge operation without sh
       releaseId: actionReleaseId,
       arguments: ["search", "--query", "exact phrase"],
     }],
-    ["skill_run_read_only", {
-      companyId: actionWorkspaceId,
-      skillId: "example-skill",
-      releaseId: actionReleaseId,
-      arguments: ["search", "--query", "exact phrase"],
-    }],
     ["secret_exec", {
       grantId: actionGrantId,
       executable: "/usr/bin/example",
@@ -168,22 +160,6 @@ test("typed Workspace dispatcher covers every public bridge operation without sh
     assert.equal(invocation.argumentsList.some((value) => value.includes("\0")), false);
     assert.equal(invocation.workingDirectory, workingDirectory ?? null);
   }
-
-  const readOnlyInvocation = buildTrelioWorkspaceActionInvocation({
-    schemaVersion: 1,
-    operation: "skill_run_read_only",
-    parameters: {
-      companyId: actionWorkspaceId,
-      skillId: "example-skill",
-      releaseId: actionReleaseId,
-      arguments: ["search"],
-    },
-  });
-  assert.deepEqual(readOnlyInvocation.argumentsList.slice(0, 3), [
-    "skill",
-    "run",
-    "--read-only-action",
-  ]);
 });
 
 test("typed Workspace dispatcher rejects undeclared flags and implicit destructive cleanup", () => {
@@ -271,26 +247,6 @@ test("bridge origin stays before child argv and the local handler uses the exact
   });
   assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.name, "continue_trelio_workspace_action");
   assert.equal(TRELIO_WORKSPACE_ACTION_TOOL.inputSchema.additionalProperties, false);
-  assert.equal(
-    TRELIO_READ_ONLY_SKILL_ACTION_TOOL.name,
-    "continue_trelio_read_only_skill_action",
-  );
-  assert.deepEqual(TRELIO_READ_ONLY_SKILL_ACTION_TOOL.annotations, {
-    readOnlyHint: true,
-    destructiveHint: false,
-    openWorldHint: true,
-  });
-});
-
-test("read-only skill facade rejects every other bridge operation before spawn", async () => {
-  await assert.rejects(
-    () => handleTrelioReadOnlySkillActionOperation(
-      "https://trelio.example",
-      { schemaVersion: 1, operation: "skill_run", parameters: {} },
-      { runBridge: async () => { throw new Error("must not spawn"); } },
-    ),
-    /accepts only skill_run_read_only/u,
-  );
 });
 
 test("live MCP host renews an opened Run every twenty minutes", async () => {

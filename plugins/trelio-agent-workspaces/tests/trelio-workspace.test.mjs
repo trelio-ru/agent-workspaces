@@ -44,7 +44,6 @@ import {
   TrelioApiError,
   WINDOWS_PRIVATE_ACL_SCRIPT,
   assertEncryptedCandidateSafe,
-  agentSkillRuntimeArgumentsAreReadOnly,
   assertMaterializedWorkspaceFileTypes,
   applyAgentRulesHandshake,
   buildAgentWorkspaceRuntimeAgentsMarkdown,
@@ -4258,7 +4257,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.2.3");
+  assert.equal(BRIDGE_VERSION, "2.2.2");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -5791,10 +5790,9 @@ test("hot-path skills use typed bridge actions and keep launcher compatibility l
   );
 
   assert.match(catalogSkill, /runtimeExecution\.localAction/u);
-  assert.match(catalogSkill, /runtimeExecution\.readOnlyLocalAction/u);
   assert.match(catalogSkill, /без shell\/PATH/u);
-  assert.match(workspaceSkill, /`readOnlyLocalAction` – только/u);
-  assert.match(workspaceSkill, /не shell/u);
+  assert.match(workspaceSkill, /continue_trelio_workspace_action/u);
+  assert.match(workspaceSkill, /а не shell-команду/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /continue_trelio_workspace_action/u);
   assert.match(AGENT_WORKSPACE_RUNTIME_AGENTS_MARKDOWN, /без shell-команды/u);
   assert.doesNotMatch(catalogSkill, /If it is available in `PATH`/u);
@@ -7243,8 +7241,7 @@ test("workspace worker gates external services but not native Trelio work", asyn
   assert.match(catalogSkill, /личный навык\/коннектор разрешён/u);
   assert.match(catalogSkill, /не считай неготовность разрешением другого\s+источника/u);
   assert.match(catalogSkill, /Ответ проекта уже объединяет опубликованные процедуры и эффективные\s+назначения skills/u);
-  assert.match(catalogSkill, /точный server\/tool из `runtimeExecution\.readOnlyLocalAction`/u);
-  assert.match(catalogSkill, /иначе используй\s+`runtimeExecution\.localAction`/u);
+  assert.match(catalogSkill, /Вызови точные server\/tool из `runtimeExecution\.localAction`/u);
   assert.match(catalogSkill, /Host проверяет подпись\s+package и file hashes при каждом запуске/u);
   assert.match(catalogSkill, /При `integrationRouting` используй только текущи(?:е поля|й контракт)/u);
   assert.match(catalogSkill, /Не выводи приоритет\s+из ID, названий, порядка элементов/u);
@@ -7321,46 +7318,6 @@ test("skill package host rejects non-portable paths and case collisions", () => 
     () => parseAndValidateAgentSkillPackage(packageBytes, "test-runtime"),
     /регистронно конфликтует/u,
   );
-});
-
-test("skill package host validates and matches signed read-only argv prefixes", async () => {
-  const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "trelio-skill-policy-test-"));
-  try {
-    await writeFile(path.join(temporaryDirectory, "main.mjs"), "console.log('ok');\n");
-    const packageBytes = await buildAgentSkillPackage({
-      skillId: "test-runtime",
-      runtimeVersion: "1.0.0",
-      sourceDirectory: temporaryDirectory,
-      entrypointPath: "main.mjs",
-      interpreter: "node",
-      executionPolicy: {
-        schemaVersion: 1,
-        readOnlyArgumentPrefixes: [["inspect"], ["policy", "show"]],
-      },
-    });
-    const parsed = parseAndValidateAgentSkillPackage(packageBytes, "test-runtime");
-
-    assert.equal(agentSkillRuntimeArgumentsAreReadOnly(parsed, ["inspect", "--limit", "10"]), true);
-    assert.equal(agentSkillRuntimeArgumentsAreReadOnly(parsed, ["policy", "show"]), true);
-    assert.equal(agentSkillRuntimeArgumentsAreReadOnly(parsed, ["policy", "set"]), false);
-    assert.equal(agentSkillRuntimeArgumentsAreReadOnly(parsed, ["mutate"]), false);
-    await assert.rejects(
-      buildAgentSkillPackage({
-        skillId: "test-runtime",
-        runtimeVersion: "1.0.0",
-        sourceDirectory: temporaryDirectory,
-        entrypointPath: "main.mjs",
-        interpreter: "node",
-        executionPolicy: {
-          schemaVersion: 1,
-          readOnlyArgumentPrefixes: [["inspect"], ["inspect"]],
-        },
-      }),
-      /повторяет read-only prefix/u,
-    );
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
-  }
 });
 
 test("skill pack rejects machine-specific Python bytecode cache", async () => {
@@ -7816,7 +7773,6 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
       `if (process.env.TRELIO_SECRET_FILE) await writeFile(${JSON.stringify(deliveredFilePathLog)}, process.env.TRELIO_SECRET_FILE, "utf8");`,
       `const stdinGrant = stdinValue === ${JSON.stringify(secretValues.stdin)};`,
       `if (process.env.TRELIO_TEST_SETUP_TOKEN) process.stdout.write("setup-authorized:" + (process.env.TRELIO_TEST_SETUP_TOKEN === ${JSON.stringify(secretValues.env)}) + "\\n");`,
-      'if (process.env.TRELIO_SKILL_READ_ONLY_ACTION === "1") process.stdout.write("read-only-action\\n");',
       "process.stdout.write(`runtime:${process.argv.slice(2).join(',')}:${process.env.TRELIO_SKILL_RELEASE_ID}:${process.env.TRELIO_SKILL_MEMBER_ID}:${process.env.TRELIO_SKILL_CONNECTION_ID}:${process.env.TRELIO_SKILL_CONNECTION_CONFIG_JSON}:project=${process.env.TRELIO_SKILL_PROJECT_ID || 'none'}:grants=${envGrant},${fileGrant},${stdinGrant}\\n`);",
       "",
     ].join("\n"),
@@ -7833,10 +7789,6 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
     entrypointPath: "main.mjs",
     interpreter: "node",
     capabilities: ["network", "secret-checkout"],
-    executionPolicy: {
-      schemaVersion: 1,
-      readOnlyArgumentPrefixes: [["inspect"]],
-    },
   });
   const packageSha256 = createHash("sha256").update(packageBytes).digest("hex");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -8036,16 +7988,12 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
       `${JSON.stringify({ schemaVersion: 3, origin, runId }, null, 2)}\n`,
       "utf8",
     );
-    const runSkill = (
-      runtimeArguments = ["--message", "hello"],
-      { readOnly = false } = {},
-    ) => execFileAsync(
+    const runSkill = (runtimeArguments = ["--message", "hello"]) => execFileAsync(
       process.execPath,
       [
         bridgePath,
         "skill",
         "run",
-        ...(readOnly ? ["--read-only-action"] : []),
         "--origin",
         origin,
         "--company",
@@ -8124,13 +8072,6 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
     assert.equal(resolveCount, boundSession ? 1 : 2, "only exact bound sessions may reuse admission");
     assert.equal(packageDownloadCount, 1, "second invocation must use verified cache");
 
-    const readOnlyRun = await runSkill(["inspect", "--limit", "10"], { readOnly: true });
-    assert.match(readOnlyRun.stdout, /read-only-action/u);
-    await assert.rejects(
-      runSkill(["mutate"], { readOnly: true }),
-      /Signed runtime manifest не разрешает эти аргументы/u,
-    );
-
     for (const deliveryMode of ["env", "file", "stdin"]) {
       const grantedRun = await runWithGrant(deliveryMode);
       const expectedGrantTuple = {
@@ -8169,7 +8110,7 @@ test(`skill host ${boundSession ? "reuses twelve-hour admission" : "resolves leg
 
     const repairedRun = await runSkill();
     assert.match(repairedRun.stdout, new RegExp(expectedRuntimeOutput.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
-    assert.equal(resolveCount, boundSession ? 2 : 9, "damaged package bytes require live reauthorization");
+    assert.equal(resolveCount, boundSession ? 2 : 7, "damaged package bytes require live reauthorization");
     assert.equal(packageDownloadCount, 2, "tampered cache must be downloaded again");
     const resolvesBeforeSetup = resolveCount;
     for (let invocation = 0; invocation < 2; invocation += 1) {

@@ -129,20 +129,6 @@ payload вместе с release одной транзакцией. Исполн�
 3. Использует content-addressed cache только после полной проверки.
 4. Запускает exact command с `shell:false`.
 
-Platform-verified package может дополнительно подписать bounded
-`executionPolicy.schemaVersion=1` с exact `readOnlyArgumentPrefixes`. Тогда
-backend возвращает рядом с обычным `runtimeExecution.localAction` отдельный
-`runtimeExecution.readOnlyLocalAction`. Model-visible facade
-`continue_trelio_read_only_skill_action` имеет `readOnlyHint=true`,
-`destructiveHint=false`, но сохраняет `openWorldHint=true` для сетевых чтений.
-Host допускает только operation `skill_run_read_only`, повторно требует
-`platform_verified` publication и artifact, сверяет полный runtime argv с одним
-из подписанных prefixes и только затем передаёт runtime-у host-only read-only
-marker. Unknown/legacy policy, неподходящий argv, secret checkout, setup route и
-любой `company_unverified` package fail closed и остаются на обычном
-destructive dispatcher. Generic host не выводит безопасность из имени команды
-и не содержит provider-specific allowlist.
-
 Перед первым запуском `company_unverified` release агент показывает publisher,
 summary и обязательную причину публикации. Затем host открывает защищённую
 одноразовую форму на `127.0.0.1`. Только сам пользователь может нажать в ней

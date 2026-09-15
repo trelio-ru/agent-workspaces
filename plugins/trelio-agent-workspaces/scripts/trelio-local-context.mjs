@@ -158,7 +158,6 @@ const TRELIO_WORKSPACE_ACTION_OPERATIONS = new Set([
   "submit",
   "skill_pack",
   "skill_run",
-  "skill_run_read_only",
   "secret_exec",
   "secret_browser_fill",
   "secret_set_file",
@@ -8205,7 +8204,7 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
         maximumItems: 32,
       }),
     );
-  } else if (operation === "skill_run" || operation === "skill_run_read_only") {
+  } else if (operation === "skill_run") {
     assertWorkspaceActionKeys(parameters, new Set([
       "companyId",
       "projectId",
@@ -8217,7 +8216,6 @@ export const buildTrelioWorkspaceActionInvocation = (rawInput) => {
     argumentsList = [
       "skill",
       "run",
-      ...(operation === "skill_run_read_only" ? ["--read-only-action"] : []),
       "--company",
       normalizeWorkspaceActionUuid(parameters.companyId, "parameters.companyId"),
     ];
@@ -8789,26 +8787,6 @@ export const handleTrelioWorkspaceActionOperation = async (
   } finally {
     heartbeatManager?.endAction(activeHeartbeatEntry);
   }
-};
-
-/**
- * Keep the model-visible read-only annotation truthful even if a client skips
- * JSON-schema validation. Only the dedicated operation can enter this handler;
- * the bridge then verifies the signed runtime policy and Trelio trust before
- * spawning any provider code.
- */
-export const handleTrelioReadOnlySkillActionOperation = async (
-  origin,
-  rawInput,
-  options = {},
-) => {
-  if (rawInput?.operation !== "skill_run_read_only") {
-    throw new TrelioLocalContextError(
-      "TRELIO_WORKSPACE_ACTION_INVALID_INPUT",
-      "The read-only skill facade accepts only skill_run_read_only.",
-    );
-  }
-  return handleTrelioWorkspaceActionOperation(origin, rawInput, options);
 };
 
 const isHumanFacingLocalWorkspacePath = (filePath) => {
@@ -10317,26 +10295,6 @@ export const TRELIO_WORKSPACE_ACTION_TOOL = {
   annotations: {
     readOnlyHint: false,
     destructiveHint: true,
-    openWorldHint: true,
-  },
-};
-
-export const TRELIO_READ_ONLY_SKILL_ACTION_TOOL = {
-  name: "continue_trelio_read_only_skill_action",
-  description: "Run one exact server-returned read-only action of a Trelio-verified signed skill; keep operation and parameters unchanged.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["schemaVersion", "operation", "parameters"],
-    properties: {
-      schemaVersion: { type: "integer", const: TRELIO_WORKSPACE_ACTION_SCHEMA_VERSION },
-      operation: { type: "string", const: "skill_run_read_only" },
-      parameters: { type: "object" },
-    },
-  },
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
     openWorldHint: true,
   },
 };

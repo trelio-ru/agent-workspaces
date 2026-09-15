@@ -83,7 +83,7 @@ import {
 } from "./trelio-skill-admission.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "2.2.3";
+export const BRIDGE_VERSION = "2.2.2";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
   path.dirname(BRIDGE_ENTRYPOINT_PATH),
@@ -459,9 +459,6 @@ const AGENT_SKILL_ALLOWED_CAPABILITIES = new Set([
   "network",
   "secret-checkout",
 ]);
-const AGENT_SKILL_READ_ONLY_PREFIX_MAX_COUNT = 64;
-const AGENT_SKILL_READ_ONLY_PREFIX_MAX_ARGUMENTS = 8;
-const AGENT_SKILL_READ_ONLY_PREFIX_ARGUMENT_MAX_LENGTH = 256;
 const WORKSPACE_OBJECT_POINTER_VERSION = "https://trelio.ru/spec/workspace-object/v1";
 const MAX_INLINE_TEXT_BYTES = 4 * 1024 * 1024;
 const TARGET_INLINE_GIT_TREE_BYTES = 48 * 1024 * 1024;
@@ -5370,9 +5367,6 @@ export const parseAndValidateAgentSkillPackage = (
   const capabilities = Array.isArray(runtimePackage?.capabilities)
     ? runtimePackage.capabilities.map(String)
     : [];
-  const executionPolicy = normalizeAgentSkillExecutionPolicy(
-    runtimePackage?.executionPolicy,
-  );
   const files = runtimePackage?.files;
 
   if (runtimePackage?.format !== AGENT_SKILL_PACKAGE_FORMAT) {
@@ -5476,74 +5470,10 @@ export const parseAndValidateAgentSkillPackage = (
       interpreter,
     },
     capabilities,
-    executionPolicy,
     files: parsedFiles,
     packageSha256: crypto.createHash("sha256").update(packageBytes).digest("hex"),
     packageSizeBytes: packageBytes.byteLength,
   };
-};
-
-/**
- * Normalize the optional signed classification used by the dedicated
- * read-only MCP facade. The declaration is deliberately a list of exact argv
- * prefixes rather than command names inferred by the generic host: provider
- * semantics stay with the independently released runtime, while bounds and
- * duplicate rejection keep the security-relevant comparison deterministic.
- */
-export const normalizeAgentSkillExecutionPolicy = (rawPolicy) => {
-  if (rawPolicy === undefined) return null;
-  if (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy)) {
-    throw new Error("Runtime package executionPolicy должен быть объектом.");
-  }
-  const unknownKey = Object.keys(rawPolicy).find(
-    (key) => !["schemaVersion", "readOnlyArgumentPrefixes"].includes(key),
-  );
-  if (unknownKey || rawPolicy.schemaVersion !== 1) {
-    throw new Error("Runtime package executionPolicy использует неподдерживаемую схему.");
-  }
-  if (
-    !Array.isArray(rawPolicy.readOnlyArgumentPrefixes)
-    || rawPolicy.readOnlyArgumentPrefixes.length === 0
-    || rawPolicy.readOnlyArgumentPrefixes.length > AGENT_SKILL_READ_ONLY_PREFIX_MAX_COUNT
-  ) {
-    throw new Error("Runtime package executionPolicy содержит недопустимое число read-only prefixes.");
-  }
-
-  const prefixes = rawPolicy.readOnlyArgumentPrefixes.map((rawPrefix, prefixIndex) => {
-    if (
-      !Array.isArray(rawPrefix)
-      || rawPrefix.length === 0
-      || rawPrefix.length > AGENT_SKILL_READ_ONLY_PREFIX_MAX_ARGUMENTS
-    ) {
-      throw new Error(`Runtime package read-only prefix ${prefixIndex} имеет недопустимую длину.`);
-    }
-    return rawPrefix.map((rawArgument, argumentIndex) => {
-      if (
-        typeof rawArgument !== "string"
-        || rawArgument.length === 0
-        || rawArgument.length > AGENT_SKILL_READ_ONLY_PREFIX_ARGUMENT_MAX_LENGTH
-        || /[\u0000-\u001f\u007f]/u.test(rawArgument)
-      ) {
-        throw new Error(
-          `Runtime package read-only prefix ${prefixIndex} argument ${argumentIndex} недопустим.`,
-        );
-      }
-      return rawArgument;
-    });
-  });
-  const identities = prefixes.map((prefix) => JSON.stringify(prefix));
-  if (new Set(identities).size !== identities.length) {
-    throw new Error("Runtime package executionPolicy повторяет read-only prefix.");
-  }
-  return { schemaVersion: 1, readOnlyArgumentPrefixes: prefixes };
-};
-
-export const agentSkillRuntimeArgumentsAreReadOnly = (parsedPackage, runtimeArguments) => {
-  const prefixes = parsedPackage?.executionPolicy?.readOnlyArgumentPrefixes ?? [];
-  return prefixes.some((prefix) => (
-    runtimeArguments.length >= prefix.length
-    && prefix.every((argument, index) => runtimeArguments[index] === argument)
-  ));
 };
 
 const collectAgentSkillPackageSourceFiles = async (sourceDirectory) => {
@@ -5611,7 +5541,6 @@ export const buildAgentSkillPackage = async ({
   entrypointPath,
   interpreter,
   capabilities = [],
-  executionPolicy = null,
 }) => {
   if (!SKILL_ID_PATTERN.test(String(skillId || ""))) {
     throw new Error("Параметр --skill должен содержать lowercase kebab-case id.");
@@ -5625,9 +5554,6 @@ export const buildAgentSkillPackage = async ({
 
   const normalizedEntrypoint = normalizeAgentSkillPackagePath(entrypointPath);
   const uniqueCapabilities = [...new Set(capabilities.map(String))].sort();
-  const normalizedExecutionPolicy = executionPolicy === null
-    ? null
-    : normalizeAgentSkillExecutionPolicy(executionPolicy);
 
   if (
     uniqueCapabilities.some(
@@ -5681,9 +5607,6 @@ export const buildAgentSkillPackage = async ({
       interpreter,
     },
     capabilities: uniqueCapabilities,
-    ...(normalizedExecutionPolicy
-      ? { executionPolicy: normalizedExecutionPolicy }
-      : {}),
     files: packageFiles,
   })}\n`, "utf8");
 
@@ -5874,9 +5797,6 @@ const inspectEncryptedAgentSkillRuntimeForConsent = async ({
       },
       entrypoint: parsedPackage.entrypoint,
       capabilities: [...parsedPackage.capabilities].sort(),
-      ...(parsedPackage.executionPolicy
-        ? { executionPolicy: parsedPackage.executionPolicy }
-        : {}),
       files: parsedPackage.files.map((file) => ({
         path: file.path,
         mode: file.mode,
@@ -5956,9 +5876,6 @@ const downloadAndMaterializeAgentSkillRuntime = async ({
       },
       entrypoint: artifact.parsedPackage.entrypoint,
       capabilities: [...artifact.parsedPackage.capabilities].sort(),
-      ...(artifact.parsedPackage.executionPolicy
-        ? { executionPolicy: artifact.parsedPackage.executionPolicy }
-        : {}),
       files: artifact.parsedPackage.files.map((file) => ({
         path: file.path,
         mode: file.mode,
@@ -6624,7 +6541,6 @@ export const buildAgentSkillRuntimeEnvironment = ({
     TRELIO_SKILL_MEMBER_ID: _staleMemberId,
     TRELIO_SKILL_CONNECTION_ID: _staleConnectionId,
     TRELIO_SKILL_CONNECTION_CONFIG_JSON: _staleConnectionConfig,
-    TRELIO_SKILL_READ_ONLY_ACTION: _staleReadOnlyAction,
     ...cleanEnvironment
   } = sanitizeAgentSkillInheritedEnvironment(inheritedEnvironment);
   const connectionConfigJson = executionContext.companyConnection
@@ -6700,9 +6616,6 @@ export const buildAgentSkillRuntimeEnvironment = ({
           TRELIO_SKILL_CONNECTION_CONFIG_JSON: connectionConfigJson,
         }
       : {}),
-    ...(executionContext.readOnlyAction
-      ? { TRELIO_SKILL_READ_ONLY_ACTION: "1" }
-      : {}),
     // A server-authorized checkout is not ambient parent environment. It is
     // supplied only by this process's secret-exec -> exact skill-run handoff
     // below, after live release resolution, and cannot override host identity.
@@ -6720,7 +6633,6 @@ const runMaterializedAgentSkill = async ({
   grantedEnvironment = {},
   grantedStdin = null,
   prepareSetupEnvironment = null,
-  readOnlyAction = false,
 }) => {
   const entrypointPath = path.join(
     runtimeDirectory,
@@ -6753,10 +6665,7 @@ const runMaterializedAgentSkill = async ({
       env: buildAgentSkillRuntimeEnvironment({
         artifact,
         runtimeDirectory,
-        // The signed argv-prefix check is enforced by the host before spawn.
-        // The marker gives a cooperating verified runtime a second independent
-        // fail-closed check without trusting ambient parent environment.
-        executionContext: { ...executionContext, readOnlyAction },
+        executionContext,
         grantedEnvironment,
       }),
       shell: false,
@@ -7047,11 +6956,6 @@ const skillCommand = async (
   { grantedEnvironment = {}, grantedStdin = null, refreshAdmission = false } = {},
 ) => {
   const skillSubcommand = positional[0];
-  const readOnlyActionOption = options["read-only-action"];
-  if (readOnlyActionOption !== undefined && readOnlyActionOption !== true) {
-    throw new Error("Параметр --read-only-action не принимает значение и не может повторяться.");
-  }
-  const readOnlyAction = readOnlyActionOption === true;
 
   if (skillSubcommand === "pack") {
     const sourceDirectory = path.resolve(String(options.source || ""));
@@ -7082,10 +6986,6 @@ const skillCommand = async (
 
   if (skillSubcommand !== "run") {
     throw new Error("Поддерживаются `skill pack` и `skill run`.");
-  }
-
-  if (readOnlyAction && (Object.keys(grantedEnvironment).length || grantedStdin !== null)) {
-    throw new Error("Read-only запуск навыка не принимает Agent Secret checkout.");
   }
 
   const companyId = requireUuid(options.company, "company");
@@ -7220,25 +7120,7 @@ const skillCommand = async (
     runtimeDirectory = materialized.runtimeDirectory;
   }
 
-  if (readOnlyAction) {
-    if (
-      resolution.trust.level !== "platform_verified"
-      || resolution.trust.artifactLevel !== "platform_verified"
-    ) {
-      throw new Error("Read-only запуск доступен только проверенному Trelio runtime.");
-    }
-    if (!agentSkillRuntimeArgumentsAreReadOnly(
-      artifactForCache.parsedPackage,
-      positional.slice(1),
-    )) {
-      throw new Error("Signed runtime manifest не разрешает эти аргументы через read-only маршрут.");
-    }
-  }
-
   const setupCommand = readSkillSecretSetupCommand(artifactForCache.parsedPackage, positional.slice(1));
-  if (readOnlyAction && setupCommand) {
-    throw new Error("Read-only запуск не выполняет команды настройки с secret delivery.");
-  }
   if (setupCommand && (Object.keys(grantedEnvironment).length || grantedStdin !== null)) {
     throw new Error("Команда настройки использует собственную signed-доставку. Запустите её через runtimeExecution без checkout grant.");
   }
@@ -7263,7 +7145,6 @@ const skillCommand = async (
     },
     grantedEnvironment,
     grantedStdin,
-    readOnlyAction,
     prepareSetupEnvironment: setupCommand ? () => deliverSkillSetupEnvironment({
       request, origin, token, command: setupCommand, resolution, companyId,
       projectId, skillId, releaseId, runtimeSessionId,

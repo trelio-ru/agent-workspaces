@@ -90,12 +90,6 @@ provider-tag workflow или внутренние release playbooks в этот 
   capability matrices не добавляются в plugin instructions, README или tests.
   Generic regression использует synthetic integration identity и проверяет
   только host protocol/security semantics.
-- Signed `executionPolicy` может открыть отдельный read-only facade только для
-  exact argv-prefix, если backend и host подтвердили `platform_verified`
-  publication и artifact. Host не выводит безопасность из provider command,
-  блокирует secret/setup через этот facade и передаёт runtime-у отдельный
-  fail-closed marker. Company-unverified и legacy packages остаются на обычном
-  destructive dispatcher независимо от содержимого manifest.
 - Remote MCP schema v1 сохраняет exact allowlist. Schema v2
   `toolPolicy.mode=all_read_only` допустима только с `authentication.type=none`
   и требует host `>=1.13.3`: перед doctor и каждым call host заново читает

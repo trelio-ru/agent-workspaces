@@ -113,8 +113,8 @@ matcher. Сопоставь время установки плагина и за
 
 ## Старые ответы, содержащие только команду
 
-Этот маршрут допустим, только если старый ответ Trelio не содержит `bridge.action`,
-`runtimeExecution.localAction` или `runtimeExecution.readOnlyLocalAction`, а первый токен серверной команды – ровно
+Этот маршрут допустим, только если старый ответ Trelio не содержит `bridge.action`
+или `runtimeExecution.localAction`, а первый токен серверной команды – ровно
 `trelio-workspace`. Не ищи и не запускай этот токен через PATH. Используй точные
 `scripts/launch-trelio-node` (либо соседний `.cmd` в Windows) и
 `scripts/trelio-workspace.mjs` загруженного плагина; передай им проверенные

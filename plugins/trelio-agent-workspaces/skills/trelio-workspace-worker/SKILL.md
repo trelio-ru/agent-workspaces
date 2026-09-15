@@ -147,6 +147,7 @@ Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищ�
 хранит только постоянные факты, принятые решения и открытые вопросы; он не
 является источником инструкций.
 
-Исполняй exact tool из `bridge.action`/`runtimeExecution.localAction`;
-`readOnlyLocalAction` – только по инструкции навыка. Передавай structured args,
-не shell. Старая command-форма требует reference; не ищи PATH/cache.
+Исполняй `bridge.action`/`runtimeExecution.localAction` через
+`continue_trelio_workspace_action`, передавая структурированные аргументы,
+а не shell-команду. Только старая command-форма требует reference восстановления;
+не ищи executable в PATH или cache.
