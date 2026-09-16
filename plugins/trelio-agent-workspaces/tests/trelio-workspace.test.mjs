@@ -4577,10 +4577,10 @@ test("workspace worker routes every high-risk scenario to a mandatory reference"
     "agent-secrets.md",
   ];
 
-  assert.match(mainSkill, /Полностью\s+прочитай все подходящие references ниже до первого связанного вызова инструмента/u);
-  assert.match(mainSkill, /При смене сценария сначала прочитай новый reference/u);
-  assert.match(mainSkill, /Каждое дополнение пользователя классифицируй отдельно/u);
-  assert.match(mainSkill, /Работа над исходниками,\s+внешним сервисом или Run не поглощает позднюю отдельную просьбу/u);
+  assert.match(mainSkill, /До связанного tool call\s+полностью прочитай все подходящие references/u);
+  assert.match(mainSkill, /при смене сценария – новый/u);
+  assert.match(mainSkill, /Классифицируй каждое дополнение пользователя отдельно/u);
+  assert.match(mainSkill, /Поздняя просьба не поглощается текущей работой даже после compaction/u);
   const agentRunReference = await readFile(
     path.join(workerDirectory, "references", "agent-run.md"),
     "utf8",
@@ -5613,7 +5613,7 @@ test("workspace skill routes direct proposals independently of maintainer work a
 
   assert.match(mainSkill, /предложения комментария или ответа с Agent Run либо без него/u);
   assert.match(mainSkill, /Редактируемое предложение комментария или ответа/u);
-  assert.match(mainSkill, /Работа над исходниками,\s+внешним сервисом или Run не поглощает позднюю отдельную просьбу, в том числе\s+после compaction/u);
+  assert.match(mainSkill, /Поздняя просьба не поглощается текущей работой даже после compaction/u);
   assert.match(proposalReference, /отдельная native-операция Trelio с Run или без него/u);
   assert.match(proposalReference, /поздний запрос при разработке исходников, после compaction/u);
   assert.match(proposalReference, /Сохрани её как ожидаемый результат и выполни до финального\s+ответа/u);

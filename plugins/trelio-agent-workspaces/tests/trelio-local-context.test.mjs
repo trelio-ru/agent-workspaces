@@ -22,6 +22,7 @@ import {
   TRELIO_WORKSPACE_ACTION_TOOL,
   WORKSPACE_RUN_AUTO_HEARTBEAT_INTERVAL_MS,
   buildEncryptedRestoreHandoffArguments,
+  buildLocalCancelledRunReceipt,
   buildLocalTaskAttachmentStreamRequest,
   buildLocalMarkdownDocument,
   buildLocalProposalPublicationDocument,
@@ -892,7 +893,13 @@ test("local search exposes archived workspaces as marked read-only history outsi
 });
 
 test("agent-guidance routing ranks skills and published procedures in one local result", () => {
-  const result = handleNativeLocalContextRead(mirror, "search_agent_guidance", {
+  const mirrorWithStorageInventory = structuredClone(mirror);
+  mirrorWithStorageInventory.company.storageProjectsJson = Array.from(
+    { length: 25 },
+    (_, index) => ({ id: `unrelated-${index}`, name: `Лишний проект ${index}` }),
+  );
+  mirrorWithStorageInventory.company.usageBytes = 9_999_999;
+  const result = handleNativeLocalContextRead(mirrorWithStorageInventory, "search_agent_guidance", {
     companySlug: "acme",
     query: "кто в отпуске",
     hints: ["согласование", "отсутствие"],
@@ -909,6 +916,12 @@ test("agent-guidance routing ranks skills and published procedures in one local 
     text: "кто в отпуске",
     hints: ["согласование", "отсутствие"],
   });
+  assert.deepEqual(result.company, {
+    id: "11111111-1111-4111-8111-111111111111",
+    slug: "acme",
+    name: "Acme",
+  });
+  assert.doesNotMatch(JSON.stringify(result), /Лишний проект|9999999/u);
   const skill = result.guidance.find(({ kind }) => kind === "skill");
   assert.deepEqual(skill.connection, { status: "ready", configured: true });
   assert.doesNotMatch(JSON.stringify(result), /must-never-reach-guidance-search/u);
@@ -950,6 +963,32 @@ test("native personal task reads keep the ordinary MCP list shape and local quer
   assert.deepEqual(result.pagination, { limit: 50, offset: 0, total: 1, hasMore: false });
   assert.equal(result.filters.query, "офлайн контекст");
   assert.equal(Object.hasOwn(result, "provider"), false);
+});
+
+test("empty project task lists keep only the compact project identity", () => {
+  const mirrorWithStorageAccounting = structuredClone(mirror);
+  const project = mirrorWithStorageAccounting.projects.find(({ slug }) => slug === "mobile");
+  project.usageBytes = 1_234_567;
+  project.attachmentCount = 35;
+
+  const result = handleNativeLocalContextRead(
+    mirrorWithStorageAccounting,
+    "list_project_tasks",
+    {
+      companySlug: "acme",
+      projectSlug: "mobile",
+      query: "no-such-task",
+    },
+  );
+
+  assert.deepEqual(result.project, {
+    id: project.id,
+    slug: "mobile",
+    name: project.name,
+    isArchived: false,
+  });
+  assert.deepEqual(result.tasks, []);
+  assert.doesNotMatch(JSON.stringify(result), /1234567|attachmentCount/u);
 });
 
 test("native exact-task reads preserve schema-v3 instruction and deferred-section shape", () => {
@@ -2563,6 +2602,34 @@ test("always-visible local schemas stay compact and provider-neutral", () => {
     "cancel_run",
   ]);
   assert.equal(TRELIO_LOCAL_WORKSPACE_TOOL.annotations.readOnlyHint, false);
+});
+
+test("cancelled local Run returns a compact mutation receipt", () => {
+  const receipt = buildLocalCancelledRunReceipt({ run: {
+    id: "88888888-8888-4888-8888-888888888888",
+    workspaceId: "55555555-5555-4555-8555-555555555555",
+    status: "cancelled",
+    fencingToken: 7,
+    cancelledAt: "2026-09-16T10:00:00.000Z",
+    updatedAt: "2026-09-16T10:00:00.000Z",
+    agentInstructionsSnapshotJson: { markdown: "must stay local" },
+    runtimePolicySnapshotJson: { rules: ["must stay local"] },
+    handoffJson: { summary: "must stay local" },
+  } });
+
+  assert.deepEqual(receipt, {
+    schemaVersion: 1,
+    action: "cancel_agent_workspace_run",
+    run: {
+      id: "88888888-8888-4888-8888-888888888888",
+      workspaceId: "55555555-5555-4555-8555-555555555555",
+      status: "cancelled",
+      fencingToken: 7,
+      cancelledAt: "2026-09-16T10:00:00.000Z",
+      updatedAt: "2026-09-16T10:00:00.000Z",
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(receipt), /must stay local/u);
 });
 
 test("ambiguous restore prepare is recovered only by one exact audit marker", () => {

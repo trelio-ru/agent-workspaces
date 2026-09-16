@@ -4238,6 +4238,25 @@ const resolveMirrorProjectBySlug = (mirror, projectSlug) => {
   return matches[0] ?? null;
 };
 
+// Mirror company metadata also carries encrypted-storage accounting and the
+// complete project inventory needed only by local synchronization. Returning
+// that object from one search/list result leaked unrelated project names and
+// multiplied model context. Every model-facing route uses this explicit public
+// identity projection instead; the full object remains inside the trusted host.
+const buildLocalCompanySummary = (company) => ({
+  id: company?.id ?? null,
+  slug: company?.slug ?? null,
+  name: company?.name ?? null,
+});
+
+const buildLocalProjectSummary = (project) => project ? ({
+  id: project.id ?? null,
+  slug: project.slug ?? null,
+  name: project.name ?? null,
+  ...(project.publicPath ? { publicPath: project.publicPath } : {}),
+  ...(typeof project.isArchived === "boolean" ? { isArchived: project.isArchived } : {}),
+}) : null;
+
 const buildMirrorProjectScopeMatcher = (mirror, projectSlug) => {
   if (!projectSlug) return () => true;
   const project = resolveMirrorProjectBySlug(mirror, projectSlug);
@@ -4859,7 +4878,7 @@ const buildLocalListedTask = (mirror, record, rawInput) => {
     dueDate,
     deadlineTone: task.deadlineTone ?? null,
     hasUnreadNotifications: Boolean(task.hasUnreadNotifications),
-    company: detail.company ?? mirror.company,
+    company: buildLocalCompanySummary(detail.company ?? mirror.company),
     project: {
       id: project.id,
       slug: project.slug,
@@ -4980,7 +4999,7 @@ const listTasksFromMirror = (mirror, rawInput, { personal = false } = {}) => {
 
   return personal
     ? {
-        company: mirror.company,
+        company: buildLocalCompanySummary(mirror.company),
         viewer: mirror.viewer,
         relation,
         archiveState,
@@ -4994,13 +5013,13 @@ const listTasksFromMirror = (mirror, rawInput, { personal = false } = {}) => {
         pagination: { limit, offset, total: tasks.length, hasMore: offset + page.length < tasks.length },
       }
     : {
-        company: page[0]?.company ?? mirror.company,
-        project: page[0]?.project
+        company: buildLocalCompanySummary(page[0]?.company ?? mirror.company),
+        project: buildLocalProjectSummary(page[0]?.project
           ?? (mirror.projects ?? []).find((project) => matchesProjectScope({
             projectId: project.id,
             projectSlug: project.slug,
           }))
-          ?? null,
+          ?? null),
         archiveState,
         filters,
         tasks: page,
@@ -5083,7 +5102,7 @@ const searchTasksFromMirror = (mirror, rawInput) => {
       url: mirror.origin ? new URL(publicPath, mirror.origin).toString() : publicPath,
       archivedAt: task.archivedAt ?? null,
       isArchived: Boolean(task.isArchived || task.archivedAt),
-      company: detail.company ?? mirror.company,
+      company: buildLocalCompanySummary(detail.company ?? mirror.company),
       project: {
         id: project.id,
         slug: project.slug,
@@ -5234,7 +5253,7 @@ const searchAgentGuidanceFromMirror = (mirror, rawInput) => {
     .slice(0, limit);
 
   return {
-    company: mirror.company,
+    company: buildLocalCompanySummary(mirror.company),
     project: project ? { id: project.id, slug: project.slug, name: project.name } : null,
     query: { text: query, hints },
     guidance: ranked.map(({ document, matchedTerms, matchedFields }, index) => {
@@ -5352,7 +5371,7 @@ const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
   return {
     schemaVersion: 1,
     provider: "local_company_context",
-    company: mirror.company,
+    company: buildLocalCompanySummary(mirror.company),
     generation: mirror.generation,
     offset,
     limit,
@@ -5378,7 +5397,7 @@ const listRegularWorkFromMirror = (mirror, rawInput) => {
     Boolean(document.payload?.viewer?.canEdit),
   ]));
   const projects = [...projectById.values()].map((project) => ({
-      ...project,
+      ...buildLocalProjectSummary(project),
       // Company managers are authoritative for every visible project. For an
       // ordinary member, exact set reads prove edit access only for projects
       // already represented in this generation; unknown capability stays false.
@@ -5396,7 +5415,7 @@ const listRegularWorkFromMirror = (mirror, rawInput) => {
     return {
       id: set.id ?? document.id,
       title: set.title ?? document.title,
-      project: payload.project ?? projectById.get(document.projectId) ?? null,
+      project: buildLocalProjectSummary(payload.project ?? projectById.get(document.projectId)),
       schedule: set.schedule ?? null,
       state: set.state,
       revision: set.revision,
@@ -5413,7 +5432,7 @@ const listRegularWorkFromMirror = (mirror, rawInput) => {
     };
   });
   return {
-    company: documents[0]?.payload?.company ?? mirror.company,
+    company: buildLocalCompanySummary(documents[0]?.payload?.company ?? mirror.company),
     projects,
     sets,
     viewer: {
@@ -5600,8 +5619,8 @@ const listWorkspacesFromMirror = (mirror, rawInput) => {
     provider: "local_company_context",
     owner: {
       scope: project ? "project" : "company",
-      company: mirror.company,
-      project,
+      company: buildLocalCompanySummary(mirror.company),
+      project: buildLocalProjectSummary(project),
     },
     generation: mirror.generation,
     workspaces,
@@ -7218,11 +7237,14 @@ export const handleTrelioLocalContextOperation = async (
     if (!Number.isSafeInteger(taskNumber) || taskNumber <= 0) {
       throw new TrelioLocalContextError("LOCAL_CONTEXT_INVALID_INPUT", "taskNumber must be positive.");
     }
-    return getTaskFromMirror(ready.mirror, {
+    // Compatibility callers now receive the same schema-v3 compact core as
+    // native get_task. Heavy comments, people and workflow stay behind one
+    // explicit get_task_sections read instead of reviving the legacy payload.
+    return buildLocalExactTaskRead(ready.mirror, [{
+      companySlug,
       projectSlug,
       taskNumber,
-      knownInstructionLayerKeys: rawInput?.knownInstructionLayerKeys,
-    });
+    }], rawInput?.knownInstructionLayerKeys);
   }
   if (operation === "fetch") {
     return fetchMirrorResult(
@@ -8847,6 +8869,23 @@ const normalizeLocalWorkspaceHistoryInteger = (
   return normalized;
 };
 
+export const buildLocalCancelledRunReceipt = (value) => {
+  const run = value?.run && typeof value.run === "object" ? value.run : value;
+  if (!run || typeof run !== "object") return value;
+  return {
+    schemaVersion: 1,
+    action: "cancel_agent_workspace_run",
+    run: {
+      id: run.id ?? null,
+      workspaceId: run.workspaceId ?? null,
+      status: run.status ?? null,
+      fencingToken: run.fencingToken ?? null,
+      cancelledAt: run.cancelledAt ?? null,
+      updatedAt: run.updatedAt ?? null,
+    },
+  };
+};
+
 const normalizeLocalWorkspaceDiffStatus = (statusCode) => {
   const status = statusCode.slice(0, 1);
   if (status === "A") return "added";
@@ -10034,7 +10073,10 @@ export const handleTrelioLocalWorkspaceOperation = async (
       origin,
       token: provider.token,
     }).catch(() => undefined);
-    return hydratedResult;
+    // Cancellation authority snapshots and handoff history are useful to the
+    // trusted local bridge while preparing the request, but after a successful
+    // mutation the model needs only the exact resulting status and fence.
+    return buildLocalCancelledRunReceipt(hydratedResult);
   }
   if (operation === "restore_revision") {
     const expectedHead = normalizeGitHead(rawInput?.expectedHead, "expectedHead");

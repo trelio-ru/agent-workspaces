@@ -63,9 +63,9 @@ set result; ищутся active items/manual comments/files, не system events.
 `list` – лишь для явного inventory или задачи с известным проектом без номера:
 документированный resource, необязательные project/offset, `limit<=100`.
 Регулярные native list/get читай через `operation=native_read`.
-`get_task` – точный project slug и положительный номер. Он возвращает
-правила/профиль и разрешает точный старый slug до шифрования/переименования,
-возвращая только текущий канонический.
+`get_task` со slug/positive number возвращает schema-v3 rules/profile/core
+и канонизирует slug; heavy sections – один `get_task_sections`. Lists показывают
+лишь company `id/slug/name` и compact project, не inventory/storage accounting.
 
 Если exact local `fetch`, `get_task` или `native_read` вернул
 `effectiveInstructions.nextReadArguments`, передай эти поля в следующее exact
@@ -108,7 +108,7 @@ accepted-head fence. Эти маршруты не начинают Run и не �
   один точный marker read-back, не предположительный второй Run.
 - `cancel_run`: `runId` и конкретная причина, которую защищает host.
   Только transport/5xx или malformed success допускают ограниченный повтор
-  с тем же маркером.
+  с тем же маркером. Успех – IDs/status/fencing/time без Run row/authority.
 
 Plaintext истории находится во временном Git-корне, удаляемом до возврата;
 controls скрыты. Не воспроизводи шаги bridge и не повторяй неподтверждённый restore.
@@ -125,7 +125,8 @@ controls скрыты. Не воспроизводи шаги bridge и не п�
   фиксирует local renderer и правильную вложенность цели.
 - `render_trelio_local_proposal`, `operation=save`: та же цель, plaintext
   draft/reasons и точные revision/snapshot из контекста. Host отправляет
-  только локально зашифрованный подписанный ciphertext.
+  только signed encrypted ciphertext. App payload – hidden
+  `_meta`; receipt omits comments/Run evidence/members.
 
 Local route приоритетнее generic native-имени даже после compaction. Первый
 подтверждённый local company read уже сохраняет выбор коротким owner-private

@@ -145,7 +145,8 @@ MCP/App. Плагин шифрует текст и причины
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v13 resource metadata, а
+полноценный App result с compact model receipt в `structuredContent`, полным
+App payload в model-hidden `_meta` и exact v13 resource metadata, а
 v9/v8/v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
 Bundle использует sandboxed `srcdoc`-frames без `data:` frame permission;
 защищённая review-карточка появляется только после `save` и вызывает только

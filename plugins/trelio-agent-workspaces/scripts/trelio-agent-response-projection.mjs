@@ -3,7 +3,8 @@ export const MCP_RESPONSE_PROJECTION_VERSION = 1;
 export const MCP_RESPONSE_DETAIL_TOOLS = new Set([
     "get_contact", "get_registry", "get_knowledge_base_page", "get_project_meta",
     "get_task_create_meta", "get_regular_work", "list_recent_activity", "list_agent_skills",
-    "get_agent_skill",
+    "get_agent_skill", "get_agent_workspace", "get_agent_workspace_by_scope",
+    "list_agent_secrets",
 ]);
 export const MCP_RESPONSE_FIELD_TOOLS = {
     get_contact: ["options"],
@@ -311,60 +312,108 @@ const RUN_SNAPSHOT_FIELDS = [
     "agentInstructionsSnapshotJson", "userProfileSnapshotJson", "runtimePolicySnapshotJson",
     "runtimeAttestationJson", "clientMetadataJson",
 ];
+const ACTIVE_RUN_STATUSES = new Set(["running", "waiting_for_human", "review"]);
+const WORKSPACE_RECENT_TERMINAL_RUN_LIMIT = 5;
+const WORKSPACE_RECENT_CHECKPOINT_LIMIT = 10;
 const projectWorkspaceOverview = (payload) => {
-    // Это внутрисообщенческие ссылки, а не cache keys: каждый полный immutable
-    // snapshot остаётся в том же ответе. Не склеиваем разные authority fields.
-    if (!Array.isArray(payload.runs) || own(payload, "runSnapshots")
-        || payload.runs.some((run) => { const item = record(run); return item && own(item, "snapshotRefs"); }))
+    if (!Array.isArray(payload.runs) || own(payload, "overviewSummary"))
         return payload;
-    const candidates = new Map();
-    for (const run of payload.runs) {
+    // Overview is a navigation/readiness read, not an authority-materialization
+    // endpoint. Keep every active Run plus a bounded recent terminal history;
+    // pinned rules/profile/runtime snapshots remain available through an exact
+    // explicit full read and through the bridge that actually executes the Run.
+    const activeRuns = payload.runs.filter((run) => {
+        const entry = record(run);
+        return entry ? ACTIVE_RUN_STATUSES.has(String(entry.status ?? "")) : false;
+    });
+    const terminalRuns = payload.runs.filter((run) => {
+        const entry = record(run);
+        return entry ? !ACTIVE_RUN_STATUSES.has(String(entry.status ?? "")) : true;
+    }).slice(0, WORKSPACE_RECENT_TERMINAL_RUN_LIMIT);
+    const selectedRuns = [...activeRuns, ...terminalRuns];
+    const selectedRunIds = new Set(selectedRuns.flatMap((run) => {
+        const entry = record(run);
+        return typeof entry?.id === "string" ? [entry.id] : [];
+    }));
+    const checkpoints = Array.isArray(payload.checkpoints) ? payload.checkpoints : [];
+    const selectedCheckpoints = checkpoints.filter((checkpoint) => {
+        const entry = record(checkpoint);
+        return typeof entry?.runId !== "string" || selectedRunIds.has(entry.runId);
+    }).slice(0, WORKSPACE_RECENT_CHECKPOINT_LIMIT);
+    const compactRun = (run) => {
         const entry = record(run);
         if (!entry)
-            continue;
-        for (const field of RUN_SNAPSHOT_FIELDS) {
-            if (!record(entry[field]))
-                continue;
-            const encoded = JSON.stringify(entry[field]);
-            // Маленькие/null snapshots дешевле оставить на месте. Сравниваем exact
-            // serialization: разный порядок ключей лишь упустит экономию, не смысл.
-            if (encoded.length < 256)
-                continue;
-            const key = field + ":" + encoded;
-            const previous = candidates.get(key);
-            candidates.set(key, { field, value: entry[field], count: (previous?.count ?? 0) + 1 });
-        }
-    }
-    const shared = new Map([...candidates].filter(([, item]) => item.count > 1)
-        .map(([key, item], index) => [key, { id: `snapshot-${index + 1}`, field: item.field, value: item.value }]));
-    if (!shared.size)
-        return payload;
-    const projected = {
+            return run;
+        const result = { ...entry };
+        for (const field of RUN_SNAPSHOT_FIELDS)
+            delete result[field];
+        delete result.handoffJson;
+        return result;
+    };
+    const workspace = record(payload.workspace);
+    return {
         ...payload,
-        runs: payload.runs.map((run) => {
-            const entry = record(run);
-            if (!entry)
-                return run;
-            const result = { ...entry };
-            const refs = {};
-            for (const field of RUN_SNAPSHOT_FIELDS) {
-                const snapshot = shared.get(field + ":" + JSON.stringify(entry[field]));
-                if (snapshot) {
-                    delete result[field];
-                    refs[field] = snapshot.id;
-                }
-            }
-            return Object.keys(refs).length ? { ...result, snapshotRefs: refs } : run;
-        }),
-        runSnapshots: {
-            entries: [...shared.values()],
-            instruction: "Каждое поле run.snapshotRefs ссылается на полный снимок в этом ответе. У каждого Run свои закреплённые правила; текущие инструкции не заменяют исторический снимок.",
+        runs: selectedRuns.map(compactRun),
+        checkpoints: selectedCheckpoints,
+        overviewSummary: {
+            runsTotal: payload.runs.length,
+            runsReturned: selectedRuns.length,
+            checkpointsTotal: checkpoints.length,
+            checkpointsReturned: selectedCheckpoints.length,
+            activeRunsAreAlwaysIncluded: true,
+        },
+        deferredData: {
+            fields: ["completeRunHistory", "completeCheckpointHistory", "pinnedRunAuthoritySnapshots"],
+            tool: "get_agent_workspace",
+            arguments: {
+                ...(typeof workspace?.id === "string" ? { workspaceId: workspace.id } : {}),
+                responseDetail: "full",
+            },
+            instruction: "Use responseDetail=full only for an explicit historical or pinned-authority audit. Ordinary Workspace navigation and Run recovery use this compact overview or the prepared bridge action.",
         },
     };
-    // Для двух маленьких снимков ссылки и объяснение могут быть дороже дубля.
-    // Проверяем только Run-часть, не сериализуя заново file manifests/overview.
-    return JSON.stringify({ runs: projected.runs, runSnapshots: projected.runSnapshots }).length
-        < JSON.stringify({ runs: payload.runs }).length ? projected : payload;
+};
+const projectAgentSecretInventory = (payload, args) => {
+    if (!Array.isArray(payload.secrets) || own(payload, "deferredData"))
+        return payload;
+    return {
+        ...payload,
+        secrets: payload.secrets.map((value) => {
+            const secret = record(value);
+            if (!secret)
+                return value;
+            const { publicDescription: _publicDescription, fields: _fields, publicPath: _publicPath, createdByMemberId: _createdBy, createdAt: _createdAt, updatedAt: _updatedAt, rotationReminderDays: _rotationReminderDays, notifyOnSensitiveEvents: _notifyOnSensitiveEvents, ...summary } = secret;
+            return summary;
+        }),
+        deferredData: {
+            fields: ["publicDescription", "fields", "auditMetadata", "rotationPolicy"],
+            tool: "list_agent_secrets",
+            arguments: {
+                scopeType: payload.scope ? record(payload.scope)?.type ?? args.scopeType : args.scopeType,
+                scopeId: args.scopeId,
+                includeParents: args.includeParents ?? true,
+                responseDetail: "full",
+            },
+            instruction: "Choose exact secretIds from this inventory and request responseDetail=full only for those secrets. Values are never returned.",
+        },
+    };
+};
+const projectCancelledWorkspaceRun = (payload) => {
+    const run = record(payload.run);
+    if (!run)
+        return payload;
+    return {
+        schemaVersion: 1,
+        action: "cancel_agent_workspace_run",
+        run: {
+            id: run.id ?? null,
+            workspaceId: run.workspaceId ?? null,
+            status: run.status ?? null,
+            fencingToken: run.fencingToken ?? null,
+            cancelledAt: run.cancelledAt ?? null,
+            updatedAt: run.updatedAt ?? null,
+        },
+    };
 };
 const projectAgentSkillDetail = (payload, args) => {
     const skill = record(payload.skill);
@@ -505,6 +554,10 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
         return projectAgentSkillDetail(payload, args);
     if (toolName === "get_agent_workspace" || toolName === "get_agent_workspace_by_scope")
         return projectWorkspaceOverview(payload);
+    if (toolName === "list_agent_secrets")
+        return projectAgentSecretInventory(payload, args);
+    if (toolName === "cancel_agent_workspace_run")
+        return projectCancelledWorkspaceRun(payload);
     if (taskMutationTools.has(toolName))
         return projectTaskMutation(payload, args);
     if (toolName === "batch_update_tasks") {

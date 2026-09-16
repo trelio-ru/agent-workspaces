@@ -1974,6 +1974,11 @@ test("local proposal render returns a real MCP App result instead of JSON text o
       provider: "local_company_context",
       proposal: {
         schemaVersion: 3,
+        authoringBasis: {
+          publicCommentsSnapshot: { comments: [{ bodyText: "Старый комментарий" }] },
+          pendingHumanUpdateBasis: { acceptedRuns: [{ summary: "Большой внутренний итог" }] },
+        },
+        mentionableMembers: [{ id: "member-1", username: "private-user" }],
         currentDraft: {
           proposalId,
           revision: 1,
@@ -1995,7 +2000,19 @@ test("local proposal render returns a real MCP App result instead of JSON text o
   );
   assert.equal(result.content[0].type, "text");
   assert.equal(result.structuredContent.blocks[0].proposal.currentDraft.bodyText, "Готовый комментарий");
+  assert.equal(result.structuredContent.blocks[0].proposal.authoringBasis, undefined);
+  assert.equal(result.structuredContent.blocks[0].proposal.mentionableMembers, undefined);
+  assert.equal(
+    result._meta["trelio/taskProposalPayload"].blocks[0].proposal.authoringBasis
+      .publicCommentsSnapshot.comments[0].bodyText,
+    "Старый комментарий",
+  );
+  assert.equal(
+    result._meta["trelio/taskProposalPayload"].blocks[0].proposal.mentionableMembers[0].username,
+    "private-user",
+  );
   assert.doesNotMatch(result.content[0].text, /Готовый комментарий/u);
+  assert.doesNotMatch(JSON.stringify(result.structuredContent), /Старый комментарий|Большой внутренний итог|private-user/u);
   assert.doesNotMatch(
     result.content[0].text,
     new RegExp(result._meta["trelio/taskProposalApp"].capabilityToken, "u"),
@@ -2745,7 +2762,9 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
   assert.equal(instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   for (const invariant of [
     /Native Trelio не требует каталога без вероятной procedure\/service/u,
-    /Следуй только server providerSelection; не выводи local route сам/u,
+    /Следуй server providerSelection; local route сам не выводи/u,
+    /Codex Code Mode: один exact read; max_output_tokens задай сразу/u,
+    /между exec используй store\(\)\/load\(\)/u,
     /вызови search_agent_guidance в exact компании/u,
     /list_agent_skills – только inventory/u,
     /kind=procedure → exact get_agent_procedure/u,
@@ -2768,12 +2787,11 @@ test("local MCP initialize publishes the universal skill-first routing gate", as
     /До повтора неоднозначной mutation установи реальный результат/u,
     /Не обходи рабочий навык browser\/HTTP\/другим MCP\/script/u,
     /request_plugin_install до каталога/u,
-    /Явная development\/debug\/audit\/release задача в определённом каноническом репозитории/u,
-    /одного checkout недостаточно/u,
-    /Сохраняй scope\/ACL, доставку секретов, запрет логирования, bounds и разрешение внешних mutations/u,
+    /Явная development\/debug\/audit\/release задача в названном каноническом репозитории/u,
+    /одного checkout мало/u,
+    /Сохраняй scope\/ACL, secret delivery, no-logging, output bounds и authority внешних mutations/u,
     /обычная работа компании возвращается к каталогу/u,
-    /Границы секретов, личных сессий и независимых решений человека не ослабляются/u,
-    /Подробности – выбранный навык и external-services\.md/u,
+    /Подробнее – выбранный skill и external-services\.md/u,
   ]) assert.match(instructions, invariant);
 });
 
@@ -3015,6 +3033,7 @@ test("platform routing is purpose-based and works for an unknown future skill", 
     skillId: "future-orbital-inventory",
   });
   assert.match(instructions, /search_agent_guidance/u);
+  assert.match(instructions, /store\(\).*load\(\)/u);
   assert.doesNotMatch(
     instructions,
     /signed-inventory-runtime|remote-knowledge|future-orbital-inventory/iu,
