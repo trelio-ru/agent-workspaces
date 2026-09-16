@@ -40,25 +40,25 @@ Generations на диске зашифрованы. В RAM открыта мак
 
 ## Ищи локально, раскрывай выбранные результаты
 
-Для `search` передай 1–5 верных формулировок и ограниченное число результатов:
+Для `search` передай 1–5 формулировок с известным предметом-якорем. Начни с
+`limit=5`; повышай его лишь при неоднозначности всей пятёрки:
 
 ```json
 {
   "operation":"search",
   "companySlug":"exact-company-slug",
-  "queries":["первая формулировка","независимый синоним"],
-  "limit":20
+  "queries":["ASUS Принт VPN прокси","ASUS Принт fail-open"],
+  "limit":5
 }
 ```
 
-Поиск охватывает проекты; номер/название/описание/checklist задач, видимые active
-control notes, custom fields, имена файлов, manual comments; Workspace, страницы,
-контакты, реестры, встречи, регулярные работы и accepted text. У regular-work один
-set result; ищутся active items/manual comments/files, не system events. Статус,
-исполнители и участники исключены. Архив помечен read-only; optional области
-требуют scopes. `context-search-v2`: exact ref > сильнейшее поле/лексика >
-независимые запросы > авторитет при истинном равенстве > stable key; тип не даёт
-приоритета. Rank локален, fetch раскрывает только выбранное.
+Ищутся проекты; task number/title/description/checklist, видимые controls/custom
+fields/files/manual comments; Workspace, pages, contacts, registries, meetings,
+regular work и accepted text. Regular work группируется по set без system events;
+status/people исключены, архив read-only, optional области требуют scopes.
+`context-search-v2`: exact ref > поле/лексика > formulations > authority > stable
+key; тип не приоритет. Rank локален; `preview<=300` строится после него по
+совпадениям и даёт два фрагмента для далёких терминов. Fetch раскрывает выбранное.
 
 `list` – лишь для явного inventory или задачи с известным проектом без номера:
 документированный resource, необязательные project/offset, `limit<=100`.

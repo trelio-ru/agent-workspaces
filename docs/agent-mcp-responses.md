@@ -35,6 +35,13 @@ MCP App не изменяются. Поля пользовательских д�
   удаляется только из доказанной второй копии; revision, coverage, диапазоны,
   hash и media остаются. Errors, самостоятельный текст и hidden `_meta`
   сохраняются. Проекция не запускается над arbitrary provider JSON.
+- Unified `search` по умолчанию возвращает пять кандидатов и сохраняет
+  `hasMore`/coverage для осознанного расширения. Каждый результат оставляет
+  stable ID, compact exact locator, archive/state, matched formulations и
+  фактический `preview` до 300 символов; полные `matches`, повторные scope names,
+  file size/MIME и другие детали выбранного объекта читаются только через exact
+  `fetch`/read. Далёкие совпадения представлены двумя короткими фрагментами, а
+  формат сниппета применяется после rank и не меняет native/local top-N.
 - Headless local proposal context сохраняет полный proposal DTO и добавляет
   компактный `nextCall` с exact local tool и `payload.target`. Это routing
   metadata, а не App result; UI metadata появляется только после local `save`.

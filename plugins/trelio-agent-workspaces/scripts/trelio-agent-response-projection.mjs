@@ -117,6 +117,115 @@ const regularWorkTools = new Set([
 const peopleTools = new Set([
     "get_project_meta", "get_task_create_meta", "resolve_user", "resolve_company_member", "resolve_status",
 ]);
+const SEARCH_RESULT_FIELDS = new Set([
+    "id", "title", "url", "type", "scope", "document", "matches",
+    "matchedQueries", "matchCount", "preview",
+]);
+const SEARCH_SCOPE_FIELDS = new Set([
+    "company", "project", "workspace", "task", "registry",
+    "knowledgeBasePage", "contact", "regularWork",
+]);
+const SEARCH_MATCH_FIELDS = new Set([
+    "query", "source", "previewText", "lexicalQuality", "resultRank", "registryRow",
+]);
+const SEARCH_REGISTRY_ROW_FIELDS = new Set(["id", "rowKey", "verificationStatus"]);
+const SEARCH_DOCUMENT_FIELDS = new Set([
+    "path", "name", "contentType", "sizeBytes", "snippet", "artifactType", "verificationStatus",
+]);
+const SEARCH_SCOPE_ENTITY_FIELDS = {
+    company: new Set(["id", "slug", "name"]),
+    project: new Set(["id", "slug", "name", "url"]),
+    workspace: new Set(["id", "title", "state", "head", "scopeType", "scopeKey"]),
+    task: new Set(["id", "number", "title", "url", "isArchived", "archivedAt"]),
+    registry: new Set(["id", "slug", "title", "scopeType", "state", "schemaRevision", "url"]),
+    knowledgeBasePage: new Set(["id", "slug", "title", "url", "updatedAt"]),
+    contact: new Set(["id", "kind", "displayName", "url", "revision"]),
+    regularWork: new Set(["id", "title", "state", "revision", "url"]),
+};
+const hasOnlyFields = (value, fields) => (Object.keys(value).every((key) => fields.has(key)));
+const definedEntries = (value) => Object.fromEntries(Object.entries(value).filter(([, field]) => field !== null && field !== undefined));
+const projectMcpContextSearchResult = (value) => {
+    const result = record(value);
+    const scope = record(result?.scope);
+    const matches = Array.isArray(result?.matches) ? result.matches.map(record) : null;
+    const document = record(result?.document);
+    const knownScopeEntities = scope && Object.entries(SEARCH_SCOPE_ENTITY_FIELDS).every(([key, fields]) => {
+        const entity = record(scope[key]);
+        return scope[key] === null || scope[key] === undefined
+            || (entity !== null && hasOnlyFields(entity, fields));
+    });
+    if (!result
+        || !scope
+        || !matches
+        || !knownScopeEntities
+        || (result.document !== null && (!document || !hasOnlyFields(document, SEARCH_DOCUMENT_FIELDS)))
+        || matches.some((match) => !match)
+        || !hasOnlyFields(result, SEARCH_RESULT_FIELDS)
+        || !hasOnlyFields(scope, SEARCH_SCOPE_FIELDS)
+        || matches.some((match) => !hasOnlyFields(match, SEARCH_MATCH_FIELDS))) {
+        return value;
+    }
+    const registryRows = matches.flatMap((match) => {
+        const row = record(match.registryRow);
+        if (!row)
+            return [];
+        // A future row field may carry semantic evidence. In that case retain the
+        // complete result until this projection is explicitly reviewed.
+        if (!hasOnlyFields(row, SEARCH_REGISTRY_ROW_FIELDS))
+            return [null];
+        return [definedEntries({ rowKey: row.rowKey, verificationStatus: row.verificationStatus })];
+    });
+    if (registryRows.some((row) => row === null))
+        return value;
+    const company = record(scope.company);
+    const project = record(scope.project);
+    const workspace = record(scope.workspace);
+    const taskScope = record(scope.task);
+    const registry = record(scope.registry);
+    const page = record(scope.knowledgeBasePage);
+    const contact = record(scope.contact);
+    const regularWork = record(scope.regularWork);
+    const locator = definedEntries({
+        companySlug: company?.slug,
+        projectSlug: project?.slug,
+        workspaceId: workspace?.id,
+        workspaceHead: workspace?.head,
+        taskId: taskScope?.id,
+        taskNumber: taskScope?.number,
+        registrySlug: registry?.slug,
+        pageSlug: page?.slug,
+        contactId: contact?.id,
+        regularWorkId: regularWork?.id,
+        documentPath: document?.path,
+    });
+    const state = definedEntries({
+        workspace: workspace?.state,
+        taskArchived: taskScope?.isArchived,
+        taskArchivedAt: taskScope?.archivedAt,
+        registry: registry?.state,
+        regularWork: regularWork?.state,
+        artifactType: document?.artifactType,
+        verificationStatus: document?.verificationStatus,
+    });
+    const matchedSources = [...new Set(matches
+            .map((match) => match.source)
+            .filter((source) => typeof source === "string"))];
+    return definedEntries({
+        id: result.id,
+        type: result.type,
+        title: result.title,
+        url: result.url,
+        matchedQueries: result.matchedQueries,
+        preview: result.preview,
+        locator: Object.keys(locator).length ? locator : undefined,
+        state: Object.keys(state).length ? state : undefined,
+        matchedSources: matchedSources.length ? matchedSources : undefined,
+        matchedRows: registryRows.length ? registryRows : undefined,
+    });
+};
+const projectMcpContextSearch = (payload) => mapFields(payload, {
+    results: list(projectMcpContextSearchResult),
+});
 const projectTaskPayload = (payload) => mapFields(payload, {
     task, tasks: list((item) => {
         const entry = record(item);
@@ -558,6 +667,8 @@ export const projectMcpAgentPayload = (toolName, value, rawArguments = {}) => {
         return projectAgentSecretInventory(payload, args);
     if (toolName === "cancel_agent_workspace_run")
         return projectCancelledWorkspaceRun(payload);
+    if (toolName === "search")
+        return projectMcpContextSearch(payload);
     if (taskMutationTools.has(toolName))
         return projectTaskMutation(payload, args);
     if (toolName === "batch_update_tasks") {

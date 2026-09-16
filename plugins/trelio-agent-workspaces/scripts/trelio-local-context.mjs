@@ -3,7 +3,12 @@ import {
   parseWorkspaceDirectoryRequiredError,
   parseWorkspaceLocalRecoveryRequiredError,
 } from "./trelio-workspace-directory.mjs";
-import { compileContextSearchQuery, normalizeContextSearchQueries, normalizeContextSearchReference } from "./trelio-context-search-matching.mjs";
+import {
+  buildContextSearchPreview,
+  compileContextSearchQuery,
+  normalizeContextSearchQueries,
+  normalizeContextSearchReference,
+} from "./trelio-context-search-matching.mjs";
 /**
  * Encrypted-company context provider for the static local MCP facade.
  *
@@ -104,6 +109,7 @@ const MAX_CONTEXT_DOCUMENTS = 20_000;
 const MIRROR_HYDRATION_RECORD_BATCH_SIZE = 250;
 const MAX_SEARCH_QUERIES = 5;
 const MAX_SEARCH_RESULTS = 50;
+const DEFAULT_CONTEXT_SEARCH_RESULTS = 5;
 const MAX_PROPOSAL_BROWSER_MANIFEST_BYTES = 32 * 1024 * 1024;
 const MIRROR_GENERATION_PATTERN = /^[0-9a-f]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -3605,18 +3611,6 @@ const collectText = (value, output = []) => {
 
 const normalizeSearchText = normalizeContextSearchText;
 
-const buildPreview = (text, normalizedQuery) => {
-  const compact = String(text || "").replace(/\s+/gu, " ").trim();
-  if (!compact) return "";
-  const normalizedText = normalizeSearchText(compact);
-  const matchIndex = normalizedText.indexOf(normalizedQuery);
-  if (matchIndex < 0) return compact.slice(0, 600);
-  // Normalization can shift offsets slightly. A bounded neighbourhood remains
-  // useful without trying to reconstruct a byte-exact source selection.
-  const start = Math.max(0, matchIndex - 180);
-  return compact.slice(start, start + 600);
-};
-
 const buildSearchField = (source, value, options = {}) => {
   const text = typeof value === "string" ? value : collectText(value).join("\n");
   const compactText = text.trim();
@@ -4126,10 +4120,20 @@ const findLocalSearchMatches = (document, queries) => queries.flatMap(([normaliz
   return match ? [match] : [];
 });
 
+const compactLocalSearchResult = (result) => Object.fromEntries(
+  Object.entries(result).filter(([key, value]) => (
+    value !== null
+    // Stable result id plus public slugs/numbers are sufficient for the next
+    // exact read. Internal UUID duplicates and file transport metadata do not
+    // help selection and used to multiply across every returned candidate.
+    && !["projectId", "scopeType", "scopeKey", "sizeBytes", "contentType", "ownerScope"].includes(key)
+  )),
+);
+
 export const searchCompanyContextMirror = (
   mirror,
   rawQueries,
-  rawLimit = 20,
+  rawLimit = DEFAULT_CONTEXT_SEARCH_RESULTS,
   { maximumQueries = MAX_SEARCH_QUERIES, documentTypes = null, includeScopeMetadata = false } = {},
 ) => {
   const queries = normalizeContextSearchQueries((Array.isArray(rawQueries) ? rawQueries : [])
@@ -4141,7 +4145,10 @@ export const searchCompanyContextMirror = (
       "At least one local context search query is required.",
     );
   }
-  const limit = Math.max(1, Math.min(MAX_SEARCH_RESULTS, Math.trunc(Number(rawLimit) || 20)));
+  const limit = Math.max(1, Math.min(
+    MAX_SEARCH_RESULTS,
+    Math.trunc(Number(rawLimit) || DEFAULT_CONTEXT_SEARCH_RESULTS),
+  ));
   const allowedDocumentTypes = Array.isArray(documentTypes)
     ? new Set(documentTypes)
     : null;
@@ -4175,6 +4182,25 @@ export const searchCompanyContextMirror = (
   }
 
   const rankedResults = rankContextSearchCandidates(results, (result) => result);
+  const hasMore = rankedResults.length > limit;
+  const returnedResults = rankedResults.slice(0, limit).map(({
+    stableKey: _stableKey,
+    referenceValues: _referenceValues,
+    matches: _matches,
+    ...result
+  }) => {
+    // Snippets are display work: only normalize the winning top-N, after
+    // every candidate has received its single precomputed rank.
+    const strongest = rankContextSearchCandidates(_matches,
+      (match) => ({ ...result, stableKey: _stableKey, referenceValues: _referenceValues, matches: [match] }))[0];
+    return compactLocalSearchResult({
+      ...result,
+      preview: buildContextSearchPreview(strongest.previewText, [strongest.query]),
+      ...(strongest.publicPath || result.publicPath
+        ? { url: strongest.publicPath ?? result.publicPath }
+        : {}),
+    });
+  });
   return {
     schemaVersion: 1,
     provider: "local_company_context",
@@ -4182,25 +4208,9 @@ export const searchCompanyContextMirror = (
     company: { id: mirror.company.id, slug: mirror.company.slug, name: mirror.company.name },
     generation: mirror.generation,
     queries: queries.map(([, original]) => original),
-    results: rankedResults.slice(0, limit).map(({
-      stableKey: _stableKey,
-      referenceValues: _referenceValues,
-      matches: _matches,
-      ...result
-    }) => {
-      // Snippets are display work: only normalize the winning top-N, after
-      // every candidate has received its single precomputed rank.
-      const strongest = rankContextSearchCandidates(_matches,
-        (match) => ({ ...result, stableKey: _stableKey, referenceValues: _referenceValues, matches: [match] }))[0];
-      return {
-        ...result,
-        preview: buildPreview(strongest.previewText, normalizeSearchText(strongest.query)),
-        ...(strongest.publicPath || result.publicPath
-          ? { url: strongest.publicPath ?? result.publicPath }
-          : {}),
-      };
-    }),
-    hasMore: results.length > limit,
+    results: returnedResults,
+    hasMore,
+    pagination: { limit, total: rankedResults.length, returned: returnedResults.length, hasMore },
     freshness: { mirroredAt: mirror.createdAt, serverGeneration: mirror.serverGeneration },
   };
 };
