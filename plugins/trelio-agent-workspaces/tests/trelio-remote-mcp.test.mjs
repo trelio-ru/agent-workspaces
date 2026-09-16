@@ -58,6 +58,34 @@ const companyId = "11111111-1111-4111-8111-111111111111";
 const memberId = "22222222-2222-4222-8222-222222222222";
 const releaseId = "33333333-3333-4333-8333-333333333333";
 
+const createProposalCapabilityConfigDirectory = async (t) => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "trelio-proposal-capability-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+};
+
+const performProtectedLocalProposalAction = async ({
+  origin,
+  capabilityToken,
+  proposalId,
+  actionRequest,
+  proposalOperation,
+  proposalCapabilityConfigDirectory,
+}) => {
+  const state = await handleToolCall(origin, "get_task_proposal_app_state", {
+    capabilityToken,
+    proposalId,
+    actionRequest,
+  }, { proposalOperation, proposalCapabilityConfigDirectory });
+  const actionCapabilityToken = state._meta?.["trelio/taskProposalAction"]?.capabilityToken;
+  assert.equal(typeof actionCapabilityToken, "string");
+  return handleToolCall(origin, "perform_task_proposal_app_action", {
+    actionCapabilityToken,
+    proposalId,
+    ...actionRequest,
+  }, { proposalOperation, proposalCapabilityConfigDirectory });
+};
+
 // Provider-neutral fixture: the generic host must validate and isolate any
 // backend-declared Remote MCP without knowing which real integration supplied it.
 const remoteKnowledgeConfig = {
@@ -1747,7 +1775,7 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.equal(contextTool.annotations.readOnlyHint, true);
   assert.equal(contextTool._meta, undefined);
   assert.equal(renderTool.annotations.readOnlyHint, false);
-  assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v9.html");
+  assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v13.html");
   assert.equal(providerTools.some(({ name }) => name === "continue_trelio_local_proposal"), false);
   assert.equal(appOnlyProposalTools.length, 14);
   for (const tool of appOnlyProposalTools) {
@@ -1764,9 +1792,8 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
     genericState.inputSchema.properties.capabilityToken,
     {
       type: "string",
-      minLength: 43,
-      maxLength: 43,
-      pattern: "^[A-Za-z0-9_-]{43}$",
+      minLength: 1,
+      maxLength: 100_000,
     },
   );
   assert.equal(genericAction.annotations.destructiveHint, true);
@@ -1838,7 +1865,7 @@ test("local MCP exposes the proposal App resource without adding its HTML to too
     method: "resources/list",
     params: {},
   });
-  const uri = "ui://trelio/task-proposals/v9.html";
+  const uri = "ui://trelio/task-proposals/v13.html";
   assert.deepEqual(listed.result.resources.map((resource) => resource.uri), [uri]);
   assert.equal(listed.result.resources[0]._meta.ui.csp.frameDomains, undefined);
   assert.equal(listed.result.resources[0]._meta["openai/widgetCSP"].frame_domains, undefined);
@@ -1909,7 +1936,7 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
     },
   };
   const origin = "https://proposal-cache-test.invalid";
-  const currentUri = "ui://trelio/task-proposals/v9.html";
+  const currentUri = "ui://trelio/task-proposals/v13.html";
   const legacyV5Uri = "ui://trelio/task-proposals/v5.html";
   const legacyV4Uri = "ui://trelio/task-proposals/v4.html";
   const legacyV3Uri = "ui://trelio/task-proposals/v3.html";
@@ -1921,7 +1948,7 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
   const currentAgain = await readLocalProposalAppResource(origin, currentUri, options);
 
   assert.deepEqual(requestedPaths, [
-    "/api/agent-workspaces/mcp-app-resources/task-proposals-v9",
+    "/api/agent-workspaces/mcp-app-resources/task-proposals-v13",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v5",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v4",
     "/api/agent-workspaces/mcp-app-resources/task-proposals-v3",
@@ -1933,14 +1960,16 @@ test("local proposal App keeps current and legacy fetches cache-safe", async () 
   assert.equal(currentAgain, current);
 });
 
-test("local proposal render returns a real MCP App result instead of JSON text only", () => {
+test("local proposal render returns a real MCP App result instead of JSON text only", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
   const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const result = buildLocalProposalRenderResult({
+  const result = await buildLocalProposalRenderResult({
     origin: "https://trelio.example",
     companySlug: "protected-company",
     kind: "comment",
     operation: "save",
+    configDirectory,
     result: {
       provider: "local_company_context",
       proposal: {
@@ -1955,9 +1984,9 @@ test("local proposal render returns a real MCP App result instead of JSON text o
     },
   });
 
-  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v9.html");
-  assert.equal(result._meta["trelio/taskProposalApp"].schemaVersion, 1);
-  assert.match(result._meta["trelio/taskProposalApp"].capabilityToken, /^[A-Za-z0-9_-]{43}$/u);
+  assert.equal(result._meta.ui.resourceUri, "ui://trelio/task-proposals/v13.html");
+  assert.equal(result._meta["trelio/taskProposalApp"].schemaVersion, 2);
+  assert.match(result._meta["trelio/taskProposalApp"].capabilityToken, /^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
   assert.equal(result.structuredContent.kind, "taskProposalBlocks");
   assert.equal(result.structuredContent.blocks[0].type, "commentProposal");
   assert.equal(
@@ -2117,17 +2146,46 @@ test("local proposal render rejects a forged context operation before dispatch",
   assert.equal(called, false);
 });
 
+test("local proposal MCP errors keep the exact code hidden from the visible message", async () => {
+  const response = await handleLocalMcpMessage({
+    jsonrpc: "2.0",
+    id: 91,
+    method: "tools/call",
+    params: {
+      name: "get_task_proposal_app_state",
+      arguments: {},
+    },
+  }, {
+    callTool: async () => {
+      throw new RemoteMcpHostError(
+        "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+        "Карточка устарела. Повторите действие.",
+      );
+    },
+  });
+
+  assert.equal(response.result.isError, true);
+  assert.equal(response.result.content[0].text, "Карточка устарела. Повторите действие.");
+  assert.doesNotMatch(response.result.content[0].text, /LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID/u);
+  assert.equal(
+    response.result.structuredContent.code,
+    "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+  );
+});
+
 test("local proposal App capability binds refresh and one delayed final action to its exact draft", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
   let nowMs = Date.now();
   t.mock.method(Date, "now", () => nowMs);
   const origin = "https://capability-test.trelio.example";
   const proposalId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-  const root = buildLocalProposalRenderResult({
+  const root = await buildLocalProposalRenderResult({
     origin,
     companySlug: "protected-company",
     kind: "comment",
     operation: "save",
+    configDirectory,
     result: {
       provider: "local_company_context",
       proposal: {
@@ -2154,10 +2212,14 @@ test("local proposal App capability binds refresh and one delayed final action t
       return {
         proposal: {
           schemaVersion: 3,
+          project: { slug: "mobile" },
+          task: { number: 17, url: "https://trelio.example/acme/mobile/tasks/17/" },
+          mentionableMembers: [],
           currentDraft: published ? null : {
             proposalId,
             revision: 7,
             bodyText: "Готовый комментарий",
+            attachments: [],
             contextRequest: { runId },
           },
           lastPublished: published ? { proposalId, commentId: "published-comment" } : null,
@@ -2172,34 +2234,69 @@ test("local proposal App capability binds refresh and one delayed final action t
     handleToolCall("https://other-origin.trelio.example", "get_task_proposal_app_state", {
       capabilityToken,
       proposalId,
-    }, { proposalOperation }),
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory }),
     (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
   );
   await handleToolCall(origin, "get_task_proposal_app_state", {
     capabilityToken,
     proposalId,
-  }, { proposalOperation });
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
   await assert.rejects(
-    handleToolCall(origin, "perform_task_proposal_app_action", {
+    handleToolCall(origin, "get_task_proposal_app_state", {
       capabilityToken,
       proposalId,
-      decision: "apply",
-      targetStatusCode: "done",
-    }, { proposalOperation }),
+      actionRequest: { decision: "apply", targetStatusCode: "done" },
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory }),
     (error) => error?.code === "LOCAL_CONTEXT_INVALID_INPUT",
   );
-  // Human review can resume after the original one-hour window; a valid
+  // Human review can resume long after the short action window; a valid
   // delayed decision must still dispatch exactly once with the bound revision.
   nowMs += 2 * 60 * 60 * 1_000;
-  await handleToolCall(origin, "perform_task_proposal_app_action", {
+  const staleDecision = await handleToolCall(origin, "get_task_proposal_app_state", {
     capabilityToken,
     proposalId,
-    decision: "apply",
-    bodyText: "Отредактированный комментарий",
-    attachmentIds: [],
-  }, { proposalOperation });
+    actionRequest: {
+      decision: "apply",
+      bodyText: "Первый ручной вариант",
+      attachmentIds: [],
+    },
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+  await assert.rejects(
+    handleToolCall(origin, "perform_task_proposal_app_action", {
+      actionCapabilityToken: staleDecision._meta["trelio/taskProposalAction"].capabilityToken,
+      proposalId,
+      decision: "apply",
+      bodyText: "Отредактированный комментарий",
+      attachmentIds: [],
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory }),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_ACTION_MISMATCH",
+  );
+  await performProtectedLocalProposalAction({
+    origin,
+    capabilityToken,
+    proposalId,
+    actionRequest: {
+      decision: "apply",
+      bodyText: "Отредактированный комментарий",
+      attachmentIds: [],
+    },
+    proposalOperation,
+    proposalCapabilityConfigDirectory: configDirectory,
+  });
 
   assert.deepEqual(calls, [
+    {
+      companySlug: "protected-company",
+      kind: "comment",
+      operation: "context",
+      payload: { target: { runId } },
+    },
+    {
+      companySlug: "protected-company",
+      kind: "comment",
+      operation: "context",
+      payload: { target: { runId } },
+    },
     {
       companySlug: "protected-company",
       kind: "comment",
@@ -2233,25 +2330,73 @@ test("local proposal App capability binds refresh and one delayed final action t
   const restored = await handleToolCall(origin, "get_task_proposal_app_state", {
     capabilityToken,
     proposalId,
-  }, { proposalOperation });
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
   assert.equal(restored.structuredContent.currentDraft, null);
   assert.deepEqual(restored.structuredContent.lastPublished, {
     proposalId,
     commentId: "published-comment",
     localCompanySlug: "protected-company",
   });
+  const closedState = await handleToolCall(origin, "get_task_proposal_app_state", {
+    capabilityToken,
+    proposalId,
+    actionRequest: { decision: "dismiss" },
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+  assert.equal(closedState._meta?.["trelio/taskProposalAction"], undefined);
+  assert.deepEqual(calls.map((input) => input.operation), [
+    "context", "context", "context", "action", "context", "context",
+  ]);
+});
+
+test("local proposal App action authorization expires after five minutes and can be renewed", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
+  const issuedAtMs = Date.now();
+  let nowMs = issuedAtMs;
+  t.mock.method(Date, "now", () => nowMs);
+  const origin = "https://action-expiry.trelio.example";
+  const proposalId = "abababab-abab-4bab-8bab-abababababab";
+  const contextRequest = { projectSlug: "mobile", taskNumber: 17 };
+  const proposal = {
+    schemaVersion: 4,
+    currentDraft: { proposalId, revision: 1, contextRequest },
+  };
+  const root = await buildLocalProposalRenderResult({
+    origin,
+    companySlug: "protected-company",
+    kind: "status",
+    operation: "save",
+    configDirectory,
+    result: { proposal },
+  });
+  const capabilityToken = root._meta["trelio/taskProposalApp"].capabilityToken;
+  const proposalOperation = async () => ({ proposal });
+  const state = await handleToolCall(origin, "get_task_proposal_app_state", {
+    capabilityToken,
+    proposalId,
+    actionRequest: { decision: "apply", targetStatusCode: "done" },
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+  const expiredActionToken = state._meta["trelio/taskProposalAction"].capabilityToken;
+
+  nowMs += 5 * 60 * 1_000;
   await assert.rejects(
     handleToolCall(origin, "perform_task_proposal_app_action", {
-      capabilityToken,
+      actionCapabilityToken: expiredActionToken,
       proposalId,
-      decision: "dismiss",
-    }, { proposalOperation }),
-    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+      decision: "apply",
+      targetStatusCode: "done",
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory }),
+    (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_ACTION_CAPABILITY_INVALID",
   );
-  assert.deepEqual(calls.map((input) => input.operation), ["context", "action", "context"]);
+  const renewed = await handleToolCall(origin, "get_task_proposal_app_state", {
+    capabilityToken,
+    proposalId,
+    actionRequest: { decision: "apply", targetStatusCode: "done" },
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+  assert.equal(typeof renewed._meta["trelio/taskProposalAction"].capabilityToken, "string");
 });
 
 test("local proposal App completed cards retain live reads until the original expiry", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
   const issuedAtMs = Date.now();
   let nowMs = issuedAtMs;
   t.mock.method(Date, "now", () => nowMs);
@@ -2262,11 +2407,12 @@ test("local proposal App completed cards retain live reads until the original ex
         const origin = `https://${kind.replaceAll("_", "-")}-${decision}.trelio.example`;
         const proposalId = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
         const target = { projectSlug: "test-project", taskNumber: 42 };
-        const root = buildLocalProposalRenderResult({
+        const root = await buildLocalProposalRenderResult({
           origin,
           companySlug: "protected-company",
           kind,
           operation: "save",
+          configDirectory,
           result: {
             proposal: { currentDraft: { proposalId, revision: 2, contextRequest: target } },
           },
@@ -2278,6 +2424,7 @@ test("local proposal App completed cards retain live reads until the original ex
           : kind === "comment" ? "lastPublished" : "lastApplied";
         const calls = [];
         let readError = null;
+        let completed = false;
         const proposalOperation = async (_origin, input) => {
           calls.push(input);
           if (input.operation === "context") {
@@ -2287,11 +2434,16 @@ test("local proposal App completed cards retain live reads until the original ex
             return {
               proposal: {
                 schemaVersion: 4,
-                currentDraft: null,
-                [completionField]: { proposalId },
+                currentDraft: completed ? null : {
+                  proposalId,
+                  revision: 2,
+                  contextRequest: target,
+                },
+                [completionField]: completed ? { proposalId } : null,
               },
             };
           }
+          completed = true;
           return {
             proposal: {
               schemaVersion: 4,
@@ -2305,53 +2457,66 @@ test("local proposal App completed cards retain live reads until the original ex
           control_clear: { controlIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"] },
           checklist: { itemIds: ["ffffffff-ffff-4fff-8fff-ffffffffffff"] },
         };
-        const actionArguments = {
-          ...argumentsForCard,
+        const actionRequest = {
           decision,
           ...(decision === "apply" ? applyFields[kind] : {}),
         };
-        await handleToolCall(origin, "perform_task_proposal_app_action", actionArguments, {
+        await performProtectedLocalProposalAction({
+          origin,
+          capabilityToken,
+          proposalId,
+          actionRequest,
           proposalOperation,
+          proposalCapabilityConfigDirectory: configDirectory,
         });
 
-        for (const elapsedMs of [1, 3 * 60 * 60 * 1_000 - 1]) {
+        for (const elapsedMs of [1, 30 * 24 * 60 * 60 * 1_000 - 1]) {
           nowMs = issuedAtMs + elapsedMs;
-          const state = await handleToolCall(origin, "get_task_proposal_app_state", argumentsForCard, {
-            proposalOperation,
-          });
+          const state = await handleToolCall(
+            origin,
+            "get_task_proposal_app_state",
+            argumentsForCard,
+            { proposalOperation, proposalCapabilityConfigDirectory: configDirectory },
+          );
           assert.equal(state.structuredContent.currentDraft, null);
           assert.equal(state.structuredContent[completionField].proposalId, proposalId);
         }
         for (const rejectedDecision of ["apply", "dismiss"]) {
-          await assert.rejects(
-            handleToolCall(origin, "perform_task_proposal_app_action", {
+          const closedState = await handleToolCall(origin, "get_task_proposal_app_state", {
               ...argumentsForCard,
-              decision: rejectedDecision,
-              ...(rejectedDecision === "apply" ? applyFields[kind] : {}),
-            }, { proposalOperation }),
-            (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
-          );
+              actionRequest: {
+                decision: rejectedDecision,
+                ...(rejectedDecision === "apply" ? applyFields[kind] : {}),
+              },
+            }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+          assert.equal(closedState._meta?.["trelio/taskProposalAction"], undefined);
         }
         readError = Object.assign(new Error("Task access revoked"), { code: "FORBIDDEN" });
         await assert.rejects(
-          handleToolCall(origin, "get_task_proposal_app_state", argumentsForCard, { proposalOperation }),
+          handleToolCall(origin, "get_task_proposal_app_state", argumentsForCard, {
+            proposalOperation,
+            proposalCapabilityConfigDirectory: configDirectory,
+          }),
           (error) => error === readError,
         );
         assert.deepEqual(calls.map((input) => input.operation), [
-          "action", "context", "context", "context",
+          "context", "action", "context", "context", "context", "context", "context",
         ]);
         for (const input of calls.filter((call) => call.operation === "context")) {
           assert.deepEqual(input, {
             companySlug: "protected-company", kind, operation: "context", payload: { target },
           });
         }
-        assert.equal(calls[0].payload.expectedRevision, 2);
+        assert.equal(calls[1].payload.expectedRevision, 2);
 
         nowMs = Date.parse(expiresAt);
         const callCount = calls.length;
         for (const name of ["get_task_proposal_app_state", "perform_task_proposal_app_action"]) {
           await assert.rejects(
-            handleToolCall(origin, name, actionArguments, { proposalOperation }),
+            handleToolCall(origin, name, {
+              ...argumentsForCard,
+              ...actionRequest,
+            }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory }),
             (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
           );
         }
@@ -2361,18 +2526,20 @@ test("local proposal App completed cards retain live reads until the original ex
   }
 });
 
-test("local proposal App bundle keeps completed reads and independent sibling decisions", async () => {
+test("local proposal App bundle keeps completed reads and independent sibling decisions", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
   const origin = "https://completed-bundle.trelio.example";
   const runId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
   const cards = [
     { type: "commentProposal", kind: "comment", proposalId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
     { type: "statusProposal", kind: "status", proposalId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" },
   ];
-  const root = buildLocalProposalRenderResult({
+  const root = await buildLocalProposalRenderResult({
     origin,
     companySlug: "protected-company",
     kind: "bundle",
     operation: "save",
+    configDirectory,
     result: {
       proposalBundle: {
         kind: "taskProposalBlocks",
@@ -2402,17 +2569,24 @@ test("local proposal App bundle keeps completed reads and independent sibling de
     }
     return {
       proposal: {
-        currentDraft: completed.has(card.proposalId) ? null : { proposalId: card.proposalId },
+        currentDraft: completed.has(card.proposalId)
+          ? null
+          : { proposalId: card.proposalId, revision: 1, contextRequest: { runId } },
         lastDismissed: completed.has(card.proposalId) ? { proposalId: card.proposalId } : null,
       },
     };
   };
   const read = (proposalId, readOrigin = origin) => handleToolCall(readOrigin, "get_task_proposal_app_state", {
     capabilityToken, proposalId,
-  }, { proposalOperation });
-  const dismiss = (proposalId) => handleToolCall(origin, "perform_task_proposal_app_action", {
-    capabilityToken, proposalId, decision: "dismiss",
-  }, { proposalOperation });
+  }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+  const dismiss = (proposalId) => performProtectedLocalProposalAction({
+    origin,
+    capabilityToken,
+    proposalId,
+    actionRequest: { decision: "dismiss" },
+    proposalOperation,
+    proposalCapabilityConfigDirectory: configDirectory,
+  });
 
   // Неуспешное решение не закрывает карточку. Перед повтором читаем live state,
   // чтобы отличить подтверждённую ошибку от уже выполненной mutation.
@@ -2436,10 +2610,12 @@ test("local proposal App bundle keeps completed reads and independent sibling de
   // Расходование последнего write-права bundle не удаляет read-маршруты.
   for (const card of cards) {
     assert.equal((await read(card.proposalId)).structuredContent.lastDismissed.proposalId, card.proposalId);
-    await assert.rejects(
-      dismiss(card.proposalId),
-      (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
-    );
+    const closedState = await handleToolCall(origin, "get_task_proposal_app_state", {
+      capabilityToken,
+      proposalId: card.proposalId,
+      actionRequest: { decision: "dismiss" },
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
+    assert.equal(closedState._meta?.["trelio/taskProposalAction"], undefined);
   }
   assert.deepEqual(
     calls.filter((input) => input.operation === "action").map((input) => input.kind),
@@ -2457,7 +2633,8 @@ test("local proposal App bundle keeps completed reads and independent sibling de
   assert.equal(calls.length, callCount);
 });
 
-test("local proposal App capability expires at three hours without renewal on refresh", async (t) => {
+test("local proposal App review capability expires at thirty days without renewal", async (t) => {
+  const configDirectory = await createProposalCapabilityConfigDirectory(t);
   const issuedAtMs = Date.now();
   let nowMs = issuedAtMs;
   t.mock.method(Date, "now", () => nowMs);
@@ -2472,32 +2649,33 @@ test("local proposal App capability expires at three hours without renewal on re
       contextRequest: { runId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd" },
     },
   };
-  const root = buildLocalProposalRenderResult({
+  const root = await buildLocalProposalRenderResult({
     origin,
     companySlug: "protected-company",
     kind: "comment",
     operation: "save",
+    configDirectory,
     result: { provider: "local_company_context", proposal },
   });
   const { capabilityToken, expiresAt } = root._meta["trelio/taskProposalApp"];
-  assert.equal(Date.parse(expiresAt), issuedAtMs + 3 * 60 * 60 * 1_000);
+  assert.equal(Date.parse(expiresAt), issuedAtMs + 30 * 24 * 60 * 60 * 1_000);
   const calls = [];
   const proposalOperation = async (_origin, input) => {
     calls.push(input.operation);
     return { proposal };
   };
 
-  for (const elapsedMs of [2 * 60 * 60 * 1_000, 3 * 60 * 60 * 1_000 - 1]) {
+  for (const elapsedMs of [20 * 24 * 60 * 60 * 1_000, 30 * 24 * 60 * 60 * 1_000 - 1]) {
     nowMs = issuedAtMs + elapsedMs;
     await handleToolCall(origin, "get_task_proposal_app_state", {
       capabilityToken,
       proposalId,
-    }, { proposalOperation });
+    }, { proposalOperation, proposalCapabilityConfigDirectory: configDirectory });
   }
 
   // A refresh just before expiry must not extend either read or action access.
   // Check the provider spy as well: expired cards must fail before dispatch.
-  for (const elapsedMs of [3 * 60 * 60 * 1_000, 3 * 60 * 60 * 1_000 + 1]) {
+  for (const elapsedMs of [30 * 24 * 60 * 60 * 1_000, 30 * 24 * 60 * 60 * 1_000 + 1]) {
     nowMs = issuedAtMs + elapsedMs;
     for (const name of ["get_task_proposal_app_state", "perform_task_proposal_app_action"]) {
       await assert.rejects(
@@ -2507,6 +2685,7 @@ test("local proposal App capability expires at three hours without renewal on re
           ...(name === "perform_task_proposal_app_action" ? { decision: "dismiss" } : {}),
         }, {
           proposalOperation,
+          proposalCapabilityConfigDirectory: configDirectory,
         }),
         (error) => error?.code === "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
       );
@@ -2515,8 +2694,8 @@ test("local proposal App capability expires at three hours without renewal on re
   assert.deepEqual(calls, ["context", "context"]);
 });
 
-test("local proposal App capability is all-or-none for a proposal bundle", () => {
-  const root = buildLocalProposalRenderResult({
+test("local proposal App capability is all-or-none for a proposal bundle", async () => {
+  const root = await buildLocalProposalRenderResult({
     origin: "https://capability-bundle-test.trelio.example",
     companySlug: "protected-company",
     kind: "bundle",

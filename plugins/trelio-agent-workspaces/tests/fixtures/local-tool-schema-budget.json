@@ -45,10 +45,10 @@
     },
     "get_task_proposal_app_state": {
       "modelVisible": false,
-      "baselineBytes": 646,
-      "maxBytes": 768,
-      "baselineTokens": 153,
-      "maxTokens": 192
+      "baselineBytes": 1187,
+      "maxBytes": 1344,
+      "baselineTokens": 288,
+      "maxTokens": 320
     },
     "perform_task_proposal_app_action": {
       "modelVisible": false,

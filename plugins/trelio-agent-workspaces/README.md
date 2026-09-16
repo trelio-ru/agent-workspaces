@@ -145,11 +145,15 @@ MCP/App. Плагин шифрует текст и причины
 отдельного явного решения пользователя. Несколько карточек сохраняются одним
 локальным bundle-вызовом в исходном порядке; конфликт одной карточки не скрывает
 готовые соседние и не подтверждает их final actions. Локальный MCP возвращает
-полноценный App result со `structuredContent` и exact v9 resource metadata, а
-v8/v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
+полноценный App result со `structuredContent` и exact v13 resource metadata, а
+v9/v8/v5/v4/v3 остаются resource-level compatibility paths для сохранённых карточек.
 Bundle использует sandboxed `srcdoc`-frames без `data:` frame permission;
 защищённая review-карточка появляется только после `save` и вызывает только
-app-only продолжения.
+app-only продолжения. Подписанная review capability действует до 30 дней и
+переживает restart local MCP; перед publish/apply/dismiss App бесшумно получает
+одноразовую action capability на 5 минут после live ACL/revision check. Для
+комментария она связана с отредактированным Markdown и выбранными вложениями.
+Stale proposal не применяется, но ручной ввод остаётся в карточке.
 
 Обычные mutation/read-tools сохраняют свои native имена, схемы, ACL,
 idempotency и CAS, но для encrypted company выполняются через один exact local

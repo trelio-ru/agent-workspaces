@@ -485,14 +485,15 @@ provider-tag workflow или внутренние release playbooks в этот 
   `render_trelio_local_proposal` монтирует current App после `save`. Короткий
   owner-private route marker первого подтверждённого local company read
   останавливает ошибочный native renderer до MCP/App и не содержит company
-  content. Hidden App capability действует 3 часа от render без продления
-  при reconcile, хранится только в памяти процесса и теряется при его restart;
-  каждое действие сохраняет live provider/ACL/CAS проверки.
-  Успешное решение расходует только право записи exact карточки: чтение её
-  актуального состояния остаётся доступным до исходного TTL, в том числе после
-  завершения всех карточек bundle. Повторная запись отклоняется отдельно от
-  истечения срока; серверный ответ не кешируется вместо live ACL/read.
-  App-only aliases скрыты от модели, а v5/v4/v3 сохраняются для
+  content. Hidden review capability действует до 30 дней; owner-private key вне
+  workspace позволяет карточке пережить restart local MCP. Она не разрешает
+  mutation. Перед кнопкой App повторяет live provider/ACL/CAS read и получает
+  одноразовую action capability на 5 минут для exact action и редактируемого
+  input. Успех расходует grant exact карточки; состояние читается до review TTL.
+  При потере process-local action grant App один раз повторяет preflight.
+  Повторная запись и stale revision отклоняются; ответ не кешируется вместо live
+  read, ручной текст сохраняется, raw capability error пользователю не показывается.
+  App-only aliases скрыты от модели, а v9/v5/v4/v3 сохраняются для
   старых карточек. Bundle использует sandboxed `srcdoc` без `data:` frame CSP.
 - Чистое чтение уже принятого Workspace использует
   `prepare_agent_workspace_read` и локальный `trelio-workspace inspect` без

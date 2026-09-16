@@ -436,11 +436,15 @@ preflight. Первый подтверждённый local company read сохр
 owner-private marker без company content; он позволяет
 `PreToolUse` остановить ошибочный native renderer до MCP/App. Для plain company
 поля нет, поэтому обычный one-call `propose_task_comment` и его model context
-не меняются. Local proposal App v9
-выдаёт capability только в hidden metadata на 3 часа от подготовки карточки.
-Обновление состояния не продлевает срок, а права, актуальность proposal и
-provider/E2EE границы проверяются при каждом действии. Успешная публикация,
-применение или отклонение закрывает право повторной записи только этой карточки.
+не меняются. Local proposal App v13 выдаёт подписанную review capability только
+в hidden metadata сроком до 30 дней. Owner-private signing key хранится вне
+workspace, поэтому карточка переживает restart local MCP. Review grant не
+разрешает mutation. Перед publish/apply/dismiss App перечитывает live state и
+получает отдельную одноразовую action capability на 5 минут; она связана с exact
+action и редактируемым input, включая Markdown и attachment IDs комментария.
+Права, актуальность proposal и provider/E2EE границы проверяются при каждом
+действии. Успешная публикация, применение или отклонение закрывает право
+повторной записи только этой карточки.
 При возврате в чат она до исходного срока заново читает состояние с сервера и
 показывает завершённый результат; это работает и после завершения всех карточек
 одного bundle. Ответ не кешируется вместо проверки текущего доступа.
@@ -448,9 +452,11 @@ provider/E2EE границы проверяются при каждом дейс
 JSON-копия в text `content` заменяется коротким указателем. Errors, независимый
 текст, смешанный media и hidden `_meta` остаются без изменений. Данные и
 отдельное действие пользователя каждой карточки сохраняются.
-Capability хранится только в памяти локального MCP-процесса: после истечения
-срока или перезапуска процесса незавершённую карточку нужно подготовить заново.
-Generic app-only state/action tools
+Короткая action capability хранится только в памяти локального MCP-процесса. Если
+она исчезла при restart между preflight и действием, App один раз бесшумно
+повторяет preflight; заново готовить карточку не требуется. При stale revision
+write не выполняется, ручной ввод сохраняется, а raw capability error не
+показывается. Generic app-only state/action tools
 не попадают в model context, а v5 kind-specific tools остаются resource-level
 совместимостью уже сохранённых карточек.
 

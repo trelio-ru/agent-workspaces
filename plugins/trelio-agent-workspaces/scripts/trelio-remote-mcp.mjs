@@ -121,10 +121,13 @@ const COMPANY_SKILL_PLAN_TTL_MS = 30 * 60 * 1000;
 const COMPANY_SKILL_MANAGEMENT_BODY_LIMIT_BYTES = 96 * 1024 * 1024;
 const LOCAL_PROPOSAL_APP_MAX_BYTES = 4 * 1024 * 1024;
 const LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES = 2_048;
-// Match the backend's bounded review window so a card remains usable after a
-// break. Refresh never renews this deadline; live provider/ACL/CAS checks still
-// gate each action, and the process-local capability does not survive restart.
-const LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS = 3 * 60 * 60 * 1_000;
+// Review authority survives an ordinary host restart and is deliberately
+// read-only. A user click obtains a separate five-minute, exact-action grant
+// after a fresh provider/ACL/proposal-state check.
+const LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const LOCAL_PROPOSAL_APP_ACTION_CAPABILITY_TTL_MS = 5 * 60 * 1_000;
+const LOCAL_PROPOSAL_APP_SIGNING_KEY_SCHEMA_VERSION = 1;
+const LOCAL_PROPOSAL_APP_SIGNING_KEY_FILE = "proposal-app-capability-key.json";
 const LOCAL_PROPOSAL_BLOCK_TYPE_BY_KIND = new Map([
   ["comment", "commentProposal"],
   ["status", "statusProposal"],
@@ -146,9 +149,14 @@ const LOCAL_PROPOSAL_APP_TOOL_ROUTE = new Map([
   ["dismiss_task_checklist_proposal", { kind: "checklist", operation: "action", action: "dismiss" }],
 ]);
 const localProposalRouteById = new Map();
+// Pre-v13 cards used one process-local token for both read and write. Keep the
+// map only for their bounded compatibility window; new cards use signed review
+// tokens plus independent one-use action grants.
 const localProposalAppCapabilityByToken = new Map();
+const localProposalAppActionCapabilityByToken = new Map();
+const localProposalAppSigningKeyPromiseByPath = new Map();
 const LOCAL_PROPOSAL_APP_RESOURCE_PATH_BY_URI = new Map([
-  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v9"],
+  [TRELIO_LOCAL_PROPOSAL_RESOURCE_URI, "/api/agent-workspaces/mcp-app-resources/task-proposals-v13"],
   ...TRELIO_LOCAL_PROPOSAL_LEGACY_RESOURCE_URIS.map((uri) => {
     // Keep every immutable ui:// generation paired with the matching backend
     // endpoint. A legacy read must never populate the cache with newer bytes
@@ -3117,6 +3125,29 @@ const buildLocalProposalAppTool = (
   _meta: { ...localProposalAppOnlyMeta, ...extraMeta },
 });
 
+const localGenericProposalActionProperties = {
+  decision: { type: "string", enum: ["apply", "dismiss"] },
+  bodyText: { type: "string", minLength: 1, maxLength: 20_000 },
+  attachmentIds: {
+    type: "array",
+    maxItems: 10,
+    items: { type: "string", format: "uuid" },
+  },
+  targetStatusCode: { type: "string", minLength: 1, maxLength: 120 },
+  controlIds: {
+    type: "array",
+    minItems: 1,
+    maxItems: 20,
+    items: { type: "string", format: "uuid" },
+  },
+  itemIds: {
+    type: "array",
+    minItems: 1,
+    maxItems: 20,
+    items: { type: "string", format: "uuid" },
+  },
+};
+
 const LOCAL_PROPOSAL_APP_TOOLS = [
   buildLocalProposalAppTool(
     "get_task_proposal_app_state",
@@ -3128,11 +3159,16 @@ const LOCAL_PROPOSAL_APP_TOOLS = [
       properties: {
         capabilityToken: {
           type: "string",
-          minLength: 43,
-          maxLength: 43,
-          pattern: "^[A-Za-z0-9_-]{43}$",
+          minLength: 1,
+          maxLength: 100_000,
         },
         proposalId: { type: "string", format: "uuid" },
+        actionRequest: {
+          type: "object",
+          additionalProperties: false,
+          required: ["decision"],
+          properties: localGenericProposalActionProperties,
+        },
       },
     },
     true,
@@ -3144,35 +3180,16 @@ const LOCAL_PROPOSAL_APP_TOOLS = [
     {
       type: "object",
       additionalProperties: false,
-      required: ["capabilityToken", "proposalId", "decision"],
+      required: ["proposalId", "decision"],
       properties: {
         capabilityToken: {
           type: "string",
-          minLength: 43,
-          maxLength: 43,
-          pattern: "^[A-Za-z0-9_-]{43}$",
+          minLength: 1,
+          maxLength: 100_000,
         },
+        actionCapabilityToken: { type: "string", minLength: 1, maxLength: 100_000 },
         proposalId: { type: "string", format: "uuid" },
-        decision: { type: "string", enum: ["apply", "dismiss"] },
-        bodyText: { type: "string", minLength: 1, maxLength: 20_000 },
-        attachmentIds: {
-          type: "array",
-          maxItems: 10,
-          items: { type: "string", format: "uuid" },
-        },
-        targetStatusCode: { type: "string", minLength: 1, maxLength: 120 },
-        controlIds: {
-          type: "array",
-          minItems: 1,
-          maxItems: 20,
-          items: { type: "string", format: "uuid" },
-        },
-        itemIds: {
-          type: "array",
-          minItems: 1,
-          maxItems: 50,
-          items: { type: "string", format: "uuid" },
-        },
+        ...localGenericProposalActionProperties,
       },
     },
     false,
@@ -3572,14 +3589,100 @@ const pruneLocalProposalAppCapabilities = () => {
   for (const [token, capability] of localProposalAppCapabilityByToken) {
     if (capability.expiresAtMs <= now) localProposalAppCapabilityByToken.delete(token);
   }
+  for (const [token, capability] of localProposalAppActionCapabilityByToken) {
+    if (capability.expiresAtMs <= now) localProposalAppActionCapabilityByToken.delete(token);
+  }
   while (localProposalAppCapabilityByToken.size >= LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES) {
     localProposalAppCapabilityByToken.delete(
       localProposalAppCapabilityByToken.keys().next().value,
     );
   }
+  while (localProposalAppActionCapabilityByToken.size >= LOCAL_PROPOSAL_ROUTE_CACHE_MAX_ENTRIES) {
+    localProposalAppActionCapabilityByToken.delete(
+      localProposalAppActionCapabilityByToken.keys().next().value,
+    );
+  }
 };
 
-const createLocalProposalAppCapability = (origin, structuredContent) => {
+const readLocalProposalAppSigningKeyRecord = (record) => {
+  if (
+    record?.schemaVersion !== LOCAL_PROPOSAL_APP_SIGNING_KEY_SCHEMA_VERSION
+    || typeof record?.secret !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(record.secret)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_KEY_INVALID",
+      "Не удалось проверить защищённые карточки. Перезапустите Trelio plugin после проверки локального хранилища.",
+    );
+  }
+  const key = Buffer.from(record.secret, "base64url");
+  if (key.byteLength !== 32) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_KEY_INVALID",
+      "Не удалось проверить защищённые карточки. Перезапустите Trelio plugin после проверки локального хранилища.",
+    );
+  }
+  return key;
+};
+
+const loadLocalProposalAppSigningKey = async (
+  configDirectory = resolveWorkspaceBridgeConfigDirectory(),
+) => {
+  const keyPath = path.join(configDirectory, LOCAL_PROPOSAL_APP_SIGNING_KEY_FILE);
+  const cached = localProposalAppSigningKeyPromiseByPath.get(keyPath);
+  if (cached) return cached;
+
+  const pending = (async () => {
+    await ensurePrivateDirectory(configDirectory);
+    const current = await readPrivateJsonFile(keyPath, { maximumBytes: 4_096 });
+    if (Object.keys(current).length > 0) return readLocalProposalAppSigningKeyRecord(current);
+
+    const record = {
+      schemaVersion: LOCAL_PROPOSAL_APP_SIGNING_KEY_SCHEMA_VERSION,
+      secret: crypto.randomBytes(32).toString("base64url"),
+    };
+    let handle;
+    try {
+      // Exclusive creation prevents two freshly started plugin processes from
+      // signing cards with different keys. The loser reads the winner's exact
+      // owner-only file instead of overwriting it.
+      handle = await fs.open(keyPath, "wx", 0o600);
+      await handle.writeFile(`${JSON.stringify(record, null, 2)}\n`, "utf8");
+      await handle.sync();
+      await handle.close();
+      handle = null;
+      if (process.platform !== "win32") await fs.chmod(keyPath, 0o600);
+      return readLocalProposalAppSigningKeyRecord(record);
+    } catch (error) {
+      if (handle) await handle.close().catch(() => undefined);
+      if (error?.code !== "EEXIST") throw error;
+      return readLocalProposalAppSigningKeyRecord(
+        await readPrivateJsonFile(keyPath, { maximumBytes: 4_096 }),
+      );
+    }
+  })();
+  localProposalAppSigningKeyPromiseByPath.set(keyPath, pending);
+  try {
+    return await pending;
+  } catch (error) {
+    localProposalAppSigningKeyPromiseByPath.delete(keyPath);
+    throw error;
+  }
+};
+
+const hashLocalProposalOrigin = (origin) => (
+  crypto.createHash("sha256").update(origin, "utf8").digest("hex")
+);
+
+const signLocalProposalCapabilityPayload = (key, encodedPayload) => (
+  crypto.createHmac("sha256", key).update(encodedPayload, "utf8").digest("base64url")
+);
+
+const createLocalProposalAppCapability = async (
+  origin,
+  structuredContent,
+  { configDirectory } = {},
+) => {
   if (typeof origin !== "string" || !origin || !Array.isArray(structuredContent?.blocks)) {
     return null;
   }
@@ -3613,61 +3716,117 @@ const createLocalProposalAppCapability = (origin, structuredContent) => {
       kind: route.kind,
       revision: route.revision,
       target: route.target,
-      ...(route.kind === "comment"
-        ? {
-            markdownPublicationContext: readLocalCommentMarkdownPublicationContext(
-              block.proposal,
-              route.companySlug,
-            ),
-          }
-        : {}),
-      actionConsumed: false,
     });
   });
   if (hasUnboundReadyDraft || targets.size === 0) return null;
 
-  pruneLocalProposalAppCapabilities();
-  const capabilityToken = crypto.randomBytes(32).toString("base64url");
+  const signingKey = await loadLocalProposalAppSigningKey(configDirectory);
   const expiresAtMs = Date.now() + LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS;
-  localProposalAppCapabilityByToken.set(capabilityToken, {
-    origin,
+  const payload = {
+    schemaVersion: 2,
+    originHash: hashLocalProposalOrigin(origin),
+    issuedAtMs: Date.now(),
     expiresAtMs,
-    targets,
-  });
+    targets: [...targets.values()],
+  };
+  const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const capabilityToken = [
+    "v2",
+    encodedPayload,
+    signLocalProposalCapabilityPayload(signingKey, encodedPayload),
+  ].join(".");
   return { capabilityToken, expiresAtMs };
 };
 
-const readLocalProposalAppCapabilityTarget = (
+const readLocalProposalAppCapabilityTarget = async (
   origin,
   capabilityToken,
   proposalId,
+  { configDirectory } = {},
 ) => {
   const token = typeof capabilityToken === "string" ? capabilityToken : "";
   const normalizedProposalId = typeof proposalId === "string"
     ? proposalId.toLowerCase()
     : "";
+
+  if (token.startsWith("v2.")) {
+    try {
+      const [version, encodedPayload, encodedSignature, extraPart] = token.split(".");
+      if (version !== "v2" || !encodedPayload || !encodedSignature || extraPart !== undefined) {
+        throw new Error("Invalid signed capability shape.");
+      }
+      const signingKey = await loadLocalProposalAppSigningKey(configDirectory);
+      const expectedSignature = Buffer.from(
+        signLocalProposalCapabilityPayload(signingKey, encodedPayload),
+        "base64url",
+      );
+      const actualSignature = Buffer.from(encodedSignature, "base64url");
+      if (
+        actualSignature.byteLength !== expectedSignature.byteLength
+        || !crypto.timingSafeEqual(actualSignature, expectedSignature)
+      ) {
+        throw new Error("Invalid signed capability signature.");
+      }
+      const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+      if (
+        payload?.schemaVersion !== 2
+        || payload.originHash !== hashLocalProposalOrigin(origin)
+        || !Number.isSafeInteger(payload.issuedAtMs)
+        || !Number.isSafeInteger(payload.expiresAtMs)
+        || payload.expiresAtMs <= payload.issuedAtMs
+        || payload.expiresAtMs - payload.issuedAtMs > LOCAL_PROPOSAL_APP_CAPABILITY_TTL_MS
+        || payload.expiresAtMs <= Date.now()
+        || !Array.isArray(payload.targets)
+        || payload.targets.length < 1
+        || payload.targets.length > 20
+      ) {
+        throw new Error("Invalid signed capability payload.");
+      }
+      const target = payload.targets.find((candidate) => (
+        candidate?.proposalId === normalizedProposalId
+        && UUID_PATTERN.test(candidate.proposalId)
+        && ["comment", "status", "control_clear", "checklist"].includes(candidate.kind)
+        && typeof candidate.companySlug === "string"
+        && Number.isSafeInteger(candidate.revision)
+        && candidate.revision >= 1
+        && candidate.target
+        && typeof candidate.target === "object"
+      ));
+      if (!target) throw new Error("Proposal target is missing from capability.");
+      return { capability: payload, target: structuredClone(target) };
+    } catch (error) {
+      if (error instanceof TrelioLocalContextError) throw error;
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
+        "Карточка больше не может подтвердить свою актуальность. Обновите предложение.",
+      );
+    }
+  }
+
+  // Compatibility for cards rendered by the previous process-local v9
+  // protocol. New renders never enter this map.
   const capability = localProposalAppCapabilityByToken.get(token);
   if (!capability || capability.expiresAtMs <= Date.now()) {
     if (capability) localProposalAppCapabilityByToken.delete(token);
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
-      "The protected proposal card expired. Ask the agent to prepare it again.",
+      "Карточка устарела. Обновите предложение.",
     );
   }
   if (capability.origin !== origin) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
-      "The protected proposal card belongs to another Trelio origin.",
+      "Карточка относится к другому серверу Trelio. Откройте её в исходном контуре.",
     );
   }
   const target = capability.targets.get(normalizedProposalId);
   if (!target) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_INVALID",
-      "The proposal does not belong to this protected card.",
+      "Предложение не относится к этой карточке. Обновите предложение.",
     );
   }
-  return { capability, target };
+  return { capability: { ...capability, schemaVersion: 1 }, target };
 };
 
 const buildLocalProposalRenderPayload = ({ result, companySlug, kind, operation }) => {
@@ -3726,12 +3885,13 @@ const buildLocalProposalRenderPayload = ({ result, companySlug, kind, operation 
   };
 };
 
-export const buildLocalProposalRenderResult = ({
+export const buildLocalProposalRenderResult = async ({
   result,
   companySlug,
   kind,
   operation,
   origin = null,
+  configDirectory,
 }) => {
   const structuredContent = buildLocalProposalRenderPayload({
     result,
@@ -3739,7 +3899,11 @@ export const buildLocalProposalRenderResult = ({
     kind,
     operation,
   });
-  const capability = createLocalProposalAppCapability(origin, structuredContent);
+  const capability = await createLocalProposalAppCapability(
+    origin,
+    structuredContent,
+    { configDirectory },
+  );
   return compactLocalMcpResult({
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
@@ -3749,7 +3913,7 @@ export const buildLocalProposalRenderResult = ({
       ...(capability
         ? {
             "trelio/taskProposalApp": {
-              schemaVersion: 1,
+              schemaVersion: 2,
               capabilityToken: capability.capabilityToken,
               expiresAt: new Date(capability.expiresAtMs).toISOString(),
             },
@@ -3846,6 +4010,87 @@ const resolveLocalProposalContextCompany = (kind, rawArguments) => {
   );
 };
 
+const normalizeLocalProposalAppAction = (target, rawAction) => {
+  const decision = rawAction?.decision;
+  if (!["apply", "dismiss"].includes(decision)) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      "Выберите применение или отклонение предложения.",
+    );
+  }
+  const fields = ["bodyText", "attachmentIds", "targetStatusCode", "controlIds", "itemIds"];
+  if (decision === "dismiss") {
+    if (fields.some((field) => rawAction?.[field] !== undefined)) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "Отклонение предложения не может содержать поля применения.",
+      );
+    }
+    return { decision };
+  }
+
+  if (target.kind === "comment") {
+    if (
+      typeof rawAction?.bodyText !== "string"
+      || !rawAction.bodyText.trim()
+      || rawAction.bodyText.length > 20_000
+      || (rawAction.attachmentIds !== undefined && (
+        !Array.isArray(rawAction.attachmentIds)
+        || rawAction.attachmentIds.length > 10
+        || !rawAction.attachmentIds.every((item) => UUID_PATTERN.test(item))
+      ))
+      || ["targetStatusCode", "controlIds", "itemIds"].some((field) => rawAction?.[field] !== undefined)
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "Для публикации комментария нужен текст и, при необходимости, выбранные вложения.",
+      );
+    }
+    return {
+      decision,
+      bodyText: rawAction.bodyText,
+      ...(rawAction.attachmentIds !== undefined
+        ? { attachmentIds: [...rawAction.attachmentIds] }
+        : {}),
+    };
+  }
+  if (target.kind === "status") {
+    if (
+      typeof rawAction?.targetStatusCode !== "string"
+      || !rawAction.targetStatusCode.trim()
+      || rawAction.targetStatusCode.length > 64
+      || ["bodyText", "attachmentIds", "controlIds", "itemIds"].some((field) => rawAction?.[field] !== undefined)
+    ) {
+      throw new TrelioLocalContextError(
+        "LOCAL_CONTEXT_INVALID_INPUT",
+        "Для изменения статуса нужен только выбранный статус.",
+      );
+    }
+    return { decision, targetStatusCode: rawAction.targetStatusCode.trim() };
+  }
+  const selectionField = target.kind === "control_clear" ? "controlIds" : "itemIds";
+  const selectedIds = rawAction?.[selectionField];
+  if (
+    !Array.isArray(selectedIds)
+    || selectedIds.length < 1
+    || selectedIds.length > 20
+    || !selectedIds.every((item) => UUID_PATTERN.test(item))
+    || fields.some((field) => field !== selectionField && rawAction?.[field] !== undefined)
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_INVALID_INPUT",
+      target.kind === "control_clear"
+        ? "Для снятия контролей нужен только выбранный список контролей."
+        : "Для изменения чек-листа нужен только выбранный список пунктов.",
+    );
+  }
+  return { decision, [selectionField]: [...selectedIds] };
+};
+
+const hashLocalProposalAppAction = (action) => (
+  crypto.createHash("sha256").update(JSON.stringify(action), "utf8").digest("hex")
+);
+
 const handleGenericLocalProposalAppToolCall = async (
   origin,
   name,
@@ -3853,81 +4098,113 @@ const handleGenericLocalProposalAppToolCall = async (
   {
     signal,
     proposalOperation = handleTrelioLocalProposalOperation,
+    configDirectory,
   } = {},
 ) => {
   const capabilityToken = rawArguments?.capabilityToken;
   const proposalId = rawArguments?.proposalId;
-  const { target } = readLocalProposalAppCapabilityTarget(
-    origin,
-    capabilityToken,
-    proposalId,
-  );
+  const actionCapabilityToken = rawArguments?.actionCapabilityToken;
+  const review = name === "get_task_proposal_app_state" || !actionCapabilityToken
+    ? await readLocalProposalAppCapabilityTarget(
+        origin,
+        capabilityToken,
+        proposalId,
+        { configDirectory },
+      )
+    : null;
+  let target = review?.target || null;
 
   if (name === "get_task_proposal_app_state") {
+    const normalizedAction = rawArguments?.actionRequest !== undefined
+      ? normalizeLocalProposalAppAction(target, rawArguments.actionRequest)
+      : null;
     const result = await proposalOperation(origin, {
       companySlug: target.companySlug,
       kind: target.kind,
       operation: "context",
       payload: { target: target.target },
     }, { signal });
-    return buildLocalProposalChildResult({
+    const childResult = buildLocalProposalChildResult({
       result,
       companySlug: target.companySlug,
       kind: target.kind,
     });
+    if (normalizedAction) {
+      const currentDraft = childResult.structuredContent?.currentDraft;
+      if (
+        currentDraft?.proposalId === target.proposalId
+        && currentDraft?.revision === target.revision
+      ) {
+        pruneLocalProposalAppCapabilities();
+        const actionCapabilityToken = crypto.randomBytes(32).toString("base64url");
+        const expiresAtMs = Date.now() + LOCAL_PROPOSAL_APP_ACTION_CAPABILITY_TTL_MS;
+        localProposalAppActionCapabilityByToken.set(actionCapabilityToken, {
+          origin,
+          expiresAtMs,
+          target: structuredClone(target),
+          actionDigest: hashLocalProposalAppAction(normalizedAction),
+          markdownPublicationContext: target.kind === "comment"
+            ? readLocalCommentMarkdownPublicationContext(
+                childResult.structuredContent,
+                target.companySlug,
+              )
+            : null,
+          consumed: false,
+        });
+        childResult._meta = {
+          ...(childResult._meta || {}),
+          "trelio/taskProposalAction": {
+            schemaVersion: 1,
+            capabilityToken: actionCapabilityToken,
+            expiresAt: new Date(expiresAtMs).toISOString(),
+          },
+        };
+      }
+    }
+    return childResult;
   }
 
-  // Host восстанавливает карточку из неизменяемого render-result вместе с тем
-  // же token. Завершённое решение закрывает только запись: live context выше
-  // нужен до исходного TTL, чтобы показать уже опубликованный/отклонённый
-  // результат. Это чтение по-прежнему проходит provider и серверный ACL.
-  if (target.actionConsumed) {
-    throw new TrelioLocalContextError(
-      "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
-      "This protected proposal card was already completed. Refresh the card to read its current state.",
-    );
-  }
-
-  const decision = rawArguments?.decision;
-  if (!["apply", "dismiss"].includes(decision)) {
-    throw new TrelioLocalContextError(
-      "LOCAL_CONTEXT_INVALID_INPUT",
-      "decision must be apply or dismiss.",
-    );
-  }
-  const applyOnlyFields = [
-    "bodyText",
-    "attachmentIds",
-    "targetStatusCode",
-    "controlIds",
-    "itemIds",
-  ];
-  if (
-    decision === "dismiss"
-    && applyOnlyFields.some((field) => rawArguments?.[field] !== undefined)
-  ) {
-    throw new TrelioLocalContextError(
-      "LOCAL_CONTEXT_INVALID_INPUT",
-      "A dismiss decision cannot include apply-only fields.",
-    );
-  }
-  if (decision === "apply") {
-    const allowedFields = target.kind === "comment"
-      ? new Set(["bodyText", "attachmentIds"])
-      : target.kind === "status"
-        ? new Set(["targetStatusCode"])
-        : target.kind === "control_clear"
-          ? new Set(["controlIds"])
-          : new Set(["itemIds"]);
-    if (applyOnlyFields.some((field) => (
-      rawArguments?.[field] !== undefined && !allowedFields.has(field)
-    ))) {
+  let actionCapability = null;
+  if (typeof actionCapabilityToken === "string" && actionCapabilityToken) {
+    pruneLocalProposalAppCapabilities();
+    actionCapability = localProposalAppActionCapabilityByToken.get(actionCapabilityToken);
+    if (
+      !actionCapability
+      || actionCapability.expiresAtMs <= Date.now()
+      || actionCapability.origin !== origin
+      || actionCapability.consumed
+      || actionCapability.target.proposalId !== String(proposalId || "").toLowerCase()
+    ) {
       throw new TrelioLocalContextError(
-        "LOCAL_CONTEXT_INVALID_INPUT",
-        "The apply decision includes fields for another proposal kind.",
+        "LOCAL_CONTEXT_PROPOSAL_ACTION_CAPABILITY_INVALID",
+        "Не удалось подтвердить действие. Повторите его из карточки.",
       );
     }
+    target = actionCapability.target;
+  } else if (review?.capability.schemaVersion !== 1) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_ACTION_CAPABILITY_INVALID",
+      "Карточка должна перепроверить предложение перед применением решения.",
+    );
   }
+
+  if (target.actionConsumed || actionCapability?.consumed) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_CAPABILITY_CONSUMED",
+      "Это решение уже было применено. Обновите карточку.",
+    );
+  }
+  const normalizedAction = normalizeLocalProposalAppAction(target, rawArguments);
+  if (
+    actionCapability
+    && hashLocalProposalAppAction(normalizedAction) !== actionCapability.actionDigest
+  ) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_PROPOSAL_ACTION_MISMATCH",
+      "Решение изменилось после проверки. Повторите действие из карточки.",
+    );
+  }
+  const decision = normalizedAction.decision;
 
   const actionPayload = {
     proposalId: target.proposalId,
@@ -3941,19 +4218,21 @@ const handleGenericLocalProposalAppToolCall = async (
   };
   if (decision === "apply") {
     if (target.kind === "comment") {
-      actionPayload.bodyText = rawArguments?.bodyText;
-      if (rawArguments?.attachmentIds !== undefined) {
-        actionPayload.attachmentIds = rawArguments.attachmentIds;
+      actionPayload.bodyText = normalizedAction.bodyText;
+      if (normalizedAction.attachmentIds !== undefined) {
+        actionPayload.attachmentIds = normalizedAction.attachmentIds;
       }
-      if (target.markdownPublicationContext) {
-        actionPayload._localMarkdownPublicationContext = target.markdownPublicationContext;
+      const markdownPublicationContext = actionCapability?.markdownPublicationContext
+        || target.markdownPublicationContext;
+      if (markdownPublicationContext) {
+        actionPayload._localMarkdownPublicationContext = markdownPublicationContext;
       }
     } else if (target.kind === "status") {
-      actionPayload.targetStatusCode = rawArguments?.targetStatusCode;
+      actionPayload.targetStatusCode = normalizedAction.targetStatusCode;
     } else if (target.kind === "control_clear") {
-      actionPayload.controlIds = rawArguments?.controlIds;
+      actionPayload.controlIds = normalizedAction.controlIds;
     } else {
-      actionPayload.itemIds = rawArguments?.itemIds;
+      actionPayload.itemIds = normalizedAction.itemIds;
     }
   }
 
@@ -3963,11 +4242,11 @@ const handleGenericLocalProposalAppToolCall = async (
     operation: "action",
     payload: actionPayload,
   }, { signal });
-  // Сохраняем только существующий exact route и отметку расходования права
-  // записи, без кеширования ответа или продления TTL. Удаление target/token
-  // здесь делало успешную публикацию неотличимой от истёкшей карточки при
-  // возврате в чат. Соседние карточки bundle сохраняют свои права независимо.
-  target.actionConsumed = true;
+  // Consume only after a confirmed provider result. An ambiguous transport
+  // failure leaves the exact token retryable, while the proposal CAS prevents
+  // a second domain effect after an actually successful decision.
+  if (actionCapability) actionCapability.consumed = true;
+  else target.actionConsumed = true;
   return buildLocalProposalChildResult({
     result,
     companySlug: target.companySlug,
@@ -3982,6 +4261,7 @@ const handleLocalProposalAppToolCall = async (
   {
     signal,
     proposalOperation = handleTrelioLocalProposalOperation,
+    configDirectory,
   } = {},
 ) => {
   if (
@@ -3992,7 +4272,7 @@ const handleLocalProposalAppToolCall = async (
       origin,
       name,
       rawArguments,
-      { signal, proposalOperation },
+      { signal, proposalOperation, configDirectory },
     );
   }
   const route = LOCAL_PROPOSAL_APP_TOOL_ROUTE.get(name);
@@ -4135,6 +4415,7 @@ export const handleToolCall = async (
     localContextOperation = handleTrelioLocalContextOperation,
     proposalOperation = handleTrelioLocalProposalOperation,
     proposalProviderSelectionRecorder = null,
+    proposalCapabilityConfigDirectory,
     codexRoutingPlan = planCodexTrelioHookRouting,
     codexRoutingApply = applyCodexTrelioHookRouting,
   } = {},
@@ -4216,6 +4497,7 @@ export const handleToolCall = async (
       kind: rawArguments?.kind,
       operation: rawArguments?.operation,
       origin,
+      configDirectory: proposalCapabilityConfigDirectory,
     });
   }
   if (
@@ -4227,7 +4509,11 @@ export const handleToolCall = async (
       origin,
       name,
       rawArguments,
-      { signal, proposalOperation },
+      {
+        signal,
+        proposalOperation,
+        configDirectory: proposalCapabilityConfigDirectory,
+      },
     );
   }
   if (name === TRELIO_LOCAL_WORKSPACE_TOOL.name) {
@@ -4359,6 +4645,7 @@ export const handleLocalMcpMessage = async (
     callTool = handleToolCall,
     readResource = readLocalProposalAppResource,
     proposalProviderSelectionRecorder = persistLocalProposalProviderSelection,
+    proposalCapabilityConfigDirectory,
     signal,
   } = {},
 ) => {
@@ -4446,15 +4733,26 @@ export const handleLocalMcpMessage = async (
           origin,
           String(message.params?.name || ""),
           message.params?.arguments,
-          { signal, proposalProviderSelectionRecorder },
+          {
+            signal,
+            proposalProviderSelectionRecorder,
+            proposalCapabilityConfigDirectory,
+          },
         )),
       };
     } catch (error) {
+      const errorPayload = safeErrorPayload(error);
+      const isProposalCardError = errorPayload.code.startsWith("LOCAL_CONTEXT_PROPOSAL_");
       return {
         jsonrpc: "2.0",
         id: message.id,
         result: {
-          ...buildTextResult(safeErrorPayload(error)),
+          ...(isProposalCardError
+            ? {
+                structuredContent: errorPayload,
+                content: [{ type: "text", text: errorPayload.message }],
+              }
+            : buildTextResult(errorPayload)),
           isError: true,
         },
       };

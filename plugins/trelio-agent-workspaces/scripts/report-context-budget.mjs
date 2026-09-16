@@ -180,7 +180,7 @@ const buildLocalResponseMeasurements = async () => {
   const context = await handleToolCall("https://context-budget.invalid", "get_trelio_local_proposal_context", {
     companySlug: "demo", kind: "comment", payload: { target: { runId: proposal.currentDraft.contextRequest.runId } },
   }, { proposalOperation: async () => result });
-  const render = buildLocalProposalRenderResult({ result, companySlug: "demo", kind: "comment", operation: "save" });
+  const render = await buildLocalProposalRenderResult({ result, companySlug: "demo", kind: "comment", operation: "save" });
   const attachmentPayload = {
     attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", originalName: "sample.pdf",
     mimeType: "application/pdf", sizeBytes: 1024 * 1024,

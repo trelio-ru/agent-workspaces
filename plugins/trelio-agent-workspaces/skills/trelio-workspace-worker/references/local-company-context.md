@@ -149,10 +149,13 @@ rich-text JSON, канонические mentions и ссылки выбранн
 locks, optimistic revisions, public-comment snapshot hashes и идемпотентные
 apply/dismiss/publication, что native Trelio.
 
-v9 App хранит скрытую от модели capability на три часа с привязкой к revision.
-Успешное решение закрывает лишь запись этой карточки; чтение текущего состояния
-проверяет provider/ACL до исходного expiry без продления. Повторно открытая
-карточка показывает завершённое состояние. Сохранённые v5 используют старые App tools.
+v13 App хранит скрытую review capability до 30 дней для exact target/revision;
+owner-private key позволяет ей пережить restart local MCP. Перед
+publish/apply/dismiss App без агента перечитывает live provider/ACL/revision и
+получает одноразовую action capability на 5 минут. Для комментария binding
+включает текущий Markdown и вложения. Успех расходует grant этой карточки;
+повторное открытие показывает результат, а stale write сохраняет ручной текст и
+показывает понятное сообщение. Сохранённые v9/v5 используют старые App tools.
 
 Для нескольких карточек, когда native `render_task_proposals` или совместимый
 `render_task_comment_proposals` выбрали local route, вызови один
