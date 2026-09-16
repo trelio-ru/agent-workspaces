@@ -76,6 +76,7 @@ import {
   materializeRuntimeControlFiles,
   normalizeLegacyWorkspaceScaffold,
   resolveWorkspaceContextFileName,
+  recoverBridgeHostRuntimeUpgrade,
   ensureAutomaticRunWorklog,
   findTrelioWorkingFolderRoot,
   formatBridgeCommandError,
@@ -835,7 +836,7 @@ test("encrypted derived-artifact staging falls back only during an older-backend
   );
 });
 
-test("runtime-host upgrade uses the same quiet plugin recovery contract", async () => {
+test("runtime-host upgrade remains a runtime error and does not trigger plugin recovery", async () => {
   const server = createServer((_request, response) => {
     response.writeHead(409, { "content-type": "application/json" });
     response.end(JSON.stringify({
@@ -862,9 +863,10 @@ test("runtime-host upgrade uses the same quiet plugin recovery contract", async 
         "/api/agent-skills/runtime/resolve",
       ),
       (error) => (
-        error instanceof BridgePluginUpgradeRequiredError
-        && error.compatibility.minimumVersion === "1.5.12"
-        && error.compatibility.update.sameTaskRetryAllowed === true
+        error instanceof TrelioApiError
+        && error.code === "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED"
+        && error.payload.minimumVersion === "1.5.12"
+        && error.payload.update.sameTaskRetryAllowed === true
       ),
     );
   } finally {
@@ -872,6 +874,47 @@ test("runtime-host upgrade uses the same quiet plugin recovery contract", async 
       error ? reject(error) : resolve()
     )));
   }
+});
+
+test("runtime-host gate refreshes the signed runtime and re-dispatches the exact bridge command", async () => {
+  const calls = [];
+  const spawnProcess = (command, argumentsList, options) => {
+    calls.push({ command, argumentsList, options });
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit("exit", 0, null));
+    return child;
+  };
+  const error = new TrelioApiError(
+    409,
+    "runtime host upgrade required",
+    null,
+    "AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED",
+    { minimumRuntimeVersion: "2.3.0" },
+  );
+  const recovery = await recoverBridgeHostRuntimeUpgrade(error, {
+    rawArguments: ["open", "--workspace", "workspace-id"],
+    environment: {
+      TRELIO_PLUGIN_ROOT: path.join(path.sep, "trusted", "plugin"),
+      TRELIO_HOST_RUNTIME_VERSION: "2.2.3",
+    },
+    spawnProcess,
+  });
+
+  assert.deepEqual(recovery, { handled: true, exitCode: 0 });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].command, process.execPath);
+  assert.deepEqual(calls[0].argumentsList, [
+    path.join(path.sep, "trusted", "plugin", "scripts", "trelio-host-runtime-loader.mjs"),
+    "__update",
+  ]);
+  assert.equal(calls[0].options.env.TRELIO_HOST_RUNTIME_UPDATE_WAIT_FOR_LOCK, "1");
+  assert.deepEqual(calls[1].argumentsList.slice(1), [
+    "bridge",
+    "open",
+    "--workspace",
+    "workspace-id",
+  ]);
+  assert.equal(calls[1].options.env.TRELIO_HOST_RUNTIME_UPDATE_REEXEC, "1");
 });
 
 test("Codex plugin updater retries transient network failures and validates exact install", async () => {
@@ -4310,7 +4353,7 @@ test("bridge release version stays synchronized across executable and manifests"
   });
   assert.deepEqual(codexManifest.mcpServers["trelio-remote-skills"], {
     command: "./scripts/launch-trelio-node",
-    args: ["./scripts/trelio-remote-mcp.mjs"],
+    args: ["./scripts/trelio-host-runtime-loader.mjs", "mcp"],
     cwd: ".",
     env_vars: [
       "CODEX_MCP_NODE_PATH",
@@ -4339,7 +4382,7 @@ test("bridge release version stays synchronized across executable and manifests"
   assert.deepEqual(claudeMcpManifest.mcpServers["trelio-remote-skills"], {
     type: "stdio",
     command: "${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node",
-    args: ["${CLAUDE_PLUGIN_ROOT}/scripts/trelio-remote-mcp.mjs"],
+    args: ["${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs", "mcp"],
     cwd: "${CLAUDE_PLUGIN_ROOT}",
   });
 
@@ -5041,7 +5084,10 @@ test("plugin exposes folder-first onboarding before ordinary task work", async (
   assert.match(onboardingSkill, /processPathReady=false/u);
   assert.match(onboardingSkill, /использует абсолютный `nodePath`/u);
   assert.match(onboardingSkill, /не повторяй совет/u);
-  assert.match(onboardingSkill, /trelio-workspace\.mjs` с `doctor --json/u);
+  assert.match(
+    onboardingSkill,
+    /trelio-host-runtime-loader\.mjs bridge doctor --json/u,
+  );
   assert.match(onboardingSkill, /standalone Git\s+2\.28/u);
   assert.match(onboardingSkill, /временный\s+`init → add → commit`/u);
   assert.match(onboardingSkill, /не приватный Git\s+загрузки marketplace Codex/u);
@@ -7266,12 +7312,30 @@ test("workspace worker gates external services but not native Trelio work", asyn
 test("bridge adds its release version and bearer credential to every API request", () => {
   const headers = buildBridgeRequestHeaders("oauth-token", { accept: "application/json" });
   assert.equal(headers.get("x-trelio-agent-workspaces-version"), BRIDGE_VERSION);
+  assert.equal(headers.get("x-trelio-host-runtime-version"), BRIDGE_VERSION);
   assert.equal(headers.get("x-trelio-agent-skill-device-consent"), "v1");
   assert.equal(headers.get("x-trelio-company-skill-e2ee"), "v1");
   assert.equal(headers.get("x-trelio-agent-secret-company-e2ee"), "v1");
   assert.equal(headers.get("x-trelio-e2ee"), "trelio-e2ee-v1");
   assert.equal(headers.get("authorization"), "Bearer oauth-token");
   assert.equal(headers.get("accept"), "application/json");
+});
+
+test("downloaded host runtime reports shell and runtime versions independently", () => {
+  const previousPluginVersion = process.env.TRELIO_PLUGIN_VERSION;
+  const previousRuntimeVersion = process.env.TRELIO_HOST_RUNTIME_VERSION;
+  process.env.TRELIO_PLUGIN_VERSION = "2.2.3";
+  process.env.TRELIO_HOST_RUNTIME_VERSION = "3.4.5";
+  try {
+    const headers = buildBridgeRequestHeaders("oauth-token");
+    assert.equal(headers.get("x-trelio-agent-workspaces-version"), "2.2.3");
+    assert.equal(headers.get("x-trelio-host-runtime-version"), "3.4.5");
+  } finally {
+    if (previousPluginVersion === undefined) delete process.env.TRELIO_PLUGIN_VERSION;
+    else process.env.TRELIO_PLUGIN_VERSION = previousPluginVersion;
+    if (previousRuntimeVersion === undefined) delete process.env.TRELIO_HOST_RUNTIME_VERSION;
+    else process.env.TRELIO_HOST_RUNTIME_VERSION = previousRuntimeVersion;
+  }
 });
 
 test("skill package host exposes the synchronized 64 MiB package contract", async () => {

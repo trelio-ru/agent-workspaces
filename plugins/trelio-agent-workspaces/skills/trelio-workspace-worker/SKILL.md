@@ -124,10 +124,9 @@ Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищ�
 и проверь владеющий процесс клиента и хронологию вызова hook.
 
 Ошибка `PreToolUse` доказывает запуск hook: сохраняй точные код и причину.
-Для `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`,
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` и `TRELIO_RUNTIME_HOOK_FAILED`
-прочитай восстановление и не называй ошибку отсутствием Hooks. Не обходи
-допуск другим MCP, HTTP, автоматизацией браузера или shell-скриптом.
+При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, любом runtime
+`*_UPGRADE_REQUIRED` или `TRELIO_RUNTIME_HOOK_FAILED` прочитай восстановление;
+это не отсутствие Hooks. Не обходи допуск через MCP, HTTP, browser или shell.
 
 <a id="preserve-operational-boundaries"></a>
 

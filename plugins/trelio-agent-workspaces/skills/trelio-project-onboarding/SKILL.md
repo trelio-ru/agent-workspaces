@@ -31,10 +31,10 @@ proof. При подтверждённом доверии не повторяй 
 проверь определение, matcher, хронологию владеющего процесса и вызов `PreToolUse`.
 
 Ошибка `PreToolUse` доказывает запуск hook. Сохрани точные код и причину.
-Для `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` и
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` используй восстановление версии
-из проверки компонентов ниже: обновляй, только если нужная версия ещё не
-установлена; затем новая задача/сессия, если текущая не может перечитать её.
+Для `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` и
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` stable loader сам обновляет runtime и
+повторяет exact действие. Только `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`
+использует официальный plugin update и при необходимости новую задачу/сессию.
 Не отвечай инструкцией об отсутствующих Hooks. При `TRELIO_RUNTIME_HOOK_FAILED`
 устрани названную причину и повтори один раз в текущей задаче.
 
@@ -148,7 +148,7 @@ proof. При подтверждённом доверии не повторяй 
      Codex `auth_status: "o_auth"` означает только схему авторизации, не передачу
      bearer процессом. Явные HTTP 401/required/missing-bearer реального чтения –
      ошибка OAuth даже при `o_auth`.
-   - Запусти встроенный `../../scripts/trelio-workspace.mjs` с `doctor --json`
+   - Запусти встроенный `../../scripts/trelio-host-runtime-loader.mjs bridge doctor --json`
      через точный launcher загруженного плагина: POSIX
      `../../scripts/launch-trelio-node`, Windows
      `../../scripts/launch-trelio-node.cmd`. Нужен Node.js 22+; сначала подсказки
@@ -429,7 +429,7 @@ OAuth из-за старого PATH клиента. Если выбранный 
 с постоянным machine/user PATH и назови одно точное исправление окружения
 либо конкретное ограничение неподдерживаемого клиента.
 
-После готовности Node запусти встроенный `trelio-workspace.mjs` с `doctor --json`
+После готовности Node запусти встроенный `trelio-host-runtime-loader.mjs bridge doctor --json`
 через launcher до pairing. При `ready` продолжай через bridge с абсолютным
 `git.gitPath`. `processPathReady=false` не требует перезапуска. Doctor проверяет
 реальный внешний Git и временный `init → add → commit`, не приватный Git

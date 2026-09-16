@@ -91,7 +91,7 @@ credential-файлы и необработанное состояние hook.
 cache и не выбирай другую версию. POSIX:
 
 ```text
-../../scripts/launch-trelio-node ../../scripts/trelio-workspace.mjs doctor --json
+../../scripts/launch-trelio-node ../../scripts/trelio-host-runtime-loader.mjs bridge doctor --json
 ```
 
 В Windows используй соседний `../../scripts/launch-trelio-node.cmd` с тем же
@@ -199,13 +199,16 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
   включить Hooks.
 - При `TRELIO_RUNTIME_HOOK_FAILED` исправь названную локальную причину и повтори
   один раз в текущей задаче.
-- При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
-  `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` сравни требуемую версию,
+- При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
+  `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` не обновляй plugin: stable loader
+  сам дожидается подписанного runtime и повторно запускает exact bridge-команду.
+  Если единственный retry снова вернул gate, сохрани exact код и диагностируй
+  runtime channel; новая задача и restart это не исправляют.
+- Только при `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` сравни требуемую версию,
   `plugin.loadedVersion` и установленную версию из клиента. Если установленная
   уже подходит, а загруженная нет, не обновляй снова: начни новую задачу/сессию
   и повтори исходный вызов. Полный перезапуск нужен, только если новая задача
-  всё ещё загружает старую версию или не видит MCP.
-- Если установленная версия старая, используй официальный менеджер плагинов,
+  всё ещё загружает старую версию или не видит MCP. Если версия старая, используй официальный менеджер плагинов,
   проверь новую версию и повтори один раз в текущей задаче до просьбы о новой.
   Не редактируй version-файл, не подделывай заголовок, не сканируй cache и не
   обходи допуск HTTP, браузером или другим MCP.
@@ -253,6 +256,7 @@ lifecycle matchers с будущими версиями. Оно запускае
   явно заданный каталог Workspace – другой сбой.
 - Ошибка только `trelio-remote-skills`: проверь точную команду клиента.
   Codex `codex mcp list --json` должен показывать `./scripts/launch-trelio-node`
+  с аргументами `./scripts/trelio-host-runtime-loader.mjs mcp`
   с `cwd` корня плагина; старый прямой `node` требует обычного обновления/
   новой задачи. Claude `claude mcp list` должен разрешать launcher от
   `${CLAUDE_PLUGIN_ROOT}`; ENOENT буквального относительного пути требует

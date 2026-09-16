@@ -28,11 +28,12 @@ description: Изменение прямой роли одного сущест�
 процесса и реальный вызов `PreToolUse`. Не обходи проверку другим маршрутом.
 
 Ошибка `PreToolUse` доказывает работу hook. Сохрани точные код и причину.
-При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` обновляй плагин, только если нужная
-версия не установлена; если текущая задача не может её перечитать, повтори
-в новой. Полный перезапуск оставь для новой задачи, которая всё ещё видит
-старую версию. Не отвечай на ошибку версии инструкцией об отсутствующих Hooks.
+При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` stable loader сам обновляет runtime и
+повторяет exact действие; plugin/restart не нужны. Только
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` разрешает официальный plugin update и
+новую задачу, если текущая не перечитала shell. Не отвечай на ошибку версии
+инструкцией об отсутствующих Hooks.
 При `TRELIO_RUNTIME_HOOK_FAILED` устрани указанную причину и повтори один раз
 в текущей задаче.
 

@@ -33,10 +33,11 @@ Trelio в контексте, а не запрет компании.
 matcher, хронологию владеющего процесса и вызов `PreToolUse`. Не обходи проверку.
 
 Ошибка `PreToolUse` доказывает активность hook. Сохрани точные код и причину.
-При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` обновляй плагин, только если нужная
-версия не установлена. Если текущая задача не может её перечитать, повтори
-в новой; полный перезапуск оставь для новой задачи со старой версией.
+При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
+`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` stable loader сам обновляет runtime и
+повторяет exact действие; plugin/restart не нужны. Только
+`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` разрешает официальный plugin update и
+новую задачу, если текущая не перечитала shell.
 Не отвечай на ошибку версии инструкцией об отсутствующих Hooks.
 При `TRELIO_RUNTIME_HOOK_FAILED` устрани причину и повтори один раз в текущей задаче.
 
@@ -194,10 +195,14 @@ submit или restore. Причину fallback называй только пр�
 package и file hashes при каждом запуске. Зашифрованные декларации и старые
 runtime-команды без session binding требуют разрешения вживую.
 При `AGENT_SKILL_RELEASE_CHANGED` перечитай один раз и используй возвращённое
-точное действие; не форсируй старый релиз. Если runtime host или
-`minPluginVersion` требует более новый плагин, сначала дай bridge выполнить
-тихое официальное обновление Codex. При успешном запуске продолжай в той же
-задаче; иначе новая задача, а полный перезапуск – только если и она видит старую версию.
+точное действие; не форсируй старый релиз. Если signed runtime требует более
+новый host runtime, не обновляй плагин: stable loader сам получает подписанный
+package и повторно запускает exact bridge-действие в той же задаче. Если этот
+единственный retry всё же вернул runtime gate, сохрани exact код и сообщи о
+runtime rollout blocker; не запускай marketplace update. Marketplace update
+допустим только при отдельном `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
+`minPluginVersion`, относящемся к shell ABI. Новая задача и restart не являются
+штатной частью host runtime rollout.
 
 <a id="connected-integrations"></a>
 

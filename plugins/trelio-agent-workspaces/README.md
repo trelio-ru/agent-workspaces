@@ -504,14 +504,25 @@ Marketplace без `--ref` отслеживает default branch. Обновит
 codex plugin marketplace upgrade trelio-plugins
 ```
 
-Trelio проверяет совместимость bridge перед transport-операциями. Codex bridge
-умеет тихо обновить только официальный marketplace и при безопасной
-возможности продолжить исходную команду новым entrypoint. Если reload в
-текущей задаче невозможен, сначала начните новую задачу; полный restart
-оставьте последним fallback. Bridge удерживает exact immutable папки уже
-загруженных версий: очистка versioned cache при обновлении или повторном
-`plugin add` не ломает абсолютный путь `SKILL.md` в ранее открытой задаче.
-Новые bytes никогда не маскируются под старую версию.
+Trelio проверяет отдельно версию стабильной plugin shell и independently
+released host runtime. Manifest, hook definition, Node launcher, loader и
+signature verification остаются в плагине. Bridge, hook implementation и
+локальный MCP приходят подписанным content-addressed package в owner-only
+каталог вне Codex plugin cache. Агент не выбирает версию и не видит updater в
+model context.
+
+Loader запускает уже проверенный immutable runtime или bundled fallback, а
+обновление проверяет в отдельном процессе. Оно переключает только будущие
+запуски; текущий процесс не удаляется и не заменяется. Поэтому compatible
+runtime rollout не запускает `plugin add`, не ломает старые absolute paths и не
+требует новой задачи либо restart. Если server уже требует новый runtime,
+stable loader дожидается подписанного package и ровно один раз повторно запускает
+exact bridge-команду в той же задаче. Marketplace update остаётся только для
+реального `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` самой shell.
+
+Runtime cache содержит только код. Ключи E2EE, plaintext company content,
+credentials и sessions туда не попадают; зашифрованные компании продолжают
+использовать локальный fail-closed data plane без plaintext fallback.
 
 При недостающем OAuth scope Trelio инициирует стандартную повторную
 авторизацию. Пользователь подтверждает новые права в браузере, а прежние

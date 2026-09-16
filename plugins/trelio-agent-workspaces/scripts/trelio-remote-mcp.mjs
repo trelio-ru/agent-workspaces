@@ -4777,7 +4777,12 @@ export const runStdioHost = async ({
   origin = normalizeOrigin(process.env.TRELIO_ORIGIN || DEFAULT_ORIGIN),
   callTool = handleToolCall,
   handleMessage = handleLocalMcpMessage,
-  retainInstallation = retainLoadedCodexPluginInstallation,
+  // The stable loader never mutates Codex plugin cache, so neither downloaded
+  // nor bundled payloads clone/restore it. Direct legacy launches without the
+  // loader keep retention only for their older marketplace-update contract.
+  retainInstallation = process.env.TRELIO_HOST_RUNTIME_VERSION
+    ? async () => undefined
+    : retainLoadedCodexPluginInstallation,
 } = {}) => {
   const input = readline.createInterface({
     input: inputStream,

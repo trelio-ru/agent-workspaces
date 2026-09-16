@@ -9,6 +9,7 @@
  * tool output, MCP arguments, Workspace or backend storage.
  */
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -45,10 +46,11 @@ const RECOVERY_TOOLS = new Set([
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const HOOK_REQUIRED_CODE = "TRELIO_RUNTIME_HOOK_REQUIRED";
 const HOOK_FAILED_CODE = "TRELIO_RUNTIME_HOOK_FAILED";
-const PLUGIN_UPGRADE_CODES = new Set([
-  "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED",
+const HOST_RUNTIME_RECOVERY_CODES = new Set([
+  "AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED",
   "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
 ]);
+const PLUGIN_UPGRADE_REQUIRED_CODE = "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED";
 const SAFE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/u;
 const TRELIO_TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]{0,127}$/u;
 // Claude Code qualifies MCP servers contributed by a plugin inside hook
@@ -659,14 +661,99 @@ const runSessionEnd = async (hookInput) => {
   await fs.rm(filePath, { force: true }).catch(() => undefined);
 };
 
-const runHook = async () => {
-  const hookInput = await readStdinJson();
+const executeHookInput = async (hookInput) => {
   if (hookInput.hook_event_name === "SessionStart") {
     await runSessionStart(hookInput);
   } else if (hookInput.hook_event_name === "PreToolUse") {
     await runPreToolUse(hookInput);
   } else if (hookInput.hook_event_name === "SessionEnd") {
     await runSessionEnd(hookInput);
+  }
+};
+
+const runChildProcess = async ({ arguments: childArguments, environment, input }) => (
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, childArguments, {
+      env: environment,
+      shell: false,
+      stdio: ["pipe", "inherit", "inherit"],
+      windowsHide: true,
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        process.kill(process.pid, signal);
+        return;
+      }
+      resolve(code ?? 1);
+    });
+    child.stdin.end(input);
+  })
+);
+
+/**
+ * A runtime gate may be raised while PreToolUse is registering its protected
+ * session, before the bridge command can use its own recovery. Reuse the
+ * immutable stable-shell loader for that path as well: update the signed
+ * runtime and replay the exact hook payload once. Process-only state guards
+ * the replay, so a broken rollout fails closed instead of recursing.
+ */
+export const recoverHookHostRuntimeUpgrade = async (
+  error,
+  hookInput,
+  {
+    environment = process.env,
+    statFile = fs.lstat,
+    runProcess = runChildProcess,
+  } = {},
+) => {
+  if (
+    !HOST_RUNTIME_RECOVERY_CODES.has(error?.code)
+    || environment.TRELIO_HOST_RUNTIME_UPDATE_REEXEC === "1"
+  ) {
+    return null;
+  }
+
+  const pluginRoot = String(environment.TRELIO_PLUGIN_ROOT || "").trim();
+  if (!path.isAbsolute(pluginRoot)) return null;
+  const loaderPath = path.join(pluginRoot, "scripts", "trelio-host-runtime-loader.mjs");
+  const loaderMetadata = await statFile(loaderPath).catch(() => null);
+  if (!loaderMetadata?.isFile() || loaderMetadata.isSymbolicLink()) return null;
+
+  const recoveryEnvironment = {
+    ...environment,
+    TRELIO_HOST_RUNTIME_UPDATE_WAIT_FOR_LOCK: "1",
+  };
+  // A launcher/spawn failure must preserve the original structured gate. The
+  // formatter can then give the precise runtime-rollout recovery instead of
+  // collapsing an operational update failure into a generic hook error.
+  const updateExitCode = await runProcess({
+    arguments: [loaderPath, "__update"],
+    environment: recoveryEnvironment,
+    input: "",
+  }).catch(() => null);
+  if (updateExitCode !== 0) return null;
+
+  return await runProcess({
+    arguments: [loaderPath, "hook"],
+    environment: {
+      ...recoveryEnvironment,
+      TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "1",
+      TRELIO_HOST_RUNTIME_UPDATE_REEXEC: "1",
+    },
+    input: `${JSON.stringify(hookInput)}\n`,
+  }).catch(() => null);
+};
+
+const runHook = async () => {
+  const hookInput = await readStdinJson();
+  try {
+    await executeHookInput(hookInput);
+    return 0;
+  } catch (error) {
+    const recoveryExitCode = await recoverHookHostRuntimeUpgrade(error, hookInput);
+    if (recoveryExitCode !== null) return recoveryExitCode;
+    throw error;
   }
 };
 
@@ -691,24 +778,35 @@ export const formatRuntimeHookFailure = (error) => {
   const message = /[.!?]$/u.test(rawMessage.trim())
     ? rawMessage.trim()
     : `${rawMessage.trim()}.`;
-  const recovery = PLUGIN_UPGRADE_CODES.has(code)
+  const recovery = HOST_RUNTIME_RECOVERY_CODES.has(code)
     ? (
+        "Stable loader не смог автоматически применить подписанный host runtime. "
+        + "Повторите этот же запрос в текущей задаче; не обновляйте плагин и не "
+        + "перезапускайте Codex. Если gate повторяется, сохраните exact code как "
+        + "runtime rollout blocker."
+      )
+    : code === PLUGIN_UPGRADE_REQUIRED_CODE
+      ? (
         "Проверьте установленную версию плагина. Если требуемая версия уже установлена, "
         + "повторите запрос в новой задаче; иначе сначала обновите плагин. Полный "
         + "перезапуск нужен только если новая задача всё ещё видит старую версию."
       )
-    : "Устраните указанную причину и повторите запрос в текущей задаче.";
+      : "Устраните указанную причину и повторите запрос в текущей задаче.";
 
   return `${code}: активный hook остановил защищённую работу Trelio. ${message} ${recovery}\n`;
 };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runHook().catch((error) => {
-    // Эта ветка выполняется только после фактического запуска hook клиентом.
-    // Поэтому общий совет включить hooks, переустановить plugin или повторить
-    // pairing здесь вводил бы пользователя в заблуждение. Конкретная причина
-    // выше уже содержит точный recovery, если он действительно требуется.
-    process.stderr.write(formatRuntimeHookFailure(error));
-    process.exitCode = 2;
-  });
+  runHook()
+    .then((exitCode) => {
+      process.exitCode = exitCode;
+    })
+    .catch((error) => {
+      // Эта ветка выполняется только после фактического запуска hook клиентом.
+      // Поэтому общий совет включить hooks, переустановить plugin или повторить
+      // pairing здесь вводил бы пользователя в заблуждение. Конкретная причина
+      // выше уже содержит точный recovery, если он действительно требуется.
+      process.stderr.write(formatRuntimeHookFailure(error));
+      process.exitCode = 2;
+    });
 }

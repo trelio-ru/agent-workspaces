@@ -33,7 +33,8 @@
     "trelio-remote-skills": {
       "command": "./scripts/launch-trelio-node",
       "args": [
-        "./scripts/trelio-remote-mcp.mjs"
+        "./scripts/trelio-host-runtime-loader.mjs",
+        "mcp"
       ],
       "cwd": ".",
       "env_vars": [

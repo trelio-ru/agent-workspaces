@@ -23,6 +23,7 @@ import {
   cleanupStaleRuntimeSessions,
   formatRuntimeHookFailure,
   isProtectedTrelioToolName,
+  recoverHookHostRuntimeUpgrade,
   resolveTrelioMcpToolName,
 } from "../scripts/trelio-runtime-session.mjs";
 import {
@@ -45,9 +46,9 @@ const hookScriptPath = fileURLToPath(
 );
 const pluginDirectory = fileURLToPath(new URL("..", import.meta.url));
 const expectedRuntimeHookCommand =
-  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs" hook';
 const windowsRuntimeHookBootstrap =
-  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
+  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-host-runtime-loader.mjs') hook; exit $LASTEXITCODE";
 const expectedRuntimeHookCommandWindows = [
   "powershell.exe",
   "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
@@ -143,6 +144,62 @@ test("active hook formatting reserves the missing-proof code for Trelio", () => 
 
   assert.match(formatted, /^TRELIO_RUNTIME_HOOK_FAILED:/u);
   assert.doesNotMatch(formatted, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
+});
+
+test("active hook distinguishes automatic host runtime recovery from plugin upgrades", () => {
+  const runtimeError = new Error("runtime v2.2.3 больше не поддерживается");
+  runtimeError.code = "AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED";
+  const runtimeFormatted = formatRuntimeHookFailure(runtimeError);
+
+  assert.match(runtimeFormatted, /^AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED:/u);
+  assert.match(runtimeFormatted, /Stable loader не смог автоматически/u);
+  assert.match(runtimeFormatted, /в текущей задаче/u);
+  assert.doesNotMatch(runtimeFormatted, /обновите плагин|новой задаче/iu);
+
+  const pluginError = new Error("plugin shell больше не поддерживается");
+  pluginError.code = "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED";
+  const pluginFormatted = formatRuntimeHookFailure(pluginError);
+
+  assert.match(pluginFormatted, /обновите плагин/u);
+  assert.match(pluginFormatted, /новой задаче/u);
+});
+
+test("active hook applies the stable runtime update and replays the exact payload once", async () => {
+  const runtimeError = new Error("runtime update required");
+  runtimeError.code = "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED";
+  const hookInput = {
+    hook_event_name: "PreToolUse",
+    session_id: "thread-1",
+    tool_name: "mcp__trelio__get_task",
+    tool_input: { companySlug: "vkus", projectSlug: "first", taskNumber: 2 },
+  };
+  const calls = [];
+  const exitCode = await recoverHookHostRuntimeUpgrade(runtimeError, hookInput, {
+    environment: {
+      TRELIO_PLUGIN_ROOT: "/private/plugin-shell",
+      TRELIO_HOST_RUNTIME_VERSION: "2.2.3",
+    },
+    statFile: async () => ({ isFile: () => true, isSymbolicLink: () => false }),
+    runProcess: async (request) => {
+      calls.push(request);
+      return 0;
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].arguments, [
+    path.join("/private/plugin-shell", "scripts", "trelio-host-runtime-loader.mjs"),
+    "__update",
+  ]);
+  assert.equal(calls[0].environment.TRELIO_HOST_RUNTIME_UPDATE_WAIT_FOR_LOCK, "1");
+  assert.deepEqual(calls[1].arguments, [
+    path.join("/private/plugin-shell", "scripts", "trelio-host-runtime-loader.mjs"),
+    "hook",
+  ]);
+  assert.equal(calls[1].environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE, "1");
+  assert.equal(calls[1].environment.TRELIO_HOST_RUNTIME_UPDATE_REEXEC, "1");
+  assert.equal(calls[1].input, `${JSON.stringify(hookInput)}\n`);
 });
 
 test("route guard covers every native proposal renderer and both target forms", () => {
@@ -441,7 +498,7 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
   );
   assert.equal(preToolUseMatcher.test("mcp__filesystem__read_file"), false);
   assert.equal(preToolUseMatcher.test("exec_command"), false);
-  assert.match(JSON.stringify(hooks), /trelio-runtime-session\.mjs/u);
+  assert.match(JSON.stringify(hooks), /trelio-host-runtime-loader\.mjs/u);
   // Codex versions affected by the Windows cmd.exe quoting regressions can
   // silently skip a command containing literal quotes. The encoded payload is
   // intentionally readable here while the actual command remains quote-free.

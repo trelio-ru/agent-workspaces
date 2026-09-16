@@ -93,19 +93,28 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin marketplace upgrade trelio-plugins
 ```
 
-Начиная с `1.5.11`, bridge проверяет exact официальный marketplace и может
-тихо обновить его в отдельном процессе. При hard gate он повторно проверяет
-installed manifest/entrypoint и, когда это безопасно, продолжает исходную
-команду новым bridge. Он не сканирует plugin cache и не выбирает произвольную
-версию. Начиная с `1.6.20`, перед такими mutating-командами bridge сохраняет
-exact загруженную immutable-версию в приватном retention-каталоге и после
-команды восстанавливает её прежний versioned path. Поэтому уже открытая задача
-не теряет свой `SKILL.md`, когда Codex очищает старую cache-папку; новые задачи
-по-прежнему получают актуальную версию. Локальный `trelio-remote-skills` также
-делает best-effort retention своей загруженной версии, но начиная с `1.19.5`
-запускает его только после записи MCP `initialize` response. Обход и копирование
-cache не входят в ограниченный startup handshake, поэтому медленный либо
-конкурентный Windows filesystem не блокирует появление local tool catalog.
+Текущий плагин состоит из стабильной оболочки и независимо выпускаемого host
+runtime. Оболочка содержит manifest, hook definition, Node launcher, runtime
+loader и проверку подписанного package. Loader не изменяет Codex plugin cache:
+он запускает уже проверенный content-addressed runtime из owner-only каталога
+`workspace-bridge/host-runtimes`, а при его отсутствии – bundled fallback.
+Проверка новой версии идёт в отдельном процессе и переключает только атомарный
+указатель для следующих запусков; уже работающий процесс и открытая задача
+остаются на своём неизменяемом каталоге. При hard gate host runtime текущая
+bridge-команда дожидается этого же проверенного updater и ровно один раз
+перезапускается через stable loader в той же задаче.
+
+Агент в этом выборе не участвует. Runtime metadata/package не добавляются в
+prompt или MCP tool schema, поэтому обновление не расходует model tokens.
+Marketplace self-update остаётся только для `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`,
+когда ниже minimum оказалась сама оболочка. Compatible runtime release не
+запускает `codex plugin marketplace upgrade`, не копирует старые cache-папки и
+не требует restart/new task.
+
+Подписанный runtime содержит только код. E2EE keys, plaintext company content,
+credentials и sessions живут в отдельных прежних owner-only хранилищах; unknown
+или повреждённый package отвергается до исполнения, bundled runtime остаётся
+fallback, а plaintext fallback для encrypted company не появляется.
 
 ## OAuth и новый контекст
 

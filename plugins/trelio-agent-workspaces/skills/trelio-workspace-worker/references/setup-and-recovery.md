@@ -95,16 +95,19 @@ matcher. Сопоставь время установки плагина и за
 Сбой только `trelio-remote-skills` не означает сбой Trelio OAuth. Работа через
 удалённый Trelio и bridge может продолжаться. В `codex mcp list --json` текущее
 определение должно запускать `./scripts/launch-trelio-node`, а не прямой `node`.
-Выполни `trelio-workspace.mjs doctor --json` через POSIX launcher или Windows
-`.cmd` именно загруженного плагина. Он сначала выбирает встроенный runtime Codex,
-затем системный Node и требует версию 22+. Отсутствующий alias в PATH не означает
+Выполни `trelio-host-runtime-loader.mjs bridge doctor --json` через POSIX launcher или Windows
+`.cmd` именно загруженного плагина. Stable loader сначала выбирает проверенный
+content-addressed Trelio runtime, затем bundled fallback; launcher выбирает
+встроенный runtime Codex, затем системный Node и требует версию 22+.
+Начиная с `1.19.5`, фоновая очистка старых snapshot не блокирует MCP
+initialize response; stable loader сохраняет эту границу для внешнего runtime.
+Отсутствующий alias в PATH не означает
 неисправность Node, если launcher работает. Если Codex всё ещё показывает прямой
 `node`, обнови плагин и перейди в новую задачу по обычной процедуре. После
 подтверждения совместимого runtime не сбрасывай OAuth, не переустанавливай Node
-и не повторяй совет перезапуска. При startup timeout плагина старше `1.19.5`
-сначала обнови его: очистка cache могла задерживать MCP handshake. Начиная с
-`1.19.5` очистка начинается после записи initialize response; повтори проверку
-в новом владеющем процессе.
+и не повторяй совет перезапуска. Если runtime update недоступен, loader
+продолжает bundled fallback и не удаляет plugin cache. Не советуй новую задачу
+или restart только из-за появления новой compatible runtime версии.
 
 Видимый текст навыка не доказывает готовность. Подтверди её успешным безопасным
 чтением MCP, например `get_my_context` или `get_task`.
@@ -117,7 +120,7 @@ matcher. Сопоставь время установки плагина и за
 или `runtimeExecution.localAction`, а первый токен серверной команды – ровно
 `trelio-workspace`. Не ищи и не запускай этот токен через PATH. Используй точные
 `scripts/launch-trelio-node` (либо соседний `.cmd` в Windows) и
-`scripts/trelio-workspace.mjs` загруженного плагина; передай им проверенные
+`scripts/trelio-host-runtime-loader.mjs bridge` загруженного плагина; передай им проверенные
 оставшиеся argv без изменений. Не используй `eval`, не сканируй cache, не выбирай
 другую версию и не принимай неизвестные операции/флаги. Если возвращены
 `argv`/`argvPrefix`, используй их вместо разбора текста.
@@ -135,7 +138,7 @@ pipe во встроенный процесс. Они не попадают в M
 
 Git нужен локальному bridge; его состояние не доказывает состояние OAuth, MCP
 ACL или установки плагина. При `TRELIO_GIT_REQUIRED` выполни встроенный
-`../../scripts/trelio-workspace.mjs doctor --json` через точный
+`../../scripts/trelio-host-runtime-loader.mjs bridge doctor --json` через точный
 `../../scripts/launch-trelio-node` загруженного плагина (либо соседний `.cmd` в
 Windows). Doctor ищет standalone Git 2.28+ только в стандартных каталогах
 macOS/Windows и постоянном Windows PATH и проверяет временный
@@ -183,38 +186,29 @@ Codex устарел: перезапуск приложения не требу�
 
 <a id="required-plugin-version"></a>
 
-## Требуется обновление плагина
+## Требуется обновление host runtime или плагина
 
-Trelio отклоняет версии ниже актуальной `minimumVersion`. При
-`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` или
-`AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` не повторяй старую защищённую операцию
-и не обходи проверку. Такой код из активного `PreToolUse` доказывает, что Hooks
-включены; не подменяй его ответом `TRELIO_RUNTIME_HOOK_REQUIRED`.
+Не объединяй два разных gate:
 
-1. Если код вернула команда bridge в Codex, сначала дай встроенному guarded
-   updater закончить работу. Он использует официальный marketplace
-   `trelio-plugins`, ограничивает сетевые повторы, проверяет установленный
-   manifest/entrypoint и может запустить новый bridge в той же задаче. До
-   завершения этого пути не проси пользователя обновляться и не сканируй cache.
-2. Если код вернул активный hook `PreToolUse` в Codex, проверь
-   `codex plugin list --json`. Если нужная версия уже установлена и включена,
-   не обновляй её снова: задача сохранила старый hook. Попроси только новую
-   задачу и повтори там исходный защищённый вызов. Если установленная версия
-   ниже требуемой, выполни точную официальную команду обновления из ошибки либо
-   `codex plugin marketplace upgrade trelio-plugins`, проверь установленную
-   версию и сделай один повтор в текущей задаче до перехода в новую.
-3. При успехе перезапуска bridge или единственного повтора продолжай работу
-   без уведомления об обновлении.
-4. Если плагин обновлён, но задача не может безопасно перечитать его, попроси
-   только новую задачу и сохрани каталог Run. Там выполни прежнее структурированное
-   действие; для старого сохранённого ответа используй маршрут совместимости выше.
-5. Полный перезапуск Codex нужен, только если новая задача всё ещё сообщает
-   старую версию или не видит MCP. Если автообновление не удалось, покажи точную
-   запасную команду из ответа bridge. Соблюдай порядок: текущая задача, новая
-   задача, полный перезапуск.
-6. Claude не использует updater Codex. Обнови `trelio-plugins` через менеджер
-   его плагинов, выполни `/reload-plugins`, если доступно, либо начни новую
-   задачу. Полный перезапуск оставь последним вариантом.
+1. `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` и
+   `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` относятся к независимо
+   выпускаемому host runtime. Stable loader автоматически загружает и проверяет
+   подписанный package вне plugin cache и ровно один раз повторно запускает exact
+   bridge-действие в той же задаче. Если этот retry снова вернул gate, сохрани
+   exact код как runtime rollout blocker. Не запускай marketplace update, не
+   проси новую задачу и не перезапускай Codex.
+2. `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` относится к stable shell:
+   manifest, hook definition, MCP surface или shell ABI. Только здесь bridge
+   может использовать guarded официальный `trelio-plugins` update. Не обходи
+   gate изменённым заголовком, другим clientKind или прямым HTTP.
+3. Если shell updater подтвердил новую установленную версию, но текущая задача
+   не может перечитать manifest/hook, попроси новую задачу. Полный restart –
+   только если и новый владеющий процесс видит прежнюю shell.
+4. Claude обновляет shell своим plugin manager и применяет `/reload-plugins`,
+   если доступно. Host runtime loader одинаково автоматический в обоих клиентах.
+
+Код из активного `PreToolUse` доказывает, что Hooks включены; не подменяй его
+ответом `TRELIO_RUNTIME_HOOK_REQUIRED`.
 
 Не обходи проверку версии прямым HTTP, другим `clientKind`, изменёнными metadata
 или поддельным заголовком. Проверка совместимости дополняет серверные ACL и

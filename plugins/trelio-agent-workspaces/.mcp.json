@@ -11,7 +11,8 @@
       "type": "stdio",
       "command": "${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-remote-mcp.mjs"
+        "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs",
+        "mcp"
       ],
       "cwd": "${CLAUDE_PLUGIN_ROOT}"
     }

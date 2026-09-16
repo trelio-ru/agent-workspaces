@@ -85,10 +85,9 @@ import {
 const execFileAsync = promisify(execFile);
 export const BRIDGE_VERSION = "2.2.3";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
-const LOADED_CODEX_PLUGIN_DIRECTORY = path.resolve(
-  path.dirname(BRIDGE_ENTRYPOINT_PATH),
-  "..",
-);
+const LOADED_CODEX_PLUGIN_DIRECTORY = process.env.TRELIO_PLUGIN_ROOT
+  ? path.resolve(process.env.TRELIO_PLUGIN_ROOT)
+  : path.resolve(path.dirname(BRIDGE_ENTRYPOINT_PATH), "..");
 export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
 export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
 // Keep the generated workspace contract deliberately small. Scenario-specific
@@ -225,6 +224,7 @@ const MAX_BENIGN_WORKSPACE_FILE_BYTES = 1024 * 1024;
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const PRODUCTION_ENCRYPTED_DATA_PLANE_ORIGIN = "https://e2ee.trelio.ru";
 const BRIDGE_VERSION_HEADER = "x-trelio-agent-workspaces-version";
+const HOST_RUNTIME_VERSION_HEADER = "x-trelio-host-runtime-version";
 const AGENT_SKILL_DEVICE_CONSENT_HEADER = "x-trelio-agent-skill-device-consent";
 const AGENT_SKILL_COMPANY_E2EE_HEADER = "x-trelio-company-skill-e2ee";
 const AGENT_SECRET_COMPANY_E2EE_HEADER = "x-trelio-agent-secret-company-e2ee";
@@ -268,8 +268,6 @@ const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
 const AUTOMATIC_CLEANUP_STATE_FILE = path.join(CONFIG_DIRECTORY, "automatic-cleanup.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
-const PLUGIN_UPDATE_STATE_FILE = path.join(CONFIG_DIRECTORY, "plugin-update.json");
-const PLUGIN_UPDATE_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "plugin-update.lock");
 const WORKSPACE_OPEN_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "workspace-open-locks");
 const WORKSPACE_OPEN_LOCK_INITIALIZATION_STALE_MS = 5 * 60 * 1000;
 const SECRET_BROWSER_DIRECTORY = path.join(CONFIG_DIRECTORY, "secret-browser");
@@ -341,7 +339,7 @@ const CODEX_OFFICIAL_MARKETPLACE_SOURCE =
 const MINIMUM_NODE_MAJOR_VERSION = 22;
 const RUNTIME_SESSION_DIAGNOSTIC_LIMIT = 256;
 const EXPECTED_RUNTIME_HOOK_COMMAND =
-  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-runtime-session.mjs"';
+  '"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node" "${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs" hook';
 // Codex executes a Windows hook through the shell selected for the local
 // environment, which can be cmd.exe or PowerShell. Keep the outer command free
 // of shell-specific variable syntax and quotes so both runners pass it intact.
@@ -349,7 +347,7 @@ const EXPECTED_RUNTIME_HOOK_COMMAND =
 // .cmd launcher and runtime hook; the launcher remains the single place that
 // resolves a compatible Node.js.
 const WINDOWS_RUNTIME_HOOK_BOOTSTRAP =
-  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-runtime-session.mjs'); exit $LASTEXITCODE";
+  "& (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\launch-trelio-node.cmd') (Join-Path $env:CLAUDE_PLUGIN_ROOT 'scripts\\trelio-host-runtime-loader.mjs') hook; exit $LASTEXITCODE";
 const EXPECTED_RUNTIME_HOOK_COMMAND_WINDOWS = [
   "powershell.exe",
   "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand",
@@ -403,9 +401,6 @@ const CODEX_PLUGIN_INSTALL_ARGUMENTS = Object.freeze([
   CODEX_PLUGIN_ID,
   "--json",
 ]);
-const PLUGIN_BACKGROUND_UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const PLUGIN_BACKGROUND_UPDATE_FAILURE_RETRY_MS = 30 * 60 * 1000;
-const PLUGIN_BACKGROUND_UPDATE_LOCK_STALE_MS = 15 * 60 * 1000;
 const PLUGIN_UPDATE_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
 const PLUGIN_UPDATE_NETWORK_RETRY_DELAYS_MS = Object.freeze([1_000, 3_000]);
 // Marketplace packages are intentionally small. These bounds let retention
@@ -1129,7 +1124,17 @@ export const buildBridgeRequestHeaders = (token, initialHeaders = {}) => {
   // Один центральный version header покрывает open, heartbeat, bundle/object
   // transfer и Agent Secrets. Backend поэтому проверяет фактически
   // исполняемый bridge каждого запроса, а не только provenance старого Run.
-  headers.set(BRIDGE_VERSION_HEADER, BRIDGE_VERSION);
+  headers.set(
+    BRIDGE_VERSION_HEADER,
+    process.env.TRELIO_PLUGIN_VERSION || BRIDGE_VERSION,
+  );
+  // Runtime changes independently from the stable plugin shell. Sending both
+  // versions lets backend compatibility policy require a runtime refresh
+  // without forcing Codex to replace a plugin directory used by open tasks.
+  headers.set(
+    HOST_RUNTIME_VERSION_HEADER,
+    process.env.TRELIO_HOST_RUNTIME_VERSION || BRIDGE_VERSION,
+  );
   // Storage capability is independent of the marketplace version during the
   // plugin-first rollout. Old executables must fail before receiving deltas.
   headers.set("x-trelio-encrypted-workspace-protocol", "2");
@@ -1271,27 +1276,8 @@ export const request = async (origin, token, pathname, options = {}) => {
     // отдельному preflight. Маршруты возвращают тот же compatibility payload,
     // поэтому upgrade между preflight и mutation безопасно запускает общий
     // updater/re-dispatch вместо тупиковой общей HTTP 409.
-    if (
-      code === "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED"
-      || code === "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED"
-    ) {
-      const compatibility = code === "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED"
-        ? errorPayload
-        : {
-            packageName: "trelio-ru/agent-workspaces",
-            installedVersion: errorPayload?.installedVersion ?? BRIDGE_VERSION,
-            minimumVersion: errorPayload?.minimumVersion ?? null,
-            supported: false,
-            update: errorPayload?.update ?? {
-              codexCommand:
-                errorPayload?.updateCommand
-                ?? "codex plugin marketplace upgrade trelio-plugins",
-              // Старый backend не обещал безопасный hot retry. Он всё равно
-              // получает тихое обновление, но продолжение идёт из новой задачи.
-              sameTaskRetryAllowed: false,
-            },
-          };
-      throw new BridgePluginUpgradeRequiredError(compatibility);
+    if (code === "AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED") {
+      throw new BridgePluginUpgradeRequiredError(errorPayload);
     }
 
     throw new TrelioApiError(
@@ -2843,142 +2829,6 @@ export const updateCodexPluginMarketplace = async ({
   throw new Error(
     `Тихое обновление Trelio plugin не выполнено: ${buildChildProcessErrorDetail(lastError)}`,
   );
-};
-
-const readPluginUpdateState = async () => {
-  try {
-    return await readPrivateJsonFile(PLUGIN_UPDATE_STATE_FILE);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      // Повреждённый JSON необязательного state не должен мешать workspace.
-      // Ошибки владельца/mode/symlink не маскируем: такой путь нельзя
-      // перезаписывать или использовать для фонового lifecycle.
-      return {};
-    }
-    throw error;
-  }
-};
-
-const acquirePluginUpdateLock = async (nowMilliseconds = Date.now()) => {
-  await ensurePrivateDirectory(CONFIG_DIRECTORY);
-
-  try {
-    await fs.mkdir(PLUGIN_UPDATE_LOCK_DIRECTORY, { mode: 0o700 });
-    return true;
-  } catch (error) {
-    if (error.code !== "EEXIST") {
-      throw error;
-    }
-  }
-
-  try {
-    const metadata = await fs.lstat(PLUGIN_UPDATE_LOCK_DIRECTORY);
-    const stale = metadata.isDirectory()
-      && !metadata.isSymbolicLink()
-      && nowMilliseconds - metadata.mtimeMs > PLUGIN_BACKGROUND_UPDATE_LOCK_STALE_MS;
-
-    if (!stale) {
-      return false;
-    }
-
-    await fs.rm(PLUGIN_UPDATE_LOCK_DIRECTORY, { recursive: true, force: true });
-    await fs.mkdir(PLUGIN_UPDATE_LOCK_DIRECTORY, { mode: 0o700 });
-    return true;
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return acquirePluginUpdateLock(nowMilliseconds);
-    }
-    throw error;
-  }
-};
-
-const releasePluginUpdateLock = async () => {
-  await fs.rm(PLUGIN_UPDATE_LOCK_DIRECTORY, {
-    recursive: true,
-    force: true,
-  });
-};
-
-export const startQuietCodexPluginUpdate = async ({
-  environment = process.env,
-  nowMilliseconds = Date.now(),
-  spawnProcess = spawn,
-} = {}) => {
-  if (!isCodexPluginAutoUpdateEnvironment(environment)) {
-    return false;
-  }
-
-  // Snapshot the currently loaded immutable package even when the network
-  // refresh interval has not elapsed. A later manual Codex update can then be
-  // repaired by the next bridge invocation instead of leaving older tasks
-  // with dead absolute SKILL.md paths.
-  await retainLoadedCodexPluginInstallation();
-
-  const state = await readPluginUpdateState();
-  const nextAttemptAt = Date.parse(String(state?.nextAttemptAt || ""));
-  if (Number.isFinite(nextAttemptAt) && nextAttemptAt > nowMilliseconds) {
-    return false;
-  }
-
-  if (!await acquirePluginUpdateLock(nowMilliseconds)) {
-    return false;
-  }
-
-  try {
-    const child = spawnProcess(
-      process.execPath,
-      [BRIDGE_ENTRYPOINT_PATH, "__plugin-update"],
-      {
-        detached: true,
-        env: {
-          ...environment,
-          TRELIO_WORKSPACE_BACKGROUND_UPDATE: "1",
-        },
-        shell: false,
-        stdio: "ignore",
-        windowsHide: true,
-      },
-    );
-    child.once("error", () => {
-      releasePluginUpdateLock().catch(() => undefined);
-    });
-    child.unref();
-    return true;
-  } catch (error) {
-    await releasePluginUpdateLock();
-    throw error;
-  }
-};
-
-const runBackgroundCodexPluginUpdate = async () => {
-  const attemptedAt = new Date();
-
-  try {
-    const installation = await updateCodexPluginMarketplace();
-    await writePrivateJsonFile(PLUGIN_UPDATE_STATE_FILE, {
-      schemaVersion: 1,
-      lastAttemptAt: attemptedAt.toISOString(),
-      lastSuccessAt: new Date().toISOString(),
-      nextAttemptAt: new Date(
-        Date.now() + PLUGIN_BACKGROUND_UPDATE_INTERVAL_MS,
-      ).toISOString(),
-      installedVersion: installation?.version || null,
-      status: "updated",
-    });
-  } catch {
-    // Background updater остаётся тихим: обязательная несовместимость позже
-    // запустит тот же bounded updater синхронно и только тогда покажет fallback.
-    await writePrivateJsonFile(PLUGIN_UPDATE_STATE_FILE, {
-      schemaVersion: 1,
-      lastAttemptAt: attemptedAt.toISOString(),
-      nextAttemptAt: new Date(
-        Date.now() + PLUGIN_BACKGROUND_UPDATE_FAILURE_RETRY_MS,
-      ).toISOString(),
-      status: "retry_later",
-    }).catch(() => undefined);
-  } finally {
-    await releasePluginUpdateLock().catch(() => undefined);
-  }
 };
 
 const writePrivateMarkerFile = async (filePath) => {
@@ -15519,6 +15369,117 @@ const runUpdatedBridgeEntrypoint = async (
   })
 );
 
+const HOST_RUNTIME_UPGRADE_REQUIRED_CODES = new Set([
+  "AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED",
+  "AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED",
+]);
+
+const runStableHostRuntimeLoader = async (
+  loaderPath,
+  argumentsList,
+  {
+    environment = process.env,
+    environmentOverrides = {},
+    allowNonzeroExit = false,
+    spawnProcess = spawn,
+  } = {},
+) => await new Promise((resolve, reject) => {
+  const child = spawnProcess(process.execPath, [loaderPath, ...argumentsList], {
+    env: { ...environment, ...environmentOverrides },
+    shell: false,
+    stdio: "inherit",
+    windowsHide: true,
+  });
+  child.once("error", reject);
+  child.once("exit", (exitCode, signal) => {
+    if (signal) {
+      reject(new Error(`Trelio host runtime loader завершён сигналом ${signal}.`));
+      return;
+    }
+    if (!allowNonzeroExit && (exitCode ?? 1) !== 0) {
+      reject(new Error(`Trelio host runtime loader завершён с кодом ${exitCode ?? 1}.`));
+      return;
+    }
+    resolve(exitCode ?? 0);
+  });
+});
+
+/**
+ * A runtime hard gate refreshes only the signed implementation package. The
+ * stable shell path comes from its own trusted environment and remains alive,
+ * so the exact bridge command can continue in this task without replacing the
+ * Codex plugin directory or exposing the decision to the model.
+ */
+export const recoverBridgeHostRuntimeUpgrade = async (
+  error,
+  {
+    rawArguments = process.argv.slice(2),
+    environment = process.env,
+    spawnProcess = spawn,
+  } = {},
+) => {
+  if (
+    !(error instanceof TrelioApiError)
+    || !HOST_RUNTIME_UPGRADE_REQUIRED_CODES.has(error.code)
+  ) {
+    return { handled: false, error };
+  }
+
+  if (environment.TRELIO_HOST_RUNTIME_UPDATE_REEXEC === "1") {
+    return {
+      handled: false,
+      error: new Error(
+        `${error.code}: новый подписанный host runtime не прошёл повторную проверку совместимости.`,
+      ),
+    };
+  }
+
+  const pluginRoot = String(environment.TRELIO_PLUGIN_ROOT || "").trim();
+  if (!path.isAbsolute(pluginRoot)) {
+    return {
+      handled: false,
+      error: new Error(
+        `${error.code}: stable loader недоступен; требуется обновить оболочку Trelio plugin.`,
+      ),
+    };
+  }
+  const loaderPath = path.join(pluginRoot, "scripts", "trelio-host-runtime-loader.mjs");
+
+  try {
+    // Wait for a possible detached update from startup, then perform one exact
+    // metadata check ourselves. This bypasses only the polling cooldown, never
+    // signature, digest, package-format or minimum-shell validation.
+    await runStableHostRuntimeLoader(loaderPath, ["__update"], {
+      environment,
+      environmentOverrides: {
+        TRELIO_HOST_RUNTIME_UPDATE_WAIT_FOR_LOCK: "1",
+      },
+      spawnProcess,
+    });
+    const exitCode = await runStableHostRuntimeLoader(
+      loaderPath,
+      ["bridge", ...rawArguments],
+      {
+        environment,
+        environmentOverrides: {
+          TRELIO_HOST_RUNTIME_UPDATE_REEXEC: "1",
+        },
+        allowNonzeroExit: true,
+        spawnProcess,
+      },
+    );
+    return { handled: true, exitCode };
+  } catch (updateError) {
+    return {
+      handled: false,
+      error: new Error(
+        `${error.code}: не удалось безопасно обновить подписанный Trelio host runtime. `
+        + `Повторите исходное действие; перезапуск Codex не требуется. Причина: ${buildChildProcessErrorDetail(updateError)}`,
+      ),
+    };
+  }
+};
+
 const buildPluginUpdateFallbackError = ({
   compatibility,
   updated,
@@ -15618,9 +15579,9 @@ export const recoverBridgePluginUpgrade = async (
   let installation = null;
 
   try {
-    // Background updater мог уже установить новую immutable cache-версию.
-    // Сначала спрашиваем exact installedPath у Codex и только при необходимости
-    // выполняем сетевой marketplace refresh.
+    // Пользователь либо другой owning process мог уже установить новую
+    // immutable plugin-версию. Сначала спрашиваем exact installedPath у Codex
+    // и только при реальном hard gate выполняем marketplace refresh.
     installation = await resolveInstalledCodexPluginBridge({
       minimumVersion,
       execFileCommand,
@@ -15691,12 +15652,7 @@ const main = async () => {
   const { command, options, positional } = parseArguments(process.argv.slice(2));
   const origin = normalizeOrigin(options.origin || DEFAULT_ORIGIN);
 
-  if (command === "__plugin-update") {
-    if (process.env.TRELIO_WORKSPACE_BACKGROUND_UPDATE !== "1") {
-      throw new Error("Внутренняя команда updater недоступна напрямую.");
-    }
-    await runBackgroundCodexPluginUpdate();
-  } else if (command === "doctor") {
+  if (command === "doctor") {
     await doctor(options);
   } else if (command === "login") {
     if (options["legacy-oauth"] === true) {
@@ -15764,14 +15720,15 @@ const main = async () => {
 const runEntrypoint = async () => {
   try {
     await main();
-
-    if (!["__plugin-update", "doctor"].includes(process.argv[2])) {
-      // Успешную workspace-команду не задерживаем сетью: отдельный скрытый
-      // процесс обновит официальный marketplace и новую immutable plugin cache.
-      await startQuietCodexPluginUpdate().catch(() => undefined);
-    }
   } catch (error) {
-    const recovery = await recoverBridgePluginUpgrade(error);
+    const runtimeRecovery = await recoverBridgeHostRuntimeUpgrade(error);
+
+    if (runtimeRecovery.handled) {
+      process.exitCode = runtimeRecovery.exitCode;
+      return;
+    }
+
+    const recovery = await recoverBridgePluginUpgrade(runtimeRecovery.error);
 
     if (recovery.handled) {
       process.exitCode = recovery.exitCode;
