@@ -59,7 +59,7 @@ test("host runtime descriptor is same-origin, bounded and stable-versioned", () 
     runtime: {
       runtimeVersion: "3.4.5",
       minimumRuntimeVersion: "3.4.0",
-      minimumPluginVersion: "2.2.3",
+      minimumPluginVersion: "2.3.0",
       packageSha256: "a".repeat(64),
       packageSizeBytes: 1024,
       packageUrl: "/api/agent-workspaces/host-runtime/artifacts/runtime/package",

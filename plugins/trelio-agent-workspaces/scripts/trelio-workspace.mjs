@@ -83,7 +83,7 @@ import {
 } from "./trelio-skill-admission.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "2.2.3";
+export const BRIDGE_VERSION = "2.3.0";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = process.env.TRELIO_PLUGIN_ROOT
   ? path.resolve(process.env.TRELIO_PLUGIN_ROOT)
