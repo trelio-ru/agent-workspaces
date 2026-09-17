@@ -1776,6 +1776,14 @@ test("local MCP exposes bounded provider routes plus skill-management and execut
   assert.equal(contextTool._meta, undefined);
   assert.equal(renderTool.annotations.readOnlyHint, false);
   assert.equal(renderTool._meta.ui.resourceUri, "ui://trelio/task-proposals/v13.html");
+  assert.deepEqual(
+    renderTool.inputSchema.properties.payload.properties.blocks,
+    {
+      type: "array",
+      items: { type: "object" },
+    },
+    "Bundle blocks must remain structured objects in the model-visible tool schema",
+  );
   assert.equal(providerTools.some(({ name }) => name === "continue_trelio_local_proposal"), false);
   assert.equal(appOnlyProposalTools.length, 14);
   for (const tool of appOnlyProposalTools) {

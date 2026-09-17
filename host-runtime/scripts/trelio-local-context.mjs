@@ -10696,7 +10696,15 @@ const TRELIO_LOCAL_PROPOSAL_RENDER_PAYLOAD_SCHEMA = {
   type: "object",
   properties: {
     target: { type: "object" },
-    blocks: { type: "array" },
+    blocks: {
+      type: "array",
+      // MCP clients derive the callable signature from `items`.  Leaving an
+      // array untyped made Codex expose `blocks` as string[] and encouraged
+      // callers to JSON-encode every card, while the runtime correctly accepts
+      // only structured block objects.  Keep the public schema aligned without
+      // duplicating the larger per-card schemas and runtime length bounds.
+      items: { type: "object" },
+    },
     proposalId: { type: "string" },
     expectedRevision: { type: "integer" },
     action: { type: "string" },
@@ -10729,7 +10737,7 @@ export const TRELIO_LOCAL_PROPOSAL_CONTEXT_TOOL = {
 
 export const TRELIO_LOCAL_PROPOSAL_RENDER_TOOL = {
   name: "render_trelio_local_proposal",
-  description: "Render only after local context; save locators belong in payload.target.",
+  description: "Render after local context; save locators belong in payload.target.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
