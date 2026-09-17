@@ -446,7 +446,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   успешной materialization нового набора, без затрагивания authority snapshots.
   Retention считает открытыми только `running`, `waiting_for_human` и `review`;
   `expired` sibling не блокирует terminal root, но собственный expired root
-  сохраняется для claim. Не расширяй cleanup на legacy-каталоги без текущей
+  сохраняется для claim. Отдельный preflight нового Run может переиспользовать
+  тот же root лишь когда expired Run неактивен минимум 48 часов, не имеет
+  server draft/checkpoint/candidate/blocker/handoff, а локальная история,
+  working tree, ignored и top-level entries независимо доказаны чистыми.
+  Иначе возвращается exact reclaim существующего Run; один возраст никогда не
+  разрешает потерю данных. Не расширяй cleanup на legacy-каталоги без текущей
   `.trelio-run.json` metadata.
 - Новая initial revision содержит только `WORKSPACE_CONTEXT.md`; технический
   README, `.trelio/workspace.json` и пустые category markers не создаются.

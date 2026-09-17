@@ -2764,6 +2764,7 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
   const events = [];
   let acceptedHead = firstExport.head;
   let firstRunStatus = "running";
+  let firstRunActivityAt = new Date().toISOString();
   let secondRunStatus = null;
   let startCount = 0;
   let serverError = null;
@@ -2776,7 +2777,7 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
     releaseFirstStart = resolve;
   });
 
-  const serializeRun = (id, head, status) => ({
+  const serializeRun = (id, head, status, lifecycle = {}) => ({
     id,
     status,
     leaseId: id === runId
@@ -2797,6 +2798,7 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
       profile: null,
       compiledMarkdown: "# Как агенту работать со мной\n",
     },
+    ...lifecycle,
   });
 
   const server = createServer(async (request, response) => {
@@ -2830,7 +2832,12 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
           workspace: { id: workspaceId, acceptedHead },
           company: testCompany,
           runs: [
-            serializeRun(runId, firstExport.head, firstRunStatus),
+            serializeRun(runId, firstExport.head, firstRunStatus, {
+              createdAt: firstRunActivityAt,
+              updatedAt: firstRunActivityAt,
+              lastHeartbeatAt: firstRunActivityAt,
+              leaseExpiresAt: firstRunActivityAt,
+            }),
             ...(secondRunStatus
               ? [serializeRun(secondRunId, secondExport.head, secondRunStatus)]
               : []),
@@ -2955,7 +2962,15 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
     );
     assert.equal(startCount, 1, "one local Workspace root permits only one active Run");
 
-    firstRunStatus = "accepted";
+    firstRunStatus = "expired";
+    firstRunActivityAt = new Date().toISOString();
+    await assert.rejects(
+      execFileAsync(process.execPath, command, executionOptions),
+      /TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED[\s\S]*prepare_agent_workspace_run\(runId\)/u,
+      "a recent expired Run stays recoverable instead of being silently replaced",
+    );
+    assert.equal(startCount, 1, "recent expired Run must fail before a new server start");
+
     acceptedHead = secondExport.head;
     secondRunStatus = "running";
     const firstMetadataPath = path.join(
@@ -2965,9 +2980,14 @@ test("future Runs reuse one persistent Workspace folder and sync accepted head b
       ".trelio-run.json",
     );
     const firstMetadata = JSON.parse(await readFile(firstMetadataPath, "utf8"));
+    const staleActivityAt = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+    firstRunActivityAt = staleActivityAt;
     await writeFile(firstMetadataPath, JSON.stringify({
       ...firstMetadata,
       automaticWorklogPath: `worklog/2026-09-14-run-${runId}.md`,
+      createdAt: staleActivityAt,
+      claimedAt: staleActivityAt,
+      lastUsedAt: staleActivityAt,
     }));
     const eventOffset = events.length;
     const secondOpen = await execFileAsync(process.execPath, command, executionOptions);
@@ -3857,6 +3877,8 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
   );
   const roots = new Map();
   let serverError = null;
+  let concurrentOverviewRequests = 0;
+  let maximumConcurrentOverviewRequests = 0;
 
   const createLocalRunRoot = async (
     origin,
@@ -3940,6 +3962,14 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
         /^\/api\/agent-workspaces\/workspaces\/([0-9a-f-]+)$/iu,
       );
       if (workspaceMatch) {
+        concurrentOverviewRequests += 1;
+        maximumConcurrentOverviewRequests = Math.max(
+          maximumConcurrentOverviewRequests,
+          concurrentOverviewRequests,
+        );
+        // A short overlap makes the bounded worker pool observable without
+        // coupling the regression to network timing or request order.
+        await new Promise((resolve) => setTimeout(resolve, 20));
         const oldTimestamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
         const currentRunEntry = [...workspaceIdByRunId.entries()]
           .find(([, currentWorkspaceId]) => currentWorkspaceId === workspaceMatch[1]);
@@ -3962,6 +3992,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
           currentRuns.push({ id: expiredSiblingRunId, status: "expired", updatedAt: oldTimestamp });
         }
         response.end(JSON.stringify({ runs: currentRuns }));
+        concurrentOverviewRequests -= 1;
         return;
       }
 
@@ -4018,6 +4049,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
       unsafeSystemMetadataRunId,
       { unsafeSystemMetadata: true },
     );
+    const missingRegistryRoot = path.join(temporaryDirectory, "already-removed-root");
     await mkdir(configDirectory, { recursive: true });
     await writeFile(
       path.join(configDirectory, "settings.json"),
@@ -4045,6 +4077,7 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
           expiredSiblingRoot,
           expiredLocalRoot,
           unsafeSystemMetadataRoot,
+          missingRegistryRoot,
         ],
       }, null, 2)}\n`,
       { mode: 0o600 },
@@ -4068,6 +4101,12 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     assert.match(preview.stdout, /unmanaged · unmanaged_root_entry · accepted/);
     assert.match(preview.stdout, /unsafe-system-metadata · unmanaged_root_entry · accepted/);
     assert.equal(await pathExists(acceptedRoot), true, "dry-run must not delete candidates");
+    assert.equal(
+      JSON.parse(await readFile(path.join(configDirectory, "runs.json"), "utf8")).roots
+        .includes(missingRegistryRoot),
+      false,
+      "a confirmed missing path is pruned from the registry even during dry-run",
+    );
 
     const cleaned = await execFileAsync(
       process.execPath,
@@ -4090,6 +4129,10 @@ test("clean lists exact reclaimable roots and never removes active, unknown or d
     assert.equal(await pathExists(ignoredRoot), true, "ignored user files are never deleted");
     assert.equal(await pathExists(busyRoot), true, "any open Run keeps the Workspace root active");
     assert.equal(await pathExists(expiredLocalRoot), true, "an expired local Run remains resumable");
+    assert.ok(
+      maximumConcurrentOverviewRequests > 1 && maximumConcurrentOverviewRequests <= 4,
+      "cleanup should read distinct Workspace states through the bounded pool",
+    );
     assert.equal(
       await pathExists(unsafeSystemMetadataRoot),
       true,

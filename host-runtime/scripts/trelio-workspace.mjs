@@ -12,6 +12,7 @@ import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "./tre
 import {
   WorkspaceDirectoryRequiredError,
   WorkspaceLocalRecoveryRequiredError,
+  WorkspaceRunReclaimRequiredError,
 } from "./trelio-workspace-directory.mjs";
 import { execFile, spawn } from "node:child_process";
 import { isUtf8 } from "node:buffer";
@@ -274,6 +275,8 @@ const PAIRING_FILE = path.join(CONFIG_DIRECTORY, "pairings.json");
 const LEGACY_HOME_CREDENTIAL_FILE = path.join(LEGACY_HOME_CONFIG_DIRECTORY, "credentials.json");
 const LOCAL_SETTINGS_FILE = path.join(CONFIG_DIRECTORY, "settings.json");
 const RUN_REGISTRY_FILE = path.join(CONFIG_DIRECTORY, "runs.json");
+const RUN_REGISTRY_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "runs.lock");
+const RUN_REGISTRY_LOCK_INITIALIZATION_STALE_MS = 1_000;
 const AUTOMATIC_CLEANUP_STATE_FILE = path.join(CONFIG_DIRECTORY, "automatic-cleanup.json");
 const AGENT_RULES_CACHE_FILE = path.join(CONFIG_DIRECTORY, "agent-rules.json");
 const WORKSPACE_OPEN_LOCK_DIRECTORY = path.join(CONFIG_DIRECTORY, "workspace-open-locks");
@@ -1221,6 +1224,7 @@ export const formatBridgeCommandError = (error, command = "") => {
   if (
     error instanceof WorkspaceDirectoryRequiredError
     || error instanceof WorkspaceLocalRecoveryRequiredError
+    || error instanceof WorkspaceRunReclaimRequiredError
   ) {
     return JSON.stringify(error);
   }
@@ -8772,6 +8776,93 @@ const readRunRegistry = async () => {
   }
 };
 
+const acquireRunRegistryLock = async () => {
+  await ensurePrivateDirectory(CONFIG_DIRECTORY);
+  const ownerToken = crypto.randomUUID();
+  const deadline = Date.now() + 5_000;
+
+  while (Date.now() < deadline) {
+    try {
+      await fs.mkdir(RUN_REGISTRY_LOCK_DIRECTORY, { mode: 0o700 });
+      try {
+        await fs.writeFile(
+          path.join(RUN_REGISTRY_LOCK_DIRECTORY, "owner.json"),
+          `${JSON.stringify({
+            schemaVersion: 1,
+            pid: process.pid,
+            ownerToken,
+            startedAt: new Date().toISOString(),
+          }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      } catch (error) {
+        await fs.rm(RUN_REGISTRY_LOCK_DIRECTORY, { recursive: true, force: true })
+          .catch(() => undefined);
+        throw error;
+      }
+      return { ownerToken };
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+
+    let lockStat;
+    let owner = null;
+    try {
+      lockStat = await fs.lstat(RUN_REGISTRY_LOCK_DIRECTORY);
+      if (!lockStat.isDirectory() || lockStat.isSymbolicLink()) {
+        throw new Error("Локальная блокировка реестра Workspace имеет небезопасный тип.");
+      }
+      owner = await readPrivateJsonFile(path.join(
+        RUN_REGISTRY_LOCK_DIRECTORY,
+        "owner.json",
+      )).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+
+    const liveOwner = Number.isSafeInteger(Number(owner?.pid))
+      && isProcessRunning(Number(owner.pid));
+    const initializing = !owner
+      && Date.now() - lockStat.mtimeMs < RUN_REGISTRY_LOCK_INITIALIZATION_STALE_MS;
+    if (!liveOwner && !initializing) {
+      // Удаляется только служебная directory-lock мёртвого процесса. Ни root,
+      // ни сам runs.json этот recovery-path не затрагивает.
+      await fs.rm(RUN_REGISTRY_LOCK_DIRECTORY, { recursive: true, force: true });
+      continue;
+    }
+    await wait(25);
+  }
+
+  throw new Error("Не удалось получить локальную блокировку реестра Agent Workspace.");
+};
+
+const releaseRunRegistryLock = async ({ ownerToken }) => {
+  try {
+    const owner = await readPrivateJsonFile(path.join(
+      RUN_REGISTRY_LOCK_DIRECTORY,
+      "owner.json",
+    ));
+    if (owner.ownerToken === ownerToken && Number(owner.pid) === process.pid) {
+      await fs.rm(RUN_REGISTRY_LOCK_DIRECTORY, { recursive: true, force: true });
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+};
+
+const withRunRegistryLock = async (handler) => {
+  const lock = await acquireRunRegistryLock();
+  try {
+    return await handler();
+  } finally {
+    await releaseRunRegistryLock(lock);
+  }
+};
+
 const writeRunRegistry = async (roots) => {
   await fs.mkdir(CONFIG_DIRECTORY, { recursive: true, mode: 0o700 });
   const temporaryPath = `${RUN_REGISTRY_FILE}.tmp-${crypto.randomUUID()}`;
@@ -8792,8 +8883,10 @@ const writeRunRegistry = async (roots) => {
 };
 
 const registerRunRoot = async (rootDirectory) => {
-  const roots = await readRunRegistry();
-  await writeRunRegistry([...roots, path.resolve(rootDirectory)]);
+  await withRunRegistryLock(async () => {
+    const roots = await readRunRegistry();
+    await writeRunRegistry([...roots, path.resolve(rootDirectory)]);
+  });
 };
 
 const normalizeAgentInstructionsSnapshot = (rawSnapshot) => {
@@ -9134,10 +9227,66 @@ export const ensureBridgeCompatibility = async (
 };
 
 const TERMINAL_RUN_STATUSES = new Set(["accepted", "cancelled"]);
+const STALE_EMPTY_EXPIRED_RUN_REUSE_MS = 48 * 60 * 60 * 1000;
 // Backend считает открытыми только состояния, которые удерживают текущую
 // работу/ревью. `expired` можно claim-нуть повторно, но он не должен навечно
 // блокировать cleanup другого terminal Run того же Workspace.
 const OPEN_RUN_STATUSES = new Set(["running", "waiting_for_human", "review"]);
+
+const latestFiniteTimestamp = (values) => {
+  const timestamps = values
+    .map((value) => Date.parse(String(value || "")))
+    .filter(Number.isFinite);
+  return timestamps.length > 0 ? Math.max(...timestamps) : null;
+};
+
+const expiredRunHasServerWork = (overview, run) => (
+  Boolean(
+    run.draftHead
+    || run.candidateHead
+    || run.blockerJson
+    || run.billingBlockerJson
+    || run.handoffJson
+  )
+  || (Array.isArray(overview?.checkpoints)
+    && overview.checkpoints.some((checkpoint) => checkpoint?.runId === run.id))
+);
+
+const canReplaceStaleEmptyExpiredRun = async ({
+  rootDirectory,
+  metadata,
+  overview,
+  run,
+  nowMs = Date.now(),
+}) => {
+  if (run?.status !== "expired" || expiredRunHasServerWork(overview, run)) {
+    return false;
+  }
+
+  const latestActivityAt = latestFiniteTimestamp([
+    metadata.lastUsedAt,
+    metadata.claimedAt,
+    metadata.createdAt,
+    run.lastHeartbeatAt,
+    run.leaseExpiresAt,
+    run.draftUpdatedAt,
+    run.updatedAt,
+    run.createdAt,
+  ]);
+  if (
+    latestActivityAt === null
+    || nowMs - latestActivityAt < STALE_EMPTY_EXPIRED_RUN_REUSE_MS
+  ) {
+    return false;
+  }
+
+  const root = { rootDirectory, metadata };
+  // Возраст – только фильтр кандидата. Право переиспользовать root появляется
+  // лишь после независимой проверки истории, working tree, ignored files и
+  // top-level записей. Неизвестная ошибка любой проверки остаётся fail-closed.
+  return !(await hasUnmanagedWorkspaceRootEntries(rootDirectory))
+    && !(await isWritableWorkspaceDirty(root));
+};
 
 const readOptionalRunMetadata = async (rootDirectory) => {
   try {
@@ -9642,7 +9791,22 @@ const preflightWorkspaceDirectory = async ({
     const continuingSameRun = requestedRunId === existingMetadata.runId;
 
     if (!continuingSameRun) {
-      if (!localRunState || !TERMINAL_RUN_STATUSES.has(localRunState.status)) {
+      const reusableExpiredRun = localRunState?.status === "expired"
+        ? await canReplaceStaleEmptyExpiredRun({
+            rootDirectory,
+            metadata: existingMetadata,
+            overview,
+            run: localRunState,
+          })
+        : false;
+      if (!localRunState || (!TERMINAL_RUN_STATUSES.has(localRunState.status) && !reusableExpiredRun)) {
+        if (localRunState?.status === "expired") {
+          throw new WorkspaceRunReclaimRequiredError({
+            workspaceId,
+            sourceRunId: existingMetadata.runId,
+            targetRunId: requestedRunId,
+          });
+        }
         throw new Error(
           "В локальной папке уже находится незавершённый Agent Run этого Workspace. Завершите или отмените его перед новым запуском.",
         );
@@ -14595,11 +14759,14 @@ const discoverDefaultRunRoots = async () => {
 };
 
 const discoverRegisteredRunRoots = async () => {
+  const registeredRoots = await readRunRegistry();
+  const registeredRootSet = new Set(registeredRoots.map((item) => path.resolve(item)));
   const roots = [...new Set([
-    ...(await readRunRegistry()),
+    ...registeredRoots,
     ...(await discoverDefaultRunRoots()),
   ].map((item) => path.resolve(item)))];
   const discovered = [];
+  const missingRegisteredRoots = new Set();
 
   for (const rootDirectory of roots) {
     try {
@@ -14618,15 +14785,43 @@ const discoverRegisteredRunRoots = async () => {
         discovered.push({ rootDirectory, metadata });
       }
     } catch (error) {
-      if (error.code !== "ENOENT") {
+      if (error.code === "ENOENT" && registeredRootSet.has(rootDirectory)) {
+        missingRegisteredRoots.add(rootDirectory);
+      } else if (error.code !== "ENOENT") {
         // Повреждённый/неизвестный root намеренно не становится кандидатом на
         // удаление. clean продолжает проверять остальные зарегистрированные Run.
       }
     }
   }
 
+  if (missingRegisteredRoots.size > 0) {
+    // Registry – индекс, а не хранилище данных. Под lock повторно доказываем
+    // ENOENT каждого exact path и удаляем только такие записи. Параллельно
+    // зарегистрированный или вновь появившийся root остаётся в текущем файле.
+    await withRunRegistryLock(async () => {
+      const currentRoots = await readRunRegistry();
+      const retainedRoots = [];
+      for (const currentRoot of currentRoots) {
+        const resolvedRoot = path.resolve(currentRoot);
+        if (!missingRegisteredRoots.has(resolvedRoot)) {
+          retainedRoots.push(currentRoot);
+          continue;
+        }
+        try {
+          await fs.lstat(resolvedRoot);
+          retainedRoots.push(currentRoot);
+        } catch (error) {
+          if (error.code !== "ENOENT") retainedRoots.push(currentRoot);
+        }
+      }
+      await writeRunRegistry(retainedRoots);
+    });
+  }
+
   return discovered;
 };
+
+const RUN_STATUS_READ_CONCURRENCY = 4;
 
 const readRunStatusMap = async ({ origin, token, roots }) => {
   const statusByRunId = new Map();
@@ -14638,7 +14833,11 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
       .map((item) => item.metadata.workspaceId),
   )];
 
-  for (const workspaceId of workspaceIds) {
+  let nextWorkspaceIndex = 0;
+  const readNextWorkspace = async () => {
+    while (nextWorkspaceIndex < workspaceIds.length) {
+      const workspaceId = workspaceIds[nextWorkspaceIndex];
+      nextWorkspaceIndex += 1;
     // Cleanup reads terminal state for every locally registered Workspace and
     // can therefore span plain and encrypted companies. Resolve each exact
     // Workspace independently so an automatic cleanup after one encrypted Run
@@ -14683,7 +14882,13 @@ const readRunStatusMap = async ({ origin, token, roots }) => {
         workspacesWithOpenRuns.add(workspaceId);
       }
     }
-  }
+    }
+  };
+
+  await Promise.all(Array.from(
+    { length: Math.min(RUN_STATUS_READ_CONCURRENCY, workspaceIds.length) },
+    () => readNextWorkspace(),
+  ));
 
   return {
     statusByRunId,
@@ -15240,9 +15445,11 @@ const cleanLocalRuns = async ({ origin, token, dryRun, automatic = false }) => {
   const deletedRootSet = new Set(
     deletionCandidates.map((item) => path.resolve(item.rootDirectory)),
   );
-  await writeRunRegistry(
-    (await readRunRegistry()).filter((item) => !deletedRootSet.has(path.resolve(item))),
-  );
+  await withRunRegistryLock(async () => {
+    await writeRunRegistry(
+      (await readRunRegistry()).filter((item) => !deletedRootSet.has(path.resolve(item))),
+    );
+  });
 
   if (!automatic) {
     process.stdout.write("Очистка завершена.\n");

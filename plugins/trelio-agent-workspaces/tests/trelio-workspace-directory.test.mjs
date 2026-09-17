@@ -15,10 +15,13 @@ import {
 import {
   WorkspaceDirectoryRequiredError,
   WorkspaceLocalRecoveryRequiredError,
+  WorkspaceRunReclaimRequiredError,
   WORKSPACE_DIRECTORY_REQUIRED,
   WORKSPACE_LOCAL_RECOVERY_REQUIRED,
+  WORKSPACE_RUN_RECLAIM_REQUIRED,
   parseWorkspaceDirectoryRequiredError,
   parseWorkspaceLocalRecoveryRequiredError,
+  parseWorkspaceRunReclaimRequiredError,
 } from "../../../host-runtime/scripts/trelio-workspace-directory.mjs";
 import {
   buildTrelioWorkspaceActionInvocation,
@@ -216,6 +219,43 @@ test("local change recovery preserves bounded source evidence and an exact safe 
     return true;
   });
   assert.equal(calls, 1, "recovery must not move files or retry open automatically");
+});
+
+test("expired local Run recovery preserves the exact existing Run without retrying target open", async () => {
+  const error = new WorkspaceRunReclaimRequiredError({
+    workspaceId,
+    sourceRunId: firstRun,
+    targetRunId: newRun,
+  });
+  const stderr = `Ошибка: ${formatBridgeCommandError(error, "open")}\n`;
+  const parsed = parseWorkspaceRunReclaimRequiredError(stderr, workspaceId, newRun);
+  assert.equal(parsed?.code, WORKSPACE_RUN_RECLAIM_REQUIRED);
+  assert.deepEqual(parsed?.details, {
+    requiredAction: "prepare_and_open_existing_run",
+    workspaceId,
+    runId: firstRun,
+    targetRunId: newRun,
+    operation: "open",
+    reasonCode: "LOCAL_EXPIRED_RUN_REQUIRES_REVIEW",
+  });
+  assert.equal(parseWorkspaceRunReclaimRequiredError(stderr, workspaceId, secondRun), null);
+
+  let calls = 0;
+  await assert.rejects(handleTrelioWorkspaceActionOperation(origin, {
+    schemaVersion: 1,
+    operation: "open",
+    parameters: { workspaceId, runId: newRun },
+  }, {
+    runBridge: async () => {
+      calls += 1;
+      throw Object.assign(new Error("child failed"), { stderr });
+    },
+  }), (actual) => {
+    assert.equal(actual.code, WORKSPACE_RUN_RECLAIM_REQUIRED);
+    assert.deepEqual(actual.details, parsed.details);
+    return true;
+  });
+  assert.equal(calls, 1, "target open must stop until the exact expired Run is prepared");
 });
 
 test("MCP preserves directory recovery once and accepts its exact directory field", async (t) => {

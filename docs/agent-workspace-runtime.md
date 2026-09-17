@@ -495,6 +495,17 @@ root не трогает source. Агент сравнивает дельту, �
 Автоматически перемещать `.DS_Store` или очищать старую папку для обхода ошибки
 запрещено.
 
+Если persistent root хранит другой `expired` Run, preflight сначала отделяет
+реальное незавершённое состояние от пустого остатка. Свежий Run, server draft,
+candidate, checkpoint, blocker/handoff, изменённый либо расходящийся Git,
+ignored user file и неизвестная top-level запись возвращают structured
+`TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED` с exact прежним `runId`: агент
+подготавливает и открывает именно его, а не повторяет новый `open`. Только после
+48 часов без локальной и server activity, при отсутствии всех этих признаков и
+полностью чистом root bridge может бесшумно переиспользовать ту же папку для
+нового Run. Это не удаляет принятую историю или server Run и не трактует возраст
+как разрешение отбросить содержательные изменения.
+
 После перезапуска MCP-host structured `TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED`
 возвращает non-secret exact `workspaceId/runId` из owner-private metadata.
 `prepare_agent_workspace_run(runId)` возвращает новый runtime-bound open того же
@@ -529,6 +540,11 @@ backend outage делает auto-prune no-op. Настройка
 Одинаковый local preflight выполняется до выбора plaintext или E2EE transport.
 Best-effort auto-clean запускается после `open`, успешного `finish` и локального
 `cancel_run`, но не чаще одного успешного прохода в сутки для одного origin.
+Перед server status reads bridge удаляет из owner-private `runs.json` только
+exact пути с повторно подтверждённым `ENOENT`; повреждённые, недоступные и
+неизвестные roots остаются fail-closed. Статусы разных Workspace читаются
+bounded пулом до четырёх запросов, поэтому большой локальный индекс не превращает
+каждый cleanup в длинную последовательную проверку.
 
 Object cache очищается по возрасту/LRU/лимиту, signed runtime packages – только
 целыми проверенными digest-каталогами. Очистка удаляет лишь локальную копию;

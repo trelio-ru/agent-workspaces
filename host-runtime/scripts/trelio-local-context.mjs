@@ -2,6 +2,7 @@ import { downloadAcceptedWorkspaceFile, validateWorkspaceFileLocator } from "./t
 import {
   parseWorkspaceDirectoryRequiredError,
   parseWorkspaceLocalRecoveryRequiredError,
+  parseWorkspaceRunReclaimRequiredError,
 } from "./trelio-workspace-directory.mjs";
 import {
   buildContextSearchPreview,
@@ -9258,6 +9259,11 @@ export const handleTrelioWorkspaceActionOperation = async (
     const openRecovery = invocation.operation === "open"
       ? parseWorkspaceDirectoryRequiredError(error?.stderr, recoveryWorkspaceId)
         || parseWorkspaceLocalRecoveryRequiredError(
+          error?.stderr,
+          recoveryWorkspaceId,
+          recoveryRunId,
+        )
+        || parseWorkspaceRunReclaimRequiredError(
           error?.stderr,
           recoveryWorkspaceId,
           recoveryRunId,

@@ -2,6 +2,7 @@ import path from "node:path";
 
 export const WORKSPACE_DIRECTORY_REQUIRED = "TRELIO_WORKSPACE_DIRECTORY_REQUIRED";
 export const WORKSPACE_LOCAL_RECOVERY_REQUIRED = "TRELIO_WORKSPACE_LOCAL_RECOVERY_REQUIRED";
+export const WORKSPACE_RUN_RECLAIM_REQUIRED = "TRELIO_WORKSPACE_RUN_RECLAIM_REQUIRED";
 const MAX_CANDIDATES = 10;
 const MAX_RECOVERY_CHANGES = 200;
 const MAX_DIRECTORY_LENGTH = 4096;
@@ -77,6 +78,33 @@ export class WorkspaceLocalRecoveryRequiredError extends Error {
       directoryParameter: "parameters.directory",
       sourceFilesMustRemainUntouched: true,
       nextSaveActions: ["checkpoint", "pause", "finish"],
+    };
+  }
+
+  toJSON() {
+    return { code: this.code, message: this.message, details: this.details };
+  }
+}
+
+const RUN_RECLAIM_MESSAGE = "Локальная папка содержит истёкший Agent Run, который ещё нельзя "
+  + "считать пустым и безопасно заменить. Подготовьте и откройте этот exact Run через "
+  + "prepare_agent_workspace_run(runId), разберите его состояние и только затем продолжайте новый Run.";
+
+// Новый server Run может быть подготовлен раньше локального preflight. Если root
+// хранит recoverable expired Run, bridge не угадывает судьбу его данных и не
+// подменяет target. Вместо свободного текста возвращается bounded exact locator,
+// который уже поддерживается общим lifecycle recovery flow MCP-host.
+export class WorkspaceRunReclaimRequiredError extends Error {
+  constructor({ workspaceId, sourceRunId, targetRunId }) {
+    super(RUN_RECLAIM_MESSAGE);
+    this.code = WORKSPACE_RUN_RECLAIM_REQUIRED;
+    this.details = {
+      requiredAction: "prepare_and_open_existing_run",
+      workspaceId,
+      runId: sourceRunId,
+      targetRunId: targetRunId || null,
+      operation: "open",
+      reasonCode: "LOCAL_EXPIRED_RUN_REQUIRES_REVIEW",
     };
   }
 
@@ -182,4 +210,35 @@ export const parseWorkspaceLocalRecoveryRequiredError = (
   });
   result.details.omittedChangeCount = details.omittedChangeCount;
   return result;
+};
+
+export const parseWorkspaceRunReclaimRequiredError = (
+  stderr,
+  workspaceId,
+  targetRunId = null,
+) => {
+  if (typeof stderr !== "string" || stderr.length > 64 * 1024) return null;
+  const text = stderr.trim();
+  if (!text.startsWith("Ошибка: {")) return null;
+  let payload;
+  try { payload = JSON.parse(text.slice("Ошибка: ".length)); }
+  catch { return null; }
+  const details = payload?.details;
+  const expectedTargetRunId = targetRunId || null;
+  if (
+    payload?.code !== WORKSPACE_RUN_RECLAIM_REQUIRED
+    || details?.requiredAction !== "prepare_and_open_existing_run"
+    || details.workspaceId !== workspaceId
+    || !UUID_PATTERN.test(workspaceId)
+    || !UUID_PATTERN.test(String(details.runId || ""))
+    || details.targetRunId !== expectedTargetRunId
+    || (details.targetRunId !== null && !UUID_PATTERN.test(details.targetRunId))
+    || details.operation !== "open"
+    || details.reasonCode !== "LOCAL_EXPIRED_RUN_REQUIRES_REVIEW"
+  ) return null;
+  return new WorkspaceRunReclaimRequiredError({
+    workspaceId,
+    sourceRunId: details.runId,
+    targetRunId: details.targetRunId,
+  });
 };
