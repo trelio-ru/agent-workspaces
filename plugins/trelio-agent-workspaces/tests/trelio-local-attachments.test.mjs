@@ -8,10 +8,10 @@ import test from "node:test";
 import {
   LOCAL_ATTACHMENT_MAX_BYTES, LOCAL_ATTACHMENT_TTL_MS,
   materializeLocalAttachment, pruneLocalAttachmentDownloads,
-} from "../scripts/trelio-local-attachments.mjs";
-import { openLocalActionAttachmentResult } from "../scripts/trelio-local-context.mjs";
-import { createAgentEncryptionDevice, encryptFileToCompanyContainer } from "../scripts/trelio-company-encryption.mjs";
-import { ensurePrivateDirectory, readPrivateJsonFile } from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-local-attachments.mjs";
+import { openLocalActionAttachmentResult } from "../../../host-runtime/scripts/trelio-local-context.mjs";
+import { createAgentEncryptionDevice, encryptFileToCompanyContainer } from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
+import { ensurePrivateDirectory, readPrivateJsonFile } from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const withDirectory = async (operation) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-attachment-test-"));

@@ -7,19 +7,19 @@ import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
-import { createAgentEncryptionDevice, canonicalJson, encryptFileToCompanyContainer } from "../scripts/trelio-company-encryption.mjs";
+import { createAgentEncryptionDevice, canonicalJson, encryptFileToCompanyContainer } from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
 import {
   ENCRYPTED_WORKSPACE_PART_BYTES, ENCRYPTED_WORKSPACE_MAX_MANIFEST_BYTES,
   ENCRYPTED_WORKSPACE_MAX_CONTAINER_BYTES, ENCRYPTED_WORKSPACE_MAX_CHAIN_LENGTH,
   encryptedWorkspaceCacheKey, materializeEncryptedWorkspaceChain,
   prepareCachedEncryptedWorkspaceFile, uploadEncryptedWorkspaceFile,
   validateEncryptedWorkspaceCapabilities, buildEncryptedWorkspaceProjectionRecord,
-} from "../scripts/trelio-encrypted-workspace-storage.mjs";
+} from "../../../host-runtime/scripts/trelio-encrypted-workspace-storage.mjs";
 import {
   assertEncryptedCandidateSafe, ensurePrivateDirectory, readPrivateJsonFile, writePrivateJsonFile,
   uploadIncrementalEncryptedWorkspaceProjection,
   TrelioApiError, withRateLimitRetry, withEncryptedWorkspaceRequestRetry,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const exec = promisify(execFile);
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");

@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   SKILL_ADMISSION_TTL_MS, SKILL_ADMISSION_MAX_BYTES,
   canCacheSkillAdmission, openSkillAdmission, sealSkillAdmission, skillAdmissionKey,
-} from "../scripts/trelio-skill-admission.mjs";
+} from "../../../host-runtime/scripts/trelio-skill-admission.mjs";
 
 const context = { origin: "https://trelio.example", token: "synthetic-device-token",
   sessionId: "session-a", kind: "runtime", companyId: "company-a", projectId: null,

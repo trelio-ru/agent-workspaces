@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { handleLocalMcpMessage } from "../scripts/trelio-remote-mcp.mjs";
+import { handleLocalMcpMessage } from "../../../host-runtime/scripts/trelio-remote-mcp.mjs";
 
 import {
   CONTEXT_TOKENIZER,
@@ -14,7 +14,7 @@ import {
   measureContextText,
   sumMeasurements,
   formatPluginContextBudgetReport,
-} from "../scripts/report-context-budget.mjs";
+} from "../../../host-runtime/scripts/report-context-budget.mjs";
 
 test("offline o200k counts Russian, Latin and literal special markers independently of byte heuristics", () => {
   // Проверенные в OpenAI tiktoken контрольные векторы: изменение зависимости,

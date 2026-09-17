@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compactLocalMcpResult, compactLocalNativeMcpResult, compactRemoteDoctorPayload } from "../scripts/trelio-mcp-results.mjs";
-import { projectMcpAgentPayload } from "../scripts/trelio-agent-response-projection.mjs";
-import { handleLocalMcpMessage } from "../scripts/trelio-remote-mcp.mjs";
+import { compactLocalMcpResult, compactLocalNativeMcpResult, compactRemoteDoctorPayload } from "../../../host-runtime/scripts/trelio-mcp-results.mjs";
+import { projectMcpAgentPayload } from "../../../host-runtime/scripts/trelio-agent-response-projection.mjs";
+import { handleLocalMcpMessage } from "../../../host-runtime/scripts/trelio-remote-mcp.mjs";
 
 test("local MCP emits one copy of successful data without altering hidden App capabilities", async () => {
   const structuredContent = { proposalId: "proposal", revision: 2, bodyText: "private proposal".repeat(500) };

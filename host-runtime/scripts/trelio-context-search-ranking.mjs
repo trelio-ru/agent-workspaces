@@ -1,5 +1,6 @@
 import { compileContextSearchQuery, normalizeContextSearchReference, normalizeContextSearchText } from "./trelio-context-search-matching.mjs";
 export { normalizeContextSearchText } from "./trelio-context-search-matching.mjs";
+// Shipped by the independently versioned host runtime, not by the stable plugin shell.
 // This module deliberately has no MCP or domain-service dependencies: task,
 // contact and registry retrieval can select evidence with the same policy that
 // the final mixed-result merge uses.

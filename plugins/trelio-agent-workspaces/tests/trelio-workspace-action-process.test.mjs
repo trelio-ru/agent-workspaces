@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const scriptsDirectory = fileURLToPath(new URL("../scripts/", import.meta.url));
+const scriptsDirectory = fileURLToPath(new URL("../../../host-runtime/scripts/", import.meta.url));
 const origin = "https://example.test";
 const skillAction = {
   schemaVersion: 1,

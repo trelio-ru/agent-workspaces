@@ -58,16 +58,16 @@ import {
   uploadLocalTaskAttachmentStream,
   uploadLocalTaskAttachmentPayloads,
   uploadLocalActionPayloads,
-} from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-local-context.mjs";
 import {
   createAgentEncryptionDevice,
   decryptCompanyPayload,
   decryptFileFromCompanyContainerBytes,
-} from "../scripts/trelio-company-encryption.mjs";
+} from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
 import {
   TrelioApiError,
   resolveCompanyContextMutationMarkerPath,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -695,6 +695,68 @@ test("local mirror search ranks structured and workspace context without remote 
     true,
   );
   assert.equal(JSON.stringify(result).includes("remote"), false);
+});
+
+test("backend search projections do not require full task or domain payloads", () => {
+  const projectedMirror = structuredClone(mirror);
+  projectedMirror.tasks = projectedMirror.tasks.map((task) => ({
+    ...task,
+    title: task.payload.task.title,
+    payload: null,
+  }));
+  projectedMirror.contextDocuments = projectedMirror.contextDocuments.map((document) => ({
+    id: document.id,
+    type: document.type,
+    title: document.title,
+    revisionToken: document.revisionToken,
+    projectId: document.projectId,
+    projectSlug: document.projectSlug,
+  }));
+  projectedMirror.searchDocuments = [{
+    cacheKey: `task:${projectedMirror.tasks[0].id}`,
+    id: ["task:", "acme", "/", "mobile", "/", 17],
+    type: "task",
+    title: "Исправить офлайн синхронизацию",
+    stableKey: ["acme", "/", "mobile", "/", 17, "/task"],
+    revisionToken: projectedMirror.tasks[0].revisionToken,
+    referenceValues: [projectedMirror.tasks[0].id, 17, "#17"],
+    fields: [{
+      source: "task-description",
+      values: ["Поиск релевантного контекста должен работать на устройстве"],
+    }],
+    metadata: {
+      taskId: projectedMirror.tasks[0].id,
+      projectId: projectedMirror.tasks[0].projectId,
+      projectSlug: "mobile",
+      taskNumber: 17,
+    },
+  }, {
+    cacheKey: `context:${projectedMirror.contextDocuments[0].id}`,
+    id: `context:registry:${projectedMirror.contextDocuments[0].id}`,
+    type: "registry",
+    title: "Реестр поставщиков",
+    stableKey: "acme/mobile/vendors/registry",
+    revisionToken: projectedMirror.contextDocuments[0].revisionToken,
+    referenceValues: [projectedMirror.contextDocuments[0].id, "vendors"],
+    fields: [{ source: "registry-row-value", values: ["Север", "Проверен"] }],
+    metadata: {
+      contextDocumentId: projectedMirror.contextDocuments[0].id,
+      sourceType: "registry",
+      projectId: projectedMirror.contextDocuments[0].projectId,
+      projectSlug: "mobile",
+    },
+  }];
+
+  assert.equal(
+    searchCompanyContextMirror(projectedMirror, ["релевантного контекста"], 10)
+      .results.find((result) => result.type === "task")?.id,
+    "task:acme/mobile/17",
+  );
+  assert.equal(
+    searchCompanyContextMirror(projectedMirror, ["Север Проверен"], 10)
+      .results.some((result) => result.type === "registry"),
+    true,
+  );
 });
 
 test("local task corpus keeps useful controls but excludes status and people", () => {
@@ -3096,7 +3158,7 @@ test("encrypted mirror generations are schema-isolated while mutation coherence 
     companyId: "11111111-1111-4111-8111-111111111111",
   });
 
-  assert.equal(paths.root.endsWith("schema-6"), true);
+  assert.equal(paths.root.endsWith("schema-7"), true);
   assert.equal(paths.pointer.startsWith(paths.root), true);
   assert.equal(paths.lock.startsWith(paths.root), true);
   assert.equal(paths.generations.startsWith(paths.root), true);

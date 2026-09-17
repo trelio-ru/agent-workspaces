@@ -9,15 +9,14 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  buildBundledHostRuntimeSelection,
   normalizeHostRuntimeDescriptor,
   verifyHostRuntimeSignature,
 } from "../scripts/trelio-host-runtime-loader.mjs";
-import { resolveHostRuntimeInvocation } from "../scripts/trelio-host-runtime-entry.mjs";
+import { resolveHostRuntimeInvocation } from "../../../host-runtime/scripts/trelio-host-runtime-entry.mjs";
 import {
   BRIDGE_VERSION,
   buildAgentSkillPackage,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const loaderPath = fileURLToPath(new URL(
   "../scripts/trelio-host-runtime-loader.mjs",
@@ -59,7 +58,7 @@ test("host runtime descriptor is same-origin, bounded and stable-versioned", () 
     runtime: {
       runtimeVersion: "3.4.5",
       minimumRuntimeVersion: "3.4.0",
-      minimumPluginVersion: "2.3.0",
+      minimumPluginVersion: "2.3.1",
       packageSha256: "a".repeat(64),
       packageSizeBytes: 1024,
       packageUrl: "/api/agent-workspaces/host-runtime/artifacts/runtime/package",
@@ -93,10 +92,12 @@ test("host runtime accepts only the exact Ed25519 signature", () => {
   );
 });
 
-test("host runtime loader has a bundled fail-closed fallback", () => {
-  const selected = buildBundledHostRuntimeSelection();
-  assert.equal(selected.runtimeVersion, BRIDGE_VERSION);
-  assert.match(selected.entrypointPath, /trelio-host-runtime-entry\.mjs$/u);
+test("stable plugin shell contains no bundled host runtime fallback", async () => {
+  const removedBundledEntrypoint = fileURLToPath(new URL(
+    "../scripts/trelio-host-runtime-entry.mjs",
+    import.meta.url,
+  ));
+  await assert.rejects(fs.access(removedBundledEntrypoint));
 });
 
 test("host runtime updater verifies, materializes and selects a signed package", async () => {

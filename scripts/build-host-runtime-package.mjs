@@ -12,14 +12,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildAgentSkillPackage } from "../plugins/trelio-agent-workspaces/scripts/trelio-workspace.mjs";
+import { buildAgentSkillPackage } from "../host-runtime/scripts/trelio-workspace.mjs";
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PLUGIN_ROOT = path.join(REPOSITORY_ROOT, "plugins", "trelio-agent-workspaces");
-const SCRIPT_SOURCE = path.join(PLUGIN_ROOT, "scripts");
+const SCRIPT_SOURCE = path.join(REPOSITORY_ROOT, "host-runtime", "scripts");
 const EXCLUDED_SCRIPT_NAMES = new Set([
   "report-context-budget.mjs",
-  "trelio-host-runtime-loader.mjs",
 ]);
 
 const parseArguments = (rawArguments) => {

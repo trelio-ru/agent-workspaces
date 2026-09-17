@@ -14,17 +14,23 @@ import {
   RUNTIME_REGISTRATION_TIMEOUT_MILLISECONDS,
   RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
   RUNTIME_STATE_LOCK_WAIT_MILLISECONDS,
-} from "../scripts/trelio-runtime-session-limits.mjs";
+} from "../../../host-runtime/scripts/trelio-runtime-session-limits.mjs";
 import {
   ensurePrivateDirectory,
   inspectBundledPlugin,
   inspectLocalRuntimeSessions,
   resolveWorkspaceBridgeConfigDirectory,
   writePrivateJsonFile,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const pluginDirectory = fileURLToPath(new URL("..", import.meta.url));
-const hookScriptPath = path.join(pluginDirectory, "scripts", "trelio-runtime-session.mjs");
+// The immutable plugin now ships only the stable loader. Timing and lock
+// semantics belong to the independently released host runtime, so this test
+// executes that source directly while loader/update behavior stays covered by
+// trelio-host-runtime-loader.test.mjs.
+const hookScriptPath = fileURLToPath(
+  new URL("../../../host-runtime/scripts/trelio-runtime-session.mjs", import.meta.url),
+);
 const definition = JSON.parse(await readFile(
   path.join(pluginDirectory, "hooks", "hooks.json"),
   "utf8",

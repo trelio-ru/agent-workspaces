@@ -97,7 +97,10 @@ codex plugin marketplace upgrade trelio-plugins
 runtime. Оболочка содержит manifest, hook definition, Node launcher, runtime
 loader и проверку подписанного package. Loader не изменяет Codex plugin cache:
 он запускает уже проверенный content-addressed runtime из owner-only каталога
-`workspace-bridge/host-runtimes`, а при его отсутствии – bundled fallback.
+`workspace-bridge/host-runtimes`. Исполняемые исходники находятся в
+`host-runtime/` source repository и не входят в plugin artifact; bundled
+fallback отсутствует. На первой установке loader один раз синхронно загружает и
+проверяет подписанный package либо завершается fail-closed.
 Проверка новой версии идёт в отдельном процессе и переключает только атомарный
 указатель для следующих запусков; уже работающий процесс и открытая задача
 остаются на своём неизменяемом каталоге. При hard gate host runtime текущая
@@ -113,8 +116,8 @@ Marketplace self-update остаётся только для `AGENT_WORKSPACE_PL
 
 Подписанный runtime содержит только код. E2EE keys, plaintext company content,
 credentials и sessions живут в отдельных прежних owner-only хранилищах; unknown
-или повреждённый package отвергается до исполнения, bundled runtime остаётся
-fallback, а plaintext fallback для encrypted company не появляется.
+или повреждённый package отвергается до исполнения, а plaintext fallback для
+encrypted company не появляется.
 
 ## OAuth и новый контекст
 

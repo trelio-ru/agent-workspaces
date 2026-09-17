@@ -33,10 +33,10 @@ import {
   selectRemoteToolsForPolicy,
   validateResolvedRemoteMcp,
   validateRemoteMcpPublicationConfig,
-} from "../scripts/trelio-remote-mcp.mjs";
+} from "../../../host-runtime/scripts/trelio-remote-mcp.mjs";
 import {
   resolveSelectedLocalProposalRouteMarkerPaths,
-} from "../scripts/trelio-proposal-route-guard.mjs";
+} from "../../../host-runtime/scripts/trelio-proposal-route-guard.mjs";
 
 test("large private packages raise their exact runtime host floor", () => {
   assert.equal(resolveAgentSkillPackageMinimumHostVersion({
@@ -51,7 +51,7 @@ test("large private packages raise their exact runtime host floor", () => {
     packageSizeBytes: 1,
     requestedMinimum: "1.4.0",
     encrypted: true,
-  }), "2.3.0");
+  }), "2.3.1");
 });
 
 const companyId = "11111111-1111-4111-8111-111111111111";
@@ -3085,7 +3085,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   );
   const scriptPath = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
-    "../scripts/trelio-remote-mcp.mjs",
+    "../../../host-runtime/scripts/trelio-remote-mcp.mjs",
   );
   const child = spawn(launcherPath, [scriptPath], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -3128,7 +3128,7 @@ test("stdio host emits only newline-delimited JSON-RPC frames", async () => {
   assert.equal(exitCode, 0, stderr);
   const frames = stdout.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(frames.map(({ id }) => id), [1, 2]);
-  assert.equal(frames[0].result.serverInfo.version, "2.3.0");
+  assert.equal(frames[0].result.serverInfo.version, "2.3.1");
   assert.equal(frames[0].result.instructions, AGENT_SKILL_ROUTING_INSTRUCTIONS);
   assert.match(frames[0].result.instructions, /runtimeExecution\.localAction/u);
   assert.match(frames[0].result.instructions, /Для старых command-ответов – его процедура совместимости/u);
@@ -3208,8 +3208,8 @@ test("Remote MCP admission expires absolutely and never caches protected wire de
     child.once("close", resolve);
   });
   child.stdin.end(JSON.stringify({
-    moduleUrl: new URL("../scripts/trelio-remote-mcp.mjs", import.meta.url).href,
-    bridgeUrl: new URL("../scripts/trelio-workspace.mjs", import.meta.url).href,
+    moduleUrl: new URL("../../../host-runtime/scripts/trelio-remote-mcp.mjs", import.meta.url).href,
+    bridgeUrl: new URL("../../../host-runtime/scripts/trelio-workspace.mjs", import.meta.url).href,
     resolution: resolvedRemoteKnowledge,
   }));
   assert.equal(await completed, 0, output);

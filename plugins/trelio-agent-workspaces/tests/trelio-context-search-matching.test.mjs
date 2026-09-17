@@ -6,8 +6,8 @@ import {
   compileContextSearchQuery,
   matchContextSearchField,
   normalizeContextSearchQueries,
-} from "../scripts/trelio-context-search-matching.mjs";
-import { searchCompanyContextMirror, getWorkspaceFileFromMirror } from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-context-search-matching.mjs";
+import { searchCompanyContextMirror, getWorkspaceFileFromMirror } from "../../../host-runtime/scripts/trelio-local-context.mjs";
 
 const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/context-search-matching-v2.json", import.meta.url), "utf8"));
 test("local admission follows the shared native/local corpus", () => {

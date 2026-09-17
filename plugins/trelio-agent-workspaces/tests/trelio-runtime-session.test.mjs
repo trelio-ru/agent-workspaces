@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import {
   chmod,
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -17,7 +18,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { detectAgentRuntimeAttestation } from "../scripts/trelio-runtime-attestation.mjs";
+import { detectAgentRuntimeAttestation } from "../../../host-runtime/scripts/trelio-runtime-attestation.mjs";
 import {
   buildRuntimeSessionProof,
   cleanupStaleRuntimeSessions,
@@ -25,24 +26,24 @@ import {
   isProtectedTrelioToolName,
   recoverHookHostRuntimeUpgrade,
   resolveTrelioMcpToolName,
-} from "../scripts/trelio-runtime-session.mjs";
+} from "../../../host-runtime/scripts/trelio-runtime-session.mjs";
 import {
   RUNTIME_PENDING_STATE_MAX_AGE_MILLISECONDS,
   RUNTIME_STATE_LOCK_STALE_MILLISECONDS,
-} from "../scripts/trelio-runtime-session-limits.mjs";
+} from "../../../host-runtime/scripts/trelio-runtime-session-limits.mjs";
 import {
   buildLocalProposalRouteMarker,
   resolveNativeProposalRouteMarkerPaths,
   resolveSelectedLocalProposalRouteMarkerPaths,
-} from "../scripts/trelio-proposal-route-guard.mjs";
+} from "../../../host-runtime/scripts/trelio-proposal-route-guard.mjs";
 import {
   ensurePrivateDirectory,
   resolveWorkspaceBridgeConfigDirectory,
   writePrivateJsonFile,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const hookScriptPath = fileURLToPath(
-  new URL("../scripts/trelio-runtime-session.mjs", import.meta.url),
+  new URL("../../../host-runtime/scripts/trelio-runtime-session.mjs", import.meta.url),
 );
 const pluginDirectory = fileURLToPath(new URL("..", import.meta.url));
 const expectedRuntimeHookCommand =
@@ -514,6 +515,27 @@ test("plugin pins a stable Trelio-only runtime hook contract without the title h
 test("configured platform hook launcher starts in every Windows shell without Node.js on PATH", async () => {
   const temporaryHome = await mkdtemp(path.join(os.tmpdir(), "trelio-runtime-launcher-"));
   try {
+    const launcherPluginDirectory = path.join(temporaryHome, "plugin");
+    const launcherScriptsDirectory = path.join(launcherPluginDirectory, "scripts");
+    await mkdir(launcherScriptsDirectory, { recursive: true });
+    await cp(
+      path.join(pluginDirectory, "scripts", "launch-trelio-node"),
+      path.join(launcherScriptsDirectory, "launch-trelio-node"),
+    );
+    await cp(
+      path.join(pluginDirectory, "scripts", "launch-trelio-node.cmd"),
+      path.join(launcherScriptsDirectory, "launch-trelio-node.cmd"),
+    );
+    // This case verifies only the configured cross-shell Node launcher. The
+    // signed loader and runtime hook have focused tests of their own, so the
+    // disposable target returns a deterministic hook-shaped failure without
+    // consulting a developer cache or the network.
+    await writeFile(
+      path.join(launcherScriptsDirectory, "trelio-host-runtime-loader.mjs"),
+      "process.stdin.resume(); process.stdin.on('end', () => {"
+        + "process.stderr.write('TRELIO_RUNTIME_HOOK_FAILED: launcher probe\\n');"
+        + "process.exitCode = 2; });\n",
+    );
     const hooks = JSON.parse(await readFile(
       path.join(pluginDirectory, "hooks", "hooks.json"),
       "utf8",
@@ -583,8 +605,8 @@ test("configured platform hook launcher starts in every Windows shell without No
             CODEX_HOME: shellHome,
             CODEX_THREAD_ID: `019f9fcd-899a-72b3-91f6-fdf3134381b${index}`,
             CODEX_MCP_NODE_PATH: process.execPath,
-            CLAUDE_PLUGIN_ROOT: pluginDirectory,
-            PLUGIN_ROOT: pluginDirectory,
+            CLAUDE_PLUGIN_ROOT: launcherPluginDirectory,
+            PLUGIN_ROOT: launcherPluginDirectory,
             CLAUDE_CODE_ENTRYPOINT: "",
             CLAUDE_EFFORT: "",
             PATH: isolatedPath,
@@ -669,7 +691,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
   let compatibilityRequests = 0;
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.0");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.1");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       compatibilityRequests += 1;
@@ -727,7 +749,7 @@ test("an active hook preserves the plugin upgrade code instead of claiming Hooks
     assert.equal(result.stdout, "");
     assert.equal(compatibilityRequests, 1);
     assert.match(result.stderr, /^AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED:/u);
-    assert.match(result.stderr, /v2\.3\.0 больше не поддерживается; требуется v1\.17\.13/u);
+    assert.match(result.stderr, /v2\.3\.1 больше не поддерживается; требуется v1\.17\.13/u);
     assert.match(result.stderr, /Если требуемая версия уже установлена, повторите запрос в новой задаче/u);
     assert.doesNotMatch(result.stderr, /TRELIO_RUNTIME_HOOK_REQUIRED|включите Hooks/iu);
   } finally {
@@ -745,7 +767,7 @@ test("SessionStart pins the initial model and supported host names inject verifi
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.0");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.1");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.11.0" }));
@@ -1106,7 +1128,7 @@ test("concurrent first protected calls register one shared runtime session", asy
   let registrationBody = null;
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.0");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.1");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));
@@ -1215,7 +1237,7 @@ test("SessionEnd removes the local key before a bounded remote cleanup", async (
   const { privateKey } = crypto.generateKeyPairSync("ed25519");
   const server = createServer((request, response) => {
     assert.equal(request.headers.authorization, "Bearer test-bridge-session");
-    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.0");
+    assert.equal(request.headers["x-trelio-agent-workspaces-version"], "2.3.1");
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/agent-workspaces/bridge-compatibility") {
       response.end(JSON.stringify({ supported: true, minimumVersion: "1.13.3" }));

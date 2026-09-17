@@ -12,8 +12,8 @@ import {
   assertBrowserFillBindingUnchanged, browserFillBinding, buildNativeSecretBrowserHelper,
   EmbeddedBrowserUnavailable, nativeIdFromSecretSelector, openNativeSecretBrowserChannel,
   prepareSecretBrowserSession,
-} from "../scripts/trelio-secret-browser-native.mjs";
-import { createSecretBrowserControllerExpression, SecretBrowserFillError } from "../scripts/trelio-secret-browser.mjs";
+} from "../../../host-runtime/scripts/trelio-secret-browser-native.mjs";
+import { createSecretBrowserControllerExpression, SecretBrowserFillError } from "../../../host-runtime/scripts/trelio-secret-browser.mjs";
 
 const targetUrl = "https://login.example.test/account?flow=1";
 const context = {

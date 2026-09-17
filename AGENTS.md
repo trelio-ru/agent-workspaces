@@ -3,13 +3,17 @@
 ## Назначение репозитория
 
 Этот публичный репозиторий – единственный канонический источник устанавливаемого
-клиентского плагина `Trelio Agent Workspaces` для Codex и Claude.
+клиентского плагина `Trelio Agent Workspaces` для Codex и Claude и независимо
+публикуемого generic Trelio host runtime.
 
 В публичный контур входят только:
 
 - marketplace manifests и client metadata;
-- `plugins/trelio-agent-workspaces/**` с bridge/host, hooks, MCP registration,
-  bundled bootstrap/control-plane skills, tests и пользовательской документацией;
+- `plugins/trelio-agent-workspaces/**` со stable shell, hooks, MCP registration,
+  bootstrap/control-plane skills, tests и пользовательской документацией;
+- `host-runtime/**` с generic bridge, hook implementation, local MCP и общими
+  security/runtime primitives; этот source собирается в signed package и не
+  копируется в plugin artifact;
 - публичные инструкции по установке, использованию и безопасности;
 - plugin CI.
 
@@ -77,10 +81,14 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Архитектурная граница
 
-- Trelio MCP – control plane; bundled bridge – локальный Git data plane.
-- Plugin является консервативным generic host. В нём остаются bridge/host,
-  lifecycle hooks, runtime admission/pairing, bootstrap/control-plane skills,
-  общие security/credential/browser primitives, manifests и assets.
+- Trelio MCP – control plane; independently published host runtime – локальный
+  Git/data plane.
+- Plugin является консервативной stable shell. В нём остаются manifests,
+  launchers, loader/signature verifier, lifecycle hook definition,
+  bootstrap/control-plane skills и assets. Исполняемого bundled runtime fallback
+  нет; first install обязан получить signed package либо завершиться fail-closed.
+- Generic host implementation, runtime admission/pairing и общие
+  security/credential/browser primitives находятся только в `host-runtime/**`.
 - Bundled skill может настраивать Trelio, читать каталог и вести Workspace/Run,
   но не реализует команды конкретного внешнего provider.
 - Внешние provider integrations доставляются независимо backend-managed

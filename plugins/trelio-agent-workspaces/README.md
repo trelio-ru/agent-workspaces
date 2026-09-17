@@ -512,8 +512,11 @@ signature verification остаются в плагине. Bridge, hook implemen
 каталог вне Codex plugin cache. Агент не выбирает версию и не видит updater в
 model context.
 
-Loader запускает уже проверенный immutable runtime или bundled fallback, а
-обновление проверяет в отдельном процессе. Оно переключает только будущие
+Исполняемый runtime физически вынесен из plugin artifact в `host-runtime/`
+этого source repository. Loader запускает уже проверенный immutable runtime, а
+при первой установке синхронно получает и проверяет подписанный package. Bundled
+fallback в плагине отсутствует. Последующие обновления проверяются в отдельном
+процессе и переключают только будущие
 запуски; текущий процесс не удаляется и не заменяется. Поэтому compatible
 runtime rollout не запускает `plugin add`, не ломает старые absolute paths и не
 требует новой задачи либо restart. Если server уже требует новый runtime,

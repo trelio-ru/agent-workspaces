@@ -32,7 +32,13 @@ const tokenEncoder = get_encoding(CONTEXT_TOKENIZER.encoding);
 process.once("exit", () => tokenEncoder.free());
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const pluginRoot = path.resolve(scriptDirectory, "..");
+const pluginRoot = path.resolve(
+  scriptDirectory,
+  "..",
+  "..",
+  "plugins",
+  "trelio-agent-workspaces",
+);
 
 // Это не список всех reference-файлов plugin. Он описывает именно обычный
 // task-scoped Run: discovery, lifecycle и три обязательных post-acceptance

@@ -2,6 +2,7 @@
 // browser runtime sockets or AXValue reads on fields. Values arrive only after
 // successful prepare, through the owning bridge's inherited anonymous stdin.
 import Foundation
+// Distributed only inside the independently signed host runtime package.
 import AppKit
 import ApplicationServices
 import Security

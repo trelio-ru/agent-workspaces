@@ -12,12 +12,14 @@ import {
   parseGitVersion,
   resolveGitExecutable,
   verifyGitRuntime,
-} from "../scripts/trelio-git.mjs";
+} from "../../../host-runtime/scripts/trelio-git.mjs";
 
 const execFileAsync = promisify(execFile);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
-const pluginDirectory = path.resolve(testDirectory, "..");
-const bridgePath = path.join(pluginDirectory, "scripts", "trelio-workspace.mjs");
+const bridgePath = path.resolve(
+  testDirectory,
+  "../../../host-runtime/scripts/trelio-workspace.mjs",
+);
 
 const createNotFoundError = (filePath) => {
   const error = new Error(`Missing virtual file: ${filePath}`);
@@ -278,7 +280,7 @@ test("bridge doctor exposes machine-readable local prerequisite status", async (
   assert.equal(report.git.status, "ready");
   assert.equal(report.git.smokeTest, "ready");
   assert.equal(report.plugin.status, "ready");
-  assert.equal(report.plugin.loadedVersion, "2.3.0");
+  assert.equal(report.plugin.loadedVersion, "2.3.1");
   assert.equal(report.plugin.hooks.status, "ready");
   assert.equal(report.plugin.hooks.preToolUseScope, "trelio_mcp");
   assert.equal(report.plugin.hooks.approvalStatus, "client_managed_unknown");

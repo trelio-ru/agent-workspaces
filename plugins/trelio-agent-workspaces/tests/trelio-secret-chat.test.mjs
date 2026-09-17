@@ -6,10 +6,10 @@ import {
   buildKnownAgentSecretChatWrite,
   handleKnownAgentSecretChatSave,
   normalizeKnownAgentSecretChatInput,
-} from "../scripts/trelio-secret-chat.mjs";
-import { createAgentEncryptionDevice, decryptCompanyPayload } from "../scripts/trelio-company-encryption.mjs";
-import { BridgePairingRequiredError, BridgePluginUpgradeRequiredError } from "../scripts/trelio-workspace.mjs";
-import { handleTrelioLocalActionOperation } from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-secret-chat.mjs";
+import { createAgentEncryptionDevice, decryptCompanyPayload } from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
+import { BridgePairingRequiredError, BridgePluginUpgradeRequiredError } from "../../../host-runtime/scripts/trelio-workspace.mjs";
+import { handleTrelioLocalActionOperation } from "../../../host-runtime/scripts/trelio-local-context.mjs";
 
 const companyId = randomUUID();
 const companySlug = "synthetic-company";

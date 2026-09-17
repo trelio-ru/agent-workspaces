@@ -7,7 +7,7 @@ import {
   CONTEXT_SEARCH_RANKING_POLICY_VERSION,
   buildContextSearchRank,
   compareContextSearchCandidates,
-} from "../scripts/trelio-context-search-ranking.mjs";
+} from "../../../host-runtime/scripts/trelio-context-search-ranking.mjs";
 
 const fixturePath = fileURLToPath(new URL(
   "./fixtures/context-search-ranking-v2.json",

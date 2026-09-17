@@ -11,7 +11,7 @@ import {
   buildCodexRoutingConfigPatch,
   planCodexTrelioHookRouting,
   resolveCodexConfigPath,
-} from "../scripts/trelio-codex-routing.mjs";
+} from "../../../host-runtime/scripts/trelio-codex-routing.mjs";
 
 test("Codex config path follows CODEX_HOME and the Windows user profile", () => {
   assert.equal(resolveCodexConfigPath({

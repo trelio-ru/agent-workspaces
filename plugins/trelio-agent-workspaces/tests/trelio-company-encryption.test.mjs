@@ -24,7 +24,7 @@ import {
   unlockRememberedAgentEncryptionDevice,
   writeAll,
   wrapAndRememberAgentEncryptionDevice,
-} from "../scripts/trelio-company-encryption.mjs";
+} from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
 
 test("encrypted file helpers complete short reads and writes", async () => {
   const source = Buffer.from("short IO must not truncate encrypted frames", "utf8");

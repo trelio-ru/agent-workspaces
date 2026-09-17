@@ -4,10 +4,11 @@
  * Stable Trelio plugin shell.
  *
  * Loader never mutates Codex plugin cache. It selects an already verified
- * content-addressed runtime outside that cache, immediately falls back to the
- * bundled runtime, and checks for a newer signed package in a detached helper.
- * Therefore a compatible runtime rollout cannot invalidate absolute paths held
- * by open Codex tasks.
+ * content-addressed runtime outside that cache and checks for a newer signed
+ * package in a detached helper. A fresh installation performs one foreground
+ * bootstrap because executable domain logic is deliberately absent from the
+ * plugin artifact. Therefore runtime updates neither rewrite plugin files nor
+ * invalidate absolute paths held by open Codex tasks.
  */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -17,14 +18,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  BRIDGE_VERSION,
-  parseAndValidateAgentSkillPackage,
+  PLUGIN_VERSION,
+  parseAndValidateHostRuntimePackage,
   readBoundedResponseBuffer,
   resolveWorkspaceBridgeConfigDirectory,
-} from "./trelio-workspace.mjs";
+} from "./trelio-host-runtime-shell.mjs";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const BUNDLED_ENTRYPOINT = path.join(PLUGIN_ROOT, "scripts", "trelio-host-runtime-entry.mjs");
 const HOST_RUNTIME_SKILL_ID = "trelio-host-runtime";
 const DEFAULT_ORIGIN = "https://trelio.ru";
 const UPDATE_INTERVAL_MS = 15 * 60 * 1000;
@@ -240,7 +240,7 @@ const readVerifiedRuntime = async (pointer = null) => {
 };
 
 const materializeRuntime = async (descriptor, packageBytes) => {
-  const parsed = parseAndValidateAgentSkillPackage(packageBytes, HOST_RUNTIME_SKILL_ID);
+  const parsed = parseAndValidateHostRuntimePackage(packageBytes, HOST_RUNTIME_SKILL_ID);
 
   if (
     parsed.runtimeVersion !== descriptor.runtimeVersion
@@ -337,16 +337,17 @@ const updateRuntime = async ({
   try {
     const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
     const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
-    metadataUrl.searchParams.set("pluginVersion", BRIDGE_VERSION);
+    metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
     const metadataResponse = await fetchWithRetries(metadataUrl);
 
-    // Backend may be deployed before the first runtime artifact. Bundled code
-    // remains the safe fallback and no empty cache state is treated as error.
+    // A source-only/backend rollout may precede the first runtime artifact.
+    // Existing verified runtimes keep working, but a fresh shell must fail
+    // closed because it intentionally contains no executable fallback.
     if (metadataResponse.status === 404) {
       await writePrivateJson(UPDATE_STATE_PATH, {
         checkedAt: new Date().toISOString(),
         nextAttemptAt: new Date(Date.now() + UPDATE_INTERVAL_MS).toISOString(),
-        status: "bundled_only",
+        status: "runtime_unavailable",
       });
       return false;
     }
@@ -355,7 +356,7 @@ const updateRuntime = async ({
     }
 
     const descriptor = normalizeHostRuntimeDescriptor(await metadataResponse.json(), origin);
-    if (compareStableVersions(BRIDGE_VERSION, descriptor.minimumPluginVersion) < 0) {
+    if (compareStableVersions(PLUGIN_VERSION, descriptor.minimumPluginVersion) < 0) {
       throw new Error(`Host runtime требует plugin v${descriptor.minimumPluginVersion} или новее.`);
     }
 
@@ -441,17 +442,7 @@ const startDetachedUpdate = async ({
   return true;
 };
 
-export const buildBundledHostRuntimeSelection = () => ({
-    source: "bundled",
-    runtimeVersion: BRIDGE_VERSION,
-    packageSha256: null,
-    runtimeDirectory: PLUGIN_ROOT,
-    entrypointPath: BUNDLED_ENTRYPOINT,
-  });
-
-export const selectHostRuntime = async () => (
-  await readVerifiedRuntime() ?? buildBundledHostRuntimeSelection()
-);
+export const selectHostRuntime = async () => readVerifiedRuntime();
 
 export const runHostRuntimeLoader = async ({
   rawArguments = process.argv.slice(2),
@@ -471,7 +462,19 @@ export const runHostRuntimeLoader = async ({
     throw new Error("Trelio host runtime loader ожидает mode bridge, hook или mcp.");
   }
 
-  const selected = await selectHostRuntime();
+  let selected = await selectHostRuntime();
+  if (!selected) {
+    // The foreground bootstrap happens only once per installation. It waits
+    // for a racing updater, verifies the signed package and then executes from
+    // the immutable cache. Network failure never falls back to plugin code.
+    await updateRuntime({ environment, waitForExisting: true });
+    selected = await selectHostRuntime();
+  }
+  if (!selected) {
+    throw new Error(
+      "HOST_RUNTIME_UNAVAILABLE: подписанный Trelio host runtime ещё не опубликован или недоступен.",
+    );
+  }
   // Update is deliberately outside the foreground path. This process never
   // deletes the selected content-addressed directory, so an already running
   // hook, bridge or MCP host keeps a stable executable tree.
@@ -487,7 +490,7 @@ export const runHostRuntimeLoader = async ({
           ...environment,
           TRELIO_HOST_RUNTIME_VERSION: selected.runtimeVersion,
           TRELIO_HOST_RUNTIME_SOURCE: selected.source,
-          TRELIO_PLUGIN_VERSION: BRIDGE_VERSION,
+          TRELIO_PLUGIN_VERSION: PLUGIN_VERSION,
           TRELIO_PLUGIN_ROOT: PLUGIN_ROOT,
         },
         shell: false,

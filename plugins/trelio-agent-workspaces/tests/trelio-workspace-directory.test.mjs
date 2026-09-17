@@ -11,7 +11,7 @@ import {
   formatBridgeCommandError,
   resolveRegisteredWorkspaceRootDirectory,
   resolveWorkspaceBridgeConfigDirectory,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 import {
   WorkspaceDirectoryRequiredError,
   WorkspaceLocalRecoveryRequiredError,
@@ -19,11 +19,11 @@ import {
   WORKSPACE_LOCAL_RECOVERY_REQUIRED,
   parseWorkspaceDirectoryRequiredError,
   parseWorkspaceLocalRecoveryRequiredError,
-} from "../scripts/trelio-workspace-directory.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace-directory.mjs";
 import {
   buildTrelioWorkspaceActionInvocation,
   handleTrelioWorkspaceActionOperation,
-} from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-local-context.mjs";
 
 const workspaceId = "11111111-1111-4111-8111-111111111111";
 const firstRun = "22222222-2222-4222-8222-222222222222";
@@ -294,7 +294,7 @@ test("real bridge reports ambiguity before claim and cwd selection still rejects
     await fs.mkdir(path.join(directory, "workspace", ".git"));
     await fs.writeFile(path.join(directory, "workspace", "draft.txt"), "keep local draft");
   }
-  const bridge = fileURLToPath(new URL("../scripts/trelio-workspace.mjs", import.meta.url));
+  const bridge = fileURLToPath(new URL("../../../host-runtime/scripts/trelio-workspace.mjs", import.meta.url));
   const run = (cwd, directory) => handleTrelioWorkspaceActionOperation(testOrigin, {
     schemaVersion: 1, operation: "open",
     parameters: { workspaceId, runId: newRun, ...(directory ? { directory } : {}) },

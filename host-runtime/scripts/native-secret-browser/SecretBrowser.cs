@@ -1,6 +1,7 @@
 // Windows UI Automation transport. This file deliberately targets the system
 // .NET Framework compiler, so desktop users do not need a downloaded runtime.
 // Field values are never read, logged, passed through argv or put on clipboard.
+// Distributed only inside the independently signed host runtime package.
 using System;
 using System.Collections;
 using System.Collections.Generic;

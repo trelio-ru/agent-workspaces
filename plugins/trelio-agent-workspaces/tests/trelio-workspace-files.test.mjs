@@ -5,9 +5,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createAgentEncryptionDevice, encryptFileToCompanyContainer } from "../scripts/trelio-company-encryption.mjs";
-import { readEncryptedWorkspaceFileManifest, readEncryptedWorkspaceSelectedFile, validateWorkspaceFileLocator } from "../scripts/trelio-workspace-files.mjs";
-import { readEncryptedWorkspaceSearchDocuments } from "../scripts/trelio-workspace.mjs";
+import { createAgentEncryptionDevice, encryptFileToCompanyContainer } from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
+import { readEncryptedWorkspaceFileManifest, readEncryptedWorkspaceSelectedFile, validateWorkspaceFileLocator } from "../../../host-runtime/scripts/trelio-workspace-files.mjs";
+import { readEncryptedWorkspaceSearchDocuments } from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 test("encrypted discovery reads names and bounded text; delivery decrypts only the selected original", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "trelio-file-delivery-test-"));

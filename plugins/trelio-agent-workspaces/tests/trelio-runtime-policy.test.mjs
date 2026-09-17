@@ -6,10 +6,10 @@ import test from "node:test";
 import {
   parseRuntimeSessionOption,
   parseSelfReportedRuntimeAttestationOptions,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 
 const hookScriptPath = fileURLToPath(
-  new URL("../scripts/trelio-runtime-session.mjs", import.meta.url),
+  new URL("../../../host-runtime/scripts/trelio-runtime-session.mjs", import.meta.url),
 );
 const hookManifestPath = fileURLToPath(
   new URL("../hooks/hooks.json", import.meta.url),

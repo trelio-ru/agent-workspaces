@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "../scripts/trelio-skill-secret-setup.mjs";
+import { readSkillSecretSetupCommand, deliverSkillSetupEnvironment } from "../../../host-runtime/scripts/trelio-skill-secret-setup.mjs";
 
 const command = { id: "configure", arguments: ["configure"], bindingKey: "service_token",
   fieldKey: "value", environmentVariable: "TRELIO_TEST_SETUP_TOKEN" };

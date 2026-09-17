@@ -112,7 +112,7 @@ import {
   validateEncryptedAgentWorkspaceDerivedArtifacts,
   withEncryptedWorkspaceBrowserProjection,
   withEncryptedWorkspaceTransportCooldownRetry,
-} from "../scripts/trelio-workspace.mjs";
+} from "../../../host-runtime/scripts/trelio-workspace.mjs";
 import {
   COMPANY_ENCRYPTION_SUITE,
   createAgentEncryptionDevice,
@@ -120,8 +120,8 @@ import {
   encryptCompanyPayload,
   hpkeSeal,
   wrapAndRememberAgentEncryptionDevice,
-} from "../scripts/trelio-company-encryption.mjs";
-import { selectEncryptedProposalFilesFromManifest } from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
+import { selectEncryptedProposalFilesFromManifest } from "../../../host-runtime/scripts/trelio-local-context.mjs";
 import {
   buildSecretBrowserArguments,
   controlSecretBrowserViaDevTools,
@@ -130,12 +130,12 @@ import {
   normalizeSecretBrowserTarget,
   resolveTrustedSecretBrowserExecutable,
   runSecretBrowserFill,
-} from "../scripts/trelio-secret-browser.mjs";
+} from "../../../host-runtime/scripts/trelio-secret-browser.mjs";
 
 const execFileAsync = promisify(execFile);
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const pluginDirectory = path.resolve(testDirectory, "..");
-const bridgePath = path.resolve(testDirectory, "../scripts/trelio-workspace.mjs");
+const bridgePath = path.resolve(testDirectory, "../../../host-runtime/scripts/trelio-workspace.mjs");
 const runId = "11111111-1111-4111-8111-111111111111";
 const companyWorkspaceId = "22222222-2222-4222-8222-222222222222";
 const relatedWorkspaceId = "33333333-3333-4333-8333-333333333333";
@@ -889,7 +889,7 @@ test("runtime-host gate refreshes the signed runtime and re-dispatches the exact
     "runtime host upgrade required",
     null,
     "AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED",
-    { minimumRuntimeVersion: "2.3.0" },
+    { minimumRuntimeVersion: "2.3.1" },
   );
   const recovery = await recoverBridgeHostRuntimeUpgrade(error, {
     rawArguments: ["open", "--workspace", "workspace-id"],
@@ -4301,7 +4301,7 @@ test("bridge release version stays synchronized across executable and manifests"
     (plugin) => plugin.name === "trelio-agent-workspaces",
   );
 
-  assert.equal(BRIDGE_VERSION, "2.3.0");
+  assert.equal(BRIDGE_VERSION, "2.3.1");
   assert.equal(codexManifest.version, BRIDGE_VERSION);
   assert.equal(claudeManifest.version, BRIDGE_VERSION);
   assert.equal(claudeMarketplaceEntry?.version, BRIDGE_VERSION);
@@ -6701,7 +6701,9 @@ const verifyEncryptedSecretApiRouting = async (dedicatedDataPlane) => {
     // every other destination fails before any network request. The browser
     // adapter is replaced at the module boundary so tests cannot launch or
     // inspect a real browser, while checkout, E2EE opening and audit stay real.
-    const browserModuleUrl = pathToFileURL(path.join(pluginDirectory, "scripts", "trelio-secret-browser.mjs")).href;
+    const browserModuleUrl = pathToFileURL(
+      path.join(path.dirname(bridgePath), "trelio-secret-browser.mjs"),
+    ).href;
     const browserFixtureSource = `
       export { normalizeSecretBrowserTarget, normalizeSecretBrowserFieldSelector }
         from ${JSON.stringify(browserModuleUrl + "?unmocked")};
@@ -9336,7 +9338,7 @@ test("bridge inspects an accepted Workspace read-only without creating an Agent 
     await inspectAgain();
     assert.equal(bundleCount(), 3, "missing Git state invalidates a cache even after its metadata was loaded");
 
-    const fileModule = new URL("../scripts/trelio-workspace-files.mjs", import.meta.url).href;
+    const fileModule = new URL("../../../host-runtime/scripts/trelio-workspace-files.mjs", import.meta.url).href;
     const download = (workspaceHead = accepted.head) => execFileAsync(process.execPath,
       ["--input-type=module", "-e", `import { downloadAcceptedWorkspaceFile } from ${JSON.stringify(fileModule)};
         const result = await downloadAcceptedWorkspaceFile(${JSON.stringify(origin)}, ${JSON.stringify({ workspaceId, workspaceHead, filePath: "sources/original.jpg" })});

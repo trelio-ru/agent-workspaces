@@ -285,10 +285,12 @@ host runtime. Обычные исправления bridge, hooks и локал�
 как подписанный content-addressed runtime в приватный каталог вне Codex plugin
 cache. Loader выбирает уже проверенную версию автоматически; агент не принимает
 решение об обновлении и не получает package или его metadata в model context.
-Оболочка и host runtime имеют разные release artifacts и rollout lifecycle, но
-их исходники намеренно остаются в одном клиентском репозитории: loader/runtime
-ABI, fallback и end-to-end tests меняются атомарно. Разделять Git-репозитории
-нужно только при отдельном ownership/access lifecycle, а не ради immutable shell.
+Оболочка и host runtime имеют разные release artifacts и rollout lifecycle.
+Исходник runtime остаётся в том же клиентском репозитории, но физически живёт в
+`host-runtime/` и не попадает в plugin artifact. Установленный плагин содержит
+только manifest, launchers, loader и минимальный verifier package; bundled
+исполняемого fallback больше нет. Первая установка один раз получает и проверяет
+подписанный runtime перед запуском, затем использует immutable локальный cache.
 Открытая задача продолжает использовать неизменяемый каталог, поэтому обычный
 runtime rollout не требует новой задачи или перезапуска Codex. Если backend
 поднял минимальную runtime-версию между двумя вызовами, loader дожидается

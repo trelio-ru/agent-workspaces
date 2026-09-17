@@ -71,10 +71,10 @@ import {
   materializeLocalAttachment,
 } from "./trelio-local-attachments.mjs";
 
-// Version 6 adds the ACL-filtered published Agent Procedure catalog. A
-// schema-specific root means an older process can finish safely without
-// publishing an incomplete generation to a newly updated bridge.
-const MIRROR_SCHEMA_VERSION = 6;
+// Version 7 stores backend-defined search projections and keeps full task and
+// domain payloads out of the durable company mirror. Exact reads are hydrated
+// into the bounded process cache only when the caller opens a selected object.
+const MIRROR_SCHEMA_VERSION = 7;
 const MIRROR_LOCK_STALE_MS = 10 * 60 * 1000;
 // A first company snapshot can legitimately hydrate thousands of tasks. When
 // no readable generation exists yet, simultaneous MCP hosts join that single
@@ -245,6 +245,11 @@ const localCompanyMirrorObservedMutation = new Map();
 // decryption for repeated searches.  The weak cache is tied to the immutable
 // in-memory mirror, cannot outlive it, and is never serialized to disk.
 const mirrorSearchIndexCache = new WeakMap();
+// Full task/domain payloads are an on-demand read cache, never part of the
+// encrypted generation. This keeps ordinary search synchronization compact
+// while avoiding a second exact download when the same object is opened again
+// during the mirror's ten-minute plaintext lifetime.
+const mirrorDetailCache = new WeakMap();
 const execFileAsync = promisify(execFile);
 const WORKSPACE_BRIDGE_ENTRYPOINT = fileURLToPath(new URL("./trelio-workspace.mjs", import.meta.url));
 const WORKSPACE_BRIDGE_PLUGIN_DIRECTORY = path.dirname(path.dirname(WORKSPACE_BRIDGE_ENTRYPOINT));
@@ -3316,6 +3321,138 @@ const fetchTaskProjection = async ({
     { signal },
   ));
 
+const fetchContextDocumentProjection = async ({
+  origin,
+  token,
+  companySlug,
+  document,
+  signal,
+}) => readJson(await request(
+  origin,
+  token,
+  `/api/agent-workspaces/company-context/${encodeURIComponent(companySlug)}`
+    + `/documents/${encodeURIComponent(document.type)}/${encodeURIComponent(document.id)}`
+    + `?${new URLSearchParams({ expectedRevision: document.revisionToken }).toString()}`,
+  { signal },
+));
+
+const getMirrorDetailCache = (mirror) => {
+  const cached = mirrorDetailCache.get(mirror);
+  if (cached) return cached;
+  const created = {
+    tasks: new Map(),
+    contextDocuments: new Map(),
+    registryRowLocators: new Map(),
+  };
+  mirrorDetailCache.set(mirror, created);
+  return created;
+};
+
+const readRegistryRowLocators = (rawDocument) => Object.fromEntries(
+  (rawDocument?.payload?.rows ?? []).flatMap((row) => (
+    row?.id
+    && typeof row.rowKey === "string"
+    && /^~e1:[0-9a-f-]{36}:row_key~$/u.test(row.rowKey)
+      ? [[row.id, row.rowKey]]
+      : []
+  )),
+);
+
+const hydrateMirrorTaskDetails = async ({
+  mirror,
+  taskIds,
+  origin,
+  token,
+  companyEncryption,
+  signal,
+}) => {
+  const selectedIds = new Set(taskIds);
+  const selected = (mirror.tasks ?? []).filter((task) => selectedIds.has(task.id));
+  const cache = getMirrorDetailCache(mirror);
+  const missing = selected.filter((task) => !cache.tasks.has(task.id));
+  if (missing.length > 0) {
+    const rawValues = await mapWithConcurrency(missing, 4, (task) => fetchTaskProjection({
+      origin,
+      token,
+      companySlug: mirror.company.slug,
+      task,
+      signal,
+    }));
+    const hydratedValues = await hydrateAgentCompanyEncryptedJson({
+      value: rawValues,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    });
+    missing.forEach((task, index) => {
+      const hydrated = hydratedValues[index];
+      cache.tasks.set(task.id, {
+        ...hydrated.task,
+        connections: hydrated.connections ?? {},
+        relatedWorkspaces: hydrated.relatedWorkspaces ?? [],
+      });
+    });
+  }
+  return {
+    ...mirror,
+    tasks: (mirror.tasks ?? []).map((task) => (
+      cache.tasks.has(task.id) ? { ...task, payload: cache.tasks.get(task.id) } : task
+    )),
+  };
+};
+
+const hydrateMirrorContextDetails = async ({
+  mirror,
+  documentIds,
+  origin,
+  token,
+  companyEncryption,
+  signal,
+}) => {
+  const selectedIds = new Set(documentIds);
+  const selected = (mirror.contextDocuments ?? []).filter((document) => selectedIds.has(document.id));
+  const cache = getMirrorDetailCache(mirror);
+  const missing = selected.filter((document) => !cache.contextDocuments.has(document.id));
+  if (missing.length > 0) {
+    const rawValues = await mapWithConcurrency(missing, 4, (document) => fetchContextDocumentProjection({
+      origin,
+      token,
+      companySlug: mirror.company.slug,
+      document,
+      signal,
+    }));
+    rawValues.forEach((value) => {
+      if (value?.document?.type === "registry") {
+        cache.registryRowLocators.set(
+          value.document.id,
+          readRegistryRowLocators(value.document),
+        );
+      }
+    });
+    const hydratedValues = await hydrateAgentCompanyEncryptedJson({
+      value: rawValues,
+      origin,
+      token,
+      companyEncryption,
+      signal,
+    });
+    missing.forEach((document, index) => {
+      cache.contextDocuments.set(document.id, hydratedValues[index].document);
+    });
+  }
+  return {
+    ...mirror,
+    contextDocuments: (mirror.contextDocuments ?? []).map((document) => (
+      cache.contextDocuments.get(document.id) ?? document
+    )),
+    registryRowLocators: {
+      ...(mirror.registryRowLocators ?? {}),
+      ...Object.fromEntries(cache.registryRowLocators),
+    },
+  };
+};
+
 const buildWorkspaceRecord = async ({
   origin,
   token,
@@ -3344,11 +3481,18 @@ const buildMirror = async ({
   signal,
 }) => {
   if (
-    rawManifest?.schemaVersion !== 1
+    ![1, 2].includes(rawManifest?.schemaVersion)
     || rawManifest.provider !== "local_company_context"
     || rawManifest.company?.id !== companyEncryption.runtime.company.id
     || rawManifest.company?.slug !== companyEncryption.runtime.company.slug
     || !MIRROR_GENERATION_PATTERN.test(String(rawManifest.generation || ""))
+    || !Array.isArray(rawManifest.tasks)
+    || !Array.isArray(rawManifest.acceptedWorkspaces)
+    || !Array.isArray(rawManifest.contextDocuments)
+    // Schema 2 deliberately makes the backend projection authoritative. An
+    // absent array must therefore fail closed instead of silently producing an
+    // empty encrypted-company search index.
+    || (rawManifest.schemaVersion === 2 && !Array.isArray(rawManifest.searchDocuments))
   ) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_MANIFEST",
@@ -3373,56 +3517,78 @@ const buildMirror = async ({
       `The company context contains more than ${MAX_CONTEXT_DOCUMENTS} first-class documents.`,
     );
   }
+  if ((rawManifest.searchDocuments?.length ?? 0) > (
+    MAX_CONTEXT_TASKS + MAX_CONTEXT_WORKSPACES + MAX_CONTEXT_DOCUMENTS + 10_000
+  )) {
+    throw new TrelioLocalContextError(
+      "LOCAL_CONTEXT_TOO_LARGE",
+      "The company context contains too many backend search projections.",
+    );
+  }
 
   // Keep independently revisioned domain documents outside the eager pass.
   // Their unchanged ciphertext markers can reuse the previous encrypted
   // generation without another decrypt/resolve cycle.
   const manifest = await hydrateAgentCompanyEncryptedJson({
-    value: { ...rawManifest, contextDocuments: [] },
+    value: { ...rawManifest, contextDocuments: [], searchDocuments: [] },
     origin: requestOrigin,
     token,
     companyEncryption,
     signal,
   });
-  const previousTasks = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
-  const taskRecords = (manifest.tasks ?? []).map((task) => {
-    const cached = previousTasks.get(task.id);
-    return cached?.revisionToken === task.revisionToken
-      ? { task, cached }
-      : { task, source: task };
-  });
-  const hydratedTaskRecords = await hydrateChangedCompanyMirrorRecords({
-    records: taskRecords,
-    load: (task) => fetchTaskProjection({
-      origin: requestOrigin,
-      token,
-      companySlug: manifest.company.slug,
-      task,
-      signal,
-    }),
-    hydrate: (value) => hydrateAgentCompanyEncryptedJson({
-      value,
-      origin: requestOrigin,
-      token,
-      companyEncryption,
-      signal,
-    }),
-  });
-  const tasks = taskRecords.map((record, index) => {
-    if (record.cached) return record.cached;
-    return {
-      id: record.task.id,
-      projectId: record.task.projectId,
-      projectSlug: record.task.projectSlug,
-      number: record.task.number,
-      revisionToken: record.task.revisionToken,
-      payload: {
-        ...hydratedTaskRecords[index].task,
-        connections: hydratedTaskRecords[index].connections ?? {},
-        relatedWorkspaces: hydratedTaskRecords[index].relatedWorkspaces ?? [],
-      },
-    };
-  });
+  const usesBackendSearchProjections = rawManifest.schemaVersion === 2;
+  let tasks;
+  if (usesBackendSearchProjections) {
+    tasks = (manifest.tasks ?? []).map((task) => ({
+      id: task.id,
+      projectId: task.projectId,
+      projectSlug: task.projectSlug,
+      number: task.number,
+      revisionToken: task.revisionToken,
+      title: task.title,
+      payload: null,
+    }));
+  } else {
+    const previousTasks = new Map((previous?.tasks ?? []).map((task) => [task.id, task]));
+    const taskRecords = (manifest.tasks ?? []).map((task) => {
+      const cached = previousTasks.get(task.id);
+      return cached?.revisionToken === task.revisionToken
+        ? { task, cached }
+        : { task, source: task };
+    });
+    const hydratedTaskRecords = await hydrateChangedCompanyMirrorRecords({
+      records: taskRecords,
+      load: (task) => fetchTaskProjection({
+        origin: requestOrigin,
+        token,
+        companySlug: manifest.company.slug,
+        task,
+        signal,
+      }),
+      hydrate: (value) => hydrateAgentCompanyEncryptedJson({
+        value,
+        origin: requestOrigin,
+        token,
+        companyEncryption,
+        signal,
+      }),
+    });
+    tasks = taskRecords.map((record, index) => {
+      if (record.cached) return record.cached;
+      return {
+        id: record.task.id,
+        projectId: record.task.projectId,
+        projectSlug: record.task.projectSlug,
+        number: record.task.number,
+        revisionToken: record.task.revisionToken,
+        payload: {
+          ...hydratedTaskRecords[index].task,
+          connections: hydratedTaskRecords[index].connections ?? {},
+          relatedWorkspaces: hydratedTaskRecords[index].relatedWorkspaces ?? [],
+        },
+      };
+    });
+  }
   const previousWorkspaces = new Map(
     (previous?.workspaces ?? []).map((workspace) => [workspace.id, workspace]),
   );
@@ -3449,7 +3615,14 @@ const buildMirror = async ({
     const cached = previousContextDocuments.get(document.id);
     return cached?.revisionToken === document.revisionToken
       ? { cached }
-      : { source: document };
+      : { source: usesBackendSearchProjections ? {
+          id: document.id,
+          type: document.type,
+          title: document.title,
+          revisionToken: document.revisionToken,
+          projectId: document.projectId ?? null,
+          projectSlug: document.projectSlug ?? null,
+        } : document };
   });
   const contextDocuments = await hydrateChangedCompanyMirrorRecords({
     records: contextDocumentRecords,
@@ -3462,7 +3635,30 @@ const buildMirror = async ({
       signal,
     }),
   });
-  const registryRowLocators = Object.fromEntries(
+  let searchDocuments;
+  if (usesBackendSearchProjections) {
+    const previousSearchDocuments = new Map(
+      (previous?.searchDocuments ?? []).map((document) => [document.cacheKey ?? document.id, document]),
+    );
+    const searchDocumentRecords = (rawManifest.searchDocuments ?? []).map((document) => {
+      const cached = previousSearchDocuments.get(document.cacheKey ?? document.id);
+      return cached?.revisionToken === document.revisionToken
+        ? { cached }
+        : { source: document };
+    });
+    searchDocuments = await hydrateChangedCompanyMirrorRecords({
+      records: searchDocumentRecords,
+      load: async (document) => document,
+      hydrate: (value) => hydrateAgentCompanyEncryptedJson({
+        value,
+        origin: requestOrigin,
+        token,
+        companyEncryption,
+        signal,
+      }),
+    });
+  }
+  const registryRowLocators = usesBackendSearchProjections ? {} : Object.fromEntries(
     (rawManifest.contextDocuments ?? [])
       .filter((document) => document?.type === "registry")
       .map((document) => [
@@ -3491,6 +3687,10 @@ const buildMirror = async ({
     // keep a compact, content-oriented shape without conflating the two lists.
     workspaceEntries: manifest.workspaces ?? [],
     contextDocuments,
+    // Backend owns the domain field selection. The host persists only the
+    // hydrated generic projection and reuses unchanged records by exact
+    // revision token across encrypted generations.
+    searchDocuments,
     registryRowLocators,
     instructions: manifest.instructions,
     agentSkills: manifest.agentSkills ?? null,
@@ -3886,11 +4086,68 @@ const buildContextDocumentReferenceValues = (contextDocument) => {
   ].filter(Boolean).map(String);
 };
 
-const buildSearchDocuments = (mirror) => {
+const buildWorkspaceFileSearchDocuments = (mirror) => {
   const documents = [];
   const workspaceEntryById = new Map(
     (mirror.workspaceEntries ?? []).map((workspace) => [workspace.id, workspace]),
   );
+  const projectedTaskTitleById = new Map(
+    (mirror.searchDocuments ?? [])
+      .filter((document) => document?.type === "task" && document?.metadata?.taskId)
+      .map((document) => [document.metadata.taskId, collectText(document.title).join("")]),
+  );
+  for (const workspace of mirror.workspaces ?? []) {
+    const workspaceEntry = workspaceEntryById.get(workspace.id);
+    const workspaceState = workspaceEntry?.state ?? null;
+    if (workspaceState === "deleted") continue;
+    for (const file of workspace.documents ?? []) {
+      const documentId = `workspace-file:${encodeURIComponent(workspace.id)}`
+        + `:${encodeURIComponent(workspace.acceptedHead)}`
+        + `:${encodeURIComponent(file.path)}`;
+      const fields = compactSearchFields([
+        buildSearchField("workspace-file", `${file.name}\n${file.path}\n${file.text ?? ""}`),
+      ]);
+      documents.push({
+        id: documentId,
+        type: "workspace_file",
+        title: workspaceState === "archived" ? `[Архив] ${file.name}` : file.name,
+        stableKey: [
+          mirror.company.slug,
+          workspace.id,
+          workspace.acceptedHead,
+          file.path,
+          "workspace-file",
+        ].join("/"),
+        referenceValues: [workspace.id, file.path, file.name],
+        fields,
+        scopePrefix: [
+          mirror.company.name,
+          (mirror.projects ?? []).find((project) => project.id === workspace.projectId)?.name,
+          workspaceEntry?.title,
+          workspaceEntry?.description,
+          projectedTaskTitleById.get(workspace.taskId)
+            ?? (mirror.tasks ?? []).find((task) => task.id === workspace.taskId)?.payload?.task?.title,
+        ].filter(Boolean).join("\n"),
+        text: fields.map((field) => field.text).join("\n"),
+        metadata: {
+          workspaceId: workspace.id,
+          workspaceState,
+          workspaceHead: workspace.acceptedHead,
+          scopeType: workspace.scopeType,
+          scopeKey: workspace.scopeKey,
+          taskId: workspace.taskId ?? null,
+          path: file.path,
+          sizeBytes: file.sizeBytes,
+          contentType: file.contentType ?? "application/octet-stream",
+        },
+      });
+    }
+  }
+  return documents;
+};
+
+const buildSearchDocuments = (mirror) => {
+  const documents = [];
   for (const project of mirror.projects ?? []) {
     const fields = compactSearchFields([
       buildSearchField("project", project.name),
@@ -4008,60 +4265,55 @@ const buildSearchDocuments = (mirror) => {
       },
     });
   }
-  for (const workspace of mirror.workspaces ?? []) {
-    const workspaceEntry = workspaceEntryById.get(workspace.id);
-    const workspaceState = workspaceEntry?.state ?? null;
-    if (workspaceState === "deleted") continue;
-    for (const file of workspace.documents ?? []) {
-      const documentId = `workspace-file:${encodeURIComponent(workspace.id)}`
-        + `:${encodeURIComponent(workspace.acceptedHead)}`
-        + `:${encodeURIComponent(file.path)}`;
-      const fields = compactSearchFields([
-        buildSearchField("workspace-file", `${file.name}\n${file.path}\n${file.text ?? ""}`),
-      ]);
-      documents.push({
-        // `workspace:<uuid>` belongs to the first-class workspace itself. A
-        // distinct file prefix plus the accepted head keeps file fetches exact
-        // even when a title/description and a document match the same query.
-        id: documentId,
-        type: "workspace_file",
-        title: workspaceState === "archived" ? `[Архив] ${file.name}` : file.name,
-        stableKey: [
-          mirror.company.slug,
-          workspace.id,
-          workspace.acceptedHead,
-          file.path,
-          "workspace-file",
-        ].join("/"),
-        referenceValues: [workspace.id, file.path, file.name],
-        fields,
-        scopePrefix: [mirror.company.name,
-          (mirror.projects ?? []).find((project) => project.id === workspace.projectId)?.name,
-          workspaceEntry?.title, workspaceEntry?.description,
-          (mirror.tasks ?? []).find((task) => task.id === workspace.taskId)?.payload?.task?.title,
-        ].filter(Boolean).join("\n"),
-        text: fields.map((field) => field.text).join("\n"),
-        metadata: {
-          workspaceId: workspace.id,
-          workspaceState,
-          workspaceHead: workspace.acceptedHead,
-          scopeType: workspace.scopeType,
-          scopeKey: workspace.scopeKey,
-          taskId: workspace.taskId ?? null,
-          path: file.path,
-          sizeBytes: file.sizeBytes,
-          contentType: file.contentType ?? "application/octet-stream",
-        },
-      });
-    }
-  }
+  documents.push(...buildWorkspaceFileSearchDocuments(mirror));
   return documents;
 };
+
+const buildProjectedSearchDocuments = (mirror) => (mirror.searchDocuments ?? []).map((projection) => {
+  const fields = compactSearchFields((projection.fields ?? []).map((field) => {
+    const text = collectText(field?.values).join("\n").trim();
+    if (!text) return null;
+    const previewValues = collectText(field?.previewValues);
+    return {
+      source: String(field.source || ""),
+      text,
+      previewText: previewValues.length > 0 ? previewValues.join(" · ") : text,
+      allowQueryContainsField: field.allowQueryContainsField === true,
+      ...(field.publicPath ? { publicPath: collectText(field.publicPath).join("") } : {}),
+    };
+  }));
+  const titleParts = collectText(projection.title);
+  return {
+    // Composite identifiers arrive as protected-value segments. Joining only
+    // after hydration keeps encrypted slugs addressable without teaching this
+    // generic runtime which domain contributed each segment.
+    id: collectText(projection.id).join(""),
+    type: String(projection.type),
+    title: titleParts.join("") || String(projection.type || "result"),
+    stableKey: collectText(projection.stableKey).join(""),
+    referenceValues: collectText(projection.referenceValues),
+    fields,
+    scopePrefix: collectText(projection.scopeValues).join("\n"),
+    text: fields.map((field) => field.text).join("\n"),
+    metadata: projection.metadata && typeof projection.metadata === "object"
+      ? projection.metadata
+      : {},
+  };
+});
 
 const getSearchIndex = (mirror) => {
   const cached = mirrorSearchIndexCache.get(mirror);
   if (cached) return cached;
-  const index = buildSearchDocuments(mirror).map((document) => ({
+  const sourceDocuments = Array.isArray(mirror.searchDocuments)
+    ? [
+        ...buildProjectedSearchDocuments(mirror),
+        // Workspace file content is encrypted before the backend can inspect
+        // it. Its accepted browser projection is the sole local exception;
+        // every server-owned company domain comes from searchDocuments above.
+        ...buildWorkspaceFileSearchDocuments(mirror),
+      ]
+    : buildSearchDocuments(mirror);
+  const index = sourceDocuments.map((document) => ({
     ...document,
     fields: document.fields.map((field) => ({
       ...field,
@@ -4134,7 +4386,14 @@ export const searchCompanyContextMirror = (
   mirror,
   rawQueries,
   rawLimit = DEFAULT_CONTEXT_SEARCH_RESULTS,
-  { maximumQueries = MAX_SEARCH_QUERIES, documentTypes = null, includeScopeMetadata = false } = {},
+  {
+    maximumQueries = MAX_SEARCH_QUERIES,
+    maximumResults = MAX_SEARCH_RESULTS,
+    documentTypes = null,
+    documentPredicate = null,
+    includeScopeMetadata = false,
+    includeMatchDetails = false,
+  } = {},
 ) => {
   const queries = normalizeContextSearchQueries((Array.isArray(rawQueries) ? rawQueries : [])
     .map((query) => normalizeBoundedString(query, "query", 500)))
@@ -4146,7 +4405,7 @@ export const searchCompanyContextMirror = (
     );
   }
   const limit = Math.max(1, Math.min(
-    MAX_SEARCH_RESULTS,
+    maximumResults,
     Math.trunc(Number(rawLimit) || DEFAULT_CONTEXT_SEARCH_RESULTS),
   ));
   const allowedDocumentTypes = Array.isArray(documentTypes)
@@ -4160,6 +4419,7 @@ export const searchCompanyContextMirror = (
     // corpus. Keeping the original mirror also preserves Workspace archive
     // metadata needed for an explicit historical-result marker.
     if (allowedDocumentTypes && !allowedDocumentTypes.has(document.type)) continue;
+    if (documentPredicate && !documentPredicate(document)) continue;
     const searchedDocument = includeScopeMetadata && document.scopePrefix ? {
       ...document, fields: [{ source: "workspace-file", text: `${document.scopePrefix}\n${document.text}`,
         previewText: `${document.scopePrefix}\n${document.text}`,
@@ -4196,6 +4456,10 @@ export const searchCompanyContextMirror = (
     return compactLocalSearchResult({
       ...result,
       preview: buildContextSearchPreview(strongest.previewText, [strongest.query]),
+      ...(includeMatchDetails ? {
+        matches: _matches,
+        matchCount: _matches.length,
+      } : {}),
       ...(strongest.publicPath || result.publicPath
         ? { url: strongest.publicPath ?? result.publicPath }
         : {}),
@@ -4317,7 +4581,7 @@ export const listCompanyContextMirror = (
           taskId: task.id,
           projectSlug: task.projectSlug,
           number: task.number,
-          title: payload?.title ?? null,
+          title: payload?.title ?? task.title ?? null,
           status: payload?.status ?? null,
           updatedAt: payload?.updatedAt ?? null,
         };
@@ -5038,10 +5302,7 @@ const listTasksFromMirror = (mirror, rawInput, { personal = false } = {}) => {
 };
 
 const searchTasksFromMirror = (mirror, rawInput) => {
-  const queries = [...new Map(normalizeBoundedStringArray(rawInput?.queries, "queries", 12, 500)
-    .map((query) => [normalizeSearchText(query), query]))
-    .entries()]
-    .filter(([normalized]) => normalized);
+  const queries = normalizeBoundedStringArray(rawInput?.queries, "queries", 12, 500);
   if (queries.length === 0) {
     throw new TrelioLocalContextError(
       "LOCAL_CONTEXT_INVALID_INPUT",
@@ -5076,43 +5337,48 @@ const searchTasksFromMirror = (mirror, rawInput) => {
     return project?.slug ?? slug;
   }))];
   const limit = Math.max(1, Math.min(100, Math.trunc(Number(rawInput?.limit) || 20)));
-  const candidates = [];
-  const rankingQueries = queries;
-
-  for (const record of mirror.tasks ?? []) {
-    if (projectMatchers.length > 0 && !projectMatchers.some((matches) => matches(record))) continue;
-    const detail = record.payload ?? {};
-    const task = detail.task ?? {};
-    const project = detail.project
-      ?? (mirror.projects ?? []).find((candidate) => candidate.id === record.projectId)
-      ?? { id: record.projectId, slug: record.projectSlug, name: null };
-    const publicPath = task.publicPath
-      ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${record.number}/`;
-    const rankingDocument = {
-      type: "task",
-      title: String(task.title || `Task ${record.number}`),
-      stableKey: `${mirror.company.slug}/${record.projectSlug}/${record.number}/task`,
-      referenceValues: [record.id, record.number, `#${record.number}`, publicPath]
-        .filter((value) => value !== null && value !== undefined)
-        .map(String),
-      fields: buildTaskSearchFields(task, record.number).map((field) => ({
-        ...field,
-        normalizedText: normalizeSearchText(field.text),
-        referenceText: normalizeContextSearchReference(field.text),
-      })),
-    };
-    const matches = findLocalSearchMatches(rankingDocument, rankingQueries);
-    if (matches.length === 0) continue;
-    candidates.push({
-      type: "task",
-      id: `task:${mirror.company.slug}/${record.projectSlug}/${record.number}`,
-      taskId: record.id,
-      number: record.number,
-      title: task.title,
+  const search = searchCompanyContextMirror(mirror, queries, limit, {
+    maximumQueries: 12,
+    maximumResults: 100,
+    documentTypes: ["task"],
+    includeMatchDetails: true,
+    documentPredicate: projectMatchers.length === 0
+      ? null
+      : (document) => projectMatchers.some((matches) => matches(document.metadata ?? {})),
+  });
+  const tasks = search.results.map((result, resultRank) => {
+    const record = (mirror.tasks ?? []).find((task) => task.id === result.taskId)
+      ?? (mirror.tasks ?? []).find((task) => (
+        task.projectSlug === result.projectSlug && task.number === result.taskNumber
+      ));
+    const project = (mirror.projects ?? []).find((candidate) => (
+      candidate.id === result.projectId || candidate.slug === result.projectSlug
+    )) ?? { id: result.projectId, slug: result.projectSlug, name: null };
+    const number = result.taskNumber ?? record?.number;
+    const publicPath = result.publicPath
+      ?? `/${mirror.company.slug}/${result.projectSlug}/tasks/${number}/`;
+    const parentTask = result.parentTask ? {
+      id: result.parentTask.id,
+      number: result.parentTask.number,
+      title: result.parentTask.title,
+      url: mirror.origin
+        ? new URL(
+            result.parentTask.publicPath
+              ?? `/${mirror.company.slug}/${result.projectSlug}/tasks/${result.parentTask.number}/`,
+            mirror.origin,
+          ).toString()
+        : result.parentTask.publicPath
+          ?? `/${mirror.company.slug}/${result.projectSlug}/tasks/${result.parentTask.number}/`,
+    } : null;
+    return {
+      id: result.id,
+      taskId: result.taskId ?? record?.id,
+      number,
+      title: result.title,
       url: mirror.origin ? new URL(publicPath, mirror.origin).toString() : publicPath,
-      archivedAt: task.archivedAt ?? null,
-      isArchived: Boolean(task.isArchived || task.archivedAt),
-      company: buildLocalCompanySummary(detail.company ?? mirror.company),
+      archivedAt: result.archivedAt ?? null,
+      isArchived: Boolean(result.isArchived || result.archivedAt),
+      company: buildLocalCompanySummary(mirror.company),
       project: {
         id: project.id,
         slug: project.slug,
@@ -5121,56 +5387,27 @@ const searchTasksFromMirror = (mirror, rawInput) => {
           ? new URL(project.publicPath ?? `/${mirror.company.slug}/${project.slug}/`, mirror.origin).toString()
           : project.publicPath ?? `/${mirror.company.slug}/${project.slug}/`,
       },
-      parentTask: task.parentTask
-        ? {
-            id: task.parentTask.id,
-            number: task.parentTask.number,
-            title: task.parentTask.title,
-            url: mirror.origin
-              ? new URL(
-                  task.parentTask.publicPath
-                    ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${task.parentTask.number}/`,
-                  mirror.origin,
-                ).toString()
-              : task.parentTask.publicPath
-                ?? `/${mirror.company.slug}/${record.projectSlug}/tasks/${task.parentTask.number}/`,
-          }
-        : null,
-      stableKey: rankingDocument.stableKey,
-      referenceValues: rankingDocument.referenceValues,
-      matches,
-    });
-  }
-
-  candidates.sort(compareContextSearchCandidates);
-  candidates.forEach((candidate, resultRank) => {
-    candidate.matches.forEach((match) => { match.resultRank = resultRank; });
+      parentTask,
+      matches: (result.matches ?? []).map((match) => ({
+        ...match,
+        resultRank,
+        source: match.source.replace(/^task-/u, ""),
+      })),
+      matchedQueries: result.matchedQueries,
+      matchCount: result.matchCount ?? 0,
+    };
   });
-  const tasks = candidates.slice(0, limit).map(({
-    type: _type,
-    stableKey: _stableKey,
-    referenceValues: _referenceValues,
-    ...candidate
-  }) => ({
-    ...candidate,
-    matches: candidate.matches.map((match) => ({
-      ...match,
-      source: match.source.replace(/^task-/u, ""),
-    })),
-    matchedQueries: candidate.matches.map((match) => match.query),
-    matchCount: candidate.matches.length,
-  }));
   return {
     searchMode: "lexical",
     rankingPolicyVersion: CONTEXT_SEARCH_RANKING_POLICY_VERSION,
     scope: { companySlugs: [mirror.company.slug], projectSlugs: canonicalProjectSlugs },
-    queries: queries.map(([, original]) => original),
+    queries: search.queries,
     tasks,
     pagination: {
       limit,
-      total: candidates.length,
+      total: search.pagination.total,
       returned: tasks.length,
-      hasMore: candidates.length > tasks.length,
+      hasMore: search.pagination.hasMore,
     },
   };
 };
@@ -5388,6 +5625,45 @@ const listDomainDocumentsFromMirror = (mirror, type, rawInput) => {
     total: items.length,
     hasMore: offset + limit < items.length,
     items: items.slice(offset, offset + limit),
+  };
+};
+
+const searchMeetingsFromMirror = (mirror, rawInput) => {
+  const query = normalizeBoundedString(rawInput?.query, "query", 500);
+  const limit = Math.max(1, Math.min(500, Math.trunc(Number(rawInput?.limit) || 100)));
+  const search = searchCompanyContextMirror(mirror, [query], limit, {
+    maximumResults: 500,
+    documentTypes: ["meeting"],
+    documentPredicate: (document) => (
+      (!rawInput?.includeArchived || !document.metadata?.archivedAt)
+      && (!rawInput?.occurredFrom || String(document.metadata?.occurredAt || "") >= rawInput.occurredFrom)
+      && (!rawInput?.occurredTo || String(document.metadata?.occurredAt || "") <= rawInput.occurredTo)
+    ),
+  });
+  return {
+    schemaVersion: 1,
+    provider: "local_company_context",
+    company: buildLocalCompanySummary(mirror.company),
+    generation: mirror.generation,
+    offset: 0,
+    limit,
+    total: search.pagination.total,
+    hasMore: search.pagination.hasMore,
+    items: search.results.map((result) => ({
+      id: result.contextDocumentId,
+      resultId: result.id,
+      type: "meeting",
+      title: result.title,
+      projectSlug: null,
+      revisionToken: result.revisionToken,
+      summary: {
+        id: result.contextDocumentId,
+        title: result.title,
+        occurredAt: result.occurredAt ?? null,
+        archivedAt: result.archivedAt ?? null,
+      },
+      preview: result.preview,
+    })),
   };
 };
 
@@ -5637,6 +5913,125 @@ const listWorkspacesFromMirror = (mirror, rawInput) => {
   };
 };
 
+const findProjectedContextDocumentId = (mirror, sourceType, predicate) => {
+  const projection = (mirror.searchDocuments ?? []).find((document) => (
+    document?.metadata?.sourceType === sourceType && predicate(document)
+  ));
+  return projection?.metadata?.contextDocumentId ?? null;
+};
+
+const taskIdsForLocators = (mirror, locators) => locators.map((locator) => (
+  getTaskRecordFromMirror(mirror, locator).id
+));
+
+const selectNativeReadDetails = (mirror, nativeTool, input) => {
+  if (nativeTool === "fetch") {
+    const resultId = String(input?.id || input?.resultId || "");
+    if (resultId.startsWith("task:")) {
+      const [companySlug, projectSlug, taskNumber] = resultId
+        .slice("task:".length)
+        .split("/")
+        .map(decodeURIComponent);
+      return {
+        taskIds: taskIdsForLocators(mirror, [{ companySlug, projectSlug, taskNumber: Number(taskNumber) }]),
+        documentIds: [],
+      };
+    }
+    if (resultId.startsWith("context:")) {
+      const [, sourceType, documentId] = resultId.split(":");
+      const exists = (mirror.contextDocuments ?? []).some((document) => (
+        document.type === sourceType && document.id === documentId
+      ));
+      return { taskIds: [], documentIds: exists ? [documentId] : [] };
+    }
+  }
+  if (["list_project_tasks", "list_my_tasks"].includes(nativeTool)) {
+    const matchesProject = buildMirrorProjectScopeMatcher(mirror, input?.projectSlug || null);
+    return {
+      taskIds: (mirror.tasks ?? []).filter(matchesProject).map((task) => task.id),
+      documentIds: [],
+    };
+  }
+  if (nativeTool === "get_task") {
+    return { taskIds: taskIdsForLocators(mirror, [input]), documentIds: [] };
+  }
+  if (nativeTool === "get_tasks") {
+    return { taskIds: taskIdsForLocators(mirror, input.tasks ?? []), documentIds: [] };
+  }
+
+  const allOfType = (type) => (mirror.contextDocuments ?? [])
+    .filter((document) => document.type === type)
+    .map((document) => document.id);
+  if (nativeTool === "list_knowledge_base_pages") return { taskIds: [], documentIds: allOfType("knowledge_page") };
+  if (nativeTool === "list_contacts") return { taskIds: [], documentIds: allOfType("contact") };
+  if (nativeTool === "list_registries") return { taskIds: [], documentIds: allOfType("registry") };
+  if (nativeTool === "list_regular_work") return { taskIds: [], documentIds: allOfType("regular_work") };
+  if (nativeTool === "search_meetings") return { taskIds: [], documentIds: [] };
+
+  let sourceType = null;
+  let documentId = null;
+  if (nativeTool === "get_knowledge_base_page") {
+    sourceType = "knowledge_page";
+    documentId = findProjectedContextDocumentId(mirror, sourceType, (document) => (
+      collectText(document.referenceValues).includes(String(input.pageSlug))
+    ));
+  } else if (nativeTool === "get_contact") {
+    sourceType = "contact";
+    documentId = String(input.contactId || "");
+  } else if (nativeTool === "get_registry") {
+    sourceType = "registry";
+    const matchesProject = buildMirrorProjectScopeMatcher(mirror, input.projectSlug || null);
+    documentId = findProjectedContextDocumentId(mirror, sourceType, (document) => (
+      matchesProject(document.metadata ?? {})
+      && collectText(document.referenceValues).includes(String(input.registrySlug || ""))
+    ));
+  } else if (nativeTool === "get_regular_work") {
+    sourceType = "regular_work";
+    documentId = String(input.setId || "");
+  } else if (nativeTool === "get_meeting") {
+    sourceType = "meeting";
+    documentId = String(input.meetingId || "");
+  }
+  if (!sourceType) return { taskIds: [], documentIds: [] };
+  const descriptor = (mirror.contextDocuments ?? []).find((document) => (
+    document.type === sourceType && document.id === documentId
+  ));
+  return { taskIds: [], documentIds: descriptor ? [descriptor.id] : [] };
+};
+
+const hydrateMirrorForNativeRead = async ({ ready, nativeTool, input, signal }) => {
+  const selection = selectNativeReadDetails(ready.mirror, nativeTool, input);
+  let taskOverlay = ready.mirror;
+  let contextOverlay = ready.mirror;
+  if (selection.taskIds.length > 0) {
+    taskOverlay = await hydrateMirrorTaskDetails({
+      mirror: ready.mirror,
+      taskIds: selection.taskIds,
+      origin: ready.requestOrigin,
+      token: ready.token,
+      companyEncryption: ready.companyEncryption,
+      signal,
+    });
+  }
+  if (selection.documentIds.length > 0) {
+    contextOverlay = await hydrateMirrorContextDetails({
+      mirror: ready.mirror,
+      documentIds: selection.documentIds,
+      origin: ready.requestOrigin,
+      token: ready.token,
+      companyEncryption: ready.companyEncryption,
+      signal,
+    });
+  }
+  if (taskOverlay === ready.mirror && contextOverlay === ready.mirror) return ready.mirror;
+  return {
+    ...ready.mirror,
+    tasks: taskOverlay.tasks,
+    contextDocuments: contextOverlay.contextDocuments,
+    registryRowLocators: contextOverlay.registryRowLocators,
+  };
+};
+
 export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) => {
   const input = rawArguments && typeof rawArguments === "object" && !Array.isArray(rawArguments)
     ? rawArguments
@@ -5713,7 +6108,7 @@ export const handleNativeLocalContextRead = (mirror, nativeTool, rawArguments) =
   if (nativeTool === "get_registry") return getRegistryFromMirror(mirror, input);
   if (nativeTool === "list_regular_work") return listRegularWorkFromMirror(mirror, input);
   if (nativeTool === "get_regular_work") return getRegularWorkFromMirror(mirror, input);
-  if (nativeTool === "search_meetings") return listDomainDocumentsFromMirror(mirror, "meeting", input);
+  if (nativeTool === "search_meetings") return searchMeetingsFromMirror(mirror, input);
   if (nativeTool === "get_meeting") {
     return getDomainDocumentFromMirror(
       mirror,
@@ -7224,7 +7619,16 @@ export const handleTrelioLocalContextOperation = async (
         },
       });
     }
-    return handleNativeLocalContextRead(ready.mirror, nativeTool, rawInput?.arguments);
+    const input = rawInput?.arguments && typeof rawInput.arguments === "object"
+      ? rawInput.arguments
+      : {};
+    const detailedMirror = await hydrateMirrorForNativeRead({
+      ready,
+      nativeTool,
+      input,
+      signal,
+    });
+    return handleNativeLocalContextRead(detailedMirror, nativeTool, input);
   }
   if (operation === "search") {
     return searchCompanyContextMirror(ready.mirror, rawInput?.queries, rawInput?.limit);
@@ -7233,8 +7637,20 @@ export const handleTrelioLocalContextOperation = async (
     return searchWorkspaceFilesFromMirror(ready.mirror, rawInput?.queries, rawInput?.limit);
   }
   if (operation === "list") {
+    const listMirror = rawInput?.resource === "tasks"
+      ? await hydrateMirrorTaskDetails({
+          mirror: ready.mirror,
+          taskIds: (ready.mirror.tasks ?? [])
+            .filter(buildMirrorProjectScopeMatcher(ready.mirror, rawInput?.projectSlug || null))
+            .map((task) => task.id),
+          origin: ready.requestOrigin,
+          token: ready.token,
+          companyEncryption: ready.companyEncryption,
+          signal,
+        })
+      : ready.mirror;
     return listCompanyContextMirror(
-      ready.mirror,
+      listMirror,
       rawInput?.resource,
       rawInput?.offset,
       rawInput?.limit,
@@ -7250,15 +7666,28 @@ export const handleTrelioLocalContextOperation = async (
     // Compatibility callers now receive the same schema-v3 compact core as
     // native get_task. Heavy comments, people and workflow stay behind one
     // explicit get_task_sections read instead of reviving the legacy payload.
-    return buildLocalExactTaskRead(ready.mirror, [{
+    const input = {
       companySlug,
       projectSlug,
       taskNumber,
-    }], rawInput?.knownInstructionLayerKeys);
+    };
+    const detailedMirror = await hydrateMirrorForNativeRead({
+      ready,
+      nativeTool: "get_task",
+      input,
+      signal,
+    });
+    return buildLocalExactTaskRead(detailedMirror, [input], rawInput?.knownInstructionLayerKeys);
   }
   if (operation === "fetch") {
+    const detailedMirror = await hydrateMirrorForNativeRead({
+      ready,
+      nativeTool: "fetch",
+      input: { id: rawInput?.resultId },
+      signal,
+    });
     return fetchMirrorResult(
-      ready.mirror,
+      detailedMirror,
       rawInput?.resultId,
       rawInput?.knownInstructionLayerKeys,
     );
@@ -7619,9 +8048,46 @@ export const handleTrelioLocalActionOperation = async (
   if (ready.nativeProvider) return {
     content: [{ type: "text", text: JSON.stringify(ready.result) }],
   };
+  let actionMirror = ready.mirror;
+  if (["upsert_registry_rows", "archive_registry_rows"].includes(nativeTool)) {
+    const documentId = findProjectedContextDocumentId(
+      ready.mirror,
+      "registry",
+      (document) => (
+        collectText(document.referenceValues).includes(String(rawInput.arguments.registrySlug || ""))
+        && buildMirrorProjectScopeMatcher(
+          ready.mirror,
+          rawInput.arguments.projectSlug || null,
+        )(document.metadata ?? {})
+      ),
+    );
+    if (documentId) {
+      actionMirror = await hydrateMirrorContextDetails({
+        mirror: ready.mirror,
+        documentIds: [documentId],
+        origin: ready.requestOrigin,
+        token: ready.token,
+        companyEncryption: ready.companyEncryption,
+        signal,
+      });
+    }
+  } else if (LOCAL_ACTION_CUSTOM_FIELD_VALUE_TOOLS.has(nativeTool)) {
+    const operations = nativeTool === "batch_update_tasks"
+      ? rawInput.arguments.operations ?? []
+      : [rawInput.arguments];
+    const taskIds = taskIdsForLocators(ready.mirror, operations);
+    actionMirror = await hydrateMirrorTaskDetails({
+      mirror: ready.mirror,
+      taskIds,
+      origin: ready.requestOrigin,
+      token: ready.token,
+      companyEncryption: ready.companyEncryption,
+      signal,
+    });
+  }
   const canonicalArguments = canonicalizeLocalActionProjectSlugs(
     rawInput.arguments,
-    ready.mirror,
+    actionMirror,
   );
   if (hasLocalFilePath) {
     return handleLocalTaskAttachmentStreamOperation({
@@ -7631,7 +8097,7 @@ export const handleTrelioLocalActionOperation = async (
       rawInput,
       arguments: canonicalArguments,
       provider,
-      mirror: ready.mirror,
+      mirror: actionMirror,
       signal,
     });
   }
@@ -7645,7 +8111,7 @@ export const handleTrelioLocalActionOperation = async (
         nativeTool,
         arguments: canonicalArguments,
         companyEncryption: provider.companyEncryption,
-        mirror: ready.mirror,
+        mirror: actionMirror,
       });
   await uploadLocalActionPayloads({
     origin: provider.requestOrigin,
@@ -7681,7 +8147,7 @@ export const handleTrelioLocalActionOperation = async (
       origin: provider.requestOrigin,
       token: provider.token,
       companyEncryption: provider.companyEncryption,
-      mirror: ready.mirror,
+      mirror: actionMirror,
       documentOrigin: origin,
       signal,
     });

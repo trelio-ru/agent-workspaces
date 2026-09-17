@@ -83,11 +83,19 @@ import {
 } from "./trelio-skill-admission.mjs";
 
 const execFileAsync = promisify(execFile);
-export const BRIDGE_VERSION = "2.3.0";
+export const BRIDGE_VERSION = "2.3.1";
 const BRIDGE_ENTRYPOINT_PATH = fileURLToPath(import.meta.url);
 const LOADED_CODEX_PLUGIN_DIRECTORY = process.env.TRELIO_PLUGIN_ROOT
   ? path.resolve(process.env.TRELIO_PLUGIN_ROOT)
-  : path.resolve(path.dirname(BRIDGE_ENTRYPOINT_PATH), "..");
+  // Direct source-tree tests do not pass loader environment. The packaged
+  // runtime always receives TRELIO_PLUGIN_ROOT from the stable shell.
+  : path.resolve(
+      path.dirname(BRIDGE_ENTRYPOINT_PATH),
+      "..",
+      "..",
+      "plugins",
+      "trelio-agent-workspaces",
+    );
 export const WORKSPACE_CONTEXT_FILE_NAME = "WORKSPACE_CONTEXT.md";
 export const LEGACY_WORKSPACE_CONTEXT_FILE_NAME = "PROJECT_CONTEXT.md";
 // Keep the generated workspace contract deliberately small. Scenario-specific

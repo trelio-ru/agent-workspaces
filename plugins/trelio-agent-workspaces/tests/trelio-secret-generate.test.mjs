@@ -7,9 +7,9 @@ import {
   generateDeterministicPassword,
   handleGeneratedAgentSecretSave,
   normalizeGeneratedAgentSecretInput,
-} from "../scripts/trelio-secret-generate.mjs";
-import { createAgentEncryptionDevice, decryptCompanyPayload } from "../scripts/trelio-company-encryption.mjs";
-import { handleTrelioLocalActionOperation } from "../scripts/trelio-local-context.mjs";
+} from "../../../host-runtime/scripts/trelio-secret-generate.mjs";
+import { createAgentEncryptionDevice, decryptCompanyPayload } from "../../../host-runtime/scripts/trelio-company-encryption.mjs";
+import { handleTrelioLocalActionOperation } from "../../../host-runtime/scripts/trelio-local-context.mjs";
 
 const companyId = randomUUID();
 const companySlug = "synthetic-company";

@@ -11,6 +11,7 @@ on:
       - "AGENTS.md"
       - "package.json"
       - "package-lock.json"
+      - "host-runtime/**"
       - "plugins/trelio-agent-workspaces/**"
       - "scripts/**"
   push:
@@ -30,6 +31,7 @@ on:
       - "AGENTS.md"
       - "package.json"
       - "package-lock.json"
+      - "host-runtime/**"
       - "plugins/trelio-agent-workspaces/**"
       - "scripts/**"
 
