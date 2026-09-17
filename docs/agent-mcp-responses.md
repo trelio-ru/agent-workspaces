@@ -59,7 +59,9 @@ input schema, включая required arguments. `schemaSelection.found=false`
 `trelio-agent-response-projection.mjs` синхронизирован с серверным контрактом;
 ручные изменения копии не допускаются.
 
-`trelio-mcp-results.test.mjs` проверяет локальную выдачу и сохранение смысла,
-а `report:context-budget` считает токены и bytes отдельно от постоянных
+`trelio-mcp-results.test.mjs` в отдельном
+[`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime)
+проверяет локальную выдачу и сохранение смысла, а `report:context-budget`
+считает токены и bytes отдельно от постоянных
 instructions/schemas. Экономия каталога/справочника условна: последующее выбранное
 чтение возвращает стоимость только запрошенного содержимого.

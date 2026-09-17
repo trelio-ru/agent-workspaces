@@ -3,37 +3,22 @@ name: Plugin tests
 on:
   pull_request:
     paths:
-      - ".githooks/**"
-      - ".gitignore"
-      - ".github/scripts/run-windows-acl-standard-user.ps1"
-      - ".github/workflows/plugin-tests.yml"
+      - ".agents/**"
       - ".claude-plugin/**"
+      - ".githooks/**"
+      - ".github/workflows/plugin-tests.yml"
       - "AGENTS.md"
+      - "docs/**"
       - "package.json"
       - "package-lock.json"
-      - "host-runtime/**"
       - "plugins/trelio-agent-workspaces/**"
       - "scripts/**"
+      - "tests/**"
   push:
     branches:
       - main
     tags:
       - "v*"
-    # Path filtering applies to branch pushes. Plugin tags retain full release
-    # verification. New provider tags are created in the private provider
-    # repository; historical public provider tags remain immutable.
-    paths:
-      - ".githooks/**"
-      - ".gitignore"
-      - ".github/scripts/run-windows-acl-standard-user.ps1"
-      - ".github/workflows/plugin-tests.yml"
-      - ".claude-plugin/**"
-      - "AGENTS.md"
-      - "package.json"
-      - "package-lock.json"
-      - "host-runtime/**"
-      - "plugins/trelio-agent-workspaces/**"
-      - "scripts/**"
 
 permissions:
   contents: read
@@ -47,14 +32,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # The test builds a disposable bare remote plus linked worktrees and
-      # proves that raw protected pushes fail while the guarded path keeps the
-      # canonical checkout, origin/main and stable release tag exact.
       - name: Run canonical main guard regressions
         run: bash scripts/git-main-guard.test.sh
 
-  node-tests:
-    name: Node tests (${{ matrix.os }})
+  plugin-shell:
+    name: Stable plugin shell (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -62,57 +44,7 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          # Keep every runner on the same Node patch. The generic suite below
-          # invokes each node:test file directly because the parent `node
-          # --test` process can still corrupt its serialized child IPC stream
-          # intermittently under load, even after upgrading from 22.23.1.
-          node-version: 22.23.2
-
-      # Only reports/tests need the offline tokenizer; runtime remains dependency-free.
-      - name: Install pinned report dependencies
-        run: npm ci --ignore-scripts
-
-      # Keep exact paths explicit so every shell passes the same generic host
-      # files to Node. Provider source and CI live in the private backend/provider
-      # contour and cannot become public plugin release inputs again.
-      - name: Run generic plugin host Node tests
-        run: |
-          node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-codex-routing.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-mcp-results.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-skill-secret-setup.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-company-encryption.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-encrypted-workspace-storage.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-context-search-ranking.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-context-search-matching.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-workspace-files.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-local-context.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-workspace-action-process.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-workspace-directory.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-host-runtime-loader.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-runtime-policy.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-runtime-session-timeout.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-secret-chat.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-secret-generate.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
-          node plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
-
-  windows-acl:
-    name: Windows runtime and private ACL
-    runs-on: windows-latest
+          - windows-latest
 
     steps:
       - name: Check out repository
@@ -123,78 +55,8 @@ jobs:
         with:
           node-version: 22.23.2
 
-      # The broader bridge suite contains POSIX-specific fixtures. This job is
-      # intentionally narrow: it exercises the command transport and the real
-      # Windows PowerShell Set-Acl/Get-Acl path that the other runners skip.
-      - name: Run admission cache boundary regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-skill-admission.test.mjs
-
-      - name: Run signed setup boundary regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-skill-secret-setup.test.mjs
-
-      - name: Run Windows ACL regressions
-        run: >-
-          node --test
-          --test-name-pattern="Windows ACL command|Windows bridge applies|Windows Node resolver|Windows Remote MCP launcher"
-          plugins/trelio-agent-workspaces/tests/trelio-workspace.test.mjs
-
-      # Git discovery is deliberately platform-aware even when Codex inherited
-      # a stale PATH. Run both pure Windows-path cases and one real Git
-      # init/add/commit smoke test on the Windows runner.
-      - name: Run Windows Git prerequisite regressions
-        run: >-
-          node --test
-          plugins/trelio-agent-workspaces/tests/trelio-git.test.mjs
-
-      # Exercise actual file DACL hardening, expiration and encrypted delivery.
-      - name: Run Windows private attachment delivery regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-local-attachments.test.mjs
-
-      - name: Run Windows encrypted Workspace file delivery regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-files.test.mjs
-
-      # The local facade must keep an explicit child cwd and return a typed
-      # restart requirement when the loaded plugin disappears during an update.
-      - name: Run Windows Workspace subprocess regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-action-process.test.mjs
-
-      - name: Run Windows host runtime loader regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-host-runtime-loader.test.mjs
-
-      - name: Run Windows Workspace directory selection regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-workspace-directory.test.mjs
-
-      # Compile the shipped UIA helper with the system compiler, exercise
-      # value-free protocol rejection, then use a disposable WPF document to
-      # prove direct setters, exact URL/id binding and no focus redirection.
-      - name: Run Windows embedded browser transport regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-secret-browser-native.test.mjs
-
-      # Execute the exact commandWindows definition through both cmd.exe and
-      # Windows PowerShell with Node removed from PATH. This protects hosts that
-      # select a different outer shell for the same approved hook definition.
-      - name: Run Windows hook launcher regression
-        run: >-
-          node --test
-          --test-name-pattern="configured platform hook launcher|resume and compact|bounded cleanup"
-          plugins/trelio-agent-workspaces/tests/trelio-runtime-session.test.mjs
-
-      # Include actual private ACL work in the hook's configured wall-clock
-      # budget. Cover both slow success and internal cancellation with cleanup.
-      - name: Run Windows hook timeout regressions
-        run: node plugins/trelio-agent-workspaces/tests/trelio-runtime-session-timeout.test.mjs
-
-      # A cache snapshot can be slow on Windows and must not consume Codex's
-      # bounded local-MCP startup window before the initialize response exists.
-      - name: Run Windows Remote MCP handshake regression
-        run: >-
-          node --test
-          --test-name-pattern="stdio initialize is not blocked by Codex plugin retention"
-          plugins/trelio-agent-workspaces/tests/trelio-remote-mcp.test.mjs
-
-      # GitHub's Windows runner account is an administrator. Re-run the real
-      # bridge guard as a disposable standard user so an accidental dependency
-      # on SeSecurityPrivilege or another elevated token right fails in CI.
-      - name: Run Windows ACL regression as a standard user
-        shell: pwsh
-        run: ./.github/scripts/run-windows-acl-standard-user.ps1
+      # The shell suite builds a synthetic signed package from the public ABI.
+      # It therefore proves loader compatibility without copying runtime source
+      # back into the plugin repository.
+      - name: Run stable shell tests
+        run: npm run test:plugin-shell

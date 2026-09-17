@@ -8,12 +8,7 @@
     "git:finish-worktree": "node scripts/git-finish-worktree.mjs",
     "git:check-finished-worktrees": "node scripts/git-finish-worktree.mjs --check",
     "git:push-main": "bash scripts/push-main.sh",
-    "build:host-runtime": "node scripts/build-host-runtime-package.mjs",
-    "report:context-budget": "node host-runtime/scripts/report-context-budget.mjs",
-    "test:context-budget": "node plugins/trelio-agent-workspaces/tests/context-budget.test.mjs",
+    "test:plugin-shell": "node tests/plugin-shell.test.mjs",
     "test:git-guard": "node --test scripts/git-finish-worktree.test.mjs && bash scripts/git-main-guard.test.sh"
-  },
-  "devDependencies": {
-    "tiktoken": "1.0.22"
   }
 }

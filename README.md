@@ -22,8 +22,10 @@ Workspaces и актуальными навыками компании и про
 - переносимый контекст между запусками, задачами и компьютерами.
 
 Этот репозиторий является единственным каноническим источником клиентского
-дистрибутива. Backend и пользовательский интерфейс находятся в основном
-репозитории Trelio. Исходники provider-specific runtime-ов, их тесты и
+plugin-дистрибутива. Generic host runtime развивается отдельно в
+[`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime).
+Backend и пользовательский интерфейс находятся в основном репозитории Trelio.
+Исходники provider-specific runtime-ов, их тесты и
 внутренние maintainer/release-инструкции ведутся вместе с backend в закрытом
 контуре и не входят ни в этот публичный repository, ни в устанавливаемый
 plugin bundle.
@@ -285,9 +287,10 @@ host runtime. Обычные исправления bridge, hooks и локал�
 как подписанный content-addressed runtime в приватный каталог вне Codex plugin
 cache. Loader выбирает уже проверенную версию автоматически; агент не принимает
 решение об обновлении и не получает package или его metadata в model context.
-Оболочка и host runtime имеют разные release artifacts и rollout lifecycle.
-Исходник runtime остаётся в том же клиентском репозитории, но физически живёт в
-`host-runtime/` и не попадает в plugin artifact. Установленный плагин содержит
+Оболочка и host runtime имеют разные repositories, release artifacts и rollout
+lifecycle. Runtime source живёт в
+[`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime)
+и не попадает в plugin artifact. Установленный плагин содержит
 только manifest, launchers, loader и минимальный verifier package; bundled
 исполняемого fallback больше нет. Первая установка один раз получает и проверяет
 подписанный runtime перед запуском, затем использует immutable локальный cache.

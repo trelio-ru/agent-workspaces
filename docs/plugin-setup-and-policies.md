@@ -97,8 +97,9 @@ codex plugin marketplace upgrade trelio-plugins
 runtime. Оболочка содержит manifest, hook definition, Node launcher, runtime
 loader и проверку подписанного package. Loader не изменяет Codex plugin cache:
 он запускает уже проверенный content-addressed runtime из owner-only каталога
-`workspace-bridge/host-runtimes`. Исполняемые исходники находятся в
-`host-runtime/` source repository и не входят в plugin artifact; bundled
+`workspace-bridge/host-runtimes`. Исполняемые исходники находятся в отдельном
+[`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime)
+и не входят в plugin artifact; bundled
 fallback отсутствует. На первой установке loader один раз синхронно загружает и
 проверяет подписанный package либо завершается fail-closed.
 Проверка новой версии идёт в отдельном процессе и переключает только атомарный

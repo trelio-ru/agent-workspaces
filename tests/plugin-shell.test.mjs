@@ -11,17 +11,44 @@ import { fileURLToPath } from "node:url";
 import {
   normalizeHostRuntimeDescriptor,
   verifyHostRuntimeSignature,
-} from "../scripts/trelio-host-runtime-loader.mjs";
-import { resolveHostRuntimeInvocation } from "../../../host-runtime/scripts/trelio-host-runtime-entry.mjs";
+} from "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-loader.mjs";
 import {
-  BRIDGE_VERSION,
-  buildAgentSkillPackage,
-} from "../../../host-runtime/scripts/trelio-workspace.mjs";
+  PLUGIN_VERSION,
+} from "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-shell.mjs";
 
 const loaderPath = fileURLToPath(new URL(
-  "../scripts/trelio-host-runtime-loader.mjs",
+  "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-loader.mjs",
   import.meta.url,
 ));
+const pluginDirectory = fileURLToPath(new URL(
+  "../plugins/trelio-agent-workspaces/",
+  import.meta.url,
+));
+
+const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
+  const sourceBytes = Buffer.from(source, "utf8");
+
+  // The plugin owns package verification, so this fixture spells out the public
+  // package ABI instead of importing the runtime repository's package builder.
+  return Buffer.from(`${JSON.stringify({
+    format: "trelio-agent-skill-package/v1",
+    skill: {
+      id: "trelio-host-runtime",
+      runtimeVersion,
+    },
+    entrypoint: {
+      path: "scripts/trelio-host-runtime-entry.mjs",
+      interpreter: "node",
+    },
+    capabilities: ["local-session", "network"],
+    files: [{
+      path: "scripts/trelio-host-runtime-entry.mjs",
+      mode: 0o644,
+      sha256: createHash("sha256").update(sourceBytes).digest("hex"),
+      contentBase64: sourceBytes.toString("base64"),
+    }],
+  })}\n`, "utf8");
+};
 
 const runLoader = async (argumentsList, environment) => await new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [loaderPath, ...argumentsList], {
@@ -41,15 +68,6 @@ const runLoader = async (argumentsList, environment) => await new Promise((resol
     stdout: Buffer.concat(stdout).toString("utf8"),
     stderr: Buffer.concat(stderr).toString("utf8"),
   }));
-});
-
-test("host runtime entrypoint keeps one stable three-mode interface", () => {
-  const bridge = resolveHostRuntimeInvocation(["bridge", "doctor", "--json"]);
-  assert.equal(path.basename(bridge.entrypointPath), "trelio-workspace.mjs");
-  assert.deepEqual(bridge.arguments, ["doctor", "--json"]);
-  assert.equal(path.basename(resolveHostRuntimeInvocation(["hook"]).entrypointPath), "trelio-runtime-session.mjs");
-  assert.equal(path.basename(resolveHostRuntimeInvocation(["mcp"]).entrypointPath), "trelio-remote-mcp.mjs");
-  assert.throws(() => resolveHostRuntimeInvocation(["unknown"]), /bridge, hook/u);
 });
 
 test("host runtime descriptor is same-origin, bounded and stable-versioned", () => {
@@ -94,31 +112,28 @@ test("host runtime accepts only the exact Ed25519 signature", () => {
 
 test("stable plugin shell contains no bundled host runtime fallback", async () => {
   const removedBundledEntrypoint = fileURLToPath(new URL(
-    "../scripts/trelio-host-runtime-entry.mjs",
+    "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-entry.mjs",
     import.meta.url,
   ));
   await assert.rejects(fs.access(removedBundledEntrypoint));
 });
 
+test("plugin manifests and stable shell keep one version", async () => {
+  const [codexManifest, claudeManifest] = await Promise.all([
+    fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),
+    fs.readFile(path.join(pluginDirectory, ".claude-plugin", "plugin.json"), "utf8"),
+  ]).then((sources) => sources.map(JSON.parse));
+
+  assert.equal(codexManifest.version, PLUGIN_VERSION);
+  assert.equal(claudeManifest.version, PLUGIN_VERSION);
+});
+
 test("host runtime updater verifies, materializes and selects a signed package", async () => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-loader-test-"));
-  const sourceDirectory = path.join(temporaryHome, "source");
-  const entrypointPath = path.join(sourceDirectory, "scripts", "trelio-host-runtime-entry.mjs");
-  await fs.mkdir(path.dirname(entrypointPath), { recursive: true });
-  await fs.writeFile(
-    entrypointPath,
-    "process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION, source: process.env.TRELIO_HOST_RUNTIME_SOURCE }));\n",
-    "utf8",
-  );
-
   const runtimeVersion = "9.8.7";
-  const packageBytes = await buildAgentSkillPackage({
-    skillId: "trelio-host-runtime",
+  const packageBytes = buildSyntheticHostRuntimePackage({
     runtimeVersion,
-    sourceDirectory,
-    entrypointPath: "scripts/trelio-host-runtime-entry.mjs",
-    interpreter: "node",
-    capabilities: ["local-session", "network"],
+    source: "process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION, source: process.env.TRELIO_HOST_RUNTIME_SOURCE }));\n",
   });
   const packageSha256 = createHash("sha256").update(packageBytes).digest("hex");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -138,7 +153,7 @@ test("host runtime updater verifies, materializes and selects a signed package",
           artifactId: "runtime-test",
           runtimeVersion,
           minimumRuntimeVersion: runtimeVersion,
-          minimumPluginVersion: BRIDGE_VERSION,
+          minimumPluginVersion: PLUGIN_VERSION,
           packageSha256,
           packageSizeBytes: packageBytes.byteLength,
           packageUrl: `http://127.0.0.1:${address.port}/runtime.skillpkg`,

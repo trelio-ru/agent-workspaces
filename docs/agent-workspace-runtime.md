@@ -552,9 +552,11 @@ accepted revision и история Run остаются на сервере Tre
 
 ## Учёт контекста агента
 
+В [`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime)
 `npm ci --ignore-scripts` устанавливает закреплённый `tiktoken@1.0.22` только
-для отчётов/тестов; bridge и MCP runtime его не импортируют.
-`npm run report:context-budget` измеряет UTF-8 bytes и `tokensO200kBase`
+для отчётов/тестов; bridge и MCP runtime его не импортируют. Команда
+`npm run report:context-budget -- --plugin-root <exact-plugin-root>` измеряет
+UTF-8 bytes и `tokensO200kBase`
 офлайн-кодировкой `o200k_base`. Русский и английский текст проходят один
 tokenizer; служебные маркеры в документах считаются обычным текстом.
 Итоги складывают независимо измеренные части, без неизвестных разделителей
@@ -612,8 +614,9 @@ reuse; локальная папка не подтверждает текущи�
 
 Изменение относится к generic host: encrypted matching, безопасная локальная
 выдача и проверка cache не могут выполняться на backend без раскрытия plaintext.
-Для выпуска требуется согласованная пара plugin/backend с search v2 и
-`download_file`; live activation следует обычному marketplace/policy read-back.
+Для выпуска требуется согласованная runtime/backend пара с search v2 и
+`download_file`, а descriptor обязан сохранить совместимый
+`minimumPluginVersion`; live activation следует runtime policy read-back.
 
 
 ## Инкрементальное encrypted хранилище

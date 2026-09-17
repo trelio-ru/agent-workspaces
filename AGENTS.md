@@ -3,17 +3,16 @@
 ## Назначение репозитория
 
 Этот публичный репозиторий – единственный канонический источник устанавливаемого
-клиентского плагина `Trelio Agent Workspaces` для Codex и Claude и независимо
-публикуемого generic Trelio host runtime.
+клиентского плагина `Trelio Agent Workspaces` для Codex и Claude. Generic Trelio
+host runtime независимо развивается в
+[`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime).
 
 В публичный контур входят только:
 
 - marketplace manifests и client metadata;
 - `plugins/trelio-agent-workspaces/**` со stable shell, hooks, MCP registration,
-  bootstrap/control-plane skills, tests и пользовательской документацией;
-- `host-runtime/**` с generic bridge, hook implementation, local MCP и общими
-  security/runtime primitives; этот source собирается в signed package и не
-  копируется в plugin artifact;
+  bootstrap/control-plane skills и пользовательской документацией;
+- top-level tests стабильной оболочки и публичного package ABI;
 - публичные инструкции по установке, использованию и безопасности;
 - plugin CI.
 
@@ -88,7 +87,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   bootstrap/control-plane skills и assets. Исполняемого bundled runtime fallback
   нет; first install обязан получить signed package либо завершиться fail-closed.
 - Generic host implementation, runtime admission/pairing и общие
-  security/credential/browser primitives находятся только в `host-runtime/**`.
+  security/credential/browser primitives находятся только в отдельном
+  `trelio-ru/agent-workspaces-runtime`. Его source и tests не копируются сюда.
 - Bundled skill может настраивать Trelio, читать каталог и вести Workspace/Run,
   но не реализует команды конкретного внешнего provider.
 - Внешние provider integrations доставляются независимо backend-managed
@@ -582,10 +582,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   сохранение ошибок, human decisions, meaningful notes и pinned snapshots.
   Сгенерированный `trelio-agent-response-projection.mjs` вручную не редактируется.
 
-- Постоянный model-visible слой типового task-scoped Run измеряется командой
-  `npm run report:context-budget`; JSON для объединённого backend-отчёта
-  возвращает `npm run --silent report:context-budget -- --json`. Перед отчётом
-  и тестами установи закреплённые devDependencies через `npm ci --ignore-scripts`.
+- Постоянный model-visible слой типового task-scoped Run измеряется из
+  `trelio-ru/agent-workspaces-runtime` с exact checkout этого plugin через
+  `--plugin-root`. Plugin source не копируется в runtime: cross-repository CI
+  использует read-only checkout.
   Метрики – UTF-8 bytes и `tokensO200kBase`: точная токенизация обычного текста
   офлайн-кодировкой `o200k_base` из `tiktoken@1.0.22`. Итоги складывают
   независимо измеренные части без неизвестного framing клиента; это не billing
@@ -613,9 +613,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   загружать их полностью только при соответствующем сценарии.
 - Для изменённого bundled skill запусти его tests, `validate-skill` при наличии
   и `skill-creator/scripts/quick_validate.py`.
-- Для manifest используй штатный `plugin-creator` validator. Для
-  bridge/host/hooks/MCP запускай релевантные generic regressions на Node.js 22+
-  на поддерживаемых платформах.
+- Для manifest используй штатный `plugin-creator` validator. Для stable shell,
+  hooks и loader запускай `npm run test:plugin-shell` на Node.js 22+; runtime
+  regressions принадлежат отдельному runtime-репозиторию.
 - Release CI фиксирует exact Node.js `22.23.2`: macOS cache для плавающего
   `node-version: 22` мог выбрать `22.23.1`, где native test runner повреждал
   serialized IPC stream и падал до assertion с `Unable to deserialize cloned
@@ -623,8 +623,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   без parent `node --test`: сбой serialized child IPC остаётся редким и на
   `22.23.2` под нагрузкой. Linux, macOS и Windows jobs не должны расходиться по
   patch version.
-- `BRIDGE_VERSION`, Codex manifest, Claude manifest, marketplace entry и exact
-  version assertions должны оставаться синхронны.
+- `PLUGIN_VERSION`, Codex manifest, Claude manifest, marketplace entry и exact
+  version assertions должны оставаться синхронны. Runtime version независима.
 - Stable plugin version и tag `vX.Y.Z` выпускаются вместе. Не меняй version, не
   создавай tag/GitHub Release и не публикуй production без явной команды на
   релиз.
