@@ -143,19 +143,20 @@ provider-tag workflow или внутренние release playbooks в этот 
   точные цитаты/ссылки сохраняются, перевод цитаты явно помечается.
 - При изменении `plugins/trelio-agent-workspaces/**` полностью прочитай
   соответствующий `SKILL.md` и только относящиеся к сценарию references.
-- Working-folder onboarding сохраняет проверенную служебную `.git` хоста.
-  Exact Codex turn-diff refs допустимы
-  лишь как прямые tree snapshots без пользовательской истории и других файлов
-  по [onboarding-контракту](plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md);
-  общий `refs/codex/` не является allowlist. После exact company resolve и до
-  content/binding агент без вопроса сохраняет корневое исключение `/workspaces/`
-  в `.gitignore`, проверяет effective rule, пустой index и допустимые snapshots.
-  Исторические копии workspace data блокируют flow даже после ignore.
-- Отказ rename `.git`, включая Windows `Access is denied` с `-Force`, не
-  требует повторной очистки: после полной проверки shell/isolation onboarding
-  продолжается. Rename/delete, reset прав, config/hooks/refs mutations и обход
-  client rejection запрещены. ACL diagnostics нужен при отказе необходимого
-  чтения или записи `.gitignore`, а не ради необязательного удаления Git.
+- Working-folder onboarding не воспроизводит Git/file state machine в model
+  instructions. Local runtime по `intent=folder_onboarding` классифицирует exact
+  client-selected root, standalone Git, все refs/objects/worktrees/hooks/config,
+  активный instruction target и root files, затем возвращает read-only preview
+  и CAS-bound apply action. Только runtime пишет managed block, `CLAUDE.md` и
+  корневой ignore, проверяет effective `/workspaces/`, пустой index и повторную
+  Git-классификацию. Плагин показывает план и передаёт exact action без shell,
+  ручной сборки файлов или собственной интерпретации snapshots.
+- Exact Codex turn-diff tree allowlist, запрет commit/tag/orphan blob и правило
+  возвращающегося `workspaces/` являются host-runtime security contract и
+  покрываются runtime tests. Общий `refs/codex/` не является allowlist.
+  Rename/delete `.git`, reset прав, config/hooks/refs mutations и обход client
+  rejection запрещены; runtime сохраняет доказанную служебную оболочку и
+  откатывает ещё принадлежащие ему записи при ошибке apply.
 - Working-folder onboarding разрешает company scope только по exact slug из
   live `list_companies`, по единственному exact display-name match либо при
   единственной доступной компании без явного selector. Имя/путь папки,
@@ -166,7 +167,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   безопасные проверки подключений и показывает подтверждённое состояние каждого.
   Границы проверки, setup и причины пропуска заданы в
   [onboarding-контракте](plugins/trelio-agent-workspaces/skills/trelio-project-onboarding/SKILL.md#offer-the-live-trelio-skills).
-- Управляемый onboarding-блок является единственным filesystem anchor для
+- Сгенерированный runtime onboarding-блок является единственным filesystem anchor для
   folder-local layout. Новый task или named Workspace создаётся в
   `<binding-root>/workspaces/<workspace-id>/`, агент работает только в выданном
   `workspace/` и не кладёт `tmp/`, `output/` или материалы рядом с корневым
@@ -475,6 +476,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   backend-selected routes. Agent не выводит provider из metadata: plain остаётся
   native, а детали exact local context/proposal route загружаются только из lazy
   worker reference после такого ответа. Always-visible schemas provider-neutral.
+  Local runtime добавляет к search/file-search результату канонический
+  `nextCall` с exact tool/operation и mapping выбранного результата; model не
+  восстанавливает fetch/file route из внутреннего устройства mirror.
 - Encrypted routing принимает только explicit capabilities: current content read,
   exact local action, proposal, local Workspace revision list, accepted-Run
   diff/file read, restore/cancel либо logical

@@ -151,6 +151,14 @@ bridge.
 запуститься, stable shell использует `trelio-workspace doctor --json` только как
 bootstrap fallback.
 
+Для самой папки тот же tool принимает `intent=folder_onboarding`. До company
+discovery он read-only классифицирует exact client-selected root; после выбора
+области возвращает managed block preview, file delta и CAS-bound
+`folder_onboarding_apply`. Полная проверка Git refs/objects/worktrees/hooks,
+выбор активного `AGENTS.md`/`AGENTS.override.md`, import `CLAUDE.md`, корневой
+ignore и post-write verification выполняются host runtime. Skill не дублирует
+этот state machine shell-командами; stale plan всегда перечитывается.
+
 Локальный doctor проверяет стандартные Homebrew/system/Program Files пути, durable
 Windows machine/user PATH, exact version и временный `init → add → commit`.
 Произвольный executable из process PATH, включая внутренний Git Codex, не
