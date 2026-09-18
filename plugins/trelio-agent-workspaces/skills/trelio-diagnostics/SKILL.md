@@ -87,33 +87,37 @@ credential-файлы и необработанное состояние hook.
 Определи клиент по его собственному контексту. Один `CLAUDE_PLUGIN_ROOT`
 не доказывает Claude Code: Codex может задавать его для совместимости.
 
-Запусти bridge именно загруженного плагина через его launcher; не сканируй
-cache и не выбирай другую версию. POSIX:
+Если доступен local tool `diagnose_trelio_installation`, вызови его один раз с
+точными `clientKind=codex|claude-code` и `intent=diagnostics`. Это канонический
+runtime-план: он одним read-only вызовом проверяет exact загруженный plugin shell,
+Node.js, standalone Git, runtime sessions и pairing; для Codex также включает
+текущий direct-routing plan. Он ничего не устанавливает, не применяет, не
+авторизует и не считает hook одобренным.
 
-```text
-../../scripts/launch-trelio-node ../../scripts/trelio-host-runtime-loader.mjs bridge doctor --json
-```
+Трактуй `requiredActions`, `warnings`, `clientInspection` и `liveVerification`
+буквально. На первом диагностическом проходе только покажи найденное; действия
+выполняй лишь когда пользователь просил исправить проблему и с указанной
+`authority`. В частности, `REVIEW_CODEX_DIRECT_ROUTING` всегда требует отдельного
+явного подтверждения exact `planHash`, а `BRIDGE_CONNECTION_NOT_READY` при
+`intent=diagnostics` – предупреждение, не команда запускать login.
+`REPAIR_CODEX_DIRECT_ROUTING_MANUALLY` означает, что runtime сохранил локальную
+диагностику, но fail-closed отказался переписывать unsafe/unsupported TOML:
+покажи exact code/message и не автоматизируй ручное объединение.
 
-В Windows используй соседний `../../scripts/launch-trelio-node.cmd` с тем же
-скриптом и аргументами. Launcher принимает Node.js 22+, сначала проверяет
-подсказки runtime от Codex и его встроенный runtime, затем установленный
-системный Node. Пустой `command -v node` или ошибка создания PATH-alias Codex
-не доказывают отсутствия Node, если launcher работает. Если совместимый runtime
-не найден, проверь `command -v node` в POSIX или встроенный
-`../../scripts/resolve-node.ps1` в Windows: до предложения установки отличи
-отсутствие Node от установленной версии ниже 22.
+Если local MCP не запустился и самого tool нет, допустим только bootstrap fallback:
+запусти bridge exact загруженного плагина через `launch-trelio-node`/соседний
+`.cmd` и `trelio-host-runtime-loader.mjs bridge doctor --json`; затем для Codex
+отдельно вызови `plan_codex_trelio_hook_routing`. Не сканируй cache и не выбирай
+другую версию. Пустой `command -v node` или ошибка создания PATH-alias Codex
+не доказывают отсутствия Node, если launcher работает. Если launcher не нашёл
+Node.js 22+, используй `command -v node` в POSIX либо `resolve-node.ps1` в
+Windows только для различения отсутствующей и старой версии.
 
-Поля результата трактуй буквально:
-
-- `plugin.loadedVersion` – bridge, выполняющий эту диагностику;
-- `plugin.hooks.status=ready` – целостность встроенного определения, не одобрение;
-- `plugin.hooks.approvalStatus=client_managed_unknown` – doctor не видит решение
-  клиента о доверии;
-- `connection` – только состояние локального pairing без значений секретов;
-- `runtimeSessions` – только счётчики, без ID сессий и ключей;
-- общий `status=action_required` вызван Node, Git или повреждёнными/
-  несогласованными файлами загруженного плагина. Отсутствие pairing – отдельное
-  состояние подключения: удалённое чтение Trelio может работать.
+В обоих маршрутах `plugin.loadedVersion` относится только к выполняющемуся
+bridge; `plugin.hooks.status=ready` означает целостность definition, а
+`approvalStatus=client_managed_unknown` – отсутствие видимости решения клиента.
+`connection` относится только к pairing, `runtimeSessions` содержит только
+счётчики без ID и ключей. Локальный успех не доказывает OAuth или runtime proof.
 
 Не запускай `trelio-workspace login` только потому, что попросили doctor.
 
@@ -129,8 +133,9 @@ cache и не выбирай другую версию. POSIX:
 2. Через `codex mcp list --json` оцени удалённый `trelio` отдельно от локального
    `trelio-remote-skills`. `auth_status: "o_auth"` описывает схему; только успешное
    реальное чтение доказывает пригодный bearer у текущего процесса.
-3. До protected read вызови read-only `plan_codex_trelio_hook_routing` без
-   аргументов. `status=ready` подтверждает только direct routing двух Trelio MCP
+3. Используй `codexRouting` из `diagnose_trelio_installation`; только в bootstrap
+   fallback вызови read-only `plan_codex_trelio_hook_routing` без аргументов.
+   `status=ready` подтверждает только direct routing двух Trelio MCP
    namespaces, не hook trust и не успешный proof. `status=action_required`
    объясняет случай, когда Code Mode выполняет MCP как nested call и клиент не
    dispatch-ит `PreToolUse`, хотя hook включён и доверен.
@@ -226,11 +231,14 @@ lifecycle matchers с будущими версиями. Оно запускае
 
 ## Примени только подходящее исправление
 
+Когда использован `diagnose_trelio_installation`, выбирай исправление по exact
+`requiredActions[].code`, не реконструируй причину из отдельных полей doctor.
+
 - Нет marketplace Codex: добавь официальный `trelio-ru/agent-workspaces`,
   затем проверь плагин.
 - Плагин отсутствует/выключен: установи/включи
   `trelio-agent-workspaces@trelio-plugins`; наличие marketplace не доказывает установку.
-- Codex routing plan вернул `action_required`: применяй его только после
+- `REVIEW_CODEX_DIRECT_ROUTING`: применяй вложенный plan только после
   отдельного подтверждения exact `planHash`; затем требуется полный restart
   owning App Server и protected read в новой задаче. Это исправляет dispatch
   для Code Mode, но не одобряет hook за пользователя.
@@ -265,9 +273,9 @@ lifecycle matchers с будущими версиями. Оно запускае
   Startup timeout до `1.19.5` может быть вызван очисткой cache до MCP initialize;
   обнови плагин и создай новый владеющий процесс до повтора. При готовом launcher
   не сбрасывай удалённый OAuth Trelio и не переустанавливай Node.
-- Doctor показал Node ниже 22: предложи штатную установку Node.js LTS для ОС
+- `INSTALL_NODE_RUNTIME`: предложи штатную установку Node.js LTS для ОС
   и получи явное подтверждение до команды менеджера пакетов.
-- Doctor вернул `TRELIO_GIT_REQUIRED`: выполни его точный план установки,
+- `INSTALL_STANDALONE_GIT`: выполни exact `installationPlan`,
   затем повтори doctor до действия Workspace. Не используй недокументированный
   Git, встроенный в клиент.
 - `connection.status=not_configured` блокирует действие с локальным bridge:

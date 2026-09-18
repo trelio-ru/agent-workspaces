@@ -192,52 +192,26 @@ Browser/Chrome/Computer Use. Сначала обычным разрешённы�
 подготовленной delivery surface. Отказ host/tool/site обязателен: runtime не
 может его обходить.
 
-Вызови `prepare_agent_secret_browser_fill` с текущим Run и упорядоченными steps:
+Вызови `prepare_agent_secret_browser_fill` с текущим Run, exact URL,
+наблюдёнными на пустой форме selectors и упорядоченными steps. Tool schema –
+канонический контракт полей, activation/submit и группировки одной страницы;
+не дублируй и не ослабляй его ограничения, не назначай отсутствующие ID.
 
-- username/password одной страницы – один step;
-- точные HTTPS URL и одно видимое поддерживаемое поле верхнего уровня на selector;
-- если пустая форма сначала показывает QR, email или другой режим, укажи exact
-  `activationSelector` value-free переключателя перед полями;
-- native AX/UIA требует точные `#id` или `[id="..."]` для activation, полей и
-  `submitSelector`; не угадывай и не назначай ID. Другой exact CSS selector
-  сохраняй как есть – runtime сам решит, нужен ли Chrome;
-- если финальная login-кнопка не имеет поддерживаемого ID (например, только
-  `button[type="submit"]`), опусти финальный `submitSelector`. Backend сам
-  закрепит такой field-only action за embedded. После успеха fill нажми
-  определённую на пустой форме кнопку обычным browser tool в той же вкладке
-  без snapshot/чтения полей;
-- промежуточным native steps нужен поддерживаемый `submitSelector`.
-  Не ослабляй selectors и не разделяй credential одной страницы.
+Исполни ровно один возвращённый `bridge.action` через объявленные local
+server/tool и exact `workingDirectory`. Следуй его `bridge.note` и outcome codes
+буквально: runtime сам выбирает и value-free проверяет delivery surface,
+получает значение только после preflight и не возвращает его модели. Не готовь
+вторую вкладку и не выбирай transport. Если returned action закрепил финальный
+field-only step за той же embedded-вкладкой, после fill нажми ранее найденную
+кнопку обычным browser tool без snapshot или чтения заполненных полей.
 
-Исполни ровно один `bridge.action` через объявленные local server/tool и
-точный `workingDirectory`. Не открывай и не готовь дополнительную browser tab:
-до одноразового consume trusted runtime value-free проверяет уже открытую exact
-embedded-вкладку либо сам открывает target в isolated persistent Chrome profile.
-Только после успешного preflight он получает значение и заполняет exact поля. E2EE
-расшифровывается только в памяти bridge. Значения не попадают в tool arguments,
-clipboard, argv, общее environment, output и чтение полей обратно.
-
-Chrome – автоматический runtime fallback только до checkout при недоступных
-native platform/client/compiler/Accessibility permission/application tree/
-selector/steps. 404 старого backend для value-free context использует
-существующий Chrome consume на том же host. Модель transport не выбирает.
-Неверные app identity/URL, отсутствующие, неоднозначные, скрытые/read-only
-поля и transport/auth failures останавливают операцию. После consume или
+После успеха отдельно проверь authentication. До delivery точный safe blocker
+можно устранить и получить новый action со свежим proof; после consume или
 частичного fill не меняй браузер, не запрашивай другой grant и не повторяй
-значение вслепую.
-
-`client_unsupported` означает отсутствие поддерживаемой hook-verified identity
-клиента у Run, не отсутствие встроенного браузера у установленного приложения.
-Используй диагностику с точной причиной. Не включай model restrictions как
-обход и не создавай runtime metadata/proofs. После исправления backend
-продолжи/открой Run через возвращённое action и свежий proof подтверждённого
-hook до нового fill; старые grants не исправляются на месте.
-
-macOS требует системный Swift compiler (Command Line Tools) и разрешение
-Accessibility пользователя; Windows – системный .NET Framework WPF/UIA.
-Bridge собирает helper приватно без скачивания, повышения прав или выдачи
-разрешений. Отсутствующие компоненты дают безопасную причину fallback,
-не разрешение автоматически менять права ОС.
+значение вслепую. Runtime-specific OS/compiler/accessibility/fallback причины
+не превращай в разрешение устанавливать компоненты, повышать права или выдавать
+системные разрешения. Значения не попадают в tool arguments, clipboard, argv,
+общее environment, output и чтение полей обратно.
 
 Успех означает заполнение/явный submit, не доказанный login. Не делай
 snapshot и не читай заполненные поля. Без финального submitSelector нажми

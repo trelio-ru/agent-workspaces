@@ -330,7 +330,10 @@ Agent Workspaces поэтому запускается на desktop macOS/Window
 актуальные Chrome, Edge, Firefox и Safari на desktop, Android и iOS при наличии
 HTTPS, Web Crypto, IndexedDB и WebAssembly.
 
-Bundled `trelio-workspace doctor --json` отдельно разрешает absolute Git только
+Read-only `diagnose_trelio_installation` объединяет локальный doctor и Codex
+direct-routing plan в один typed результат без установки, apply или login.
+Bundled `trelio-workspace doctor --json` остаётся bootstrap fallback, когда
+local MCP ещё не запускается, и разрешает absolute Git только
 из Homebrew/system/Program Files и durable Windows PATH и проверяет настоящий
 временный `init → add → commit`. Произвольный executable из process PATH,
 включая private Git, которым Codex мог скачать marketplace, bridge не использует.
@@ -340,9 +343,14 @@ hook contract, Node.js 22+, локальное pairing-состояние и т�
 private keys. Значение `plugin.hooks.approvalStatus=client_managed_unknown`
 означает, что целостность definition подтверждена, но его одобрение нужно
 проверять в самом клиенте.
-Отдельный routing plan проверяет Code Mode без вывода пути или содержимого
-`config.toml`; stale `planHash`, symlink и неоднозначный TOML fail-closed не
-перезаписываются.
+Поле `codexRouting` проверяет Code Mode без вывода пути или содержимого
+`config.toml`; действие `REVIEW_CODEX_DIRECT_ROUTING` всё равно требует отдельного
+подтверждения exact `planHash`, а stale plan, symlink и неоднозначный TOML
+fail-closed не перезаписываются. Для такого config общий отчёт сохраняет
+локальную диагностику и возвращает `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY`.
+Старые command-only ответы передаются exact в
+`continue_trelio_workspace_action(operation=legacy_command)`; shell/PATH и
+model-side parsing не используются, неизвестные routes/flags отклоняет runtime.
 Если standalone Git отсутствует,
 onboarding сразу запускает `brew install git` либо `xcode-select --install` на
 macOS и `winget install --id Git.Git -e` на Windows. Обычное системное

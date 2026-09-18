@@ -130,162 +130,87 @@ proof. При подтверждённом доверии не повторяй 
 
 ## Проверь необходимые компоненты
 
-1. Нужны вызываемые инструменты Trelio MCP, не только текст навыка. Если их
-   нет, один раз проверь независимые компоненты в текущей задаче до перехода
-   в другую:
-   - Определи клиент по его контексту; одного `CLAUDE_PLUGIN_ROOT` недостаточно.
-     В Codex через `codex mcp list --json` различай недоступный/неавторизованный
-     HTTP `trelio` и локальный `trelio-remote-skills`. В Claude Code используй
-     `claude mcp list`, не команды диагностики/login Codex. Имена Claude:
-     `plugin:trelio-agent-workspaces:trelio` и
-     `plugin:trelio-agent-workspaces:trelio-remote-skills`. Сохраняй точное
-     возвращённое имя, не сокращай до `trelio`. Удалённый сервер использует
-     HTTP, пути launcher разрешаются от `${CLAUDE_PLUGIN_ROOT}`. Пропущенный
-     URL без `type` или `ENOENT` буквального `./scripts/launch-trelio-node`
-     означают старое несовместимое определение: обнови через менеджер Claude
-     и выполни `/reload-plugins` до повтора. Не сбрасывай OAuth/pairing по этому
-     сигналу. Версия плагина не доказывает готовность серверов.
-     Codex `auth_status: "o_auth"` означает только схему авторизации, не передачу
-     bearer процессом. Явные HTTP 401/required/missing-bearer реального чтения –
-     ошибка OAuth даже при `o_auth`.
-   - Запусти встроенный `../../scripts/trelio-host-runtime-loader.mjs bridge doctor --json`
-     через точный launcher загруженного плагина: POSIX
-     `../../scripts/launch-trelio-node`, Windows
-     `../../scripts/launch-trelio-node.cmd`. Нужен Node.js 22+; сначала подсказки
-     Codex и встроенный runtime, затем системный. Пустой `command -v node`
-     или ошибка PATH-alias не доказывают отсутствия Node. В Windows встроенный
-     `../../scripts/resolve-node.ps1` проверяет постоянные machine/user PATH
-     и официальные Program Files без изменений. Если 22+ не найден, используй
-     предложение установки из подключения локального компонента ниже.
-     Локальная проблема Node не доказывает недействительность OAuth.
-   - Doctor ищет standalone Git 2.28+ лишь в стандартных каталогах macOS/Windows
-     и постоянном Windows PATH. Произвольные executable PATH процесса, включая
-     приватный runtime Codex, не подходят. Затем проверяет временный
-     `init → add → commit`. При необходимости сразу следуй установке/
-     обновлению Git ниже. Проблема Git не доказывает ошибку OAuth.
-   - Если удалённому `trelio` нужна авторизация и окно OAuth открыто, дождись
-     его завершения. Иначе сразу выполни точную команду клиента и дождись:
-     Codex `codex mcp login trelio`; Claude
-     `claude mcp login plugin:trelio-agent-workspaces:trelio`.
-     Если установленный Claude не поддерживает CLI login, направь в `/mcp`
-     к тому же точному серверу. URL авторизации сам проводит неавторизованного
-     пользователя через вход Trelio и согласие. Не открывай сайт для
-     предварительного входа, не вводи credentials через Computer Use и не
-     проси сообщить о входе до OAuth. Пользователь сам завершает один браузерный flow.
-   - После OAuth обнови MCP status того же клиента и один раз повтори безопасное
-     чтение Trelio в этой задаче. При доступных инструментах продолжай настройку
-     здесь. Claude может показывать сервер с namespace как `Connected`,
-     хотя сессия до OAuth ещё не видит `list_companies` и другие инструменты.
-     Это старая сессия, не неудачный OAuth: не повторяй login. Заверши её,
-     запусти новую `claude` из той же папки и повтори просьбу. В Codex новая
-     задача нужна, только если реальный повтор доказал отсутствие обновлённых
-     инструментов; не делай вывод по статическому списку. Если повтор после
-     завершённого OAuth явно не имеет bearer, не запускай новый цикл login:
-     процесс мог не подхватить credential. Сохрани успешную авторизацию.
-   Полный перезапуск приложения нужен, только если повтор в текущем процессе,
-   а затем новая задача/сессия в той же папке всё ещё не видят инструментов или
-   сообщают старую версию. В Claude после установки/обновления в текущей сессии
-   сначала `/reload-plugins`, затем новая сессия. Если в Codex отсутствует
-   marketplace, выполни `codex plugin marketplace add trelio-ru/agent-workspaces`,
-   затем `codex plugin list --json`. Marketplace не доказывает установку.
-   Если `trelio-agent-workspaces@trelio-plugins` не установлен/не включён,
-   выполни `codex plugin add trelio-agent-workspaces@trelio-plugins`.
-   `INSTALLED_BY_DEFAULT` – лишь оптимизация host, не повод пропустить проверку.
-2. В Codex до первого protected read вызови read-only
-   `plan_codex_trelio_hook_routing` без аргументов. Эта проверка не читает
-   Trelio content и не меняет hook trust. Она проверяет user-level default, в
-   котором Code Mode оставляет namespaces `mcp__trelio` и
-   `mcp__trelio_remote_skills` прямыми
-   model tools: nested MCP-вызов через Code Mode может не получить
-   client `PreToolUse`, даже если definition включена и доверена.
-   - При `status=ready` продолжай в текущей задаче.
-   - При `status=action_required` покажи только возвращённые table/key,
-     добавляемые namespaces и exact `planHash`; объясни, что существующие
-     namespaces и остальные настройки сохраняются. Если plan сообщает
-     `migratesLegacyBoolean=true`, отдельно объясни, что legacy
-     `[features] code_mode = true|false` станет `[features.code_mode] enabled`
-     с тем же boolean: Code Mode не включается и не выключается. Получи
-     отдельное явное подтверждение именно этой локальной правки. До него не
-     вызывай apply и не выдавай общую просьбу «настроить Trelio» за согласие
-     изменить пользовательский config Codex.
-   - После подтверждения вызови `apply_codex_trelio_hook_routing` с exact
-     `planHash` и `confirmed=true`. При stale plan заново выполни plan и покажи
-     изменившийся результат; прежнее подтверждение не переносится. После
-     `status=applied` не проверяй protected read в старом owning process:
-     пользователю нужно полностью завершить все процессы Codex/ChatGPT,
-     открыть приложение, создать новую задачу и повторить onboarding. Закрытие
-     окна или новая задача в прежнем App Server не применяют эту настройку.
-   - При отказе пользователя не меняй config. Останови protected onboarding и
-     назови direct routing нерешённой предпосылкой; не подменяй её повторным
-     включением Hooks. При unsupported/unsafe config не переписывай файл:
-     сообщи exact code и предложи ручное объединение той же table/key.
-
-   После готовности direct routing не останавливай настройку заранее только потому,
-   что approval hooks неизвестен или точный `PreToolUse` ещё не
-   наблюдался в текущей задаче.
-   Установка/включение плагина не создают доверие автоматически. После OAuth и
-   точного выбора компании выполни обязательный read-only
-   `get_agent_instructions` по шагу 5 как live-проверку. Если текущая hook
-   definition уже одобрена, `PreToolUse` сам добавит one-use proof и настройка
-   продолжится без вопроса. Новая либо неодобренная definition fail-closed не
-   раскроет protected content и вернёт `TRELIO_RUNTIME_HOOK_REQUIRED`.
-   Только при `reason=missing`, если просмотр текущей definition не подтверждён,
-   останови защищённую настройку и назови одно действие:
-   - Codex Desktop:
-     `Откройте настройки плагина Trelio Agent Workspaces, проверьте раздел Hooks,
-     включите их и повторите запрос.`
-   - Codex CLI:
-     `Откройте /hooks, выберите Trelio Agent Workspaces, проверьте текущую
-     конфигурацию, разрешите её и повторите запрос.`
-   Просмотр выполняет пользователь. Не автоматизируй доверие, не используй
-   `--dangerously-bypass-hook-trust` и не выводи одобрение из установки/включения,
-   `hooks.json`, `codex plugin list --json` или doctor.
-   `approvalStatus=client_managed_unknown` не означает ни согласия, ни отказа.
-   Успешный или ошибочный `PreToolUse` доказывает активность hook в задаче,
-   поэтому повторный checkpoint не нужен. Последующий
-   `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся сквозным отказом из-за отсутствия
-   proof, но не доказывает выключенное доверие: при подтверждённом доверии
-   переходи к точной диагностике клиента. После применённого user-level plan
-   отдельно исключи более приоритетный project/profile/CLI override; не меняй
-   этот слой автоматически.
-3. До `get_agent_instructions` и записи company-scoped привязки точно выбери
-   компанию. Codex routing preflight выше не зависит от компании и является
-   единственным локальным config-исключением до её выбора.
-   Вызови `list_companies`, если реальный ответ текущего хода ещё не вернул
-   доступные компании. Прочитай metadata-only `encryptionState`; старый
-   элемент без поля допустимо считать `plain`.
-   - Явный slug страницы, инструкций или просьбы – точный selector.
-     Продолжай только при полном совпадении возвращённого slug. Если его
-     нет, остановись и сообщи о недоступности указанной компании; не подменяй похожей.
-   - По display name допустимо лишь единственное точное совпадение.
-     Без совпадений или при нескольких покажи краткие варианты
-     `display name (slug)` и спроси пользователя.
-   - Имя/путь папки, имя репозитория, соседние файлы, fuzzy/substring/semantic
-     similarity не доказывают компанию и не исключают варианты из выбора.
-   - Без явного selector продолжай автоматически только при одной доступной
-     компании. При нескольких спроси до scoped read/write. Исправление
-     пользователя отменяет прежний выбор; повтори разрешение цели.
-4. Привязывай project slug, только если пользователь хочет ограничить всю папку
-   одним проектом. Не добавляй ограничение молча в папку всей компании.
-   Для проверенного служебного Git теперь выполни изоляцию ниже: после точного
-   выбора компании и до чтения её содержимого или локальной привязки.
-5. Для `plain`/`encrypted` до работы вызови `get_agent_instructions` с точными
-   компанией и необязательным проектом. Этот обязательный read-only вызов также
-   является live-проверкой Hooks: не проси ручное подтверждение до его попытки.
-   При успешном результате продолжай без checkpoint; при
-   `TRELIO_RUNTIME_HOOK_REQUIRED` примени точное различение из шага 2 и начала
-   этого навыка. Логический метод не зависит от транспорта:
-   - `plain`: используй native-ответ;
-   - `encrypted`: после pairing и настройки шифрования ниже выполни точное
-     локальное действие из `providerSelection`. Не пропускай/не переименовывай
-     `get_agent_instructions`: меняется только транспорт. Правила загружены
-     лишь после успешного локального продолжения.
-   Соблюдай рабочие правила и личный профиль, не копируя их в привязку папки.
+1. Определи точный клиент по его контексту; одного `CLAUDE_PLUGIN_ROOT`
+   недостаточно. Если local tool `diagnose_trelio_installation` доступен,
+   вызови его один раз с `clientKind=codex|claude-code` и
+   `intent=onboarding`. Это канонический read-only runtime-план локальной
+   настройки. Не повторяй отдельно doctor или Codex routing plan и не выводи
+   состояние из версии плагина.
+2. Следуй exact `requiredActions` по порядку:
+   - `INSTALL_NODE_RUNTIME` – объясни блокировку локального bridge, предложи
+     Node.js LTS ≥22 и получи отдельное явное подтверждение до команды менеджера
+     пакетов;
+   - `INSTALL_STANDALONE_GIT` – выполни возвращённый `installationPlan`;
+     штатное одобрение клиента/ОС остаётся у пользователя, отдельный вопрос
+     в чате не нужен;
+   - `REPAIR_LOADED_PLUGIN_SHELL` – используй официальный менеджер exact
+     клиента, не сбрасывая OAuth, pairing или runtime sessions;
+   - `REVIEW_CODEX_DIRECT_ROUTING` – покажи только table/key, добавляемые
+     namespaces и exact `planHash`. Объясни сохранение остальных настроек и,
+     при `migratesLegacyBoolean=true`, перенос boolean без изменения
+     `enabled`. Получи отдельное явное подтверждение именно этой локальной
+     правки; только затем вызови указанный `apply_codex_trelio_hook_routing`.
+     Stale plan перечитай и согласуй заново. После apply полностью заверши все
+     процессы Codex/ChatGPT, открой приложение, создай новую задачу и повтори
+     onboarding – старый App Server не может проверить новую direct routing;
+   - `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY` – сохрани exact `reasonCode` и
+     `message`, покажи только необходимое ручное объединение настройки. Не
+     переписывай symlink, неоднозначный TOML или более приоритетный config
+     автоматически;
+   - `START_BRIDGE_PAIRING` / `CONTINUE_BRIDGE_PAIRING` – выполни
+     возвращённый typed login action. При pairing request сразу вызови
+     `approve_agent_workspace_bridge_pairing` с exact `pairingId` и
+     `deviceName`, не показывая verifier/code.
+3. Если local MCP не запустился и самого diagnostic tool нет, используй только
+   bootstrap fallback:
+   - в Codex различай `trelio` и `trelio-remote-skills` через
+     `codex mcp list --json`, а установку shell – через
+     `codex plugin list --json`; в Claude используй `claude mcp list` и exact
+     namespaces `plugin:trelio-agent-workspaces:trelio` /
+     `plugin:trelio-agent-workspaces:trelio-remote-skills`;
+   - запусти exact загруженный `trelio-host-runtime-loader.mjs bridge doctor --json`
+     через соседний `launch-trelio-node`/`.cmd`; не сканируй cache и не ищи
+     глобальный `trelio-workspace`. Если launcher не нашёл Node.js 22+, проверь
+     `command -v node` либо `resolve-node.ps1`, затем согласуй установку.
+     Для Git используй только exact install plan doctor;
+   - в Codex отдельно вызови `plan_codex_trelio_hook_routing` и сохрани ту же
+     plan/apply границу. Удалённый Claude server без explicit HTTP `type` или
+     с `ENOENT` буквального относительного launcher означает старый shell:
+     обнови его и выполни `/reload-plugins`, не сбрасывая OAuth/pairing.
+4. Проверь удалённый MCP отдельно. `auth_status: "o_auth"` и Claude
+   `Connected` описывают конфигурацию, а не доказывают пригодный bearer.
+   Вызови `list_companies`: успех – live-проверка OAuth текущего процесса.
+   При явном 401/required/missing-bearer выполни ровно один login exact клиента:
+   Codex `codex mcp login trelio`; Claude
+   `claude mcp login plugin:trelio-agent-workspaces:trelio` либо тот же сервер
+   через `/mcp`. Пользователь сам завершает один browser flow; не проси
+   предварительно войти на сайт или написать о завершении в чат. После OAuth
+   повтори безопасное чтение один раз. Если старая Claude session уже видит
+   server как `Connected`, но tools не появились, заверши её и
+   запусти новую `claude` из той же папки, а не второй login.
+5. Установка/включение plugin shell не создают hook trust. После OAuth и exact
+   выбора компании обязательный `get_agent_instructions` ниже является
+   protected live-проверкой. Если definition уже одобрена, `PreToolUse` сам
+   добавит one-use proof. При `TRELIO_RUNTIME_HOOK_REQUIRED` только отсутствие
+   proof доказано. Лишь при `reason=missing` и неподтверждённом review попроси
+   пользователя проверить Hooks в настройках плагина либо Codex `/hooks`.
+   Не автоматизируй trust и не используй `--dangerously-bypass-hook-trust`.
+   При подтверждённом review используй диагностику definition/matcher/process
+   chronology, а не повторный совет включить Hooks.
+6. До `get_agent_instructions` и записи привязки точно выбери компанию по
+   свежему `list_companies` и metadata-only `encryptionState`:
+   - явный slug – только полное совпадение;
+   - display name – только единственное точное совпадение;
+   - без selector продолжай автоматически лишь при одной компании;
+   - имя папки/repository, соседние файлы и fuzzy similarity не являются
+     evidence. При нескольких вариантах покажи `display name (slug)` и спроси.
+   Project slug добавляй только при явном намерении ограничить всю папку.
+7. Для `plain` и точного `encrypted` вызови `get_agent_instructions` с
+   выбранной компанией и необязательным проектом. Для encrypted сначала
+   заверши pairing и encryption setup ниже, затем используй точное локальное
+   действие из `providerSelection`; логический method не переименовывай.
    Для `encrypting`, `decrypting`, `failed` и неизвестного non-`plain`
-   не вызывай `get_agent_instructions` и не объявляй готовность. Привязку и
-   обычный pairing можно завершить, но работу с зашифрованным содержимым
-   останови с точным состоянием и необходимым действием в настройках компании.
-   Не создавай Run и не используй plaintext fallback для проверки переходного состояния.
+   protected content не читай и plaintext fallback не используй.
 
 <a id="isolate-the-host-shell"></a>
 
@@ -396,94 +321,46 @@ display name и slug:
 
 ## Подключи локальный компонент
 
-Нужны Node.js 22+ и standalone Git 2.28+. Канонический executable – парные
-`../../scripts/launch-trelio-node`/`launch-trelio-node.cmd` с целевым встроенным
-`.mjs` первым аргументом. В Codex launcher сначала проверяет подсказки host
-и встроенный runtime, затем системный Node. Отсутствие PATH-alias не доказывает
-ошибку компонента; не записывай машинный абсолютный путь в `.mcp.json`.
+Используй результат `diagnose_trelio_installation`, уже полученный выше; не
+запускай второй doctor. Готовность локального компонента означает одновременно
+`node.status=ready`, `git.status=ready`, `plugin.status=ready` и
+`connection.status=ready`. `processPathReady=false` не блокирует bridge:
+runtime использует проверенный абсолютный executable.
 
-Если совместимый runtime не найден, разреши `node` без намеренно ошибочного
-probe и читай версию только при точном найденном executable. В Windows используй
-`../../scripts/resolve-node.ps1`. При `ready` и `processPathReady=false`
-Node уже установлен: launcher использует абсолютный `nodePath` в этой задаче.
-Не переустанавливай Node, не повторяй совет перезапуска и не блокируй удалённый
-OAuth из-за старого PATH клиента. Если выбранный `remoteMcpExecution` всё ещё
-недоступен, проверь `codex mcp list --json`: прямой `node` означает старое
-определение и требует обычного обновления/новой задачи.
+Если diagnostic tool недоступен из-за bootstrap-сбоя, stable shell сохраняет
+минимальный fallback:
 
-При `not_found` или версии ниже 22 объясни блокировку локальных bridge и
-сервера навыков, затем предложи установку:
+- launcher требует Node.js 22+; установку Node через `winget install --id
+  OpenJS.NodeJS.LTS -e`, доступный `brew install node` либо официальный
+  установщик выполняй только после краткого явного подтверждения;
+- standalone Git 2.28+ устанавливай только по exact plan doctor. Doctor сам
+  различает Homebrew / `xcode-select --install` / winget / официальный
+  installer и после установки повторно проверяет `init → add → commit`;
+- не записывай абсолютные пути в `.mcp.json`, не используй приватный Git
+  клиента и не ищи глобальную команду `trelio-workspace`.
 
-- Windows: `winget install --id OpenJS.NodeJS.LTS -e`;
-- macOS: `brew install node` только при уже доступном Homebrew; иначе официальный
-  установщик Node.js LTS;
-- другие ОС: обычный менеджер пакетов или официальный Node.js LTS, итоговая версия ≥22.
-
-Установка/обновление Node.js – отдельное изменение. До команды менеджера
-пакетов получи одно краткое явное подтверждение; штатное одобрение команды
-остаётся у клиента. Не устанавливай Node.js молча. Затем повтори launcher,
-проверь точную версию doctor и сразу используй абсолютный executable bridge.
-Один полный перезапуск нужен, только если выбранному `remoteMcpExecution`
-нужен локальный MCP клиента и новая задача всё ещё не запускает его.
-Если пользователь уже перезапускал, не повторяй совет: сравни PATH процесса
-с постоянным machine/user PATH и назови одно точное исправление окружения
-либо конкретное ограничение неподдерживаемого клиента.
-
-После готовности Node запусти встроенный `trelio-host-runtime-loader.mjs bridge doctor --json`
-через launcher до pairing. При `ready` продолжай через bridge с абсолютным
-`git.gitPath`. `processPathReady=false` не требует перезапуска. Doctor проверяет
-реальный внешний Git и временный `init → add → commit`, не приватный Git
-загрузки marketplace Codex.
-
-При `TRELIO_GIT_REQUIRED`, `not_found`, `upgrade_required` или `unusable`
-сразу выполни точный план установки doctor. Не останавливайся на предложении
-и не задавай отдельный вопрос-подтверждение в чате. Штатное одобрение команды,
-запрос администратора или окно подписанного установщика остаются у клиента/ОС;
-не обходи и не нажимай их за пользователя.
-
-- macOS с Homebrew: возвращённый `brew install git`. Без него сразу
-  `xcode-select --install`, пользователь завершает окно Apple, затем повтори
-  doctor без просьбы сообщить о завершении в чате.
-- Windows с App Installer: возвращённый
-  `winget install --id Git.Git -e --source winget --accept-source-agreements
-  --accept-package-agreements`. Если `winget` действительно недоступен,
-  сразу открой возвращённый официальный `https://git-scm.com/download/win`,
-  дай пользователю завершить подписанный установщик и повтори doctor.
-
-После установки повтори doctor в той же задаче/сессии и продолжай при `ready`.
-Git из Program Files, Homebrew или постоянного Windows PATH сразу используется
-по абсолютному пути; перезапуск не нужен. До повтора неоднозначной установки
-doctor должен проверить, не готов ли Git уже.
-
-Вызови локальный `continue_trelio_workspace_action` с `schemaVersion=1`,
-`operation=login`, `parameters={legacyOauth:false}`. Dispatcher запускает
-bridge загруженного плагина; не устанавливай и не ищи глобальный `trelio-workspace`.
-
-При одноразовом pairing request сразу вызови
-`approve_agent_workspace_bridge_pairing` с точными `pairingId` и `deviceName`,
-затем повтори прежнее login action. Не показывай pairing code/verifier.
-Не открывай Workspace компании, не начинай Run и не создавай/отменяй
-одноразовый результат ради проверки подключения.
+Для pairing выполняй только typed action из
+`START_BRIDGE_PAIRING`/`CONTINUE_BRIDGE_PAIRING`. Если план не был доступен,
+эквивалентный fallback – `continue_trelio_workspace_action` с
+`schemaVersion=1`, `operation=login`, `parameters={legacyOauth:false}`.
+При `TRELIO_BRIDGE_PAIRING_REQUIRED` сразу передай exact `pairingId` и
+`deviceName` в `approve_agent_workspace_bridge_pairing`, затем повтори прежний
+login action. Не показывай code/verifier и не создавай Workspace/Run ради
+проверки.
 
 Для точного `encrypted` успешный login доказывает только обычную device session.
-Сразу вызови тот же локальный инструмент с `operation=encryption_setup`
-и parameters с точным `companySlug` и `json=true`.
+Сразу вызови тот же local tool с `operation=encryption_setup` и parameters с
+точным `companySlug` и `json=true`. Защищённая форма `127.0.0.1` принимает ключ
+только локально; не переноси его в chat, MCP, argv, environment, stdin,
+clipboard или Workspace.
 
-Это обязательная настройка зашифрованного устройства. Может открыться защищённая
-форма `127.0.0.1`; пользователь вводит ключ только там, никогда в chat/MCP/
-argv/environment/stdin/clipboard/Workspace. Действие создаёт или переиспользует
-локальную identity шифрования/подписи, регистрирует fingerprint, открывает
-точный company envelope и проверяет случайный локальный canary production-кодеком
-`TRELIOE1` в обе стороны. Оно не создаёт Workspace, Agent Run, lease, checkpoint,
-изменение статуса задачи или серверную строку содержимого.
-
-При `status=ready` до заявления о готовности требуй `encryptionState=encrypted`
-и `selfTest.status=passed`. При `access_pending` покажи возвращённые fingerprint
-и settings URL и объясни: владелец компании должен разрешить именно это
-устройство Agent Workspaces. После разрешения повтори setup, не начинай Run.
-При `status=not_required` компания стала `plain`: повтори `list_companies`
-и обычные инструкции/каталог до завершения. Переходное/неизвестное состояние,
-ошибка envelope/scope/self-test блокируют зашифрованное содержимое без plaintext fallback.
+Готовность encrypted company требует одновременно
+`encryptionState=encrypted` и `selfTest.status=passed`. При `access_pending`
+покажи возвращённые fingerprint и settings URL: владелец компании должен
+разрешить именно это устройство Agent Workspaces, после чего setup повторяется
+без Run. `not_required` требует свежего `list_companies`; переходное/неизвестное
+состояние, ошибка envelope/scope/self-test блокируют content без plaintext
+fallback.
 
 <a id="offer-the-live-trelio-skills"></a>
 

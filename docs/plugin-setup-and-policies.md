@@ -144,13 +144,14 @@ Bundled bridge запускается через Node.js 22+ и использу
 использовать собственный undocumented executable, который не наследует Node
 bridge.
 
-После разрешения Node onboarding выполняет:
+После запуска local MCP onboarding вызывает read-only
+`diagnose_trelio_installation`. Один runtime-plan объединяет локальный doctor и,
+для Codex, direct-routing plan; он возвращает typed `requiredActions`, но ничего
+не устанавливает, не применяет и не авторизует. Если local MCP ещё не может
+запуститься, stable shell использует `trelio-workspace doctor --json` только как
+bootstrap fallback.
 
-```text
-trelio-workspace doctor --json
-```
-
-Команда проверяет стандартные Homebrew/system/Program Files пути, durable
+Локальный doctor проверяет стандартные Homebrew/system/Program Files пути, durable
 Windows machine/user PATH, exact version и временный `init → add → commit`.
 Произвольный executable из process PATH, включая внутренний Git Codex, не
 принимается; PATH сообщает только, виден ли уже выбранный standalone Git
@@ -171,12 +172,20 @@ states с уже истёкшим сроком, `pending` старше 24 час
 locks старше общего безопасного порога. Свежие и неизвестные записи остаются
 нетронутыми; invalid state по-прежнему виден в doctor для отдельной диагностики.
 
-Отдельный local MCP plan проверяет Codex Code Mode routing без вывода пути или
-содержимого `config.toml`. Если пользователь просил только диагностику, plan
-остаётся read-only. Даже при просьбе исправить настройку apply требует отдельное
-подтверждение exact `planHash`, повторно сверяет hash текущего файла и отказывает
-при stale plan. Неподдерживаемые inline/неоднозначные формы TOML и symlink
-fail-closed не переписываются.
+Встроенная в diagnostic tool часть `codexRouting` проверяет Codex Code Mode без
+вывода пути или содержимого `config.toml`. Даже при просьбе исправить настройку
+`REVIEW_CODEX_DIRECT_ROUTING` требует отдельное подтверждение exact `planHash`;
+apply повторно сверяет текущий файл и отказывает при stale plan. Неподдерживаемые
+inline/неоднозначные формы TOML и symlink fail-closed не переписываются.
+В этом случае общий diagnostic сохраняет остальные результаты и возвращает
+`REPAIR_CODEX_DIRECT_ROUTING_MANUALLY` с безопасными code/message вместо потери
+всего отчёта.
+
+Если старый backend вернул только `command`/`argv` без typed action, plugin не
+разбирает и не запускает их через shell. Он передаёт exact значение в
+`continue_trelio_workspace_action(operation=legacy_command)`, где runtime
+fail-closed проверяет executable, публичную operation/subcommand и allowlist
+флагов. Legacy secret input этим маршрутом запрещён.
 
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 

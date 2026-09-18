@@ -95,42 +95,49 @@ matcher. Сопоставь время установки плагина и за
 Сбой только `trelio-remote-skills` не означает сбой Trelio OAuth. Работа через
 удалённый Trelio и bridge может продолжаться. В `codex mcp list --json` текущее
 определение должно запускать `./scripts/launch-trelio-node`, а не прямой `node`.
-Выполни `trelio-host-runtime-loader.mjs bridge doctor --json` через POSIX launcher или Windows
-`.cmd` именно загруженного плагина. Stable loader сначала выбирает проверенный
-content-addressed Trelio runtime, затем bundled fallback; launcher выбирает
-встроенный runtime Codex, затем системный Node и требует версию 22+.
+Если local tool уже доступен, вызови `diagnose_trelio_installation` с exact
+`clientKind` и `intent=diagnostics`: он возвращает один typed local/routing plan,
+не применяя исправления. Иначе выполни
+`trelio-host-runtime-loader.mjs bridge doctor --json` через POSIX launcher или
+Windows `.cmd` именно загруженного плагина. Stable loader принимает только
+проверенный content-addressed signed Trelio runtime; исполняемого bundled
+fallback нет. Недоступный или непрошедший проверку runtime завершает запуск
+fail-closed. Launcher выбирает встроенный runtime Codex, затем системный Node
+и требует версию 22+.
 Начиная с `1.19.5`, фоновая очистка старых snapshot не блокирует MCP
 initialize response; stable loader сохраняет эту границу для внешнего runtime.
 Отсутствующий alias в PATH не означает
 неисправность Node, если launcher работает. Если Codex всё ещё показывает прямой
 `node`, обнови плагин и перейди в новую задачу по обычной процедуре. После
 подтверждения совместимого runtime не сбрасывай OAuth, не переустанавливай Node
-и не повторяй совет перезапуска. Если runtime update недоступен, loader
-продолжает bundled fallback и не удаляет plugin cache. Не советуй новую задачу
-или restart только из-за появления новой compatible runtime версии.
+и не повторяй совет перезапуска. Если runtime update недоступен, сохрани exact
+`HOST_RUNTIME_UNAVAILABLE` либо возвращённый upgrade code; не подменяй его plugin
+restart и не выбирай другую версию из cache. Не советуй новую задачу или restart
+только из-за появления новой compatible runtime версии.
 
-Видимый текст навыка не доказывает готовность. Подтверди её успешным безопасным
-чтением MCP, например `get_my_context` или `get_task`.
+Видимый текст навыка не доказывает готовность. `list_companies` подтверждает
+живой OAuth текущего процесса, а успешный protected `get_agent_instructions`
+либо `get_task` – запуск hook и действующий one-use proof.
 
 <a id="legacy-command-only-responses"></a>
 
 ## Старые ответы, содержащие только команду
 
 Этот маршрут допустим, только если старый ответ Trelio не содержит `bridge.action`
-или `runtimeExecution.localAction`, а первый токен серверной команды – ровно
-`trelio-workspace`. Не ищи и не запускай этот токен через PATH. Используй точные
-`scripts/launch-trelio-node` (либо соседний `.cmd` в Windows) и
-`scripts/trelio-host-runtime-loader.mjs bridge` загруженного плагина; передай им проверенные
-оставшиеся argv без изменений. Не используй `eval`, не сканируй cache, не выбирай
-другую версию и не принимай неизвестные операции/флаги. Если возвращены
-`argv`/`argvPrefix`, используй их вместо разбора текста.
+или `runtimeExecution.localAction`. Не разбирай текст и не запускай
+`trelio-workspace` через shell/PATH/launcher. Вызови локальный
+`continue_trelio_workspace_action` с `schemaVersion=1`,
+`operation=legacy_command`, прежним exact `workingDirectory` и ровно одним:
 
-Совместимость распространяется только на публичные операции, описанные
-загруженным bridge. Аргументы дочернего runtime и secret остаются после прежнего
-`--`. Для `secret set` от доверенного источника передавай байты напрямую через
-pipe во встроенный процесс. Они не попадают в MCP-аргументы, argv, чат или
-временный файл Workspace. Сообщать о сбое launcher можно только после неудачи
-точного встроенного маршрута; отсутствие глобальной команды нормально.
+- `parameters.argv` – exact server-returned массив, если он есть;
+- иначе `parameters.command` – exact однострочная server-returned строка.
+
+Runtime без shell проверит executable, quoting, публичную operation/subcommand,
+allowlist флагов, границу `--` и размер argv, затем выполнит встроенный bridge.
+Unknown route/flag, другой executable, многострочный/незавершённый command и
+legacy `secret set` завершаются точным `TRELIO_WORKSPACE_LEGACY_COMMAND_*`:
+не исправляй и не переписывай их в модели. Значения Agent Secret остаются только
+в typed `secret_set_file`/защищённом process-only маршруте из `agent-secrets.md`.
 
 <a id="missing-or-unusable-local-git"></a>
 
