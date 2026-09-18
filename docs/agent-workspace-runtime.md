@@ -495,6 +495,18 @@ root не трогает source. Агент сравнивает дельту, �
 Автоматически перемещать `.DS_Store` или очищать старую папку для обхода ошибки
 запрещено.
 
+При первом переходе старого `<workspace-id>/<run-id>/` container на persistent
+layout обычные ограниченные `.DS_Store`, `Thumbs.db` и `desktop.ini` также не
+блокируют миграцию и остаются нетронутыми рядом с legacy Run. Любая другая
+top-level запись, а также каталог, symlink, special file или файл больше 1 МиБ
+с системным именем возвращает structured
+`TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED`. `details.rootDirectory` называет
+фактически выбранный root, а bounded `blockingEntries` – exact имена, типы и
+reason codes; `automaticChangesPerformed=false` подтверждает отсутствие
+переноса и удаления. Local MCP сохраняет этот envelope вместо общего
+`TRELIO_WORKSPACE_ACTION_FAILED`, поэтому агент сообщает конкретную запись и не
+угадывает root по `workingDirectory` либо общей фразе о старой структуре.
+
 Если persistent root хранит другой `expired` Run, preflight сначала отделяет
 реальное незавершённое состояние от пустого остатка. Свежий Run, server draft,
 candidate, checkpoint, blocker/handoff, изменённый либо расходящийся Git,
@@ -535,8 +547,9 @@ backend outage делает auto-prune no-op. Настройка
 
 Обычные ограниченные untracked metadata-файлы `.DS_Store`, `Thumbs.db` и
 `desktop.ini` не считаются пользовательским содержимым ни рядом с `workspace/`,
-ни внутри Git-worktree. Tracked-файл, каталог, symlink или файл больше 1 МиБ с
-таким именем остаётся содержательной дельтой и блокирует замену/удаление.
+ни внутри Git-worktree, ни при безопасной миграции legacy container. Tracked-файл,
+каталог, symlink или файл больше 1 МиБ с таким именем остаётся содержательной
+дельтой и блокирует замену/удаление.
 Одинаковый local preflight выполняется до выбора plaintext или E2EE transport.
 Best-effort auto-clean запускается после `open`, успешного `finish` и локального
 `cancel_run`, но не чаще одного успешного прохода в сутки для одного origin.

@@ -44,6 +44,25 @@ bridge исключает сам; tracked-файл, каталог, symlink и �
 plaintext fallback не появляется, а последующее сохранение использует штатный
 transport целевого Run.
 
+## Заблокирована миграция старой локальной структуры
+
+`TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED` означает, что старый
+`<workspace-id>/<run-id>/` container содержит top-level записи, которые нельзя
+автоматически считать служебными. Назови пользователю exact
+`details.rootDirectory`, каждую видимую запись из `details.blockingEntries` и её
+`reasonCode`, а также прямо скажи, что при
+`automaticChangesPerformed=false` bridge ничего не перемещал и не удалял. Не
+заменяй это общей фразой «старая структура локальной папки» и не выводи
+фактический root из `workingDirectory`: bridge мог выбрать прежний global или
+registered root раньше folder binding.
+
+Обычный файл `.DS_Store`, `Thumbs.db` или `desktop.ini` размером не больше 1 МиБ
+bridge исключает сам и оставляет на месте. Одноимённые каталог, symlink, special
+file или большой файл, а также любая неизвестная запись остаются fail-closed.
+Не удаляй и не переноси их автоматически: предложи человеку проверить exact
+путь и выбрать судьбу пользовательских данных. Эта ошибка возникает до создания
+нового Run и не является сбоем OAuth, pairing или Hooks.
+
 <a id="blockers-restore-concurrency-and-cleanup"></a>
 
 ## Блокировки, восстановление, конкуренция и очистка

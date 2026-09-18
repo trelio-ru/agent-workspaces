@@ -128,6 +128,32 @@ test("plugin manifests and stable shell keep one version", async () => {
   assert.equal(claudeManifest.version, PLUGIN_VERSION);
 });
 
+test("bundled recovery instructions report exact legacy-layout blockers", async () => {
+  const [recoveryReference, diagnosticsSkill] = await Promise.all([
+    fs.readFile(path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-workspace-worker",
+      "references",
+      "run-recovery.md",
+    ), "utf8"),
+    fs.readFile(path.join(
+      pluginDirectory,
+      "skills",
+      "trelio-diagnostics",
+      "SKILL.md",
+    ), "utf8"),
+  ]);
+
+  for (const source of [recoveryReference, diagnosticsSkill]) {
+    assert.equal(source.includes("TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED"), true);
+    assert.equal(source.includes("details.rootDirectory"), true);
+    assert.equal(source.includes("details.blockingEntries"), true);
+    assert.equal(source.includes("automaticChangesPerformed"), true);
+  }
+  assert.equal(recoveryReference.includes("`workingDirectory`"), true);
+});
+
 test("host runtime updater verifies, materializes and selects a signed package", async () => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-loader-test-"));
   const runtimeVersion = "9.8.7";

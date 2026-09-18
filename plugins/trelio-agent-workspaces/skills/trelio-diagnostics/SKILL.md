@@ -284,6 +284,14 @@ lifecycle matchers с будущими версиями. Оно запускае
 - Один `runtimeSessions.status=attention` не доказывает сбоя hooks/OAuth/плагина.
   Текущие hooks восстанавливают истёкшее состояние и старые registration locks;
   сообщи счётчики и повтори одно чтение до предложения очистки.
+- `TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED` – локальный data-plane blocker,
+  а не общий сбой bridge. Сообщи exact `details.rootDirectory`, каждую видимую
+  запись из `details.blockingEntries` с её `reasonCode` и значение
+  `automaticChangesPerformed`. Не сокращай причину до «старой структуры папки»,
+  не угадывай root по `workingDirectory` и не удаляй записи автоматически.
+  Обычный ограниченный `.DS_Store`, `Thumbs.db` или `desktop.ini` текущий runtime
+  пропускает сам; если такой regular-файл всё же указан blocker-ом, сохрани
+  exact тип/размер и проверь загруженную runtime version как возможную регрессию.
 - Структурированный `MCP_SEARCH_TIMEOUT` доказывает, что MCP дошёл до Trelio
   и backend намеренно прервал read-only поиск до deadline reverse proxy.
   Это не 504, не ошибка OAuth, не отсутствие Hooks, не старый cache и не отказ
