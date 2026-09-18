@@ -274,7 +274,7 @@ Writable intent позже начинает отдельный обычный `p
 
 Company owner/admin history analytics сохраняет тот же plaintext boundary.
 Native `get_workspace_revision_diff` и `read_workspace_revision_file` выбирают
-`continue_trelio_local_workspace`; bridge загружает structural accepted-Run
+`continue_trelio_local_action` с `route=workspace`; bridge загружает structural accepted-Run
 descriptor и два opaque encrypted bundle, строит manifest/bounded patch либо
 bounded UTF-8 chunk во временном private Git-каталоге и удаляет его до возврата.
 Control paths не раскрываются, а backend не получает file path или bytes.
@@ -428,8 +428,8 @@ context/render-flow.
 
 Для encrypted company exact task read дополнительно возвращает компактный
 `proposalProvider=local_company_context` с canonical task target и двумя exact
-маршрутами: `get_trelio_local_proposal_context` читает данные без App metadata
-и возвращает `nextCall` с целью внутри `payload.target`, а
+маршрутами: `continue_trelio_local_action` с `route=proposal_context` читает
+данные без App metadata и возвращает `nextCall` с целью внутри `payload.target`, а
 `render_trelio_local_proposal` создаёт review-карточку только после `save`.
 Агент использует их сразу и не вызывает native proposal tool как отдельный
 preflight. Первый подтверждённый local company read сохраняет короткий

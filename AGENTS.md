@@ -477,8 +477,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   native, а детали exact local context/proposal route загружаются только из lazy
   worker reference после такого ответа. Always-visible schemas provider-neutral.
   Local runtime добавляет к search/file-search результату канонический
-  `nextCall` с exact tool/operation и mapping выбранного результата; model не
-  восстанавливает fetch/file route из внутреннего устройства mirror.
+  `nextCall` с exact dispatcher envelope и mapping выбранного результата; model
+  не восстанавливает fetch/file route из внутреннего устройства mirror. Все
+  non-UI local read/action/Workspace continuations используют один
+  `continue_trelio_local_action`; новые native methods расширяют backend matrix
+  и runtime adapter без нового plugin tool либо инструкции. Отдельным остаётся
+  только `render_trelio_local_proposal`, потому что MCP App resource metadata не
+  должна монтироваться на обычном dispatcher read.
 - Encrypted routing принимает только explicit capabilities: current content read,
   exact local action, proposal, local Workspace revision list, accepted-Run
   diff/file read, restore/cancel либо logical
@@ -499,8 +504,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   Encrypted comment publish replay принимает новый randomized marker только
   через verified bridge и возвращает success лишь после local plaintext
   comparison с фактически сохранённым hydrated comment.
-  Local proposal ABI разделён: `get_trelio_local_proposal_context` – headless
-  read без UI metadata и с exact local `nextCall`; только
+  Local proposal ABI разделён: generic dispatcher – headless context read без
+  UI metadata и с exact local `nextCall`; только
   `render_trelio_local_proposal` монтирует current App после `save`. Короткий
   owner-private route marker первого подтверждённого local company read
   останавливает ошибочный native renderer до MCP/App и не содержит company

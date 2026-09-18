@@ -135,8 +135,9 @@ proposal flow. URL разбирается только как структурн
 
 Comment/status/control/checklist proposals используют тот же context → editable
 draft → отдельное publish/apply/dismiss решение. Headless
-`get_trelio_local_proposal_context` не объявляет UI resource, поэтому служебное
-чтение вообще не создаёт карточку и возвращает точный local `nextCall`; только
+`continue_trelio_local_action` с `route=proposal_context` не объявляет UI
+resource, поэтому служебное чтение вообще не создаёт карточку и возвращает
+точный local `nextCall`; только
 `render_trelio_local_proposal` прикрепляет App к готовому draft. Первый
 подтверждённый local company read сохраняет короткий owner-private route
 marker, по которому hook останавливает случайный native renderer до запуска
@@ -467,7 +468,7 @@ proposal или иной Trelio mutation, поэтому пользовател�
 blocker не нужно.
 
 Явно брошенный Run отменяется после native route через
-`continue_trelio_local_workspace` / `cancel_run`. В encrypted-компании reason
+`continue_trelio_local_action` с `route=workspace`. В encrypted-компании reason
 шифруется локально; backend получает только подписанную ссылку и всё равно
 повторно проверяет автора/approver и terminal state. Тот же provider-neutral
 tool перечисляет revisions и восстанавливает выбранную encrypted revision новым

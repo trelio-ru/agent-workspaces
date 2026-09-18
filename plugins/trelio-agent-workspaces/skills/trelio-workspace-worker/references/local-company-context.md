@@ -11,16 +11,20 @@
 ## Выполни exact route
 
 1. Вызови server/tool/operation из текущего `providerSelection` без
-   переименования и без предварительного native read. Для обычных чтений это
-   `trelio-remote-skills.continue_trelio_local_context`.
-2. Передай только точные arguments выбранного native вызова и поля, объявленные
-   local tool schema. Не добавляй runtimeSessionProof, crypto-настройки, mirror
-   paths, keys или собственный fallback.
+   переименования и без предварительного native read. Новый non-UI маршрут
+   приходит как один `trelio-remote-skills.continue_trelio_local_action` с
+   готовыми `schemaVersion`, `route` и `parameters`; старые отдельные tool names
+   остаются только compatibility route уже возвращённых ответов.
+2. Если selection содержит `nativeArgumentsTarget=parameters.arguments`, скопируй
+   туда exact input исходного native вызова и больше ничего не перестраивай.
+   Для local upload вместо binary/base64 добавь только разрешённый
+   `parameters.localFilePath`. Не добавляй runtimeSessionProof,
+   crypto-настройки, mirror paths, keys или собственный fallback.
 3. Если результат содержит `nextCall`, он является каноническим продолжением:
-   выбери нужный результат, скопируй только поля из `copyFromSelectedResult` и
-   вызови указанный tool. Не восстанавливай этот маршрут по памяти. В частности,
-   search ведёт к exact fetch, а Workspace-file search – к чтению файла на
-   возвращённом accepted head.
+   выбери нужный результат, скопируй только поля из `copyFromSelectedResult` по
+   указанным dotted paths внутрь готовых `arguments` и вызови указанный tool.
+   Не восстанавливай этот маршрут по памяти. В частности, search ведёт к exact
+   fetch, а Workspace-file search – к чтению файла на возвращённом accepted head.
 4. Если provider ответил `native_trelio`, прекрати local route и продолжи exact
    native operation. `setup_required`, `access_pending`, `no_access`,
    `needs_reconnect` и provider error не разрешают другой connector, browser,
@@ -46,8 +50,8 @@ Run, lease или company-wide lock. Workspace file читай только по
 `workspaceId`, `workspaceHead`, `filePath`, которую вернул runtime; новый head не
 подставляй.
 
-Историю/restore/cancel продолжай через exact `continue_trelio_local_workspace`
-из providerSelection. Выбирай revision только из свежего list; manifest читается
+Историю/restore/cancel продолжай через exact dispatcher action из
+`providerSelection`. Выбирай revision только из свежего list; manifest читается
 до selected-file patch. Restore требует текущий/целевой heads, содержательную
 причину и server-prepared runtime session; неоднозначный mutation сначала
 проверяется точным read-back. Не повторяй restore/cancel вслепую.
@@ -56,8 +60,8 @@ Run, lease или company-wide lock. Workspace file читай только по
 
 Используй exact `proposalProvider` задачи и его `nextCall`:
 
-- context read – `get_trelio_local_proposal_context` с `runId` либо точными
-  `projectSlug`/`taskNumber`;
+- context read – server-returned dispatcher action с exact native input; runtime
+  сам выводит kind и цель, после чего следуй его `nextCall`;
 - save/render – `render_trelio_local_proposal` с live revision/snapshot и той же
   целью;
 - несколько карточек – один `kind=bundle` с исходным порядком blocks;
@@ -72,11 +76,11 @@ checklist и control остаются отдельными семантичес�
 
 ## Actions и файлы
 
-Обычную mutation выполняй только через exact `continue_trelio_local_action`.
-Для task/knowledge-base upload передай `localFilePath` выбранного локального
-файла и native arguments без base64/size/hash; runtime сам проверяет и доставляет
-bytes. Перед повтором неоднозначной mutation перечитай live object тем же
-provider.
+Обычную mutation выполняй только через exact dispatcher action из
+`providerSelection`. Для task/knowledge-base upload передай
+`parameters.localFilePath` выбранного локального файла и native arguments без
+base64/size/hash; runtime сам проверяет и доставляет bytes. Перед повтором
+неоднозначной mutation перечитай live object тем же provider.
 
 Original attachment/accepted file с `delivery=local-file` исследуй по локальному
 пути из `structuredContent`. Не возвращай binary через MCP и не сохраняй его вне

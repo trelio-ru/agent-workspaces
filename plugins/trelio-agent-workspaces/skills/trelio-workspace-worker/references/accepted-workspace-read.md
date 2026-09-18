@@ -10,7 +10,7 @@
 Для просьбы дать конкретный JPG, PDF или другой файл сначала используй exact
 file hit из поиска. В plain вызови `get_agent_workspace_file` с возвращёнными
 `workspaceId`, `workspaceHead`, `filePath` и `delivery=local-file`; в encrypted
-выполни выбранный local provider `get_workspace_file`/`fetch`. Затем выполни
+выполни exact `nextCall` выбранного local dispatcher. Затем выполни
 точный `bridge.action` либо `materialize`: `download_file` возвращает
 `localFilePath`, SHA-256, размер и срок локальной копии. Примени возвращённые
 `agentInstructionsSnapshot`/`userProfileSnapshot`, затем открой или передай файл.
