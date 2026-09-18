@@ -370,11 +370,18 @@ browser-fill outcome идут через E2EE data plane; для plain company �
 `prepare_agent_secret_browser_fill` закрепляет exact Run, версию, поля и
 ordered `steps` с HTTPS origin/hash полного URL и `fieldKey -> CSS selector`.
 Логин и пароль одной страницы входят в один step. Необязательный
+`activationSelector` разрешает один exact value-free click до поиска полей –
+например, переключение формы с QR/почты на телефон. Необязательный
 `submitSelector` разрешает нажатие exact кнопки после полей; для автономного
-перехода между native steps он обязателен. Path/query не сохраняются в БД/audit.
+перехода между native steps он обязателен. Activation/field/submit selectors и
+path/query не сохраняются в audit.
 
-По умолчанию `browser=auto`: агент штатным разрешённым browser tool открывает
-страницу во встроенном браузере Codex или Claude Code и изучает пустую форму.
+Model-visible MCP не принимает выбор `browser`. Агент может изучить пустую форму
+через разрешённый browser tool только для exact URL/selectors, но эта обычная
+вкладка не считается подготовленной для секрета. Trusted runtime сам выбирает
+transport: value-free проверяет уже открытую exact embedded-вкладку либо сам
+открывает target в isolated Chrome profile, затем выполняет optional activation
+и подтверждает все поля без значения до consume.
 Bridge получает value-free `GET /checkout-grants/:grantId/browser-fill-context`
 на выбранном `workspaceOrigin`, повторяет ACL, версию, срок, active Run/lease и
 выбирает приложение по pinned hook observation Run. GET не загружает secret
@@ -389,14 +396,14 @@ Run, а не на отсутствие встроенного браузера �
 разрешает exact `AXWebArea`/`AXDOMIdentifier` и пишет через AX setter. На Windows
 проверяются Authenticode publisher/product, процесс, UIA Document URL и
 `AutomationId`, запись идёт через `ValuePattern.SetValue`. Поддерживаются
-простые `#id` и `[id="..."]` для полей и `submitSelector`; составные CSS selectors
-не аппроксимируются. Если только финальная кнопка не имеет поддерживаемого id,
-агент готовит последний step без `submitSelector` и выбирает `browser=embedded`.
+простые `#id` и `[id="..."]` для `activationSelector`, полей и `submitSelector`;
+составные CSS selectors не аппроксимируются. Если только финальная кнопка не
+имеет поддерживаемого id, агент готовит последний step без `submitSelector`, а
+backend сам закрепляет returned action за embedded.
 После успешного fill он штатным browser tool нажимает заранее определённую кнопку
-в той же вкладке без snapshot/чтения заполненных полей. `auto` для такого плана
-не используется: fallback мог бы заполнить другую вкладку Chrome. Промежуточный
-native step требует поддерживаемый `submitSelector`; неподдерживаемые поля или
-промежуточная кнопка требуют явно выбранного Chrome ещё до выдачи значения.
+в той же вкладке без snapshot/чтения заполненных полей. Промежуточный native step
+требует поддерживаемый `submitSelector`; runtime может выбрать Chrome только до
+выдачи значения и только после собственного успешного value-free preflight.
 Системная блокировка исключает параллельные native fills и освобождается при
 выходе/crash helper. Объект документа, контейнер вкладки и поля проверяются
 заново перед каждой записью; вложенные
@@ -414,12 +421,13 @@ Accessibility-разрешение; Windows – системный .NET Framewor
 Accessibility permission нет. Правила browser tool, site approvals и запреты
 клиента продолжают действовать: native helper нельзя использовать для их обхода.
 
-Chrome fallback выбирается только до consume, если нет native platform/client,
+Chrome fallback выбирается runtime только до consume, если нет native platform/client,
 компилятора, разрешения Accessibility, доступного приложения/accessibility tree
 либо поддержки selector/перехода между steps. Старый backend с 404 на новом GET
 использует прежний Chrome flow на том же host; обычный consume всё равно
-проверяет grant. `browser=embedded` запрещает fallback, `browser=chrome` явно
-выбирает системный browser. Ошибка подписи, другой URL, missing/ambiguous/
+проверяет grant. Современный backend передаёт internal `browser=embedded` только
+для финального field-only step, где нужен последующий клик в той же вкладке;
+модель transport не выбирает. Ошибка подписи, другой URL, missing/ambiguous/
 hidden/read-only field, 401/403 или исчерпанные transport retries останавливают
 операцию. Никакого fallback после выдачи значения, partial fill или потерянного
 ответа consume нет.
@@ -429,8 +437,12 @@ grant. Bridge сравнивает весь полученный binding с pref
 E2EE payload при необходимости и один раз передаёт values по anonymous stdin
 подготовленному helper. Helper имеет ограниченный срок жизни и возвращает
 только status/reason. Chrome использует один persistent Trelio profile и
-изолированный DevTools controller с теми же exact URL/field/submit bindings.
-Профиль хранит cookies/session; подготовка не очищает их.
+изолированный DevTools controller с теми же exact URL/activation/field/submit
+bindings. Он безопасно переопределяет единственное поле или кнопку по тому же
+exact selector после динамического rerender и допускает только
+presentation-only форматирование телефонного номера с неизменной
+последовательностью цифр. Профиль хранит cookies/session; подготовка не очищает
+их.
 
 Успех означает заполнение/запрошенное нажатие, а не доказанный вход. До checkout
 используется content-free auth probe, если он есть. После заполнения агент не

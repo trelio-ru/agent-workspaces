@@ -384,11 +384,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   входом; provider runtime не получает bridge credentials. Live проверки и
   process-only доставка обязательны, admission/value cache не применяется.
   Catalog направляет такие setup-команды в exact runtime action без checkout grant.
-- Browser fill использует встроенный браузер по умолчанию; generic AX/UIA
-  helper готовится до consume, Chrome допустим только как pre-delivery fallback.
-  Native id binding относится к полям и кнопкам; финальная кнопка без id требует
-  embedded fill без submit и штатного клика в той же вкладке без чтения полей.
-  После выдачи значения браузер не меняется и secret повторно не отправляется.
+- Browser fill transport выбирает только generic runtime до consume после
+  value-free preflight: native AX/UIA либо isolated persistent Chrome profile.
+  Plugin передаёт exact URL/activation/field/submit steps и не предлагает модели
+  выбирать browser или fallback. Native id binding относится к activation,
+  полям и кнопкам; финальный step без submit backend сам закрепляет за embedded
+  для штатного клика в той же вкладке без чтения полей. После выдачи значения
+  браузер не меняется и secret повторно не отправляется.
   Native helpers, prerequisites, exact app/URL/field binding и ограничения
   описаны в [Agent Secrets](docs/agent-skills-and-secrets.md#agent-secrets).
   Не обходить host/site policy, Accessibility permission и запреты UI tools.

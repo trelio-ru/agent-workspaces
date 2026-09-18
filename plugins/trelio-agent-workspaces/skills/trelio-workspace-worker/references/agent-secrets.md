@@ -187,38 +187,40 @@ consume Agent Secret. Отдельный profile хранит session provider; 
 
 Не передавай именованное secret field в literal-text действие
 Browser/Chrome/Computer Use. Сначала обычным разрешённым browser tool открой
-точную страницу login во встроенном браузере клиента. Исследуй лишь пустую
-форму, определи поля и login/next до grant. Отказ host/tool/site обязателен:
-native helper не может его обходить.
+точную страницу login. Исследуй лишь пустую форму, определи переключатель режима,
+поля и login/next до grant. Эта вкладка нужна только для изучения и не считается
+подготовленной delivery surface. Отказ host/tool/site обязателен: runtime не
+может его обходить.
 
 Вызови `prepare_agent_secret_browser_fill` с текущим Run и упорядоченными steps:
 
 - username/password одной страницы – один step;
 - точные HTTPS URL и одно видимое поддерживаемое поле верхнего уровня на selector;
-- native AX/UIA требует точные `#id` или `[id="..."]` полей и любого
-  `submitSelector`; не угадывай и не назначай ID;
+- если пустая форма сначала показывает QR, email или другой режим, укажи exact
+  `activationSelector` value-free переключателя перед полями;
+- native AX/UIA требует точные `#id` или `[id="..."]` для activation, полей и
+  `submitSelector`; не угадывай и не назначай ID. Другой exact CSS selector
+  сохраняй как есть – runtime сам решит, нужен ли Chrome;
 - если финальная login-кнопка не имеет поддерживаемого ID (например, только
-  `button[type="submit"]`), опусти финальный `submitSelector` и используй
-  `browser=embedded`. После успеха fill нажми определённую на пустой форме
-  кнопку обычным browser tool в той же вкладке без snapshot/чтения полей.
-  Embedded-only связывает отдельный клик с подготовленной вкладкой, не
-  заполняя молча другой Chrome profile;
+  `button[type="submit"]`), опусти финальный `submitSelector`. Backend сам
+  закрепит такой field-only action за embedded. После успеха fill нажми
+  определённую на пустой форме кнопку обычным browser tool в той же вкладке
+  без snapshot/чтения полей;
 - промежуточным native steps нужен поддерживаемый `submitSelector`.
-  Если поле/промежуточная кнопка без ID, выбери объявленный Chrome flow до
-  доставки; не ослабляй selectors и не разделяй credential одной страницы.
+  Не ослабляй selectors и не разделяй credential одной страницы.
 
 Исполни ровно один `bridge.action` через объявленные local server/tool и
-точный `workingDirectory`. По умолчанию `browser=auto` до одноразового
-consume подготавливает уже открытый embedded Codex/Claude в macOS/Windows
-и автоматически заполняет прямыми native setters. E2EE расшифровывается
-только в памяти bridge. Значения не попадают в tool arguments, clipboard,
-argv, общее environment, output и чтение полей обратно.
+точный `workingDirectory`. Не открывай и не готовь дополнительную browser tab:
+до одноразового consume trusted runtime value-free проверяет уже открытую exact
+embedded-вкладку либо сам открывает target в isolated persistent Chrome profile.
+Только после успешного preflight он получает значение и заполняет exact поля. E2EE
+расшифровывается только в памяти bridge. Значения не попадают в tool arguments,
+clipboard, argv, общее environment, output и чтение полей обратно.
 
-Chrome – автоматический запасной путь только до checkout при недоступных
+Chrome – автоматический runtime fallback только до checkout при недоступных
 native platform/client/compiler/Accessibility permission/application tree/
 selector/steps. 404 старого backend для value-free context использует
-существующий Chrome consume на том же host. `browser=embedded` требует
-встроенную поверхность; `browser=chrome` явно выбирает Chrome.
+существующий Chrome consume на том же host. Модель transport не выбирает.
 Неверные app identity/URL, отсутствующие, неоднозначные, скрытые/read-only
 поля и transport/auth failures останавливают операцию. После consume или
 частичного fill не меняй браузер, не запрашивай другой grant и не повторяй
