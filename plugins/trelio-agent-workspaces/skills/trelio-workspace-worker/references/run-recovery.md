@@ -63,6 +63,28 @@ file или большой файл, а также любая неизвестн
 путь и выбрать судьбу пользовательских данных. Эта ошибка возникает до создания
 нового Run и не является сбоем OAuth, pairing или Hooks.
 
+## Действие требует открытого активного Run
+
+`TRELIO_WORKSPACE_ACTIVE_RUN_REQUIRED` означает, что Run-bound действие
+запущено не из materialized writable Run. Это не доказательство старой
+локальной структуры и не повод запускать диагностику OAuth/plugin. Следуй
+`details.reasonCode`:
+
+- `READ_ONLY_INSPECTION` – текущая папка создана
+  `prepare_agent_workspace_read`; отсутствие `.trelio-run.json` в ней штатно;
+- `RUN_METADATA_NOT_FOUND` – рядом с рабочей папкой нет metadata открытого Run;
+- `RUN_METADATA_INVALID` или `RUN_ID_MISSING` – найденная metadata не может
+  подтвердить active Run.
+
+Используй уже выбранную точную задачу/Workspace. Вызови
+`prepare_agent_workspace_run` (с exact `runId`, если он уже задан текущим
+workflow), исполни returned `open`, возьми выданный writable directory и
+повтори исходное действие один раз. Не превращай read-only inspection в
+writable каталог и не создавай новый Run при наличии exact recoverable Run.
+Если цель ещё не определена точно, сначала вернись к `scope-and-context.md`.
+`automaticChangesPerformed=false` означает, что bridge ничего не переносил и
+не удалял; эта ошибка не содержит `rootDirectory` или `blockingEntries`.
+
 <a id="blockers-restore-concurrency-and-cleanup"></a>
 
 ## Блокировки, восстановление, конкуренция и очистка

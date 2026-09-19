@@ -155,6 +155,29 @@ test("bundled recovery instructions report exact legacy-layout blockers", async 
   assert.equal(recoveryReference.includes("`workingDirectory`"), true);
 });
 
+test("bundled recovery distinguishes a missing active Run from legacy migration", async () => {
+  const [recoveryReference, agentSecrets, externalServices] = await Promise.all([
+    "run-recovery.md",
+    "agent-secrets.md",
+    "external-services.md",
+  ].map((name) => fs.readFile(path.join(
+    pluginDirectory,
+    "skills",
+    "trelio-workspace-worker",
+    "references",
+    name,
+  ), "utf8")));
+
+  for (const source of [recoveryReference, agentSecrets, externalServices]) {
+    assert.equal(source.includes("TRELIO_WORKSPACE_ACTIVE_RUN_REQUIRED"), true);
+    assert.equal(source.includes("TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED"), true);
+  }
+  assert.match(recoveryReference, /READ_ONLY_INSPECTION/u);
+  assert.match(recoveryReference, /prepare_agent_workspace_run/u);
+  assert.match(recoveryReference, /returned `open`/u);
+  assert.match(recoveryReference, /automaticChangesPerformed=false/u);
+});
+
 test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {
   const instructionPaths = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),

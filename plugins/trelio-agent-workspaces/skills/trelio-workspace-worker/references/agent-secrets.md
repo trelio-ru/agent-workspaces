@@ -161,6 +161,13 @@ Bridge сам выполняет live проверку; отказ устран�
 затем исполни единственный `bridge.action` через точные local server/tool
 и открытый `workingDirectory`. В `parameters.arguments` добавляй только
 намеченные child arguments; не меняй executable/grant.
+
+Если action вернул `TRELIO_WORKSPACE_ACTIVE_RUN_REQUIRED`, checkout ещё не
+доказывает открытый локальный Run. Прочитай `run-recovery.md`, подготовь и
+открой точный Run, затем повтори тот же action один раз из выданного writable
+directory. Не называй отсутствие `.trelio-run.json` старой структурой: в
+read-only inspection этот файл намеренно отсутствует и не доказывает
+`TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED`.
 Bridge расходует grant через разрешённые stdin, scoped env или private
 temporary-file. В encrypted сервер возвращает лишь ciphertext с проверкой ACL;
 bridge валидирует company/scope/secret/version, расшифровывает в памяти,

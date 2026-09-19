@@ -77,3 +77,9 @@ personal connection сообщи о текущей недоступности, �
 
 Для старого `runtimeExecution.command` прочитай `setup-and-recovery.md`
 и используй ограниченную совместимость. Не ищи PATH и не сканируй cache.
+
+Run-bound `localAction`, включая Agent Secret checkout, выполняй только из
+writable directory, возвращённого успешным `open`. При
+`TRELIO_WORKSPACE_ACTIVE_RUN_REQUIRED` прочитай `run-recovery.md`, открой
+точный Run и повтори действие один раз; отсутствие служебного файла само по
+себе не является `TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED`.

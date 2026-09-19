@@ -507,6 +507,18 @@ reason codes; `automaticChangesPerformed=false` подтверждает отс�
 `TRELIO_WORKSPACE_ACTION_FAILED`, поэтому агент сообщает конкретную запись и не
 угадывает root по `workingDirectory` либо общей фразе о старой структуре.
 
+Run-bound действие, запущенное вне открытого writable Run, возвращает
+`TRELIO_WORKSPACE_ACTIVE_RUN_REQUIRED`, а не общий filesystem-текст.
+`details.reasonCode=READ_ONLY_INSPECTION` отдельно обозначает штатный каталог
+`prepare_agent_workspace_read`, где `.trelio-run.json` намеренно отсутствует;
+`RUN_METADATA_NOT_FOUND`, `RUN_METADATA_INVALID` и `RUN_ID_MISSING` описывают
+остальные состояния metadata. Во всех случаях `requiredAction` равен
+`prepare_and_open_workspace_run`, `automaticChangesPerformed=false`: агент
+вызывает `prepare_agent_workspace_run` для уже выбранной цели, исполняет
+returned `open` и повторяет исходное действие один раз. Эта ошибка не является
+доказательством старой структуры. Настоящая migration blocker по-прежнему
+обязана содержать exact `rootDirectory` и `blockingEntries`.
+
 Если persistent root хранит другой `expired` Run, preflight сначала отделяет
 реальное незавершённое состояние от пустого остатка. Свежий Run, server draft,
 candidate, checkpoint, blocker/handoff, изменённый либо расходящийся Git,
