@@ -86,6 +86,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   launchers, loader/signature verifier, lifecycle hook definition,
   bootstrap/control-plane skills и assets. Исполняемого bundled runtime fallback
   нет; first install обязан получить signed package либо завершиться fail-closed.
+- Повреждённый exact content-addressed host runtime восстанавливается только под
+  update lock: loader удаляет и заново материализует один каталог
+  `runtimeVersion/packageSha256`, не сканируя и не очищая соседние версии.
 - Generic host implementation, runtime admission/pairing и общие
   security/credential/browser primitives находятся только в отдельном
   `trelio-ru/agent-workspaces-runtime`. Его source и tests не копируются сюда.

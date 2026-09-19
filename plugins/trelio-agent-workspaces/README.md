@@ -532,6 +532,9 @@ runtime rollout не запускает `plugin add`, не ломает стар
 stable loader дожидается подписанного package и ровно один раз повторно запускает
 exact bridge-команду в той же задаче. Marketplace update остаётся только для
 реального `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` самой shell.
+Если exact content-addressed каталог оказался неполным или повреждённым, updater
+под своей блокировкой заменяет только этот каталог и повторно проверяет его перед
+переключением указателя; соседние runtime-каталоги остаются неизменными.
 
 Runtime cache содержит только код. Ключи E2EE, plaintext company content,
 credentials и sessions туда не попадают; зашифрованные компании продолжают

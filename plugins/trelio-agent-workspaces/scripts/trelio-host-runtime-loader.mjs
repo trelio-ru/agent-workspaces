@@ -13,7 +13,6 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -88,6 +87,14 @@ const writePrivateJson = async (filePath, value) => {
     mode: 0o600,
   });
   await fs.rename(temporaryPath, filePath);
+};
+
+const scheduleNextUpdate = async (delayMilliseconds) => {
+  // update-state is a private throttle, not a diagnostic journal. Keeping only
+  // the timestamp consumed by startDetachedUpdate avoids stale duplicate state.
+  await writePrivateJson(UPDATE_STATE_PATH, {
+    nextAttemptAt: new Date(Date.now() + delayMilliseconds).toISOString(),
+  });
 };
 
 const normalizeOrigin = (rawOrigin) => {
@@ -190,7 +197,8 @@ const readVerifiedRuntime = async (pointer = null) => {
 
   const runtimeDirectory = runtimeDirectoryFor(selected);
   const marker = await readPrivateJson(path.join(runtimeDirectory, ".trelio-verified.json"));
-  const entrypointPath = path.join(runtimeDirectory, "scripts", "trelio-host-runtime-entry.mjs");
+  const entrypointRelativePath = "scripts/trelio-host-runtime-entry.mjs";
+  const entrypointPath = path.join(runtimeDirectory, ...entrypointRelativePath.split("/"));
 
   if (
     marker?.runtimeVersion !== selected.runtimeVersion
@@ -200,11 +208,13 @@ const readVerifiedRuntime = async (pointer = null) => {
     return null;
   }
 
+  const verifiedPaths = new Set();
   for (const file of marker.files) {
     if (
       typeof file?.path !== "string"
       || file.path.includes("\\")
       || file.path.split("/").some((segment) => !segment || segment === "." || segment === "..")
+      || verifiedPaths.has(file.path)
       || !sha256Pattern.test(String(file?.sha256 || ""))
       || !Number.isSafeInteger(file?.sizeBytes)
     ) {
@@ -228,15 +238,36 @@ const readVerifiedRuntime = async (pointer = null) => {
       if (error?.code === "ENOENT") return null;
       throw error;
     }
+    verifiedPaths.add(file.path);
   }
+  if (!verifiedPaths.has(entrypointRelativePath)) return null;
 
   return {
-    source: "downloaded",
     runtimeVersion: selected.runtimeVersion,
     packageSha256: selected.packageSha256,
     runtimeDirectory,
     entrypointPath,
   };
+};
+
+const removeInvalidRuntimeTarget = async (targetDirectory) => {
+  const metadata = await fs.lstat(targetDirectory).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!metadata) return;
+  if (metadata.isSymbolicLink()) {
+    throw new Error("Повреждённый Trelio host runtime cache имеет небезопасный тип.");
+  }
+
+  // materializeRuntime is called only while the updater lock is held. The
+  // descriptor also fixes this exact version/hash path, so recovery removes no
+  // sibling runtime and cannot widen into a cache sweep.
+  if (metadata.isDirectory()) {
+    await fs.rm(targetDirectory, { recursive: true, force: false });
+  } else {
+    await fs.unlink(targetDirectory);
+  }
 };
 
 const materializeRuntime = async (descriptor, packageBytes) => {
@@ -257,6 +288,7 @@ const materializeRuntime = async (descriptor, packageBytes) => {
   if (existing) return existing;
 
   await ensurePrivateDirectory(path.dirname(targetDirectory));
+  await removeInvalidRuntimeTarget(targetDirectory);
   const temporaryDirectory = await fs.mkdtemp(path.join(
     path.dirname(targetDirectory),
     ".materializing-",
@@ -275,7 +307,6 @@ const materializeRuntime = async (descriptor, packageBytes) => {
     await writePrivateJson(path.join(temporaryDirectory, ".trelio-verified.json"), {
       runtimeVersion: descriptor.runtimeVersion,
       packageSha256: descriptor.packageSha256,
-      signingKeyId: descriptor.signingKeyId,
       verifiedAt: new Date().toISOString(),
       files: parsed.files.map((file) => ({
         path: file.path,
@@ -284,9 +315,7 @@ const materializeRuntime = async (descriptor, packageBytes) => {
       })),
     });
 
-    await fs.rename(temporaryDirectory, targetDirectory).catch(async (error) => {
-      if (error?.code !== "EEXIST" && error?.code !== "ENOTEMPTY") throw error;
-    });
+    await fs.rename(temporaryDirectory, targetDirectory);
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
     for (const file of parsed.files) file.bytes.fill(0);
@@ -344,11 +373,7 @@ const updateRuntime = async ({
     // Existing verified runtimes keep working, but a fresh shell must fail
     // closed because it intentionally contains no executable fallback.
     if (metadataResponse.status === 404) {
-      await writePrivateJson(UPDATE_STATE_PATH, {
-        checkedAt: new Date().toISOString(),
-        nextAttemptAt: new Date(Date.now() + UPDATE_INTERVAL_MS).toISOString(),
-        status: "runtime_unavailable",
-      });
+      await scheduleNextUpdate(UPDATE_INTERVAL_MS);
       return false;
     }
     if (!metadataResponse.ok) {
@@ -366,20 +391,12 @@ const updateRuntime = async ({
       && current.runtimeVersion === descriptor.runtimeVersion
       && current.packageSha256 === descriptor.packageSha256
     ) {
-      await writePrivateJson(UPDATE_STATE_PATH, {
-        checkedAt: new Date().toISOString(),
-        nextAttemptAt: new Date(Date.now() + UPDATE_INTERVAL_MS).toISOString(),
-        status: "current",
-        runtimeVersion: current.runtimeVersion,
-        minimumRuntimeVersion: descriptor.minimumRuntimeVersion,
-      });
+      await scheduleNextUpdate(UPDATE_INTERVAL_MS);
       return false;
     }
 
     const packageResponse = await fetchWithRetries(descriptor.packageUrl);
     if (!packageResponse.ok) throw new Error(`Host runtime package HTTP ${packageResponse.status}.`);
-    const contentLength = Number(packageResponse.headers.get("content-length") || 0);
-    if (contentLength > MAX_PACKAGE_BYTES) throw new Error("Host runtime package превышает лимит.");
     // Content-Length is optional and cannot be trusted as the only allocation
     // boundary. Stream-count against the signed descriptor before buffering.
     const packageBytes = await readBoundedResponseBuffer(
@@ -389,33 +406,18 @@ const updateRuntime = async ({
     );
 
     try {
-      if (
-        packageBytes.byteLength !== descriptor.packageSizeBytes
-        || crypto.createHash("sha256").update(packageBytes).digest("hex") !== descriptor.packageSha256
-      ) {
-        throw new Error("Host runtime package не совпадает с опубликованным SHA-256.");
-      }
       verifyHostRuntimeSignature(packageBytes, descriptor);
+      // Package parsing computes the whole-package SHA-256 once and compares
+      // both size and digest with this descriptor before any file is written.
       await materializeRuntime(descriptor, packageBytes);
     } finally {
       packageBytes.fill(0);
     }
 
-    await writePrivateJson(UPDATE_STATE_PATH, {
-      checkedAt: new Date().toISOString(),
-      nextAttemptAt: new Date(Date.now() + UPDATE_INTERVAL_MS).toISOString(),
-      status: "updated",
-      runtimeVersion: descriptor.runtimeVersion,
-      minimumRuntimeVersion: descriptor.minimumRuntimeVersion,
-    });
+    await scheduleNextUpdate(UPDATE_INTERVAL_MS);
     return true;
   } catch (error) {
-    await writePrivateJson(UPDATE_STATE_PATH, {
-      checkedAt: new Date().toISOString(),
-      nextAttemptAt: new Date(Date.now() + UPDATE_FAILURE_RETRY_MS).toISOString(),
-      status: "failed",
-      errorCode: "HOST_RUNTIME_UPDATE_FAILED",
-    }).catch(() => undefined);
+    await scheduleNextUpdate(UPDATE_FAILURE_RETRY_MS).catch(() => undefined);
     throw error;
   } finally {
     await fs.rm(UPDATE_LOCK_PATH, { recursive: true, force: true });
@@ -489,7 +491,6 @@ export const runHostRuntimeLoader = async ({
         env: {
           ...environment,
           TRELIO_HOST_RUNTIME_VERSION: selected.runtimeVersion,
-          TRELIO_HOST_RUNTIME_SOURCE: selected.source,
           TRELIO_PLUGIN_VERSION: PLUGIN_VERSION,
           TRELIO_PLUGIN_ROOT: PLUGIN_ROOT,
         },

@@ -14,6 +14,7 @@ import {
 } from "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-loader.mjs";
 import {
   PLUGIN_VERSION,
+  resolveWorkspaceBridgeConfigDirectory,
 } from "../plugins/trelio-agent-workspaces/scripts/trelio-host-runtime-shell.mjs";
 
 const loaderPath = fileURLToPath(new URL(
@@ -159,7 +160,7 @@ test("host runtime updater verifies, materializes and selects a signed package",
   const runtimeVersion = "9.8.7";
   const packageBytes = buildSyntheticHostRuntimePackage({
     runtimeVersion,
-    source: "process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION, source: process.env.TRELIO_HOST_RUNTIME_SOURCE }));\n",
+    source: "process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION }));\n",
   });
   const packageSha256 = createHash("sha256").update(packageBytes).digest("hex");
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -185,7 +186,6 @@ test("host runtime updater verifies, materializes and selects a signed package",
           packageUrl: `http://127.0.0.1:${address.port}/runtime.skillpkg`,
           packageSignature,
           signingPublicKeySpki,
-          signingKeyId: "test-ed25519",
         },
       }));
       return;
@@ -212,8 +212,27 @@ test("host runtime updater verifies, materializes and selects a signed package",
       LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
       TRELIO_ORIGIN: `http://127.0.0.1:${address.port}`,
     };
+    const configDirectory = resolveWorkspaceBridgeConfigDirectory({
+      platform: process.platform,
+      environment,
+      homeDirectory: temporaryHome,
+    });
+    const corruptRuntimeDirectory = path.join(
+      configDirectory,
+      "host-runtimes",
+      runtimeVersion,
+      packageSha256,
+    );
+    await fs.mkdir(corruptRuntimeDirectory, { recursive: true });
+    await fs.writeFile(path.join(corruptRuntimeDirectory, "stale-partial-file"), "broken");
+    await fs.writeFile(
+      path.join(corruptRuntimeDirectory, ".trelio-verified.json"),
+      `${JSON.stringify({ runtimeVersion, packageSha256, files: [] })}\n`,
+    );
+
     const update = await runLoader(["__update"], environment);
     assert.equal(update.code, 0, update.stderr);
+    await assert.rejects(fs.access(path.join(corruptRuntimeDirectory, "stale-partial-file")));
 
     // Foreground startup selects only a fully verified immutable tree. Neither
     // the agent nor the Codex plugin cache participates in this decision.
@@ -225,7 +244,6 @@ test("host runtime updater verifies, materializes and selects a signed package",
     assert.deepEqual(JSON.parse(invocation.stdout), {
       mode: "mcp",
       version: runtimeVersion,
-      source: "downloaded",
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (
