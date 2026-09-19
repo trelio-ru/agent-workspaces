@@ -71,8 +71,7 @@ proposal либо автоматического handoff:
 Для нескольких карточек всегда читай `get_task_comment_proposal_context`
 точной цели и передавай authoring-basis hash/revision с текстом в её
 `commentProposal` одного `render_task_proposals`, включая обычный комментарий
-принятого Run. Старый `render_task_comment_proposals` остаётся совместимостью
-для comment-only клиентов, не основным bundle-маршрутом.
+принятого Run.
 
 <a id="keep-publication-separate"></a>
 

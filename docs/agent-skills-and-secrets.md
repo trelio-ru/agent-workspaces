@@ -505,9 +505,9 @@ Plugin выполняет value-free preflight; для E2EE шифрует и п
 optional fields удаляются. Повтор с тем же request ID не создаёт дубль.
 Plaintext остаётся в исходном чате и может остаться в tool history, но не
 возвращается в response/audit и не копируется в shell, файл или mirror.
-Прямой remote `save_known_agent_secret` остаётся legacy plain-only путём;
-новая инструкция выбирает локальный facade. При недоступном opt-in или
-устройстве используется штатная настройка доступа либо защищённая форма.
+Прямой remote `save_known_agent_secret` не принимает plaintext: запись проходит
+только через локальный facade. При недоступном opt-in или устройстве используется
+штатная настройка доступа либо защищённая форма.
 
 Когда пользователь прямо просит сгенерировать и сохранить password, агент
 использует тот же local facade с `nativeTool=generate_agent_secret`, но не

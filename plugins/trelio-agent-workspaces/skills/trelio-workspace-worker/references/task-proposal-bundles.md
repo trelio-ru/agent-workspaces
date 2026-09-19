@@ -12,8 +12,8 @@
 интерактивных карточках прочитай reference каждого вида и вызови
 `render_task_proposals` ровно один раз. В этом ответе не вызывай
 `propose_task_comment`, `render_task_comment_proposal`,
-`render_task_comment_proposals`, `render_task_status_proposal`,
-`render_task_control_clear_proposal` или `render_task_checklist_proposal`:
+`render_task_status_proposal`, `render_task_control_clear_proposal` или
+`render_task_checklist_proposal`:
 клиент может показать только последний отдельный App-результат.
 
 Для локального `proposalProvider`/выбранного сервером `providerSelection`

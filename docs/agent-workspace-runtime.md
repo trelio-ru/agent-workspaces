@@ -562,7 +562,7 @@ Workspace нет другого открытого Run, Git чист и root с�
 `expired` Run сохраняется для возможного claim. Active, unknown и dirty roots сохраняются;
 backend outage делает auto-prune no-op. Настройка
 `workspaceRetentionDays` меняет срок в пределах 1–365 дней; старый
-`terminalRunRetentionDays` читается как совместимый alias.
+Старый ключ `terminalRunRetentionDays` в protocol v3 больше не читается.
 
 Обычные ограниченные untracked metadata-файлы `.DS_Store`, `Thumbs.db` и
 `desktop.ini` не считаются пользовательским содержимым ни рядом с `workspace/`,
@@ -626,10 +626,10 @@ Encrypted regular-work mirror получает отдельную bounded search
 backend не строит plaintext index. Проекция входит в revision token, поэтому
 изменение комментария вне 50-entry detail page создаёт новое immutable generation.
 
-Local mirror schema 5 читает accepted browser manifest и bounded safe text;
-имена binary/external файлов индексируются без их скачивания. Только явно
-отсутствующая legacy projection использует прежний encrypted bundle. Ошибка
-ACL, head, crypto или сети не переключает transport.
+Local mirror schema 5 требует accepted browser manifest и bounded safe text;
+имена binary/external файлов индексируются без их скачивания. Отсутствующая
+projection блокирует чтение и требует обновления; прежний whole-bundle transport
+не используется. Ошибка ACL, head, crypto или сети не переключает transport.
 
 Один file hit разрешается через `get_agent_workspace_file(delivery=local-file)`
 либо server-selected local `get_workspace_file`/`fetch`, затем typed
@@ -656,7 +656,8 @@ reuse; локальная папка не подтверждает текущи�
 Bridge получает protocol 2 capabilities и per-file limit компании до проверки
 candidate. Общего ограничения 96/100 МиБ для этого протокола нет: ciphertext
 передаётся частями по 8 МиБ, manifest ограничен 8 МиБ, число файлов – server
-capability. Только явный `404` включает прежний transport старого backend.
+capability. Отсутствие capability или маршрута завершает операцию fail-closed;
+монолитный transport старого backend не используется.
 
 Каждый файл – отдельный `TRELIOE1` с random UUID. Bridge сверяет exact committed
 path/type/size/plaintext digest с расшифрованным manifest принятой base revision.

@@ -10,8 +10,8 @@ bridge возвращает `TRELIO_GIT_REQUIRED`, Trelio отклоняет у�
 
 ## Допуск через runtime hook
 
-Не создавай, не копируй, не сохраняй и не отправляй повторно `runtimeSessionProof`
-или `runtimeAttestation`. Поиск подключений и восстановление pairing/session
+Не создавай, не копируй, не сохраняй и не отправляй повторно `runtimeSessionProof`.
+Поиск подключений и восстановление pairing/session
 доступны без допуска. Для чтения контекста, изменений и Agent Workspace
 подтверждённый hook сам добавляет новое одноразовое доказательство.
 
@@ -118,26 +118,6 @@ restart и не выбирай другую версию из cache. Не сов
 Видимый текст навыка не доказывает готовность. `list_companies` подтверждает
 живой OAuth текущего процесса, а успешный protected `get_agent_instructions`
 либо `get_task` – запуск hook и действующий one-use proof.
-
-<a id="legacy-command-only-responses"></a>
-
-## Старые ответы, содержащие только команду
-
-Этот маршрут допустим, только если старый ответ Trelio не содержит `bridge.action`
-или `runtimeExecution.localAction`. Не разбирай текст и не запускай
-`trelio-workspace` через shell/PATH/launcher. Вызови локальный
-`continue_trelio_workspace_action` с `schemaVersion=1`,
-`operation=legacy_command`, прежним exact `workingDirectory` и ровно одним:
-
-- `parameters.argv` – exact server-returned массив, если он есть;
-- иначе `parameters.command` – exact однострочная server-returned строка.
-
-Runtime без shell проверит executable, quoting, публичную operation/subcommand,
-allowlist флагов, границу `--` и размер argv, затем выполнит встроенный bridge.
-Unknown route/flag, другой executable, многострочный/незавершённый command и
-legacy `secret set` завершаются точным `TRELIO_WORKSPACE_LEGACY_COMMAND_*`:
-не исправляй и не переписывай их в модели. Значения Agent Secret остаются только
-в typed `secret_set_file`/защищённом process-only маршруте из `agent-secrets.md`.
 
 <a id="missing-or-unusable-local-git"></a>
 

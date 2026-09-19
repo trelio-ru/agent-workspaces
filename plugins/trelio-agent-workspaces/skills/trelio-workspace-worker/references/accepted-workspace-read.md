@@ -31,8 +31,8 @@ file hit из поиска. В plain вызови `get_agent_workspace_file` с 
 2. Один раз вызови `prepare_agent_workspace_read` с точным `workspaceId`,
    `taskId` или координатами канонического URL задачи. Он перепроверяет read
    ACL и возвращает принятый head и точный `bridge.action`. Если материалов
-   нет, сообщи об этом; не создавай их через `ensure_agent_workspace`,
-   `prepare_agent_workspace_run` или `start_agent_workspace_run`.
+   нет, сообщи об этом; не создавай их через `ensure_agent_workspace` или
+   `prepare_agent_workspace_run`.
 3. Один раз вызови точные `server`/`tool` действия с неизменёнными `arguments`;
    не превращай в shell-команду и не ищи в PATH. Это не создаёт Run, lease,
    checkpoint, предложение статуса или изменение Trelio. Для E2EE скачивается
@@ -53,6 +53,3 @@ file hit из поиска. В plain вызови `get_agent_workspace_file` с 
 фиксация разрешена effective rules или поручением, прочитай Run references
 и вызови `prepare_agent_workspace_run`. Отдельная просьба о записи тогда
 не нужна; пользователь не должен открывать Trelio и запускать Run вручную.
-
-Если старый backend вернул лишь `bridge.command`, не исполняй напрямую:
-прочитай `setup-and-recovery.md` и используй ограниченную совместимость.

@@ -62,8 +62,8 @@ input schema, включая required arguments. `schemaSelection.found=false`
 не разрешает выдумывать аргументы. No-auth connect возвращает тот же компактный
 каталог. Generic provider result сокращает только точную JSON-копию.
 
-Существующие local-file/stream, binary bytes, Apps и legacy commands сохраняют
-свои контракты. Сокращение не меняет ACL, encryption, human decisions или
+Существующие local-file/stream, binary bytes и Apps сохраняют свои контракты;
+bridge выполняет только typed actions. Сокращение не меняет ACL, encryption, human decisions или
 поведение повторной записи. Генерируемый модуль
 `trelio-agent-response-projection.mjs` синхронизирован с серверным контрактом;
 ручные изменения копии не допускаются.

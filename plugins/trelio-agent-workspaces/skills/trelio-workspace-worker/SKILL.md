@@ -115,8 +115,8 @@ Git, комментарии, checkpoint, handoff и логи. Не проси cr
 
 ## Доказательство runtime создаёт подтверждённый hook
 
-Не создавай, не копируй, не сохраняй и не повторяй `runtimeSessionProof` или
-`runtimeAttestation`: подтверждённый hook сам добавляет новый proof. Если сам
+Не создавай, не копируй, не сохраняй и не повторяй `runtimeSessionProof`:
+подтверждённый hook сам добавляет новый proof. Если сам
 Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищённую работу. Ответ
 доказывает отсутствие proof, но не причину. Если просмотр текущего определения
 не подтверждён, попроси включить/одобрить его штатным способом данного клиента.
@@ -148,5 +148,5 @@ Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищ�
 
 Исполняй `bridge.action`/`runtimeExecution.localAction` через
 `continue_trelio_workspace_action`, передавая структурированные аргументы,
-а не shell-команду. Только старая command-форма требует reference восстановления;
-не ищи executable в PATH или cache.
+а не shell-команду. Не ищи executable в PATH или cache: command-form не входит
+в текущий protocol 2.

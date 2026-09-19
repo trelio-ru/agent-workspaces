@@ -162,18 +162,16 @@ remote `generate_agent_secret` всегда отклоняется. При не�
 Не создавай внутренний `localWrite`, не используй общий uploader и не
 превращай chat values в shell/stdin/file/clipboard.
 
-Загруженный local tool должен объявлять `save_known_agent_secret`.
-Старый общий local-action tool не даёт эту capability: обнови plugin обычным
-путём совместимости либо используй защищённую форму.
+Загруженный local tool должен объявлять `save_known_agent_secret`. Если
+capability отсутствует, обнови plugin обычным путём либо используй защищённую
+форму.
 
 При неопределённом результате прочитай текущие безопасные metadata и повтори
 точный input с тем же request ID; не создавай новый ID ради обхода конфликта.
 Отозванные policy/ACL, старая версия, истёкший Run и ожидающий device access
 останавливают сохранение. При необходимости штатный pairing/device setup,
 никогда ключ компании через чат. Без opt-in/capability используй защищённую
-форму. Старый прямой remote `save_known_agent_secret` принимает лишь значения
-существующих plain-карточек и не является основным путём. Не проси новое
-значение специально ради доступности исключения чата.
+форму. Не проси новое значение специально ради доступности исключения чата.
 
 <a id="executable-checkout"></a>
 
@@ -292,6 +290,3 @@ Native session values намеренно доставляются разрешё
 `secretId` канонический. При повторном обращении обнови имя через
 `list_agent_secrets`. Не храни value, version, checkout grant, setup URL,
 runtime arguments и найденные, но не использованные секреты.
-
-Для старого backend с одной secret-командой используй ограниченную
-совместимость `setup-and-recovery.md`. Не ищи PATH и не сканируй cache.

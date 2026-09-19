@@ -193,12 +193,6 @@ inline/неоднозначные формы TOML и symlink fail-closed не п
 `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY` с безопасными code/message вместо потери
 всего отчёта.
 
-Если старый backend вернул только `command`/`argv` без typed action, plugin не
-разбирает и не запускает их через shell. Он передаёт exact значение в
-`continue_trelio_workspace_action(operation=legacy_command)`, где runtime
-fail-closed проверяет executable, публичную operation/subcommand и allowlist
-флагов. Legacy secret input этим маршрутом запрещён.
-
 При `TRELIO_GIT_REQUIRED` onboarding сразу запускает exact план из doctor:
 
 - macOS – `brew install git`, если Homebrew уже установлен, иначе

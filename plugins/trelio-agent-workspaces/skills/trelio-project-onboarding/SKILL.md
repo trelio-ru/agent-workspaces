@@ -148,7 +148,7 @@ absolute executable.
 
 Pairing выполняй только typed action из diagnostic. Если plan недоступен,
 fallback – `continue_trelio_workspace_action` с `schemaVersion=1`,
-`operation=login`, `parameters={legacyOauth:false}`. При
+`operation=login`, `parameters={}`. При
 `TRELIO_BRIDGE_PAIRING_REQUIRED` сразу вызови pairing approval с exact данными и
 повтори исходный login один раз. Не создавай Run ради проверки.
 

@@ -21,10 +21,10 @@
    связанный контекст и начинает полностью подготовленный Run.
    `startNewRun=true` – только для намеренной независимой параллельной ветки:
    обычное продолжение не должно терять прежнюю частичную работу.
-   Не вызывай отдельно `get_agent_instructions`, `ensure_agent_workspace`,
-   `start_agent_workspace_run`, `attach_agent_workspace_context` на компактном
-   пути. Низкоуровневые инструменты остаются для продолжения/восстановления
-   уже точного Run. Один Run пишет в один Workspace; все связанные – pinned read-only.
+   Не вызывай отдельно `get_agent_instructions` или `ensure_agent_workspace` на
+   компактном пути. `attach_agent_workspace_context` нужен только для уже
+   открытого точного Run, когда новый связанный Workspace появился после
+   подготовки. Один Run пишет в один Workspace; все связанные – pinned read-only.
 3. Не добавляй runtime-поля в prepare. Подтверждённый hook добавляет proof,
    а `bridge.actions.open` несёт лишь серверное runtime state. Исполни без
    изменений, добавив текущую папку проекта клиента только как
@@ -37,8 +37,8 @@
    единственный возможный шаг пользователя; не проси второго подтверждения
    в чате и не раскрывай verifier. После обмена кратко сообщи о подключении
    устройства и продолжай. Для pairing/storage failures прочитай
-   `setup-and-recovery.md`; не начинай второй OAuth, не используй
-   `--legacy-oauth` и не расширяй узкие права устройства. Они никогда не
+   `setup-and-recovery.md`; не начинай второй OAuth flow и не расширяй узкие
+   права устройства. Они никогда не
    включают `mcp:agent-instructions:manage` и чтение secret metadata.
 5. Сразу после успешного open task-scoped Run, до первого содержательного
    действия, выполни однократную процедуру начала из `task-status-proposals.md`.

@@ -351,9 +351,6 @@ private keys. Значение `plugin.hooks.approvalStatus=client_managed_unkno
 подтверждения exact `planHash`, а stale plan, symlink и неоднозначный TOML
 fail-closed не перезаписываются. Для такого config общий отчёт сохраняет
 локальную диагностику и возвращает `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY`.
-Старые command-only ответы передаются exact в
-`continue_trelio_workspace_action(operation=legacy_command)`; shell/PATH и
-model-side parsing не используются, неизвестные routes/flags отклоняет runtime.
 Если standalone Git отсутствует,
 onboarding сразу запускает `brew install git` либо `xcode-select --install` на
 macOS и `winget install --id Git.Git -e` на Windows. Обычное системное
