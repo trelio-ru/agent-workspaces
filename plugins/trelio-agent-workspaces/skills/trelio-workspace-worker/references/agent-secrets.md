@@ -150,8 +150,10 @@ remote `generate_agent_secret` всегда отклоняется. При не�
 Передай точные `companySlug`, `nativeTool` и `arguments`:
 
 - `secretId` существующей карточки либо `newSecret` с `scopeType`,
-  `scopeId`, `name`, необязательными `publicDescription`, `templateType`
-  и `fields` с точными `key/label/type/required`;
+  `scopeId`, `name`, необязательными `publicDescription`, `secretType`,
+  `templateType` и `fields` с точными `key/label/type/required`.
+  `secretType` принимает `opaque|password|api_key|oauth|ssh_key|certificate`;
+  если он опущен, backend выводит тип из `templateType`;
 - `runId`, точный `expectedCurrentVersion` (ноль при создании),
   стабильный `clientRequestId`, `userExplicitlyRequestedPersistentStorage=true`;
 - ровно одно из `value` (одно поле) или `values` (именованные string/null).
@@ -168,6 +170,10 @@ capability отсутствует, обнови plugin обычным путём
 
 При неопределённом результате прочитай текущие безопасные metadata и повтори
 точный input с тем же request ID; не создавай новый ID ради обхода конфликта.
+При `reason=unsupported_new_secret_field` сверь `newSecret` с перечисленной
+выше схемой, убери только неподдерживаемое свойство и повтори с прежними
+`templateType`, `fields`, `values` и `clientRequestId`. Не меняй template или
+схему полей как обход validation error.
 Отозванные policy/ACL, старая версия, истёкший Run и ожидающий device access
 останавливают сохранение. При необходимости штатный pairing/device setup,
 никогда ключ компании через чат. Без opt-in/capability используй защищённую

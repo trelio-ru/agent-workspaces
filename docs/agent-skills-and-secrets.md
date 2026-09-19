@@ -498,7 +498,10 @@ scope, active Run, exact `expectedCurrentVersion`, стабильный `clientR
 вместе с данными достаточна; повторного подтверждения или ручного ввода нет.
 
 Аргументы содержат `secretId` либо `newSecret` (scope, name, description,
-template, fields) и ровно одно из `value`/`values`. Новая карточка имеет CAS 0.
+необязательный `secretType`, template, fields) и ровно одно из
+`value`/`values`. Допустимые типы – `opaque`, `password`, `api_key`, `oauth`,
+`ssh_key` и `certificate`; без явного типа backend выводит его из template.
+Новая карточка имеет CAS 0.
 Plugin выполняет value-free preflight; для E2EE шифрует и подписывает metadata
 и values в памяти. Карточка, ciphertext, версия, audit и replay-result
 сохраняются атомарно. В обоих режимах передаётся полный bundle; пропущенные
@@ -508,6 +511,9 @@ Plaintext остаётся в исходном чате и может остат
 Прямой remote `save_known_agent_secret` не принимает plaintext: запись проходит
 только через локальный facade. При недоступном opt-in или устройстве используется
 штатная настройка доступа либо защищённая форма.
+`unsupported_new_secret_field` означает только лишнее свойство `newSecret`:
+убери его по объявленной схеме и повтори с прежними template, fields, values и
+`clientRequestId`, не переделывая всю карточку.
 
 Когда пользователь прямо просит сгенерировать и сохранить password, агент
 использует тот же local facade с `nativeTool=generate_agent_secret`, но не

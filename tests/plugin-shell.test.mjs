@@ -194,6 +194,10 @@ test("Agent Secret reference routes unified and dedicated discovery through one 
   assert.match(reference, /никогда не\s+возвращают value, version или field schema/u);
   assert.match(reference, /После выбора вызови `list_agent_secrets` с exact `scopeType`/u);
   assert.match(reference, /не используй plaintext\s+fallback/u);
+  assert.match(reference, /`secretType` принимает `opaque\|password\|api_key\|oauth\|ssh_key\|certificate`/u);
+  assert.match(reference, /`reason=unsupported_new_secret_field`/u);
+  assert.match(reference, /прежними\s+`templateType`, `fields`, `values` и `clientRequestId`/u);
+  assert.match(reference, /Не меняй template или\s+схему полей как обход validation error/u);
 });
 
 test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {
