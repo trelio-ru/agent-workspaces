@@ -13,8 +13,7 @@
 1. Вызови server/tool/operation из текущего `providerSelection` без
    переименования и без предварительного native read. Новый non-UI маршрут
    приходит как один `trelio-remote-skills.continue_trelio_local_action` с
-   готовыми `schemaVersion`, `route` и `parameters`; старые отдельные tool names
-   остаются только compatibility route уже возвращённых ответов.
+   готовыми `schemaVersion`, `route` и `parameters`.
 2. Если selection содержит `nativeArgumentsTarget=parameters.arguments`, скопируй
    туда exact input исходного native вызова и больше ничего не перестраивай.
    Для local upload вместо binary/base64 добавь только разрешённый
@@ -58,10 +57,12 @@ Run, lease или company-wide lock. Workspace file читай только по
 
 ## Proposals остаются независимым решением
 
-Используй exact `proposalProvider` задачи и его `nextCall`:
+Используй exact `proposalProvider` задачи:
 
-- context read – server-returned dispatcher action с exact native input; runtime
-  сам выводит kind и цель, после чего следуй его `nextCall`;
+- context read – вызови его `contextTool` с `schemaVersion=contextSchemaVersion`,
+  `route=contextRoute` и `parameters={companySlug, kind, arguments: target}`.
+  `kind` выбирай только из требуемого semantic proposal, остальные поля копируй
+  из provider; после ответа следуй возвращённому `nextCall`;
 - save/render – `render_trelio_local_proposal` с live revision/snapshot и той же
   целью;
 - несколько карточек – один `kind=bundle` с исходным порядком blocks;

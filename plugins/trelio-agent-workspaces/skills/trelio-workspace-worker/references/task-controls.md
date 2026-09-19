@@ -34,8 +34,9 @@
 Если снятие одного/нескольких контролей – вывод агента, а не точная немедленная
 команда, сначала вызови `get_task_control_clear_proposal_context` и сохрани
 по одной конкретной приватной причине. Для единственной карточки следуй
-текущему `proposalProvider`: его local `nextCall` приоритетнее, а без него –
-`render_task_control_clear_proposal`. Если нужны comment/status/checklist
+текущему `proposalProvider`: его local context и возвращённый `nextCall`
+приоритетнее, а без provider – `render_task_control_clear_proposal`. Если нужны
+comment/status/checklist
 или контроль другой задачи, прочитай `task-proposal-bundles.md` и передай
 точную ревизию/контроли в `controlClearProposal` одного `render_task_proposals`.
 Не делай несколько одиночных App-вызовов. Причины остаются приватными, не
