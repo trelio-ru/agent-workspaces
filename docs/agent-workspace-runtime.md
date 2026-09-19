@@ -83,7 +83,11 @@ Workspace files с exact metadata, а также доступные наборы
 одним `get_tasks`; повторять `get_task` для такого набора нельзя. Агент не
 выбирает цель по одному похожему заголовку.
 `search_tasks` и `search_agent_workspace_files` нужны только для task-only или
-Workspace-only уточнения, а не как обязательная последовательность.
+Workspace-only уточнения, а не как обязательная последовательность; их defaults
+равны соответственно 10 и 5 результатам. Inventory компаний, проектов,
+воркспейсов, реестров, регулярных работ и knowledge-base pages приходит по 20
+элементов с явным `hasMore`: агент продолжает страницы только когда полнота
+каталога влияет на точный выбор.
 
 Если backend вернул structured `MCP_SEARCH_TIMEOUT`, соединение с Trelio уже
 состоялось: это ограничение времени read-only SQL, а не HTTP 504, OAuth или
@@ -368,7 +372,10 @@ clean Git и принятый head проверяются обычным preflig
 
 `WORKSPACE_OUTDATED` не обходится force push: агент начинает новый Run от
 current head и осознанно переносит inspected changes. Restore создаёт новую
-accepted revision со старым деревом, не переписывая историю.
+accepted revision со старым деревом, не переписывая историю. История revisions
+читается newest-first по 10, максимум 50, с opaque cursor, привязанным к текущему
+accepted head; exact `head` lookup проверяет выбранную revision без полного
+вычитывания истории.
 
 `COMPANY_STORAGE_BALANCE_REQUIRED` означает, что Trelio не смог сохранить
 новый платный объём. Bridge не повторяет такой HTTP-ответ автоматически и

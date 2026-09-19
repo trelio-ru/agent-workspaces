@@ -42,6 +42,15 @@ MCP App не изменяются. Поля пользовательских д�
   file size/MIME и другие детали выбранного объекта читаются только через exact
   `fetch`/read. Далёкие совпадения представлены двумя короткими фрагментами, а
   формат сниппета применяется после rank и не меняет native/local top-N.
+- Bounded defaults одинаковы в native и local route. Inventory компаний,
+  проектов, воркспейсов, реестров, регулярных работ и knowledge-base pages
+  возвращает по 20 элементов с `total`/`hasMore`; task lists, activity и
+  newest-first task comments также начинают с 20. Notifications и user resolution –
+  10, registry rows – 25, contacts – 20, task-only search – 10, meeting и
+  Workspace-file search – 5. История Workspace возвращает 10 revisions,
+  допускает максимум 50, использует opaque cursor и exact `head` lookup.
+  Неполная первая страница никогда не доказывает отсутствие объекта: агент
+  продолжает pagination, только когда полнота влияет на точный выбор.
 - Headless local proposal context сохраняет полный proposal DTO и добавляет
   компактный `nextCall` с exact local tool и `payload.target`. Это routing
   metadata, а не App result; UI metadata появляется только после local `save`.

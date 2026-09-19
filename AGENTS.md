@@ -41,6 +41,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   нужен поддерживаемым клиентам и rollback.
 - Server-returned пути и команды трактуй буквально. Не сканируй plugin cache,
   не выбирай другую установленную версию и не подменяй exact executable.
+- До правки определи owner: MCP schema/handler/default меняется в Trelio backend,
+  generic local execution/adapters/projection – только в
+  `trelio-ru/agent-workspaces-runtime`. В этом репозитории меняй лишь stable
+  shell/manifest/hook/loader и model-visible skills/references; не создавай здесь
+  копию backend schema или runtime implementation.
 - Сохраняй чужие изменения в рабочем дереве и отделяй scope текущей задачи.
 
 ## Обязательный Git-workflow

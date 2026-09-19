@@ -131,6 +131,13 @@ inventory/management одной известной области владель
 оправдывает company scope. Создание требует конкретный `companyScopeReason`
 и `confirmCompanyWideAccess=true`.
 
+Inventory `list_companies`, `list_projects`, `list_workspaces`,
+`list_registries`, `list_regular_work` и `list_knowledge_base_pages` приходит
+страницами по 20 с `total` и `hasMore`. Не считай первую страницу полным
+каталогом. Продолжай `offset` только если невидимый хвост может изменить выбор
+точной компании, проекта или объекта; для обычного поиска контекста используй
+сначала `search`, а не полное вычитывание inventory.
+
 У задачи не больше одного канонического task-owned Workspace. Постоянный
 контекст вне одной задачи использует именованный Workspace с одним основным
 владельцем – проектом/компанией. Дополнительные связи с любым числом проектов
