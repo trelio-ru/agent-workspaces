@@ -49,9 +49,10 @@ table/key, добавляемые namespaces и CAS-bound `planHash`, а зат�
 все остальные настройки и существующие namespaces. Legacy
 `[features] code_mode = true|false`, который ещё пишет CLI Codex 0.154,
 преобразуется в `[features.code_mode] enabled` с неизменным boolean. После apply
-нужен полный restart Codex/ChatGPT и новая задача; включение или trust Hooks за
-пользователя не выполняются. Диагностический starter использует тот же
-plan/apply flow.
+нужен полный restart Codex/ChatGPT. Protected read сначала повторяется в этом же
+чате; новый чат того же проекта нужен только если проверка здесь снова не
+прошла. Включение или trust Hooks за пользователя не выполняются.
+Диагностический starter использует тот же plan/apply flow.
 Project/profile/CLI override имеет более высокий приоритет, поэтому окончательным
 доказательством effective routing остаётся protected read после restart. Если он
 снова приходит без proof при доверенной hook definition, diagnostics проверяет

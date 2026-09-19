@@ -155,6 +155,30 @@ test("bundled recovery instructions report exact legacy-layout blockers", async 
   assert.equal(recoveryReference.includes("`workingDirectory`"), true);
 });
 
+test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {
+  const instructionPaths = [
+    path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    path.join(pluginDirectory, "README.md"),
+    path.join(fileURLToPath(new URL("../", import.meta.url)), "README.md"),
+    path.join(fileURLToPath(new URL("../", import.meta.url)), "docs", "plugin-setup-and-policies.md"),
+  ];
+
+  for (const instructionPath of instructionPaths) {
+    const source = await fs.readFile(instructionPath, "utf8");
+    assert.match(
+      source,
+      /(?:этом\s+же\s+чате|этот\s+же\s+чат)/iu,
+      `${instructionPath} must retry the existing chat`,
+    );
+    assert.match(
+      source,
+      /новый чат того же проекта нужен\s+только/iu,
+      `${instructionPath} must keep a new chat as the fallback`,
+    );
+  }
+});
+
 test("host runtime updater verifies, materializes and selects a signed package", async () => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-loader-test-"));
   const runtimeVersion = "9.8.7";

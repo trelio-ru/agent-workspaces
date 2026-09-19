@@ -152,10 +152,12 @@ bridge; `plugin.hooks.status=ready` означает целостность defi
    `[features.code_mode] enabled` с тем же значением.
 
    После `status=applied` полностью заверши все процессы Codex/ChatGPT, открой
-   приложение заново, создай новую задачу и повтори один protected read. Не
-   проверяй исправление в прежнем App Server. При отказе пользователя не меняй
-   config; при unsupported/unsafe config сохрани exact code и предложи ручное
-   объединение `features.code_mode.direct_only_tool_namespaces`.
+   приложение заново, вернись в этот же чат и повтори один protected read. Не
+   проверяй исправление в прежнем App Server. Новый чат того же проекта нужен
+   только если проверка после перезапуска здесь снова не прошла. При отказе
+   пользователя не меняй config; при unsupported/unsafe config сохрани exact
+   code и предложи ручное объединение
+   `features.code_mode.direct_only_tool_namespaces`.
    Если после restart proof всё ещё отсутствует, read-only проверь более
    приоритетный project/profile/CLI override той же настройки. Не переписывай
    такой слой автоматически и не объявляй user-level `ready` effective proof.
@@ -240,8 +242,9 @@ lifecycle matchers с будущими версиями. Оно запускае
   `trelio-agent-workspaces@trelio-plugins`; наличие marketplace не доказывает установку.
 - `REVIEW_CODEX_DIRECT_ROUTING`: применяй вложенный plan только после
   отдельного подтверждения exact `planHash`; затем требуется полный restart
-  owning App Server и protected read в новой задаче. Это исправляет dispatch
-  для Code Mode, но не одобряет hook за пользователя.
+  owning App Server и protected read сначала в этом же чате. Новый чат того же
+  проекта нужен только после фактического сбоя этой проверки. Это исправляет
+  dispatch для Code Mode, но не одобряет hook за пользователя.
 - Удалённый Trelio явно вернул HTTP 401 или отсутствие bearer: выполни вход
   MCP Trelio один раз в точном клиенте. Codex: `codex mcp login trelio`;
   Claude Code: `claude mcp login plugin:trelio-agent-workspaces:trelio`

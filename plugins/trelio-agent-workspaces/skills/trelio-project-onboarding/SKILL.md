@@ -76,8 +76,9 @@ runtime. Не воспроизводи эти проверки shell-коман�
      сбрасывая OAuth, pairing и runtime sessions;
    - `REVIEW_CODEX_DIRECT_ROUTING` – покажи table/key, добавляемые namespaces и
      `planHash`; после отдельного подтверждения вызови exact apply. Stale plan
-     перечитай. После успеха полностью перезапусти Codex/ChatGPT и продолжи в
-     новой задаче этого проекта;
+     перечитай. После успеха полностью перезапусти Codex/ChatGPT, вернись в этот
+     же чат и повтори защищённое чтение. Новый чат того же проекта нужен только
+     если проверка здесь снова не прошла;
    - `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY` – сохрани exact reason/message и
      покажи только нужное ручное объединение, не переписывая неоднозначный TOML;
    - `START_BRIDGE_PAIRING` / `CONTINUE_BRIDGE_PAIRING` – выполни возвращённый
