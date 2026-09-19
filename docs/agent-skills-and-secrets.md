@@ -471,8 +471,19 @@ shell/logger/`env`/`cat` либо сохранять plaintext в локальн
 доверенного producer/file напрямую в bridge; для уже присланного в чат значения
 действует отдельный opt-in ниже.
 
-Перед созданием агент вызывает `list_agent_secrets` для exact scope, чтобы
-исключить дубликат, и читает `allowAgentSaveChatSecrets`. Storage mode не
+Если exact scope уже известна, агент сразу вызывает `list_agent_secrets`.
+Когда известна только компания, обычный неоднозначный запрос идёт в единый
+`search`, а явно secret-only запрос либо реальная оставшаяся неоднозначность –
+в `search_agent_secrets`. Оба entrypoint используют одну search projection,
+видят только доступные company/project/task scopes и возвращают safe metadata
+без value, version и field schema. Их не вызывают автоматически друг за другом.
+Для encrypted-компании server-selected local route сохраняется без plaintext
+fallback. После выбора агент вызывает `list_agent_secrets` с exact scope и
+необязательным `secretIds` для актуальных permissions, encryption state и
+policy.
+
+Перед созданием агент по этому маршруту исключает дубликат и читает
+`allowAgentSaveChatSecrets`. Storage mode не
 передаётся и вопрос о выборе хранения не задаётся. MCP placeholder доступен
 только обычной компании; вне local chat-save в encrypted-компании карточку создаёт пользователь в
 защищённом browser UI, где локально шифруются также name, description и labels.

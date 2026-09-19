@@ -178,6 +178,24 @@ test("bundled recovery distinguishes a missing active Run from legacy migration"
   assert.match(recoveryReference, /automaticChangesPerformed=false/u);
 });
 
+test("Agent Secret reference routes unified and dedicated discovery through one safe contour", async () => {
+  const reference = await fs.readFile(path.join(
+    pluginDirectory,
+    "skills",
+    "trelio-workspace-worker",
+    "references",
+    "agent-secrets.md",
+  ), "utf8");
+
+  assert.match(reference, /`search` и `search_agent_secrets` находят только безопасные metadata/u);
+  assert.match(reference, /company-wide по всем доступным company\/project\/task/u);
+  assert.match(reference, /не вызывай оба поиска автоматически/u);
+  assert.match(reference, /один server-selected контур/u);
+  assert.match(reference, /никогда не\s+возвращают value, version или field schema/u);
+  assert.match(reference, /После выбора вызови `list_agent_secrets` с exact `scopeType`/u);
+  assert.match(reference, /не используй plaintext\s+fallback/u);
+});
+
 test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {
   const instructionPaths = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),

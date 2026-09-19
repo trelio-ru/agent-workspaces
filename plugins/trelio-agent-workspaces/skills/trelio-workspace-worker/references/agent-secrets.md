@@ -3,11 +3,38 @@
 Полностью прочитай файл до поиска, создания, настройки, checkout, fill,
 reveal или сохранения зависимости от Agent Secret.
 
-`list_agent_secrets` используй только для безопасных metadata. Без доступа
-вызови `request_agent_secret_access`; не проси пароль, token, private key,
-TOTP seed или company encryption key в чате. Значения не попадают в prompt,
-обычный MCP output, argv, общее environment, Workspace, Git, комментарии,
-checkpoint, handoff и логи.
+`search` и `search_agent_secrets` находят только безопасные metadata;
+`list_agent_secrets` читает выбранную exact scope. Без доступа вызови
+`request_agent_secret_access`; не проси пароль, token, private key, TOTP seed
+или company encryption key в чате. Значения не попадают в prompt, обычный MCP
+output, argv, общее environment, Workspace, Git, комментарии, checkpoint,
+handoff и логи.
+
+<a id="discovery"></a>
+
+## Найди карточку
+
+Если exact `scopeType` и `scopeId` уже известны, сразу вызови
+`list_agent_secrets`; company scope с `includeParents=true` не означает поиск
+по всем проектам и задачам. Если известна только компания:
+
+- для обычного неоднозначного запроса используй единый `search`: при наличии
+  `mcp:secrets:read` он ранжирует доступные Agent Secrets вместе с другим
+  контекстом;
+- если запрос явно только о секрете либо единый поиск оставил реальную
+  неоднозначность между секретами, вызови `search_agent_secrets` с exact
+  `companySlug`. Он ищет company-wide по всем доступным company/project/task
+  scopes, но не расширяет ACL;
+- не вызывай оба поиска автоматически и не повторяй dedicated search после
+  достаточного результата единого поиска.
+
+Оба поиска используют один server-selected контур и возвращают только `id`,
+safe name/description/status, scope locator и публичную ссылку. Они никогда не
+возвращают value, version или field schema. Для encrypted-компании выполни
+точный returned local route; не повторяй native call и не используй plaintext
+fallback. После выбора вызови `list_agent_secrets` с exact `scopeType`,
+`scopeId` и при возможности `secretIds=[selectedId]`: только этот read даёт
+актуальные permissions, `encryptionState` и `allowAgentSaveChatSecrets`.
 
 <a id="storage-contract"></a>
 
@@ -28,8 +55,9 @@ checkpoint, handoff и логи.
 Agent Secret не использует Trelio ACL, reveal, одноразовые grants,
 доступ с нескольких устройств или выполнение Workspace без присутствия пользователя.
 
-До создания вызови `list_agent_secrets` точной области для поиска существующей
-карточки и чтения `allowAgentSaveChatSecrets`. Не проси выбирать storage mode
+До создания найди существующую карточку по правилам выше, затем вызови
+`list_agent_secrets` точной области для проверки дубликата и чтения
+`allowAgentSaveChatSecrets`. Не проси выбирать storage mode
 и не передавай его в `create_agent_secret_placeholder`. MCP placeholder
 доступен лишь plain-компании. Для encrypted, кроме случая уже присланного
 значения ниже, пользователь создаёт карточку в защищённом браузерном UI Trelio:
@@ -84,11 +112,11 @@ Bridge никогда не пишет Agent Secret values в private config ил
 
 Каждое required поле должно иметь тип `password` и входить в
 `generatedFields`; optional password можно пропустить. Не используй этот путь
-для username, token, TOTP, key, certificate или text. До создания вызови
-`list_agent_secrets` exact scope и не создавай дубликат. Путь работает в plain
-и encrypted company, не зависит от `allowAgentSaveChatSecrets` и требует
-manage/create ACL, применимый active Run, `mcp:secrets:write`, `secret:write`
-paired bridge и допустимый runtime proof.
+для username, token, TOTP, key, certificate или text. До создания выполни
+discovery выше, затем `list_agent_secrets` exact scope и не создавай дубликат.
+Путь работает в plain и encrypted company, не зависит от
+`allowAgentSaveChatSecrets` и требует manage/create ACL, применимый active Run,
+`mcp:secrets:write`, `secret:write` paired bridge и допустимый runtime proof.
 
 Не создавай `localWrite`: plugin нормализует policy, детерминированно выводит
 пароль для безопасного ambiguous retry, E2EE-шифрует при необходимости и
