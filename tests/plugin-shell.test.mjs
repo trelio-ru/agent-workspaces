@@ -221,21 +221,14 @@ test("Agent Secret reference routes unified and dedicated discovery through one 
   assert.match(reference, /Не меняй template или\s+схему полей как обход validation error/u);
 });
 
-test("regular-work guidance keeps exact check discussion separate from completion", async () => {
-  const reference = await fs.readFile(path.join(
-    pluginDirectory,
-    "skills",
-    "trelio-workspace-worker",
-    "references",
-    "regular-work.md",
-  ), "utf8");
+test("bundled worker delegates native domain workflows to current MCP contracts", async () => {
+  const workerDirectory = path.join(pluginDirectory, "skills", "trelio-workspace-worker");
+  const worker = await fs.readFile(path.join(workerDirectory, "SKILL.md"), "utf8");
+  const references = await fs.readdir(path.join(workerDirectory, "references"));
 
-  assert.match(reference, /`get_regular_work` с `setId \+ occurrenceId`/u);
-  assert.match(reference, /`create_regular_check_comment`/u);
-  assert.match(reference, /`userExplicitlyRequestedImmediatePublication=true`/u);
-  assert.match(reference, /Комментарий и изменение\s+completion state – независимые решения/u);
-  assert.match(reference, /Историческая occurrence остаётся изменяемой/u);
-  assert.match(reference, /immutable system events/u);
+  assert.match(worker, /следуй актуальным `description` и input schema Trelio\s+MCP/u);
+  assert.match(worker, /plugin не дублирует методы, поля и подтверждения/u);
+  assert.equal(references.includes("regular-work.md"), false);
 });
 
 test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {

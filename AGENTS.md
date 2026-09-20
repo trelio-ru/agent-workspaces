@@ -499,9 +499,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   прежними schema/scope/ACL/idempotency/CAS только после проверки bridge session,
   runtime proof и field-bound payload markers; неизвестный method fail-closed и
   не маскируется generic local search.
-  Server read-fence `get_task_sections` автоматически выбрасывает только
-  доказанно устаревшую RAM generation, bounded дожидается свежего mirror и ровно
-  один раз повторяет read-only запрос; повторный конфликт остаётся fail-closed.
+  Product-domain flow, включая регулярные работы, принадлежит актуальным
+  descriptions и input schemas native MCP tools. Bundled skills не перечисляют
+  их методы, поля и подтверждения и не требуют plugin release при расширении
+  backend API. Server read-fence `get_task_sections` автоматически выбрасывает
+  только доказанно устаревшую RAM generation, bounded дожидается свежего mirror
+  и ровно один раз повторяет read-only запрос; повторный конфликт остаётся fail-closed.
   Workspace-only query имеет exact company scope; current-head file, revision
   metadata и accepted-Run history читаются локально, audited restore проходит
   local Run, а server-side historical Git diff/read не получают plaintext
