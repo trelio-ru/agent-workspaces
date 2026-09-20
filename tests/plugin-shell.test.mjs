@@ -129,6 +129,27 @@ test("plugin manifests and stable shell keep one version", async () => {
   assert.equal(claudeManifest.version, PLUGIN_VERSION);
 });
 
+test("private skill management stays a compact router to the live runtime contract", async () => {
+  const source = await fs.readFile(path.join(
+    pluginDirectory,
+    "skills",
+    "trelio-private-skill-management",
+    "SKILL.md",
+  ), "utf8");
+
+  // Этот bundled слой должен переживать новые execution kinds и package limits
+  // без plugin release: изменяемая schema приходит от current runtime tools.
+  assert.match(source, /management tools `trelio-remote-skills`/u);
+  assert.match(source, /отдельного явного подтверждения/u);
+  assert.match(source, /`planId`, `planHash` и `confirmed=true`/u);
+  assert.match(source, /не обходи этот контур браузером, прямым HTTP, записью в БД или другим MCP/iu);
+  assert.equal(source.includes("executionKind="), false);
+  assert.equal(source.includes("MiB"), false);
+  assert.equal(source.includes("plan_company_private_agent_skill_create"), false);
+  assert.equal(source.includes("publish_company_private_agent_skill_release"), false);
+  assert.ok(Buffer.byteLength(source, "utf8") <= 4_000);
+});
+
 test("bundled recovery instructions report exact legacy-layout blockers", async () => {
   const [recoveryReference, diagnosticsSkill] = await Promise.all([
     fs.readFile(path.join(
