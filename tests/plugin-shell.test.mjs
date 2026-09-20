@@ -221,6 +221,23 @@ test("Agent Secret reference routes unified and dedicated discovery through one 
   assert.match(reference, /Не меняй template или\s+схему полей как обход validation error/u);
 });
 
+test("regular-work guidance keeps exact check discussion separate from completion", async () => {
+  const reference = await fs.readFile(path.join(
+    pluginDirectory,
+    "skills",
+    "trelio-workspace-worker",
+    "references",
+    "regular-work.md",
+  ), "utf8");
+
+  assert.match(reference, /`get_regular_work` с `setId \+ occurrenceId`/u);
+  assert.match(reference, /`create_regular_check_comment`/u);
+  assert.match(reference, /`userExplicitlyRequestedImmediatePublication=true`/u);
+  assert.match(reference, /Комментарий и изменение\s+completion state – независимые решения/u);
+  assert.match(reference, /Историческая occurrence остаётся изменяемой/u);
+  assert.match(reference, /immutable system events/u);
+});
+
 test("Codex direct-routing recovery retries the same chat before a new-chat fallback", async () => {
   const instructionPaths = [
     path.join(pluginDirectory, "skills", "trelio-diagnostics", "SKILL.md"),

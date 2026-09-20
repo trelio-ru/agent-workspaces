@@ -21,6 +21,9 @@ MCP App не изменяются. Поля пользовательских д�
   `responseDetail=full` остаётся совместимым явным чтением. Эти arguments
   передаются через `native_read`; registry values/technical rows/provenance и
   ошибки не откладываются. Для задач сохраняются schema v3 и sections.
+  Exact `get_regular_work` с `occurrenceId` и ответ
+  `create_regular_check_comment` уже ограничены одной проверкой и её тредом,
+  поэтому не получают set-level continuation.
 - Каталог навыков сохраняет purpose, routing, assignment, readiness, trust
   и requirements. Default `get_agent_skill` также compact: возвращает exact
   scope/release, summary, `instructionKey` и continuation. Перед первым внешним
