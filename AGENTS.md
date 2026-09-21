@@ -43,9 +43,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   не выбирай другую установленную версию и не подменяй exact executable.
 - До правки определи owner: MCP schema/handler/default меняется в Trelio backend,
   generic local execution/adapters/projection – только в
-  `trelio-ru/agent-workspaces-runtime`. В этом репозитории меняй лишь stable
-  shell/manifest/hook/loader и model-visible skills/references; не создавай здесь
-  копию backend schema или runtime implementation.
+  `trelio-ru/agent-workspaces-runtime`. Public plugin неизменяем по умолчанию:
+  не правь его skills/references ради runtime recovery, текста ошибки, local MCP,
+  action routing или model guidance, которые может доставить signed runtime либо
+  server contract. Изменение допустимо только при доказанной невозможности этого
+  маршрута и необходимости поправить сам stable shell/manifest/hook/loader/ABI
+  либо критический security/compatibility defect; доказательство зафиксируй в
+  задаче и тестах. Не копируй сюда backend schema или runtime implementation.
 - Сохраняй чужие изменения в рабочем дереве и отделяй scope текущей задачи.
 
 ## Обязательный Git-workflow
@@ -186,9 +190,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   `workspace/` и не кладёт `tmp/`, `output/` или материалы рядом с корневым
   `AGENTS.md`. Уже существующие global/registered/custom roots не переносятся;
   без managed binding сохраняется fallback `~/Trelio Workspaces/`.
-- Plugin change допустим для общего security/fail-closed defect,
-  несовместимости Codex/Claude/MCP/OAuth/hooks, дефекта generic host либо нового
-  общего primitive, который нельзя безопасно доставить независимым runtime.
+- Plugin change допустим только для общего security/fail-closed defect,
+  несовместимости Codex/Claude/MCP/OAuth/hooks либо нового shell primitive,
+  который доказанно нельзя безопасно доставить independent runtime/server
+  contract. Удобство правки bundled Markdown таким доказательством не является.
 - Provider API/DOM, provider-команда, parser, dependency, instruction или тест
   одного provider не являются основанием менять plugin.
 - Default `get_agent_skill` возвращает compact scope/release/readiness summary.
