@@ -209,8 +209,14 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
 - При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
   `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` не обновляй plugin: stable loader
   сам дожидается подписанного runtime и повторно запускает exact bridge-команду.
-  Если единственный retry снова вернул gate, сохрани exact код и диагностируй
-  runtime channel; новая задача и restart это не исправляют.
+  Если gate вернул уже работающий локальный MCP, а единственный retry снова
+  называет прежнюю runtime-версию, сохрани exact код и диагностируй runtime
+  channel. Не сбрасывай OAuth или pairing. Для plugin до исправления foreground
+  convergence полностью заверши owning Codex/ChatGPT process, открой приложение
+  заново и повтори один раз; новая задача в старом процессе не помогает. В
+  исправленной shell локальный MCP до открытия transport сам сверяет current
+  signed runtime, поэтому повторный gate после полного restart означает уже не
+  stale process, а сбой runtime channel.
 - Только при `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` сравни требуемую версию,
   `plugin.loadedVersion` и установленную версию из клиента. Если установленная
   уже подходит, а загруженная нет, не обновляй снова: начни новую задачу/сессию

@@ -91,6 +91,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   launchers, loader/signature verifier, lifecycle hook definition,
   bootstrap/control-plane skills и assets. Исполняемого bundled runtime fallback
   нет; first install обязан получить signed package либо завершиться fail-closed.
+- Перед открытием долгоживущего local MCP loader выполняет bounded foreground
+  convergence current signed runtime, повторно читает verified pointer и только
+  затем передаёт stdio transport immutable runtime. Обычные compatible updates
+  bridge/hook остаются detached; network failure с существующим verified cache
+  сохраняет fail-closed server gate и не подделывает compatibility.
 - Повреждённый exact content-addressed host runtime восстанавливается только под
   update lock: loader удаляет и заново материализует один каталог
   `runtimeVersion/packageSha256`, не сканируя и не очищая соседние версии.

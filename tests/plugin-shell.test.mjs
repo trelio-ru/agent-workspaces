@@ -353,3 +353,96 @@ test("host runtime updater verifies, materializes and selects a signed package",
     packageBytes.fill(0);
   }
 });
+
+test("long-lived MCP startup converges before selecting a cached runtime", async () => {
+  const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-mcp-convergence-test-"));
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const signingPublicKeySpki = publicKey
+    .export({ format: "der", type: "spki" })
+    .toString("base64");
+  const releases = new Map();
+
+  for (const runtimeVersion of ["2.4.6", "3.0.2"]) {
+    const packageBytes = buildSyntheticHostRuntimePackage({
+      runtimeVersion,
+      source: `process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION }));\n`,
+    });
+    releases.set(runtimeVersion, {
+      runtimeVersion,
+      packageBytes,
+      packageSha256: createHash("sha256").update(packageBytes).digest("hex"),
+      packageSignature: sign(null, packageBytes, privateKey).toString("base64"),
+    });
+  }
+  let publishedVersion = "2.4.6";
+
+  const server = createServer((request, response) => {
+    const published = releases.get(publishedVersion);
+    assert.ok(published);
+    if (request.url?.startsWith("/api/agent-workspaces/host-runtime/current")) {
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        schemaVersion: 1,
+        runtime: {
+          artifactId: `runtime-${published.runtimeVersion}`,
+          runtimeVersion: published.runtimeVersion,
+          minimumRuntimeVersion: published.runtimeVersion,
+          minimumPluginVersion: PLUGIN_VERSION,
+          packageSha256: published.packageSha256,
+          packageSizeBytes: published.packageBytes.byteLength,
+          packageUrl: `http://127.0.0.1:${address.port}/${published.runtimeVersion}.skillpkg`,
+          packageSignature: published.packageSignature,
+          signingPublicKeySpki,
+        },
+      }));
+      return;
+    }
+    const requested = [...releases.values()].find((release) => (
+      request.url === `/${release.runtimeVersion}.skillpkg`
+    ));
+    if (requested) {
+      response.writeHead(200, {
+        "content-type": "application/vnd.trelio.agent-skill-package+json",
+        "content-length": String(requested.packageBytes.byteLength),
+      });
+      response.end(requested.packageBytes);
+      return;
+    }
+    response.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const environment = {
+      ...process.env,
+      HOME: temporaryHome,
+      USERPROFILE: temporaryHome,
+      LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
+      TRELIO_ORIGIN: `http://127.0.0.1:${address.port}`,
+    };
+
+    // First materialize the old runtime and its future update throttle. This
+    // reproduces the affected Macs: current.json is valid, so the previous
+    // loader opened a persistent MCP on 2.4.6 before its detached updater ran.
+    const initialUpdate = await runLoader(["__update"], environment);
+    assert.equal(initialUpdate.code, 0, initialUpdate.stderr);
+    publishedVersion = "3.0.2";
+
+    const invocation = await runLoader(["mcp"], environment);
+    assert.equal(invocation.code, 0, invocation.stderr);
+    assert.deepEqual(JSON.parse(invocation.stdout), {
+      mode: "mcp",
+      version: "3.0.2",
+    });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (
+      error ? reject(error) : resolve()
+    )));
+    await fs.rm(temporaryHome, { recursive: true, force: true });
+    for (const release of releases.values()) release.packageBytes.fill(0);
+  }
+});

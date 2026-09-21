@@ -6,7 +6,7 @@ import path from "node:path";
 // This module is intentionally the complete executable dependency surface of
 // the stable plugin loader. Domain logic, bridge commands and search behavior
 // live in the independently signed host-runtime package.
-export const PLUGIN_VERSION = "3.0.1";
+export const PLUGIN_VERSION = "3.0.2";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;

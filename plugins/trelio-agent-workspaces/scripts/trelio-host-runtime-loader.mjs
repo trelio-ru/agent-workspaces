@@ -5,10 +5,11 @@
  *
  * Loader never mutates Codex plugin cache. It selects an already verified
  * content-addressed runtime outside that cache and checks for a newer signed
- * package in a detached helper. A fresh installation performs one foreground
- * bootstrap because executable domain logic is deliberately absent from the
- * plugin artifact. Therefore runtime updates neither rewrite plugin files nor
- * invalidate absolute paths held by open Codex tasks.
+ * package in a detached helper. A fresh installation and every long-lived MCP
+ * startup perform a foreground convergence because a stale MCP process cannot
+ * replace its own executable after the server raises the runtime minimum.
+ * Therefore runtime updates neither rewrite plugin files nor invalidate
+ * absolute paths held by open Codex tasks.
  */
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -33,6 +34,8 @@ const UPDATE_LOCK_WAIT_MS = 90 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
 const RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
+const MCP_STARTUP_REQUEST_TIMEOUT_MS = 4_000;
+const MCP_STARTUP_RETRY_DELAYS_MS = Object.freeze([200, 600, 1_200]);
 
 const CONFIG_DIRECTORY = resolveWorkspaceBridgeConfigDirectory();
 const RUNTIME_ROOT = path.join(CONFIG_DIRECTORY, "host-runtimes");
@@ -108,24 +111,31 @@ const normalizeOrigin = (rawOrigin) => {
   return url.origin;
 };
 
-const fetchWithRetries = async (url, options = {}) => {
+const fetchWithRetries = async (
+  url,
+  options = {},
+  {
+    requestTimeoutMs = REQUEST_TIMEOUT_MS,
+    retryDelaysMs = RETRY_DELAYS_MS,
+  } = {},
+) => {
   let lastError;
 
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
     try {
       const response = await fetch(url, {
         ...options,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
-      if (response.status >= 500 && attempt < RETRY_DELAYS_MS.length) {
-        await sleep(RETRY_DELAYS_MS[attempt]);
+      if (response.status >= 500 && attempt < retryDelaysMs.length) {
+        await sleep(retryDelaysMs[attempt]);
         continue;
       }
       return response;
     } catch (error) {
       lastError = error;
-      if (attempt >= RETRY_DELAYS_MS.length) break;
-      await sleep(RETRY_DELAYS_MS[attempt]);
+      if (attempt >= retryDelaysMs.length) break;
+      await sleep(retryDelaysMs[attempt]);
     }
   }
 
@@ -360,6 +370,7 @@ const acquireUpdateLock = async ({ waitForExisting = false } = {}) => {
 const updateRuntime = async ({
   environment = process.env,
   waitForExisting = false,
+  requestPolicy,
 } = {}) => {
   if (!await acquireUpdateLock({ waitForExisting })) return false;
 
@@ -367,7 +378,7 @@ const updateRuntime = async ({
     const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
     const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
     metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
-    const metadataResponse = await fetchWithRetries(metadataUrl);
+    const metadataResponse = await fetchWithRetries(metadataUrl, {}, requestPolicy);
 
     // A source-only/backend rollout may precede the first runtime artifact.
     // Existing verified runtimes keep working, but a fresh shell must fail
@@ -395,7 +406,7 @@ const updateRuntime = async ({
       return false;
     }
 
-    const packageResponse = await fetchWithRetries(descriptor.packageUrl);
+    const packageResponse = await fetchWithRetries(descriptor.packageUrl, {}, requestPolicy);
     if (!packageResponse.ok) throw new Error(`Host runtime package HTTP ${packageResponse.status}.`);
     // Content-Length is optional and cannot be trusted as the only allocation
     // boundary. Stream-count against the signed descriptor before buffering.
@@ -465,6 +476,33 @@ export const runHostRuntimeLoader = async ({
   }
 
   let selected = await selectHostRuntime();
+  if (
+    mode === "mcp"
+    && selected
+    && environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE !== "1"
+  ) {
+    try {
+      // The local MCP is long-lived. If it starts on a cached runtime and the
+      // server has already raised the minimum, a detached update can switch
+      // current.json but cannot replace the executable that owns this stdio
+      // transport. Converge before opening the transport and then re-read the
+      // verified pointer. A bounded network failure preserves the existing
+      // immutable runtime; its next server call remains fail-closed.
+      await updateRuntime({
+        environment,
+        waitForExisting: true,
+        requestPolicy: {
+          requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
+          retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
+        },
+      });
+      selected = await selectHostRuntime();
+    } catch {
+      // The detached retry schedule was written by updateRuntime. Starting the
+      // last verified runtime keeps offline-compatible work available without
+      // pretending that a server-side compatibility gate was satisfied.
+    }
+  }
   if (!selected) {
     // The foreground bootstrap happens only once per installation. It waits
     // for a racing updater, verifies the signed package and then executes from
