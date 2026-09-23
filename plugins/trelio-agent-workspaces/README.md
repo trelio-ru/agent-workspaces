@@ -375,6 +375,9 @@ bundled `launch-trelio-node`, а на Windows отдельный quote-free `com
 передаёт запуск bundled `.cmd` launcher. Изменение hook definition может
 потребовать одно новое одобрение в клиенте; дальнейшие behavior-only
 исправления – нет.
+Если loader не смог выбрать подписанный runtime либо дочерний hook завершился
+с ошибкой, loader возвращает блокирующий для `PreToolUse` код `2`, сохраняя
+причину на stderr. Вызов MCP без proof после такой ошибки не продолжается.
 
 Codex Code Mode может выполнять обычные MCP через nested tool runner, для
 которого клиент не dispatch-ит `PreToolUse`. Поэтому onboarding закрепляет оба

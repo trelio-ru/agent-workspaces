@@ -549,12 +549,16 @@ export const runHostRuntimeLoader = async ({
 };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const isHookInvocation = process.argv[2] === "hook";
   runHostRuntimeLoader()
     .then((exitCode) => {
-      process.exitCode = exitCode;
+      // Codex blocks a PreToolUse call only for exit 2. If package selection or
+      // the child hook fails with another code, forwarding it would let the MCP
+      // request proceed without the runtime proof and hide the local failure.
+      process.exitCode = isHookInvocation && exitCode !== 0 ? 2 : exitCode;
     })
     .catch((error) => {
       process.stderr.write(`Trelio host runtime loader failed: ${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
+      process.exitCode = isHookInvocation ? 2 : 1;
     });
 }

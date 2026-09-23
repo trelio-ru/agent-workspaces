@@ -119,6 +119,36 @@ test("stable plugin shell contains no bundled host runtime fallback", async () =
   await assert.rejects(fs.access(removedBundledEntrypoint));
 });
 
+test("hook bootstrap failure blocks the protected call", async () => {
+  const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-hook-bootstrap-test-"));
+  const server = createServer((_request, response) => response.writeHead(404).end());
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const result = await runLoader(["hook"], {
+      ...process.env,
+      HOME: temporaryHome,
+      USERPROFILE: temporaryHome,
+      LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
+      TRELIO_ORIGIN: `http://127.0.0.1:${address.port}`,
+      TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "1",
+    });
+
+    // A missing signed runtime must surface as a blocking PreToolUse failure,
+    // not as a generic loader error that allows an unsigned MCP request.
+    assert.equal(result.code, 2);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Trelio host runtime loader failed:/u);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (
+      error ? reject(error) : resolve()
+    )));
+    await fs.rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
 test("plugin manifests and stable shell keep one version", async () => {
   const [codexManifest, claudeManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),
