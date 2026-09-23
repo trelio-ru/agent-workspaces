@@ -160,7 +160,9 @@ test("platform Node launcher preserves blocking hook failures", async () => {
     ? process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe"
     : launcher;
   const argumentsList = process.platform === "win32"
-    ? ["/d", "/s", "/c", `"${launcher}" "${missingEntrypoint}" hook`]
+    // cmd /s strips the surrounding pair, then evaluates the two quoted
+    // absolute paths. Without that outer pair it drops the launcher path.
+    ? ["/d", "/s", "/c", `""${launcher}" "${missingEntrypoint}" hook"`]
     : [missingEntrypoint, "hook"];
   const result = await new Promise((resolve, reject) => {
     const child = spawn(command, argumentsList, {
