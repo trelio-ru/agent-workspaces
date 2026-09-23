@@ -1,8 +1,14 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
+rem A lifecycle hook must return Codex's blocking exit code even when Node
+rem cannot be selected, before the JavaScript loader has a chance to run.
+set "TRELIO_HOOK_MODE="
+if /I "%~2"=="hook" set "TRELIO_HOOK_MODE=1"
+
 if "%~1"=="" (
   echo Trelio could not start: missing bundled JavaScript entrypoint. 1>&2
+  if defined TRELIO_HOOK_MODE exit /b 2
   exit /b 64
 )
 
@@ -44,10 +50,12 @@ for /f "delims=" %%I in ('where node 2^>nul') do if not defined TRELIO_NODE_PATH
 if defined TRELIO_NODE_PATH goto launch
 
 echo Trelio could not find Node.js 22 or newer. Update Codex or install Node.js 22+. 1>&2
+if defined TRELIO_HOOK_MODE exit /b 2
 exit /b 127
 
 :launch
 "%TRELIO_NODE_PATH%" %*
+if defined TRELIO_HOOK_MODE if not "%ERRORLEVEL%"=="0" exit /b 2
 exit /b %ERRORLEVEL%
 
 :consider_node

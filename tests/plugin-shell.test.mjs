@@ -149,6 +149,38 @@ test("hook bootstrap failure blocks the protected call", async () => {
   }
 });
 
+test("platform Node launcher preserves blocking hook failures", async () => {
+  const launcher = path.join(
+    pluginDirectory,
+    "scripts",
+    process.platform === "win32" ? "launch-trelio-node.cmd" : "launch-trelio-node",
+  );
+  const missingEntrypoint = path.join(os.tmpdir(), "trelio-absent-hook-entrypoint.mjs");
+  const command = process.platform === "win32"
+    ? process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe"
+    : launcher;
+  const argumentsList = process.platform === "win32"
+    ? ["/d", "/s", "/c", `"${launcher}" "${missingEntrypoint}" hook`]
+    : [missingEntrypoint, "hook"];
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(command, argumentsList, {
+      env: { ...process.env, CODEX_MCP_NODE_PATH: process.execPath },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const stderr = [];
+    child.stderr.on("data", (chunk) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => resolve({
+      code,
+      stderr: Buffer.concat(stderr).toString("utf8"),
+    }));
+  });
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.match(result.stderr, /trelio-absent-hook-entrypoint\.mjs/u);
+});
+
 test("plugin manifests and stable shell keep one version", async () => {
   const [codexManifest, claudeManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),

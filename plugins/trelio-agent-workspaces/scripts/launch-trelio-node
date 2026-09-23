@@ -2,9 +2,11 @@
 set -eu
 
 minimum_node_major=22
+hook_mode=${2:-}
 
 if [ "$#" -lt 1 ]; then
   printf '%s\n' 'Trelio could not start: missing bundled JavaScript entrypoint.' >&2
+  if [ "$hook_mode" = hook ]; then exit 2; fi
   exit 64
 fi
 
@@ -60,6 +62,18 @@ is_compatible_node() {
   return 0
 }
 
+launch_node() {
+  executable=$1
+  shift
+  if [ "$hook_mode" = hook ]; then
+    # Codex needs exit 2 to stop PreToolUse; a failed child or an executable
+    # disappearing after the version probe must never fall through to MCP.
+    if "$executable" "$@"; then exit 0; fi
+    exit 2
+  fi
+  exec "$executable" "$@"
+}
+
 for candidate in \
   "${CODEX_MCP_NODE_PATH:-}" \
   "${CODEX_BROWSER_USE_NODE_PATH:-}" \
@@ -68,15 +82,16 @@ for candidate in \
   "$codex_cached_node"
 do
   if is_compatible_node "$candidate"; then
-    exec "$candidate" "$@"
+    launch_node "$candidate" "$@"
   fi
 done
 
 if node_path=$(command -v node 2>/dev/null); then
   if is_compatible_node "$node_path"; then
-    exec "$node_path" "$@"
+    launch_node "$node_path" "$@"
   fi
 fi
 
 printf '%s\n' 'Trelio could not find Node.js 22 or newer. Update Codex or install Node.js 22+.' >&2
+if [ "$hook_mode" = hook ]; then exit 2; fi
 exit 127

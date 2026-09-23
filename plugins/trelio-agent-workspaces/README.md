@@ -378,6 +378,8 @@ bundled `launch-trelio-node`, а на Windows отдельный quote-free `com
 Если loader не смог выбрать подписанный runtime либо дочерний hook завершился
 с ошибкой, loader возвращает блокирующий для `PreToolUse` код `2`, сохраняя
 причину на stderr. Вызов MCP без proof после такой ошибки не продолжается.
+Node launcher также возвращает код `2` для hook, если Node.js недоступен либо
+запуск JavaScript завершился с ошибкой; обычные bridge/MCP коды сохраняются.
 
 Codex Code Mode может выполнять обычные MCP через nested tool runner, для
 которого клиент не dispatch-ит `PreToolUse`. Поэтому onboarding закрепляет оба
