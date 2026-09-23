@@ -156,13 +156,26 @@ test("platform Node launcher preserves blocking hook failures", async () => {
     process.platform === "win32" ? "launch-trelio-node.cmd" : "launch-trelio-node",
   );
   const missingEntrypoint = path.join(os.tmpdir(), "trelio-absent-hook-entrypoint.mjs");
+  const windowsPowerShell = path.join(
+    process.env.SystemRoot || "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
   const command = process.platform === "win32"
-    ? process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe"
+    ? windowsPowerShell
     : launcher;
   const argumentsList = process.platform === "win32"
-    // cmd /s strips the surrounding pair, then evaluates the two quoted
-    // absolute paths. Without that outer pair it drops the launcher path.
-    ? ["/d", "/s", "/c", `""${launcher}" "${missingEntrypoint}" hook"`]
+    // Use the same PowerShell-to-cmd entrypoint as commandWindows. Encoding
+    // avoids cmd /s rewriting the quotes before the launcher even starts.
+    ? [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(
+        `& '${launcher.replaceAll("'", "''")}' '${missingEntrypoint.replaceAll("'", "''")}' hook; exit $LASTEXITCODE`,
+        "utf16le",
+      ).toString("base64"),
+    ]
     : [missingEntrypoint, "hook"];
   const result = await new Promise((resolve, reject) => {
     const child = spawn(command, argumentsList, {
