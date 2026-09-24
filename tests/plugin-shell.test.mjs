@@ -422,6 +422,20 @@ test("host runtime updater verifies, materializes and selects a signed package",
       mode: "mcp",
       version: runtimeVersion,
     });
+
+    // A verified package may outlive a lost current.json after an interrupted
+    // update. Foreground bootstrap must restore the pointer before selecting
+    // that same immutable package; successful HTTP responses are insufficient.
+    await fs.unlink(path.join(configDirectory, "host-runtimes", "current.json"));
+    const recovered = await runLoader(["mcp"], {
+      ...environment,
+      TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "1",
+    });
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assert.deepEqual(JSON.parse(recovered.stdout), {
+      mode: "mcp",
+      version: runtimeVersion,
+    });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (
       error ? reject(error) : resolve()

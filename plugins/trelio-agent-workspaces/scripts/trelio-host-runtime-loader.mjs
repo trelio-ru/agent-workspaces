@@ -295,7 +295,16 @@ const materializeRuntime = async (descriptor, packageBytes) => {
 
   const targetDirectory = runtimeDirectoryFor(descriptor);
   const existing = await readVerifiedRuntime(descriptor);
-  if (existing) return existing;
+  if (existing) {
+    // An interrupted pointer update can leave the signed, fully verified tree
+    // intact while current.json is absent. Restore only the exact descriptor
+    // selected by the server before the caller tries to start the runtime.
+    await writePrivateJson(CURRENT_POINTER_PATH, {
+      runtimeVersion: descriptor.runtimeVersion,
+      packageSha256: descriptor.packageSha256,
+    });
+    return existing;
+  }
 
   await ensurePrivateDirectory(path.dirname(targetDirectory));
   await removeInvalidRuntimeTarget(targetDirectory);
