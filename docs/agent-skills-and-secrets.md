@@ -16,10 +16,15 @@
 свой. Отсутствие назначения не запрещает совместимый личный навык.
 
 Перед подключением или использованием внешнего сервиса агент сначала разрешает
-exact Trelio company/project context. Затем он вызывает единый
-`search_agent_guidance` с кратким точным описанием задачи и только полезными
-semantic hints. Результат объединяет effective Agent Skills и опубликованные
-project Agent Procedures; `kind` и exact read tool не выводятся из названия.
+exact Trelio company/project context. Единый `search` с `queries`, одной
+`companySlugs`, optional `projectSlug` и исходным `intent` возвращает материалы
+и отдельный компактный `guidance`: до 3 совпадений по умолчанию, максимум 5.
+Лимит материалов не расходуется на guidance. Инструкции и schemas загружаются
+только для выбранного exact read. `searched` переиспользуется без второго
+catalog call; `search_agent_guidance` нужен только старому ответу без блока.
+`requires_scope`/`unavailable`/ошибка не означают отсутствия навыка.
+Company procedures наследуются проектом; project procedures остаются в нём.
+`kind` и exact read tool не выводятся из названия.
 `list_agent_skills` используется для явной инвентаризации всего каталога и
 onboarding, а не как стандартный путь ordinary operation.
 

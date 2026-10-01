@@ -17,10 +17,14 @@ Native-чтения Trelio, discovery и управляющие операции
 
 ## Выбери текущий навык
 
-1. В точной компании/проекте вызови `search_agent_guidance` с задачей и краткими
-   hints; `list_agent_skills` оставь для явной инвентаризации. Если результат
-   `kind=procedure`, сначала прочитай `agent-procedures.md` и загрузи exact
-   `get_agent_procedure`; этот файл продолжает определять внешние зависимости.
+1. Используй `guidance` уже выполненного единого `search` для той же области
+   и намерения. Иначе вызови `search` с одной точной `companySlugs`, известным
+   `projectSlug`, `queries` и исходным `intent`. По умолчанию три коротких
+   совпадения; полный текст читай только у выбранного `read`.
+   После `status=searched` повторного catalog search нет. Только старый ответ
+   без `guidance` требует одного `search_agent_guidance`. Ошибка, `unavailable`
+   и `requires_scope` не означают отсутствия навыка. `list_agent_skills` – inventory.
+   Для `kind=procedure` прочитай `agent-procedures.md` и exact published revision.
 2. Default `get_agent_skill` даёт compact summary. До первого внешнего действия
    вызови его с `sections=[instructions,execution]`; `connection` добавляй для
    setup, `publication` – для provenance. Переиспользуй полный текст и точную

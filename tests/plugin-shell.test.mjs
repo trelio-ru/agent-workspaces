@@ -26,6 +26,17 @@ const pluginDirectory = fileURLToPath(new URL(
   import.meta.url,
 ));
 
+test("unified discovery bootstrap avoids a second catalog call and retains old-server compatibility", async () => {
+  const catalog = await fs.readFile(path.join(pluginDirectory, "skills/trelio-skill-catalog/SKILL.md"), "utf8");
+  const context = await fs.readFile(path.join(pluginDirectory, "skills/trelio-workspace-worker/references/scope-and-context.md"), "utf8");
+  assert.match(catalog, /единый `search`/u);
+  assert.match(catalog, /После `guidance.status=searched` не вызывай `search_agent_guidance`/u);
+  assert.match(catalog, /старый ответ вообще не содержит `guidance`/u);
+  assert.match(catalog, /трёх коротких совпадений/u);
+  assert.match(context, /лимит материалов независим/u);
+  assert.match(catalog, /`unavailable`\/ошибка не означают отсутствия навыка/u);
+});
+
 const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
   const sourceBytes = Buffer.from(source, "utf8");
 

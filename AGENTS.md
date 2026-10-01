@@ -51,6 +51,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   либо критический security/compatibility defect; доказательство зафиксируй в
   задаче и тестах. Не копируй сюда backend schema или runtime implementation.
 - Сохраняй чужие изменения в рабочем дереве и отделяй scope текущей задачи.
+- Согласованное узкое исключение для bundled instructions: единый `search`
+  одновременно возвращает компактный `guidance` и материалы. Старые инструкции
+  предписывали второй catalog call, поэтому bootstrap router и references
+  синхронизируются с server/runtime без изменения ABI и minimum versions.
+  Test обязан сохранять legacy fallback только для ответа без `guidance`.
+  Это не разрешает другие model-guidance правки plugin по умолчанию.
 
 ## Обязательный Git-workflow
 
@@ -438,7 +444,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   названием папки. Для любого non-`plain` `encryptionState` он не вызывает
   remote `get_agent_instructions`/`list_agent_skills`. Published Agent
   Procedures входят только в локально расшифрованный manifest; единый
-  `search_agent_guidance` и exact `get_agent_procedure` не отправляют query,
+  `search.guidance`, legacy `search_agent_guidance` и exact `get_agent_procedure` не отправляют query,
   snippets, draft или comments на backend. Для exact `encrypted`
   после binding/pairing он обязан выполнить отдельный `encryption setup` через
   bridge и считать доступ готовым только после открытого owner envelope и
