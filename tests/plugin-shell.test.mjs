@@ -62,12 +62,13 @@ const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
   })}\n`, "utf8");
 };
 
-const runLoader = async (argumentsList, environment) => await new Promise((resolve, reject) => {
+const runLoader = async (argumentsList, environment, { timeout = 0 } = {}) => await new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [loaderPath, ...argumentsList], {
     env: environment,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
+    timeout,
   });
   const stdout = [];
   const stderr = [];
@@ -486,7 +487,11 @@ test("host runtime updater verifies, materializes and selects a signed package",
   }
 });
 
-test("long-lived MCP startup converges before selecting a cached runtime", async () => {
+// Это regression именно stable shell: lock и HTTP возникают ДО запуска
+// signed entrypoint, поэтому исправление внутри host runtime сюда не дойдёт.
+// Каждая fixture использует отдельный cache и synthetic Ed25519 package;
+// реальные установки, credentials и сервер Trelio в проверке не участвуют.
+const createMcpStartupFixture = async () => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-mcp-convergence-test-"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signingPublicKeySpki = publicKey
@@ -507,11 +512,16 @@ test("long-lived MCP startup converges before selecting a cached runtime", async
     });
   }
   let publishedVersion = "2.4.6";
+  const behavior = { stallMetadata: false, packageDelayMs: 0 };
+  const requests = { metadata: 0, package: 0 };
+  const timers = new Set();
 
   const server = createServer((request, response) => {
     const published = releases.get(publishedVersion);
     assert.ok(published);
     if (request.url?.startsWith("/api/agent-workspaces/host-runtime/current")) {
+      requests.metadata += 1;
+      if (behavior.stallMetadata) return;
       const address = server.address();
       assert.ok(address && typeof address !== "string");
       response.writeHead(200, { "content-type": "application/json" });
@@ -535,46 +545,204 @@ test("long-lived MCP startup converges before selecting a cached runtime", async
       request.url === `/${release.runtimeVersion}.skillpkg`
     ));
     if (requested) {
-      response.writeHead(200, {
-        "content-type": "application/vnd.trelio.agent-skill-package+json",
-        "content-length": String(requested.packageBytes.byteLength),
-      });
-      response.end(requested.packageBytes);
+      requests.package += 1;
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        response.writeHead(200, {
+          "content-type": "application/vnd.trelio.agent-skill-package+json",
+          "content-length": String(requested.packageBytes.byteLength),
+        });
+        response.end(requested.packageBytes);
+      }, behavior.packageDelayMs);
+      timers.add(timer);
       return;
     }
     response.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 
-  try {
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const environment = {
-      ...process.env,
-      HOME: temporaryHome,
-      USERPROFILE: temporaryHome,
-      LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
-      TRELIO_ORIGIN: `http://127.0.0.1:${address.port}`,
-    };
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const environment = {
+    ...process.env,
+    HOME: temporaryHome,
+    USERPROFILE: temporaryHome,
+    LOCALAPPDATA: path.join(temporaryHome, "AppData", "Local"),
+    TRELIO_ORIGIN: `http://127.0.0.1:${address.port}`,
+    // A developer's shell must not silently disable the behavior under test.
+    TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "0",
+  };
+  const configDirectory = resolveWorkspaceBridgeConfigDirectory({
+    platform: process.platform,
+    environment,
+    homeDirectory: temporaryHome,
+  });
+  const runtimeRoot = path.join(configDirectory, "host-runtimes");
+  const lockPath = path.join(runtimeRoot, "update.lock");
 
+  return {
+    environment, runtimeRoot, lockPath, behavior, requests,
+    publish: (version) => { publishedVersion = version; },
+    bootstrap: async () => {
+      const result = await runLoader(["__update"], environment, { timeout: 10_000 });
+      assert.equal(result.code, 0, result.stderr);
+    },
+    holdLock: async () => {
+      await fs.mkdir(lockPath, { recursive: true });
+      await fs.writeFile(path.join(lockPath, "owner"), "another updater");
+    },
+    close: async () => {
+      for (const timer of timers) clearTimeout(timer);
+      // Stalled responses deliberately never end; abort them before close so
+      // a failed assertion cannot leave the suite waiting on a synthetic peer.
+      const closed = new Promise((resolve, reject) => server.close((error) => (
+        error ? reject(error) : resolve()
+      )));
+      server.closeAllConnections();
+      await closed;
+      await fs.rm(temporaryHome, { recursive: true, force: true });
+      for (const release of releases.values()) release.packageBytes.fill(0);
+    },
+  };
+};
+
+test("long-lived MCP startup converges before selecting a cached runtime", async () => {
+  const fixture = await createMcpStartupFixture();
+  try {
     // First materialize the old runtime and its future update throttle. This
     // reproduces the affected Macs: current.json is valid, so the previous
     // loader opened a persistent MCP on 2.4.6 before its detached updater ran.
-    const initialUpdate = await runLoader(["__update"], environment);
-    assert.equal(initialUpdate.code, 0, initialUpdate.stderr);
-    publishedVersion = "3.0.2";
+    await fixture.bootstrap();
+    fixture.publish("3.0.2");
 
-    const invocation = await runLoader(["mcp"], environment);
+    const invocation = await runLoader(["mcp"], fixture.environment);
     assert.equal(invocation.code, 0, invocation.stderr);
     assert.deepEqual(JSON.parse(invocation.stdout), {
       mode: "mcp",
       version: "3.0.2",
     });
   } finally {
-    await new Promise((resolve, reject) => server.close((error) => (
-      error ? reject(error) : resolve()
+    await fixture.close();
+  }
+});
+
+test("MCP startup shares one deadline across lock wait, retries and first bootstrap", { concurrency: true }, async (t) => {
+  // Реальные процессы и реальные 20 секунд проверяют production timeout без
+  // test-only override в loader. Сценарии независимы и идут одновременно.
+  // Внешние 28 секунд убивают старый 90-секундный путь до client handshake
+  // timeout (30 секунд), оставляя запас на spawn и CI scheduling.
+  await Promise.all([
+    t.test("cached runtime survives a busy lock without stealing it", async () => {
+      const fixture = await createMcpStartupFixture();
+      try {
+        await fixture.bootstrap();
+        const statePath = path.join(fixture.runtimeRoot, "update-state.json");
+        const previousState = await fs.readFile(statePath, "utf8");
+        await fixture.holdLock();
+        const invocation = await runLoader(["mcp"], fixture.environment, { timeout: 28_000 });
+        assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+        assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "2.4.6" });
+        assert.equal(fixture.requests.metadata, 1, "no HTTP request before acquiring the lock");
+        assert.equal(await fs.readFile(statePath, "utf8"), previousState);
+        assert.equal(await fs.readFile(path.join(fixture.lockPath, "owner"), "utf8"), "another updater");
+      } finally {
+        await fixture.close();
+      }
+    }),
+    t.test("first install fails closed within the same budget when no runtime exists", async () => {
+      const fixture = await createMcpStartupFixture();
+      try {
+        await fixture.holdLock();
+        const invocation = await runLoader(["mcp"], fixture.environment, { timeout: 28_000 });
+        assert.equal(invocation.code, 1, `${invocation.signal}: ${invocation.stderr}`);
+        assert.equal(invocation.stdout, "");
+        const diagnostic = JSON.parse(invocation.stderr.trim().replace(/^Trelio host runtime loader failed: /u, ""));
+        assert.deepEqual(diagnostic, {
+          code: "TRELIO_HOST_RUNTIME_UPDATE_FAILED",
+          operation: "host_runtime_update",
+          reason: "timeout",
+          stage: "update_lock",
+          timeoutKind: "total",
+          timeoutMs: 20_000,
+        });
+        assert.equal(fixture.requests.metadata, 0);
+        assert.equal(await fs.readFile(path.join(fixture.lockPath, "owner"), "utf8"), "another updater");
+        await assert.rejects(fs.access(path.join(fixture.runtimeRoot, "current.json")));
+      } finally {
+        await fixture.close();
+      }
+    }),
+    t.test("network retries consume only the time left after lock acquisition", async () => {
+      const fixture = await createMcpStartupFixture();
+      try {
+        await fixture.bootstrap();
+        fixture.behavior.stallMetadata = true;
+        await fixture.holdLock();
+        const startedAt = performance.now();
+        const invocationPromise = runLoader(["mcp"], fixture.environment, { timeout: 28_000 });
+        // Старое поведение получало бы новый network budget после 12 секунд
+        // ожидания и не успевало бы до внешнего timeout. Новый путь успевает
+        // повторить безопасный GET, но не продлевает общий срок.
+        await new Promise((resolve) => setTimeout(resolve, 12_000));
+        await fs.rm(fixture.lockPath, { recursive: true });
+        const invocation = await invocationPromise;
+        assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+        assert.ok(performance.now() - startedAt < 28_000);
+        assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "2.4.6" });
+        assert.ok(fixture.requests.metadata >= 3, "bootstrap plus at least one foreground retry");
+        assert.ok(fixture.requests.metadata <= 5, "at most three retries");
+        await assert.rejects(fs.access(fixture.lockPath));
+      } finally {
+        await fixture.close();
+      }
+    }),
+    t.test("timeout rechecks a verified pointer published by another updater", async () => {
+      const fixture = await createMcpStartupFixture();
+      try {
+        await fixture.bootstrap();
+        const pointerPath = path.join(fixture.runtimeRoot, "current.json");
+        const previousPointer = await fs.readFile(pointerPath, "utf8");
+        fixture.publish("3.0.2");
+        await fixture.bootstrap();
+        const nextPointer = await fs.readFile(pointerPath, "utf8");
+        await fs.writeFile(pointerPath, previousPointer);
+        await fixture.holdLock();
+        const invocationPromise = runLoader(["mcp"], fixture.environment, { timeout: 28_000 });
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        // Публикация нового verified pointer не означает, что сосед уже успел
+        // освободить lock. На timeout запускаем новый проверенный runtime.
+        const temporaryPointer = `${pointerPath}.next`;
+        await fs.writeFile(temporaryPointer, nextPointer);
+        await fs.rename(temporaryPointer, pointerPath);
+        const invocation = await invocationPromise;
+        assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+        assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "3.0.2" });
+        assert.equal(fixture.requests.metadata, 2);
+        assert.equal(await fs.readFile(path.join(fixture.lockPath, "owner"), "utf8"), "another updater");
+      } finally {
+        await fixture.close();
+      }
+    }),
+  ]);
+});
+
+test("concurrent MCP startups share one signed package and all select the new runtime", async () => {
+  const fixture = await createMcpStartupFixture();
+  try {
+    await fixture.bootstrap();
+    fixture.publish("3.0.2");
+    fixture.behavior.packageDelayMs = 500;
+    const invocations = await Promise.all(Array.from({ length: 4 }, () => (
+      runLoader(["mcp"], fixture.environment, { timeout: 10_000 })
     )));
-    await fs.rm(temporaryHome, { recursive: true, force: true });
-    for (const release of releases.values()) release.packageBytes.fill(0);
+    for (const invocation of invocations) {
+      assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+      assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "3.0.2" });
+    }
+    assert.equal(fixture.requests.package, 2, "one initial and one new signed package");
+    await assert.rejects(fs.access(fixture.lockPath));
+    assert.equal((await fs.readdir(fixture.runtimeRoot)).some((name) => name.endsWith(".tmp")), false);
+  } finally {
+    await fixture.close();
   }
 });

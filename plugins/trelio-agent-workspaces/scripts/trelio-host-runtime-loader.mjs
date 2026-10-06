@@ -37,7 +37,7 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 const UPDATE_LOCK_WAIT_MS = 90 * 1000;
 const MAX_METADATA_BYTES = 256 * 1024;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
-const MCP_STARTUP_NETWORK_TIMEOUT_MS = 20_000;
+const MCP_STARTUP_TIMEOUT_MS = 20_000;
 const MCP_STARTUP_REQUEST_TIMEOUT_MS = 4_000;
 const MCP_STARTUP_RETRY_DELAYS_MS = Object.freeze([200, 600, 1_200]);
 
@@ -322,11 +322,32 @@ const materializeRuntime = async (descriptor, packageBytes) => {
   return verified;
 };
 
-const acquireUpdateLock = async ({ waitForExisting = false } = {}) => {
+const acquireUpdateLock = async ({ waitForExisting = false, requestPolicy } = {}) => {
   await ensurePrivateDirectory(RUNTIME_ROOT);
-  const deadline = Date.now() + UPDATE_LOCK_WAIT_MS;
+  // MCP должен успеть передать stdio рантайму до handshake timeout клиента.
+  // Ожидание чужого updater расходует ТОТ ЖЕ срок, что и следующие HTTP GET,
+  // а не отдельные 90 секунд до начала сетевого бюджета. Обычный __update
+  // сохраняет прежний предел ожидания; чужую блокировку при timeout не трогаем.
+  const deadline = Math.min(
+    Date.now() + UPDATE_LOCK_WAIT_MS,
+    requestPolicy?.deadline ?? Infinity,
+  );
 
   while (true) {
+    if (Date.now() >= deadline) {
+      if (requestPolicy?.deadline !== undefined) {
+        const diagnostic = {
+          code: "TRELIO_HOST_RUNTIME_UPDATE_FAILED",
+          operation: "host_runtime_update",
+          reason: "timeout",
+          stage: "update_lock",
+          timeoutKind: "total",
+          timeoutMs: requestPolicy.totalTimeoutMs,
+        };
+        throw Object.assign(new Error(JSON.stringify(diagnostic)), { diagnostic });
+      }
+      throw new Error("Trelio host runtime update lock не освободился вовремя.");
+    }
     try {
       await fs.mkdir(UPDATE_LOCK_PATH, { mode: 0o700 });
       return true;
@@ -340,12 +361,9 @@ const acquireUpdateLock = async ({ waitForExisting = false } = {}) => {
       continue;
     }
     if (!waitForExisting) return false;
-    if (Date.now() >= deadline) {
-      throw new Error("Trelio host runtime update lock не освободился вовремя.");
-    }
     // A hard compatibility gate can race with the detached updater started at
     // process launch. Waiting here avoids re-executing the same stale runtime.
-    await sleep(250);
+    await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
   }
 };
 
@@ -354,17 +372,20 @@ const updateRuntime = async ({
   waitForExisting = false,
   requestPolicy,
 } = {}) => {
-  if (!await acquireUpdateLock({ waitForExisting })) return false;
+  // Lock acquisition остаётся вне try/finally: процесс, который не получил
+  // блокировку, не вправе удалить её или менять retry-state другого updater.
+  if (!await acquireUpdateLock({ waitForExisting, requestPolicy })) return false;
 
   try {
     const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
     const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
     metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
     // Один общий network budget не даёт непрерывному медленному stream либо
-    // четырём retries пережить срок stale lock. MCP startup сохраняет свой
-    // короткий бюджет; __update/bootstrap могут завершить большую загрузку.
+    // четырём попыткам пережить срок stale lock. MCP startup передаёт уже
+    // начавшийся до lock короткий срок; остальные режимы получают сетевой
+    // бюджет здесь и могут завершить большую загрузку.
     const networkPolicy = { totalTimeoutMs: UPDATE_NETWORK_TIMEOUT_MS, ...requestPolicy };
-    networkPolicy.deadline = Date.now() + networkPolicy.totalTimeoutMs;
+    networkPolicy.deadline ??= Date.now() + networkPolicy.totalTimeoutMs;
     const metadataResponse = await downloadHostRuntimeResponse(metadataUrl, {
       ...networkPolicy,
       resource: "metadata",
@@ -466,12 +487,21 @@ export const runHostRuntimeLoader = async ({
     throw new Error("Trelio host runtime loader ожидает mode bridge, hook или mcp.");
   }
 
+  // Срок задаётся один раз до чтения cache и не продлевается после lock,
+  // повторного GET или перехода к первому bootstrap. Остаток внешних 30 секунд
+  // нужен для локальной проверки package и initialize самого runtime.
+  const requestPolicy = mode === "mcp" ? {
+    requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
+    totalTimeoutMs: MCP_STARTUP_TIMEOUT_MS,
+    deadline: Date.now() + MCP_STARTUP_TIMEOUT_MS,
+    retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
+  } : undefined;
   let selected = await selectHostRuntime();
   if (
-    mode === "mcp"
-    && selected
-    && environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE !== "1"
+    !selected
+    || (mode === "mcp" && environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE !== "1")
   ) {
+    let updateError;
     try {
       // The local MCP is long-lived. If it starts on a cached runtime and the
       // server has already raised the minimum, a detached update can switch
@@ -482,25 +512,18 @@ export const runHostRuntimeLoader = async ({
       await updateRuntime({
         environment,
         waitForExisting: true,
-        requestPolicy: {
-          requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
-          totalTimeoutMs: MCP_STARTUP_NETWORK_TIMEOUT_MS,
-          retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
-        },
+        requestPolicy,
       });
-      selected = await selectHostRuntime();
-    } catch {
-      // The detached retry schedule was written by updateRuntime. Starting the
-      // last verified runtime keeps offline-compatible work available without
-      // pretending that a server-side compatibility gate was satisfied.
+    } catch (error) {
+      updateError = error;
     }
-  }
-  if (!selected) {
-    // The foreground bootstrap happens only once per installation. It waits
-    // for a racing updater, verifies the signed package and then executes from
-    // the immutable cache. Network failure never falls back to plugin code.
-    await updateRuntime({ environment, waitForExisting: true });
-    selected = await selectHostRuntime();
+    // Пока мы ждали lock, соседний процесс мог закончить signed update.
+    // Перечитываем и проверяем pointer даже после timeout; прежний проверенный
+    // immutable runtime остаётся fallback с обычным server-side admission.
+    // Без проверенного runtime первый запуск fail-closed возвращает исходную
+    // ошибку, а не начинает второй bootstrap с новым, неограниченным бюджетом.
+    selected = await selectHostRuntime() ?? selected;
+    if (!selected && updateError) throw updateError;
   }
   if (!selected) {
     throw new Error(

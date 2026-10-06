@@ -110,11 +110,17 @@ provider-tag workflow или внутренние release playbooks в этот 
   transport/idle timeout/5xx с освобождением предыдущего stream. Метаданные
   ограничены 256 KiB, package – размером descriptor. Idle timeout 15 секунд
   сбрасывается только непустыми chunks; общий network budget 120 секунд на
-  metadata + package + backoff не продлевается. MCP startup использует 4/20
-  секунд. HTTP 4xx, size/signature/manifest failure не повторяются; current
+  metadata + package + backoff не продлевается. MCP startup задаёт единый срок
+  20 секунд до чтения cache: ожидание update lock, metadata, package и backoff
+  расходуют один бюджет; idle timeout – 4 секунды. После истечения срока loader
+  повторно проверяет current pointer и может запустить только verified runtime;
+  при его отсутствии завершает первый bootstrap fail-closed, без нового бюджета.
+  Чужой lock и retry-state при timeout не меняются. HTTP 4xx,
+  size/signature/manifest failure не повторяются; current
   pointer меняется только после полной проверки. Диагностика transport содержит
   закрытый stage, reason, attempt, receivedBytes и timeoutKind/timeoutMs либо
-  httpStatus, без URL/body/local paths. Контракт нужен до загрузки runtime и
+  httpStatus, без URL/body/local paths; timeout ожидания lock имеет отдельный
+  stage `update_lock`. Контракт нужен до загрузки runtime и
   проверяется synthetic HTTP regressions stable shell.
 - Повреждённый exact content-addressed host runtime восстанавливается только под
   update lock: loader удаляет и заново материализует один каталог
