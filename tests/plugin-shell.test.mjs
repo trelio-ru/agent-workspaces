@@ -215,6 +215,8 @@ test("plugin manifests and stable shell keep one version", async () => {
 
   assert.equal(codexManifest.version, PLUGIN_VERSION);
   assert.equal(claudeManifest.version, PLUGIN_VERSION);
+  const marketplace = JSON.parse(await fs.readFile(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
+  assert.equal(marketplace.plugins.find((entry) => entry.name === "trelio-agent-workspaces").version, PLUGIN_VERSION);
 });
 
 test("private skill management stays a compact router to the live runtime contract", async () => {
@@ -357,6 +359,8 @@ test("host runtime updater verifies, materializes and selects a signed package",
     .export({ format: "der", type: "spki" })
     .toString("base64");
 
+  let packageRequests = 0;
+  let invalidPackage = false;
   const server = createServer((request, response) => {
     if (request.url?.startsWith("/api/agent-workspaces/host-runtime/current")) {
       const address = server.address();
@@ -366,7 +370,7 @@ test("host runtime updater verifies, materializes and selects a signed package",
         schemaVersion: 1,
         runtime: {
           artifactId: "runtime-test",
-          runtimeVersion,
+          runtimeVersion: invalidPackage ? "9.8.8" : runtimeVersion,
           minimumRuntimeVersion: runtimeVersion,
           minimumPluginVersion: PLUGIN_VERSION,
           packageSha256,
@@ -383,7 +387,19 @@ test("host runtime updater verifies, materializes and selects a signed package",
         "content-type": "application/vnd.trelio.agent-skill-package+json",
         "content-length": String(packageBytes.byteLength),
       });
-      response.end(packageBytes);
+      packageRequests += 1;
+      if (packageRequests <= 3) {
+        // Реальный reset ПОСЛЕ headers должен повторять полный GET, а не
+        // оставлять частичный package или переключать current.json.
+        response.write(packageBytes.subarray(0, 20));
+        setTimeout(() => response.destroy(), 20);
+      } else if (invalidPackage) {
+        const corrupted = Buffer.from(packageBytes);
+        corrupted[corrupted.length - 1] ^= 1;
+        response.end(corrupted);
+      } else {
+        response.end(packageBytes);
+      }
       return;
     }
     response.writeHead(404).end();
@@ -420,6 +436,7 @@ test("host runtime updater verifies, materializes and selects a signed package",
 
     const update = await runLoader(["__update"], environment);
     assert.equal(update.code, 0, update.stderr);
+    assert.equal(packageRequests, 4);
     await assert.rejects(fs.access(path.join(corruptRuntimeDirectory, "stale-partial-file")));
 
     // Foreground startup selects only a fully verified immutable tree. Neither
@@ -447,6 +464,19 @@ test("host runtime updater verifies, materializes and selects a signed package",
       mode: "mcp",
       version: runtimeVersion,
     });
+
+    // Signature failure не относится к transport retry. Старый проверенный
+    // runtime остаётся выбранным, lock освобождается, новое дерево не появляется.
+    invalidPackage = true;
+    const beforeFailureRequests = packageRequests;
+    const failed = await runLoader(["__update"], environment);
+    assert.equal(failed.code, 1);
+    assert.match(failed.stderr, /signature verification/u);
+    assert.equal(packageRequests, beforeFailureRequests + 1);
+    const pointer = JSON.parse(await fs.readFile(path.join(configDirectory, "host-runtimes", "current.json"), "utf8"));
+    assert.equal(pointer.runtimeVersion, runtimeVersion);
+    await assert.rejects(fs.access(path.join(configDirectory, "host-runtimes", "9.8.8")));
+    await assert.rejects(fs.access(path.join(configDirectory, "host-runtimes", "update.lock")));
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (
       error ? reject(error) : resolve()

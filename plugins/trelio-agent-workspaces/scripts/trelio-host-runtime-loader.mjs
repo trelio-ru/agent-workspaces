@@ -20,9 +20,13 @@ import { fileURLToPath } from "node:url";
 import {
   PLUGIN_VERSION,
   parseAndValidateHostRuntimePackage,
-  readBoundedResponseBuffer,
   resolveWorkspaceBridgeConfigDirectory,
 } from "./trelio-host-runtime-shell.mjs";
+
+import {
+  downloadHostRuntimeResponse,
+  UPDATE_NETWORK_TIMEOUT_MS,
+} from "./trelio-host-runtime-download.mjs";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST_RUNTIME_SKILL_ID = "trelio-host-runtime";
@@ -31,9 +35,9 @@ const UPDATE_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_FAILURE_RETRY_MS = 5 * 60 * 1000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const UPDATE_LOCK_WAIT_MS = 90 * 1000;
-const REQUEST_TIMEOUT_MS = 15_000;
+const MAX_METADATA_BYTES = 256 * 1024;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
-const RETRY_DELAYS_MS = Object.freeze([250, 1_000, 3_000]);
+const MCP_STARTUP_NETWORK_TIMEOUT_MS = 20_000;
 const MCP_STARTUP_REQUEST_TIMEOUT_MS = 4_000;
 const MCP_STARTUP_RETRY_DELAYS_MS = Object.freeze([200, 600, 1_200]);
 
@@ -109,37 +113,6 @@ const normalizeOrigin = (rawOrigin) => {
   url.search = "";
   url.hash = "";
   return url.origin;
-};
-
-const fetchWithRetries = async (
-  url,
-  options = {},
-  {
-    requestTimeoutMs = REQUEST_TIMEOUT_MS,
-    retryDelaysMs = RETRY_DELAYS_MS,
-  } = {},
-) => {
-  let lastError;
-
-  for (let attempt = 0; attempt <= retryDelaysMs.length; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: AbortSignal.timeout(requestTimeoutMs),
-      });
-      if (response.status >= 500 && attempt < retryDelaysMs.length) {
-        await sleep(retryDelaysMs[attempt]);
-        continue;
-      }
-      return response;
-    } catch (error) {
-      lastError = error;
-      if (attempt >= retryDelaysMs.length) break;
-      await sleep(retryDelaysMs[attempt]);
-    }
-  }
-
-  throw lastError;
 };
 
 export const normalizeHostRuntimeDescriptor = (payload, origin) => {
@@ -387,7 +360,16 @@ const updateRuntime = async ({
     const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
     const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
     metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
-    const metadataResponse = await fetchWithRetries(metadataUrl, {}, requestPolicy);
+    // Один общий network budget не даёт непрерывному медленному stream либо
+    // четырём retries пережить срок stale lock. MCP startup сохраняет свой
+    // короткий бюджет; __update/bootstrap могут завершить большую загрузку.
+    const networkPolicy = { totalTimeoutMs: UPDATE_NETWORK_TIMEOUT_MS, ...requestPolicy };
+    networkPolicy.deadline = Date.now() + networkPolicy.totalTimeoutMs;
+    const metadataResponse = await downloadHostRuntimeResponse(metadataUrl, {
+      ...networkPolicy,
+      resource: "metadata",
+      maximumBytes: MAX_METADATA_BYTES,
+    });
 
     // A source-only/backend rollout may precede the first runtime artifact.
     // Existing verified runtimes keep working, but a fresh shell must fail
@@ -396,11 +378,12 @@ const updateRuntime = async ({
       await scheduleNextUpdate(UPDATE_INTERVAL_MS);
       return false;
     }
-    if (!metadataResponse.ok) {
-      throw new Error(`Host runtime metadata HTTP ${metadataResponse.status}.`);
+    let descriptor;
+    try {
+      descriptor = normalizeHostRuntimeDescriptor(JSON.parse(metadataResponse.bytes.toString("utf8")), origin);
+    } finally {
+      metadataResponse.bytes.fill(0);
     }
-
-    const descriptor = normalizeHostRuntimeDescriptor(await metadataResponse.json(), origin);
     if (compareStableVersions(PLUGIN_VERSION, descriptor.minimumPluginVersion) < 0) {
       throw new Error(`Host runtime требует plugin v${descriptor.minimumPluginVersion} или новее.`);
     }
@@ -415,15 +398,14 @@ const updateRuntime = async ({
       return false;
     }
 
-    const packageResponse = await fetchWithRetries(descriptor.packageUrl, {}, requestPolicy);
-    if (!packageResponse.ok) throw new Error(`Host runtime package HTTP ${packageResponse.status}.`);
-    // Content-Length is optional and cannot be trusted as the only allocation
-    // boundary. Stream-count against the signed descriptor before buffering.
-    const packageBytes = await readBoundedResponseBuffer(
-      packageResponse,
-      descriptor.packageSizeBytes,
-      "Trelio host runtime package",
-    );
+    // Повтор включает bounded чтение всего body. Signature/manifest checks
+    // выполняются только после полного ответа, вне transport retry: повреждённый
+    // либо неподписанный package не становится сетевой ошибкой.
+    const { bytes: packageBytes } = await downloadHostRuntimeResponse(descriptor.packageUrl, {
+      ...networkPolicy,
+      resource: "package",
+      maximumBytes: descriptor.packageSizeBytes,
+    });
 
     try {
       verifyHostRuntimeSignature(packageBytes, descriptor);
@@ -502,6 +484,7 @@ export const runHostRuntimeLoader = async ({
         waitForExisting: true,
         requestPolicy: {
           requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
+          totalTimeoutMs: MCP_STARTUP_NETWORK_TIMEOUT_MS,
           retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
         },
       });

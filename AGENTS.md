@@ -106,6 +106,16 @@ provider-tag workflow или внутренние release playbooks в этот 
   затем передаёт stdio transport immutable runtime. Обычные compatible updates
   bridge/hook остаются detached; network failure с существующим verified cache
   сохраняет fail-closed server gate и не подделывает compatibility.
+- Loader повторяет bounded GET целиком, включая body: до трёх повторов для
+  transport/idle timeout/5xx с освобождением предыдущего stream. Метаданные
+  ограничены 256 KiB, package – размером descriptor. Idle timeout 15 секунд
+  сбрасывается только непустыми chunks; общий network budget 120 секунд на
+  metadata + package + backoff не продлевается. MCP startup использует 4/20
+  секунд. HTTP 4xx, size/signature/manifest failure не повторяются; current
+  pointer меняется только после полной проверки. Диагностика transport содержит
+  закрытый stage, reason, attempt, receivedBytes и timeoutKind/timeoutMs либо
+  httpStatus, без URL/body/local paths. Контракт нужен до загрузки runtime и
+  проверяется synthetic HTTP regressions stable shell.
 - Повреждённый exact content-addressed host runtime восстанавливается только под
   update lock: loader удаляет и заново материализует один каталог
   `runtimeVersion/packageSha256`, не сканируя и не очищая соседние версии.

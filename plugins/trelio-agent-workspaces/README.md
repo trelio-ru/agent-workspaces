@@ -545,6 +545,20 @@ exact bridge-команду в той же задаче. Marketplace update ос
 loader атомарно восстанавливает указатель на exact подписанный package после
 повторной проверки и запускает runtime без очистки соседних каталогов.
 
+Загрузка повторяется целиком при сетевом обрыве, простое или HTTP 5xx: до трёх
+повторов с короткой увеличивающейся паузой. Loader допускает медленную передачу,
+если очередные bytes приходят не реже одного раза в 15 секунд; общий бюджет
+metadata, package и повторов – 120 секунд. При старте долгоживущего MCP
+сохраняется короткий бюджет: 4 секунды простоя и 20 секунд в целом.
+Метаданные ограничены 256 KiB, package – размером descriptor; подпись, manifest
+и все file hashes проверяются перед переключением. HTTP 4xx, превышение размера
+и неверная подпись не повторяются. При отказе скачивания loader сообщает
+`TRELIO_HOST_RUNTIME_UPDATE_FAILED`, `stage` (`metadata_headers`, `metadata_body`,
+`package_headers`, `package_body`), `reason`, `attempt`, `maxAttempts`,
+`receivedBytes`, а для timeout – `timeoutKind` и `timeoutMs`. Ответ HTTP сохраняет
+`httpStatus`; транспортная ошибка сохраняет доступный машинный `networkCode`.
+Адреса, содержимое ответа и локальные пути в эту диагностику не входят.
+
 Runtime cache содержит только код. Ключи E2EE, plaintext company content,
 credentials и sessions туда не попадают; зашифрованные компании продолжают
 использовать локальный fail-closed data plane без plaintext fallback.

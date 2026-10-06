@@ -6,7 +6,7 @@ import path from "node:path";
 // This module is intentionally the complete executable dependency surface of
 // the stable plugin loader. Domain logic, bridge commands and search behavior
 // live in the independently signed host-runtime package.
-export const PLUGIN_VERSION = "3.0.5";
+export const PLUGIN_VERSION = "3.0.6";
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
 const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
@@ -41,10 +41,15 @@ export const readBoundedResponseBuffer = async (
   response,
   maximumBytes,
   label = "HTTP response",
+  onProgress = () => {},
 ) => {
+  const sizeError = () => Object.assign(
+    new Error(`${label} превышает допустимый размер ${maximumBytes} байт.`),
+    { code: "HOST_RUNTIME_RESPONSE_TOO_LARGE" },
+  );
   const declaredLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
-    throw new Error(`${label} превышает допустимый размер ${maximumBytes} байт.`);
+    throw sizeError();
   }
   if (!response.body) return Buffer.alloc(0);
 
@@ -54,9 +59,12 @@ export const readBoundedResponseBuffer = async (
     const chunk = Buffer.from(rawChunk);
     totalBytes += chunk.byteLength;
     if (totalBytes > maximumBytes) {
-      throw new Error(`${label} превышает допустимый размер ${maximumBytes} байт.`);
+      throw sizeError();
     }
     chunks.push(chunk);
+    // Прогресс учитывается только после проверки размера; пустые chunks не
+    // должны поддерживать бесконечно живой idle timer вызывающего transport.
+    if (chunk.byteLength > 0) onProgress(totalBytes);
   }
   return Buffer.concat(chunks, totalBytes);
 };
