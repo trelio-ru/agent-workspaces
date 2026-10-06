@@ -125,6 +125,10 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Повреждённый exact content-addressed host runtime восстанавливается только под
   update lock: loader удаляет и заново материализует один каталог
   `runtimeVersion/packageSha256`, не сканируя и не очищая соседние версии.
+- Guard прямого запуска loader сравнивает realpath exact файлов: Node раскрывает
+  родительские ссылки/junctions, а argv сохраняет исходный путь. Это нужно до
+  загрузки runtime и не меняет запрет ссылок внутри package, signature или trust.
+  Regression должен отличать реальный blocking failure от пустого exit 0.
 - Generic host implementation, runtime admission/pairing и общие
   security/credential/browser primitives находятся только в отдельном
   `trelio-ru/agent-workspaces-runtime`. Его source и tests не копируются сюда.

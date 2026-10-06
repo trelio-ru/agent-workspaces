@@ -62,8 +62,8 @@ const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
   })}\n`, "utf8");
 };
 
-const runLoader = async (argumentsList, environment, { timeout = 0 } = {}) => await new Promise((resolve, reject) => {
-  const child = spawn(process.execPath, [loaderPath, ...argumentsList], {
+const runLoader = async (argumentsList, environment, { timeout = 0, scriptPath = loaderPath } = {}) => await new Promise((resolve, reject) => {
+  const child = spawn(process.execPath, [scriptPath, ...argumentsList], {
     env: environment,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
@@ -158,6 +158,35 @@ test("hook bootstrap failure blocks the protected call", async () => {
       error ? reject(error) : resolve()
     )));
     await fs.rm(temporaryHome, { recursive: true, force: true });
+  }
+});
+
+test("loader runs through a plugin directory alias instead of silently succeeding", async () => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-loader-alias-"));
+  const alias = path.join(home, "plugin");
+  const server = createServer((_request, response) => response.writeHead(404).end());
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    // A directory junction needs no administrative symlink privilege on Windows.
+    // Only the parent is aliased; the shell and package files remain unchanged.
+    await fs.symlink(pluginDirectory, alias, process.platform === "win32" ? "junction" : "dir");
+    const environment = {
+      ...process.env, HOME: home, USERPROFILE: home,
+      LOCALAPPDATA: path.join(home, "AppData", "Local"),
+      TRELIO_ORIGIN: `http://127.0.0.1:${server.address().port}`,
+      TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "1",
+    };
+    const scriptPath = path.join(alias, "scripts/trelio-host-runtime-loader.mjs");
+    const result = await runLoader(["hook"], environment, { scriptPath, timeout: 5_000 });
+    assert.equal(result.code, 2, "The real loader must report a blocking bootstrap failure");
+    assert.match(result.stderr, /Trelio host runtime loader failed:/u);
+    const invalidMode = await runLoader(["invalid-mode"], environment, { scriptPath, timeout: 5_000 });
+    assert.equal(invalidMode.code, 1);
+    assert.match(invalidMode.stderr, /bridge, hook или mcp/u);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(home, { recursive: true, force: true });
   }
 });
 

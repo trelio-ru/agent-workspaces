@@ -14,6 +14,7 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -563,7 +564,23 @@ export const runHostRuntimeLoader = async ({
   });
 };
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+// Node resolves the module through directory links/junctions, while argv[1]
+// retains the caller's spelling. Compare the actual file so an approved hook
+// cannot silently exit 0 before loading its signed runtime. This affects only
+// CLI detection, never package path validation, signatures or cache selection.
+const isLoaderEntrypoint = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return path.relative(
+      realpathSync.native(fileURLToPath(import.meta.url)),
+      realpathSync.native(path.resolve(process.argv[1])),
+    ) === "";
+  } catch {
+    return false;
+  }
+};
+
+if (isLoaderEntrypoint()) {
   const isHookInvocation = process.argv[2] === "hook";
   runHostRuntimeLoader()
     .then((exitCode) => {
