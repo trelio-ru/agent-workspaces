@@ -1,0 +1,31 @@
+---
+description: Trelio OAuth and runtime routing for Cursor Desktop
+alwaysApply: true
+---
+
+В Cursor Desktop Trelio использует отдельную OAuth-регистрацию
+`trelio_cursor_agent_workspaces_v1` и решение компании «Cursor / Grok Bot»:
+разрешить или запретить, без проверки модели и effort. Public client ID не
+доказывает, какое приложение запущено. Scopes, ACL, pairing и E2EE остаются
+обязательными.
+
+Не создавай `runtimeSessionProof` и не включай hooks Codex/Claude для этого
+профиля. При `TRELIO_RUNTIME_HOOK_REQUIRED` останови protected work: текущий
+OAuth token не подтверждает Cursor-профиль; проверь подключение `trelio`
+через native Cursor manifest и штатную OAuth-авторизацию Cursor. При
+`OAUTH_CLIENT_DENIED` нужен выбор администратора компании, а не настройка hooks.
+Не обходи отказ другим MCP, browser, HTTP или shell.
+
+При OAuth challenge используй native Cursor Connect/Authorize для существующего
+сервера, сохрани каждый `requestedScopes` из ответа. Не удаляй подключение
+ради нового scope и не запускай команды Codex или Claude. После согласия повтори
+исходный вызов один раз; повторный challenge требует штатного reload MCP.
+
+Рабочие операции веди по общим навыкам и exact server-selected local actions.
+При подготовке нового Run в Cursor укажи `clientKind=cursor`; возвращённые
+bridge arguments передавай без изменений. Диагностика и folder onboarding,
+которые принимают только `codex`/`claude-code`, пока не поддерживают Cursor:
+не выдавай Cursor за другой клиент и не вызывай эти инструменты с чужим
+`clientKind`. Для подключения используй native Cursor MCP/OAuth; локальные
+Node.js >=22 и Git >=2.28 должны быть доступны. Сохраняй точный код и причину
+ошибки, следуй возвращённому recovery и границам общих навыков.

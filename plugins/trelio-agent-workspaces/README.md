@@ -1,6 +1,6 @@
 # Trelio Agent Workspaces
 
-Официальный плагин Trelio для работы Codex и Claude с управляемыми
+Официальный плагин Trelio для работы Codex, Claude и Cursor Desktop с управляемыми
 воркспейсами, задачами, регулярными работами, встречами и актуальными навыками компании.
 
 Плагин подключает:
@@ -35,6 +35,14 @@
 остаются в основном монорепозитории. Состав, инструкции и возможности
 конкретных интеграций приходят из текущего каталога Trelio и не фиксируются в
 плагине.
+
+## Cursor Desktop
+
+Cursor Desktop использует native `.cursor-plugin/plugin.json` и отдельный
+OAuth-профиль с company allow/deny без model/effort проверки. Он запускает тот же
+signed runtime; Codex/Claude hooks и registrations сохраняются. В Cursor не
+объявлены diagnostics/folder-onboarding skills, принимающие только Codex/Claude.
+Установка и smoke: [контракт Cursor](../../docs/cursor-desktop.md).
 
 ## Локальные Workspace
 

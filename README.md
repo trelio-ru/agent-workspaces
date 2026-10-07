@@ -1,6 +1,6 @@
 # Trelio Agent Workspaces
 
-Официальный плагин Trelio для работы Codex и Claude с управляемыми Agent
+Официальный плагин Trelio для работы Codex, Claude и Cursor Desktop с управляемыми Agent
 Workspaces и актуальными навыками компании и проектов.
 
 Плагин подключает:
@@ -37,6 +37,13 @@ plugin bundle.
 может заранее получить только ciphertext и расшифровать его во временной папке,
 чтобы показать реальные capabilities. Новая публикация всегда требует нового
 согласия, даже если package bytes не изменились.
+
+## Cursor Desktop
+
+Cursor Desktop использует отдельный OAuth-профиль без проверки модели и общий
+переключатель компании «Cursor / Grok Bot». Native manifest, установка,
+ограничения диагностики и порядок проверки описаны в
+[контракте Cursor](docs/cursor-desktop.md).
 
 ## Управление приватными навыками
 

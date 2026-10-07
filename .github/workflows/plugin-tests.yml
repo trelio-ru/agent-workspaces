@@ -5,6 +5,7 @@ on:
     paths:
       - ".agents/**"
       - ".claude-plugin/**"
+      - ".cursor-plugin/**"
       - ".githooks/**"
       - ".github/workflows/plugin-tests.yml"
       - "AGENTS.md"

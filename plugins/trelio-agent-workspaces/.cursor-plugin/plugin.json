@@ -1,0 +1,17 @@
+{
+  "name": "trelio-agent-workspaces",
+  "version": "3.0.7",
+  "description": "Trelio MCP, scoped Agent Workspaces, Agent Secrets and signed skills for Cursor Desktop with company allow/deny policy.",
+  "author": { "name": "Trelio" },
+  "repository": "https://github.com/trelio-ru/agent-workspaces",
+  "logo": "./assets/trelio-logo.svg",
+  "skills": [
+    "./skills/trelio-workspace-worker",
+    "./skills/trelio-skill-catalog",
+    "./skills/trelio-project-access",
+    "./skills/trelio-private-skill-management"
+  ],
+  "rules": "./.cursor-plugin/cursor-runtime.mdc",
+  "hooks": { "hooks": {} },
+  "mcpServers": "./.cursor-plugin/mcp.json"
+}

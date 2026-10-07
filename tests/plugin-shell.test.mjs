@@ -238,15 +238,55 @@ test("platform Node launcher preserves blocking hook failures", async () => {
 });
 
 test("plugin manifests and stable shell keep one version", async () => {
-  const [codexManifest, claudeManifest] = await Promise.all([
+  const [codexManifest, claudeManifest, cursorManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),
     fs.readFile(path.join(pluginDirectory, ".claude-plugin", "plugin.json"), "utf8"),
+    fs.readFile(path.join(pluginDirectory, ".cursor-plugin", "plugin.json"), "utf8"),
   ]).then((sources) => sources.map(JSON.parse));
 
   assert.equal(codexManifest.version, PLUGIN_VERSION);
   assert.equal(claudeManifest.version, PLUGIN_VERSION);
+  assert.equal(cursorManifest.version, PLUGIN_VERSION);
   const marketplace = JSON.parse(await fs.readFile(new URL("../.claude-plugin/marketplace.json", import.meta.url), "utf8"));
   assert.equal(marketplace.plugins.find((entry) => entry.name === "trelio-agent-workspaces").version, PLUGIN_VERSION);
+  const cursorMarketplace = JSON.parse(await fs.readFile(new URL("../.cursor-plugin/marketplace.json", import.meta.url), "utf8"));
+  const entry = cursorMarketplace.plugins.find((item) => item.name === "trelio-agent-workspaces");
+  assert.equal(entry.version, PLUGIN_VERSION);
+  assert.equal(path.resolve(pluginDirectory, "../../", entry.source), path.resolve(pluginDirectory));
+});
+
+test("Cursor native manifest isolates OAuth and suppresses incompatible hook discovery", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/plugin.json"), "utf8"));
+  const cursorMcp = JSON.parse(await fs.readFile(path.join(pluginDirectory, manifest.mcpServers), "utf8"));
+  const claudeMcp = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
+  const codex = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  // A new client-specific manifest is shell-owned: server/runtime updates
+  // cannot select Cursor's native auth keys or prevent default hook discovery.
+  assert.deepEqual(manifest.hooks, { hooks: {} });
+  assert.equal(cursorMcp.mcpServers.trelio.auth.CLIENT_ID, "trelio_cursor_agent_workspaces_v1");
+  assert.equal(cursorMcp.mcpServers.trelio.url, codex.mcpServers.trelio.url);
+  assert.equal(cursorMcp.mcpServers.trelio.auth.scopes, undefined);
+  assert.equal(cursorMcp.mcpServers.trelio.auth.CLIENT_SECRET, undefined);
+  assert.equal(codex.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
+  assert.equal(claudeMcp.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
+  const local = cursorMcp.mcpServers["trelio-remote-skills"];
+  assert.equal(local.command, "${CURSOR_PLUGIN_ROOT}/scripts/launch-trelio-node");
+  assert.deepEqual(local.args, ["${CURSOR_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs", "mcp"]);
+  assert.equal(local.cwd, "${CURSOR_PLUGIN_ROOT}");
+  const validatePath = (relative) => {
+    assert.equal(path.isAbsolute(relative), false);
+    assert.equal(relative.split("/").includes(".."), false);
+    return path.join(pluginDirectory, relative);
+  };
+  for (const directory of manifest.skills) {
+    await fs.access(path.join(validatePath(directory), "SKILL.md"));
+    assert.doesNotMatch(directory, /diagnostics|onboarding/u);
+  }
+  await fs.access(validatePath(manifest.mcpServers));
+  const rule = await fs.readFile(validatePath(manifest.rules), "utf8");
+  assert.ok(Buffer.byteLength(rule, "utf8") < 4096, "Cursor bootstrap must stay a small host adapter");
+  assert.match(rule, /alwaysApply: true/u);
+  assert.match(rule, /не выдавай Cursor за другой клиент/u);
 });
 
 test("private skill management stays a compact router to the live runtime contract", async () => {

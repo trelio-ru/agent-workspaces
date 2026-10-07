@@ -3,7 +3,7 @@
 ## Назначение репозитория
 
 Этот публичный репозиторий – единственный канонический источник устанавливаемого
-клиентского плагина `Trelio Agent Workspaces` для Codex и Claude. Generic Trelio
+клиентского плагина `Trelio Agent Workspaces` для Codex, Claude и Cursor Desktop. Generic Trelio
 host runtime независимо развивается в
 [`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime).
 
@@ -403,6 +403,14 @@ provider-tag workflow или внутренние release playbooks в этот 
   запускается только после записи MCP `initialize` response и никогда не входит
   в handshake/output queue: медленный или конкурентный cache snapshot не должен
   расходовать ограниченное startup-время локального server.
+- Cursor Desktop использует собственный `.cursor-plugin/plugin.json`,
+  `auth.CLIENT_ID` отдельного public PKCE профиля и `${CURSOR_PLUGIN_ROOT}`
+  для прежнего signed loader. Native manifest явно задаёт пустые hooks:
+  discovery `hooks/hooks.json` Codex/Claude недопустим. Diagnostics/folder
+  onboarding с enum только Codex/Claude в Cursor не объявляются; нельзя
+  подменять clientKind. Канонический контракт – [Cursor](docs/cursor-desktop.md).
+  Native manifest/marketplace являются shell-owned исключением immutable
+  default: backend или signed runtime не могут объявить клиенту эти пути.
 - Запуск bridge из долгоживущего local facade использует explicit child `cwd`
   по [контракту runtime](docs/agent-workspace-runtime.md#запуск-локального-bridge).
   Нельзя менять `cwd` общего host-процесса, выбирать другую plugin-version либо
@@ -681,7 +689,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   без parent `node --test`: сбой serialized child IPC остаётся редким и на
   `22.23.2` под нагрузкой. Linux, macOS и Windows jobs не должны расходиться по
   patch version.
-- `PLUGIN_VERSION`, Codex manifest, Claude manifest, marketplace entry и exact
+- `PLUGIN_VERSION`, Codex/Claude/Cursor manifests, оба marketplace entry и exact
   version assertions должны оставаться синхронны. Runtime version независима.
 - Stable plugin version и tag `vX.Y.Z` выпускаются вместе. Не меняй version, не
   создавай tag/GitHub Release и не публикуй production без явной команды на

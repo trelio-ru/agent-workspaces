@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "trelio": {
+      "url": "https://trelio.ru/mcp",
+      "auth": {
+        "CLIENT_ID": "trelio_cursor_agent_workspaces_v1"
+      }
+    },
+    "trelio-remote-skills": {
+      "command": "${CURSOR_PLUGIN_ROOT}/scripts/launch-trelio-node",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs",
+        "mcp"
+      ],
+      "cwd": "${CURSOR_PLUGIN_ROOT}"
+    }
+  }
+}

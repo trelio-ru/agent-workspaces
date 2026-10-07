@@ -1,0 +1,12 @@
+{
+  "name": "trelio-plugins",
+  "owner": { "name": "Trelio" },
+  "plugins": [
+    {
+      "name": "trelio-agent-workspaces",
+      "source": "./plugins/trelio-agent-workspaces",
+      "description": "Trelio MCP, Agent Workspaces and signed local skills for Cursor Desktop.",
+      "version": "3.0.7"
+    }
+  ]
+}

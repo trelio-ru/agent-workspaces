@@ -7,6 +7,7 @@
 - Локальные Node.js и Git
 - Pairing локального bridge
 - Claude Code
+- Cursor Desktop: [отдельный OAuth-профиль и установка](cursor-desktop.md)
 - Политика моделей
 - Правила компании, проекта и пользователя
 
