@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import fs from "node:fs/promises";
 import { createServer } from "node:http";
@@ -270,8 +270,12 @@ test("Cursor native manifest isolates OAuth and suppresses incompatible hook dis
   assert.equal(codex.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
   assert.equal(claudeMcp.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
   const local = cursorMcp.mcpServers["trelio-remote-skills"];
-  assert.equal(local.command, "${CURSOR_PLUGIN_ROOT}/scripts/launch-trelio-node");
-  assert.deepEqual(local.args, ["${CURSOR_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs", "mcp"]);
+  // Native Cursor has no documented per-OS command override. Its executable
+  // must be portable and preserve the Node prerequisite before the loader.
+  assert.equal(local.command, "node");
+  assert.deepEqual(local.args, ["--require",
+    "${CURSOR_PLUGIN_ROOT}/.cursor-plugin/node-requirement.cjs",
+    "${CURSOR_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs", "mcp"]);
   assert.equal(local.cwd, "${CURSOR_PLUGIN_ROOT}");
   const validatePath = (relative) => {
     assert.equal(path.isAbsolute(relative), false);
@@ -287,6 +291,28 @@ test("Cursor native manifest isolates OAuth and suppresses incompatible hook dis
   assert.ok(Buffer.byteLength(rule, "utf8") < 4096, "Cursor bootstrap must stay a small host adapter");
   assert.match(rule, /alwaysApply: true/u);
   assert.match(rule, /не выдавай Cursor за другой клиент/u);
+});
+
+test("Cursor Node preload rejects an old runtime before execution and keeps stdio clean", () => {
+  const guardPath = path.join(pluginDirectory, ".cursor-plugin/node-requirement.cjs");
+  // Probe the version boundary in an isolated child before any ESM loader
+  // import. A downstream marker proves rejection prevents further execution.
+  const rejected = spawnSync(process.execPath, ["--eval", [
+    'Object.defineProperty(process.versions, "node", { value: "20.20.0" });',
+    `require(${JSON.stringify(guardPath)});`,
+    'process.stdout.write("LOADER_MUST_NOT_RUN");',
+  ].join("\n")], { encoding: "utf8", timeout: 10_000 });
+  assert.ifError(rejected.error);
+  assert.equal(rejected.status, 127);
+  assert.equal(rejected.stdout, "");
+  assert.match(rejected.stderr, /requires Node\.js 22 or newer on PATH/u);
+
+  const supported = spawnSync(process.execPath, ["--require", guardPath,
+    "--eval", 'process.stdout.write("stdio-ready");'], { encoding: "utf8", timeout: 10_000 });
+  assert.ifError(supported.error);
+  assert.equal(supported.status, 0);
+  assert.equal(supported.stdout, "stdio-ready");
+  assert.equal(supported.stderr, "");
 });
 
 test("private skill management stays a compact router to the live runtime contract", async () => {

@@ -390,7 +390,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   После apply нужен полный restart owning Codex/ChatGPT App Server и новая
   задача. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
   не включает Hooks, не меняет trust и не создаёт runtime proof.
-- Bundled JavaScript entrypoints и локальный `trelio-remote-skills` запускаются
+- В Codex/Claude bundled entrypoints и `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,
   затем системный Node. MCP registration разделена по host-контракту: Codex
@@ -405,7 +405,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   расходовать ограниченное startup-время локального server.
 - Cursor Desktop использует собственный `.cursor-plugin/plugin.json`,
   `auth.CLIENT_ID` отдельного public PKCE профиля и `${CURSOR_PLUGIN_ROOT}`
-  для прежнего signed loader. Native manifest явно задаёт пустые hooks:
+  для прежнего signed loader. Native MCP запускает системный `node` с отдельным
+  `--require` guard Node.js >=22 до loader/cache/network; documented OS override
+  у Cursor отсутствует, выбирать между POSIX launcher и `.cmd` нельзя. Общие
+  launchers/loader Codex/Claude не меняются. Manifest явно задаёт пустые hooks:
   discovery `hooks/hooks.json` Codex/Claude недопустим. Diagnostics/folder
   onboarding с enum только Codex/Claude в Cursor не объявляются; нельзя
   подменять clientKind. Канонический контракт – [Cursor](docs/cursor-desktop.md).

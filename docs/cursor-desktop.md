@@ -27,8 +27,11 @@ OAuth grants/tokens и pairing сохраняются.
 
 ## Локальная работа
 
-`trelio-remote-skills` использует `${CURSOR_PLUGIN_ROOT}`, общий Node launcher
-и прежний signed loader. Нужны доступные Node.js >=22 и Git >=2.28.
+`trelio-remote-skills` использует `${CURSOR_PLUGIN_ROOT}` и прежний signed loader.
+Native MCP запускает `node` из PATH на каждой OS с отдельным preload guard:
+Node.js <22 отклоняется до loader, cache и network. Это не зависит от выбора
+POSIX launcher либо `.cmd`; запуск Codex/Claude не меняется. Нужны доступные
+Node.js >=22 и Git >=2.28.
 Workspace, skills, secrets и encrypted context продолжают идти через exact
 server-selected actions; pairing и crypto-device envelope независимы от OAuth.
 Без managed folder binding bridge использует прежний fallback

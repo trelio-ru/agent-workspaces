@@ -7,8 +7,10 @@
       }
     },
     "trelio-remote-skills": {
-      "command": "${CURSOR_PLUGIN_ROOT}/scripts/launch-trelio-node",
+      "command": "node",
       "args": [
+        "--require",
+        "${CURSOR_PLUGIN_ROOT}/.cursor-plugin/node-requirement.cjs",
         "${CURSOR_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs",
         "mcp"
       ],
