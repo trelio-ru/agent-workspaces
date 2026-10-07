@@ -13,8 +13,11 @@ manifest: Cursor берёт их из текущей server metadata. Backend д
 эту регистрацию до выпуска Cursor plugin. На старом backend первый вход
 завершается `invalid_client`; менять общий клиент или обходить gate нельзя.
 
-OAuth требует fresh Trelio login, явного согласия и PKCE S256; callback только
-`http://localhost:8787/callback`. Consent явно сообщает, что модель не
+OAuth требует fresh Trelio login, явного согласия и PKCE S256; разрешены два
+exact callback: `http://localhost:8787/callback` и
+`https://www.cursor.com/agents/mcp/oauth/callback`. Cursor выбирает адрес своего
+OAuth flow; backend должен поддерживать оба под тем же client ID. Переустановка
+plugin ради добавления callback не требуется. Consent сообщает, что модель не
 проверяется. Каждый token получает scopes текущего запроса. Компания управляет
 доступом переключателем «Cursor / Grok Bot», по умолчанию разрешённым; в режиме
 enforce сохранённый запрет блокирует MCP и paired bridge.
