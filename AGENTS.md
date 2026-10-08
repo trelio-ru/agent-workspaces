@@ -3,7 +3,7 @@
 ## Назначение репозитория
 
 Этот публичный репозиторий – единственный канонический источник устанавливаемого
-клиентского плагина `Trelio Agent Workspaces` для Codex, Claude и Cursor Desktop. Generic Trelio
+клиентского плагина `Trelio Agent Workspaces` для Codex, Claude, Cursor Desktop и Antigravity. Generic Trelio
 host runtime независимо развивается в
 [`trelio-ru/agent-workspaces-runtime`](https://github.com/trelio-ru/agent-workspaces-runtime).
 
@@ -414,6 +414,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   подменять clientKind. Канонический контракт – [Cursor](docs/cursor-desktop.md).
   Native manifest/marketplace являются shell-owned исключением immutable
   default: backend или signed runtime не могут объявить клиенту эти пути.
+- Antigravity native shell материализуется `scripts/install-antigravity.mjs`:
+  root manifests/absolute MCP paths без foreign hooks и managed binding.
+  Installer сохраняет human edits, runtime/verifier не копируется в другой
+  implementation. Необходимость shell change и rollout — [контракт](docs/antigravity.md).
 - Запуск bridge из долгоживущего local facade использует explicit child `cwd`
   по [контракту runtime](docs/agent-workspace-runtime.md#запуск-локального-bridge).
   Нельзя менять `cwd` общего host-процесса, выбирать другую plugin-version либо

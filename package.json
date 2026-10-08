@@ -8,7 +8,7 @@
     "git:finish-worktree": "node scripts/git-finish-worktree.mjs",
     "git:check-finished-worktrees": "node scripts/git-finish-worktree.mjs --check",
     "git:push-main": "bash scripts/push-main.sh",
-    "test:plugin-shell": "node tests/host-runtime-download.test.mjs && node tests/plugin-shell.test.mjs",
+    "test:plugin-shell": "node tests/host-runtime-download.test.mjs && node tests/plugin-shell.test.mjs && node tests/antigravity-install.test.mjs",
     "test:git-guard": "node --test scripts/git-finish-worktree.test.mjs && bash scripts/git-main-guard.test.sh"
   }
 }

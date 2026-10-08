@@ -349,3 +349,5 @@ issues и pull requests. Об уязвимостях сообщайте по п�
 - [Подробная документация плагина](plugins/trelio-agent-workspaces/README.md)
 - [Политика безопасности](SECURITY.md)
 - [История релизов](https://github.com/trelio-ru/agent-workspaces/releases)
+
+Подключение Google Antigravity: [native установка и границы проверки](docs/antigravity.md).
