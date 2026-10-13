@@ -153,8 +153,9 @@ bridge; `plugin.hooks.status=ready` означает целостность defi
 
    После `status=applied` полностью заверши все процессы Codex/ChatGPT, открой
    приложение заново, вернись в этот же чат и повтори один protected read. Не
-   проверяй исправление в прежнем App Server. Новый чат того же проекта нужен
-   только если проверка после перезапуска здесь снова не прошла. При отказе
+   проверяй исправление в прежнем App Server.
+   Новый чат с той же выбранной папкой нужен только если проверка после
+   перезапуска здесь снова не прошла. При отказе
    пользователя не меняй config; при unsupported/unsafe config сохрани exact
    code и предложи ручное объединение
    `features.code_mode.direct_only_tool_namespaces`.
@@ -248,8 +249,9 @@ lifecycle matchers с будущими версиями. Оно запускае
   `trelio-agent-workspaces@trelio-plugins`; наличие marketplace не доказывает установку.
 - `REVIEW_CODEX_DIRECT_ROUTING`: применяй вложенный plan только после
   отдельного подтверждения exact `planHash`; затем требуется полный restart
-  owning App Server и protected read сначала в этом же чате. Новый чат того же
-  проекта нужен только после фактического сбоя этой проверки. Это исправляет
+  owning App Server и protected read сначала в этом же чате.
+  Новый чат с той же выбранной папкой нужен только после фактического сбоя
+  этой проверки. Это исправляет
   dispatch для Code Mode, но не одобряет hook за пользователя.
 - Удалённый Trelio явно вернул HTTP 401 или отсутствие bearer: выполни вход
   MCP Trelio один раз в точном клиенте. Codex: `codex mcp login trelio`;

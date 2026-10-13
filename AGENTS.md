@@ -391,8 +391,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   `apply_codex_trelio_hook_routing` требует отдельного явного подтверждения
   exact CAS-bound `planHash`; общий запрос настройки или исправления его не
   заменяет. Stale/unsafe/неоднозначный TOML fail closed.
-  После apply нужен полный restart owning Codex/ChatGPT App Server и новая
-  задача. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
+  После apply нужен полный restart owning Codex/ChatGPT App Server и одно
+  protected read сначала в этом же чате. Новый чат с той же выбранной папкой
+  нужен только после фактического сбоя этой проверки, без требования локального
+  проекта. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
   не включает Hooks, не меняет trust и не создаёт runtime proof.
 - В Codex/Claude bundled entrypoints и `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует

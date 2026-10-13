@@ -424,6 +424,7 @@ test("Codex direct-routing recovery retries the same chat before a new-chat fall
     path.join(pluginDirectory, "README.md"),
     path.join(fileURLToPath(new URL("../", import.meta.url)), "README.md"),
     path.join(fileURLToPath(new URL("../", import.meta.url)), "docs", "plugin-setup-and-policies.md"),
+    path.join(fileURLToPath(new URL("../", import.meta.url)), "AGENTS.md"),
   ];
 
   for (const instructionPath of instructionPaths) {
@@ -435,9 +436,14 @@ test("Codex direct-routing recovery retries the same chat before a new-chat fall
     );
     assert.match(
       source,
-      /новый чат того же проекта нужен\s+только/iu,
-      `${instructionPath} must keep a new chat as the fallback`,
+      /новый чат с той же выбранной папкой\s+нужен\s+только/iu,
+      `${instructionPath} must preserve the selected folder in the fallback`,
     );
+    // Routing recovery can restart the owning process without replacing a
+    // usable chat. Requiring a host project here would undo the folder-only
+    // bootstrap fix when that chat has no project metadata.
+    assert.doesNotMatch(source, /новый чат\s+(?:того же )?проекта/iu);
+    assert.doesNotMatch(source, /После apply[^.]*и новая\s+задача/iu);
   }
 });
 
