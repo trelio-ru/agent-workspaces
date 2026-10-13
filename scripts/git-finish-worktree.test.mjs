@@ -43,11 +43,11 @@ function git(cwd, ...args) {
  * Поэтому destructive happy path проверяет реальное `git worktree remove`,
  * не касаясь репозитория разработчика.
  */
-function createFixture(t, { mergeTask = "none", taskCommits = 1 } = {}) {
+function createFixture(t, { mergeTask = "none", taskCommits = 1, mainName = "main", taskName = "task" } = {}) {
   const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), "git-finish-worktree-"));
   const originPath = path.join(fixtureRoot, "origin.git");
-  const mainPath = path.join(fixtureRoot, "main");
-  const taskPath = path.join(fixtureRoot, "task");
+  const mainPath = path.join(fixtureRoot, mainName);
+  const taskPath = path.join(fixtureRoot, taskName);
 
   t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
@@ -144,6 +144,25 @@ test("удаляет чистый worktree полностью влитой codex
   assert.equal(listedTaskBranch(mainPath), "");
 });
 
+test("сохраняет literal whitespace в canonical и task paths", {
+  // Win32 не допускает trailing space/newline filenames; эти POSIX fixtures
+  // проверяют настоящую Git inventory и destructive remove без mock parser.
+  skip: process.platform === "win32",
+}, async (t) => {
+  for (const suffix of [" ", "\t", "\n"]) {
+    await t.test(JSON.stringify(suffix), (subtest) => {
+      const { mainPath, taskPath } = createFixture(subtest, {
+        mergeTask: "merge", mainName: `main${suffix}`, taskName: `task${suffix}`,
+      });
+      const result = runHelper(mainPath, taskPath);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(mainPath), true);
+      assert.equal(existsSync(taskPath), false);
+      assert.equal(listedTaskBranch(mainPath), "");
+    });
+  }
+});
+
 test("dry-run проверяет условия, но сохраняет worktree и ветку", (t) => {
   const { mainPath, taskPath } = createFixture(t, { mergeTask: "merge" });
   const result = runHelper(mainPath, taskPath, ["--dry-run"]);
@@ -151,6 +170,33 @@ test("dry-run проверяет условия, но сохраняет worktre
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(taskPath), true);
   assert.equal(listedTaskBranch(mainPath), "codex/test-cleanup");
+});
+
+test("не удаляет worktree при неполном status с exit 0", {
+  skip: process.platform === "win32" || process.getuid?.() === 0,
+}, (t) => {
+  const { mainPath, taskPath } = createFixture(t, { mergeTask: "merge" });
+  const unreadable = path.join(taskPath, "unreadable");
+  mkdirSync(unreadable);
+  writeFileSync(path.join(unreadable, "draft.txt"), "unsaved work\n");
+  chmodSync(unreadable, 0);
+  // Restore permissions before the fixture cleanup, including assertion failure.
+  try {
+    const observed = run("git", ["status", "--porcelain", "--untracked-files=all"], { cwd: taskPath });
+    assert.equal(observed.stdout, "");
+    assert.match(observed.stderr, /could not open directory/);
+    const result = runHelper(mainPath, taskPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /read returned diagnostics/);
+    assert.equal(existsSync(taskPath), true);
+    assert.equal(listedTaskBranch(mainPath), "codex/test-cleanup");
+    const guard = run("bash", ["-c",
+      'source "$1"; agent_workspaces_assert_clean_worktree "$2"', "fixture",
+      fileURLToPath(new URL("../scripts/git-main-guard.sh", import.meta.url)), taskPath],
+    { allowFailure: true });
+    assert.notEqual(guard.status, 0);
+    assert.match(guard.stderr, /Git status is incomplete/);
+  } finally { chmodSync(unreadable, 0o700); }
 });
 
 test("отказывается удалять dirty либо ещё не влитый worktree", async (t) => {

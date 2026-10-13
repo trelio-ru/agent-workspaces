@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run canonical main guard regressions
-        run: bash scripts/git-main-guard.test.sh
+        run: npm run test:git-guard
 
   plugin-shell:
     name: Stable plugin shell (${{ matrix.os }})

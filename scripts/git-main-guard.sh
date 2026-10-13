@@ -96,13 +96,25 @@ agent_workspaces_assert_clean_worktree() {
   local repository_path="$1"
   local worktree_label="${2:-Git worktree}"
   local status_output=""
+  local status_diagnostics=""
+  local status_exit=0
 
+  # Git может пропустить unreadable directory и вернуть exit 0. Отдельный
+  # owner-only stderr capture нужен до clean-tree authorization; progress
+  # fetch/commit сюда не относится. Temporary file удаляется на обоих исходах.
+  status_diagnostics="$(mktemp)" || return 1
   status_output="$(
     git -C "${repository_path}" status \
       --porcelain=v1 \
       --untracked-files=all \
-      --ignore-submodules=none
-  )" || return 1
+      --ignore-submodules=none 2>"${status_diagnostics}"
+  )" || status_exit=$?
+  if [[ "${status_exit}" -ne 0 || -s "${status_diagnostics}" ]]; then
+    rm -f -- "${status_diagnostics}"
+    agent_workspaces_git_guard_log "ERROR: Git status is incomplete or failed; clean state is not established."
+    return 1
+  fi
+  rm -f -- "${status_diagnostics}"
 
   if [[ -n "${status_output}" ]]; then
     agent_workspaces_git_guard_log "ERROR: ${worktree_label} is not clean:"

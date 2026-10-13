@@ -82,6 +82,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   свежего `origin/main`; squash/rebase merge требует отдельного
   `--merged-pr <number-or-url>`. `git:new-worktree` fail-closed блокирует новую
   задачу, если обычный merged worktree оставлен.
+  Этот maintainer helper не входит в plugin package: path whitespace сохраняется,
+  worktree inventory читается с NUL framing, diagnostic stderr блокирует cleanup
+  даже при exit 0. Проверять реальными Git fixtures до destructive шага.
 - Непосредственно перед guarded push выполни `npm run check:worktree` и не
   пушь при непустом status. Если canonical либо source содержит чужие tracked
   или untracked изменения, сохрани их и остановись до выяснения scope.

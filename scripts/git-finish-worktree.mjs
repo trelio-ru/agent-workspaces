@@ -49,6 +49,14 @@ function processFailureDetail(result) {
 
 function runGit(args, { cwd = process.cwd(), allowFailure = false } = {}) {
   const result = runProcess("git", args, { cwd });
+  const commandArgs = args[0] === "-C" ? args.slice(2) : args;
+  // Exit 0 с warning не подтверждает clean tree или полную inventory.
+  // Перед удалением такой read всегда блокирует helper, даже в audit/probe.
+  const metadataRead = ["status", "rev-parse", "merge-base", "cherry", "rev-list", "config", "symbolic-ref"].includes(commandArgs[0])
+    || commandArgs[0] === "worktree" && commandArgs[1] === "list";
+  if (metadataRead && result.stderr?.length) {
+    fail("Git read returned diagnostics; complete repository state is not established");
+  }
   if ((result.error || result.status !== 0) && !allowFailure) {
     fail(`Git не выполнил ${args[0]}: ${processFailureDetail(result)}`);
   }
@@ -56,7 +64,13 @@ function runGit(args, { cwd = process.cwd(), allowFailure = false } = {}) {
 }
 
 function gitText(args, options) {
-  return runGit(args, options).stdout.trim();
+  // Удаляем только добавленный Git line terminator. Пробел, tab и newline
+  // могут принадлежать самому пути: trim() способен выбрать соседний checkout.
+  return stripGitLineTerminator(runGit(args, options).stdout);
+}
+
+function stripGitLineTerminator(value) {
+  return value.replace(process.platform === "win32" ? /\r?\n$/u : /\n$/u, "");
 }
 
 function wait(milliseconds) {
@@ -100,6 +114,7 @@ function exactExistingPath(rawPath, label) {
 }
 
 function parseWorktrees(rawList) {
+  if (!rawList.endsWith("\0\0")) fail("Git worktree inventory is incomplete");
   return rawList
     .split("\0\0")
     .filter(Boolean)
@@ -137,7 +152,7 @@ function hasInProgressOperation(worktreePath, repositoryRoot) {
     if (markerResult.status !== 0) {
       return true;
     }
-    const markerPath = markerResult.stdout.trim();
+    const markerPath = stripGitLineTerminator(markerResult.stdout);
     const absoluteMarkerPath = path.isAbsolute(markerPath)
       ? markerPath
       : path.resolve(worktreePath, markerPath);
