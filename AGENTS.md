@@ -194,6 +194,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   корневой ignore, проверяет effective `/workspaces/`, пустой index и повторную
   Git-классификацию. Плагин показывает план и передаёт exact action без shell,
   ручной сборки файлов или собственной интерпретации snapshots.
+- Источник выбранной постоянной папки и pre-runtime bootstrap boundary –
+  [контракт установки](docs/plugin-setup-and-policies.md#codex-marketplace).
+  При изменении этого шага проверяй локальную задачу без project metadata,
+  неизвестный путь и отсутствие локального доступа отдельно.
 - Exact Codex turn-diff tree allowlist, запрет commit/tag/orphan blob и правило
   возвращающегося `workspaces/` являются host-runtime security contract и
   покрываются runtime tests. Общий `refs/codex/` не является allowlist.

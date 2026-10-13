@@ -441,6 +441,42 @@ test("Codex direct-routing recovery retries the same chat before a new-chat fall
   }
 });
 
+test("folder bootstrap does not reject a selected local root for missing project metadata", async () => {
+  const skill = await fs.readFile(
+    path.join(pluginDirectory, "skills", "trelio-project-onboarding", "SKILL.md"),
+    "utf8",
+  );
+  const folderGate = skill.slice(
+    skill.indexOf('id="confirm-the-working-folder-first"'),
+    skill.indexOf('id="check-prerequisites"'),
+  ).replace(/\s+/gu, " ");
+
+  // This decision runs before the first local runtime call, sometimes before
+  // plugin installation. A server or signed-runtime fix cannot reach an agent
+  // stopped by this bundled gate. Keep the selected-root alternative explicit,
+  // while preserving the runtime as the only Git/file classifier.
+  assert.match(folderGate, /основная папка открытого локального проекта либо/u);
+  assert.match(folderGate, /папка текущей локальной задачи.*выбранная клиентом или пользователем/u);
+  assert.match(folderGate, /`projectId=null`.*не блокируют настройку/u);
+  assert.doesNotMatch(folderGate, /cwd задачи без локального проекта|projectless.*(?:остан|block)/iu);
+  assert.match(folderGate, /process cwd MCP-сервера.*выбор не доказывают/u);
+  assert.match(folderGate, /Продолжи в текущей задаче.*локальный доступ подтверждены/u);
+  assert.match(folderGate, /облачный или временный root не заменяет/u);
+  assert.ok(folderGate.indexOf('"intent":"folder_onboarding"') > folderGate.indexOf("`projectId=null`"));
+
+  // Public setup instructions must not reintroduce the rejected prerequisite
+  // outside the skill. A missing selected path still stops setup before writes.
+  for (const relativePath of [
+    "README.md",
+    "plugins/trelio-agent-workspaces/README.md",
+    "docs/plugin-setup-and-policies.md",
+  ]) {
+    const source = await fs.readFile(new URL("../" + relativePath, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /Чат без локального проекта|чат без локального проекта не/u);
+    assert.match(source, /выбранн.*(?:папк|root)/iu);
+  }
+});
+
 test("host runtime updater verifies, materializes and selects a signed package", async () => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-loader-test-"));
   const runtimeVersion = "9.8.7";
