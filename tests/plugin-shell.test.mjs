@@ -883,3 +883,15 @@ test("concurrent MCP startups share one signed package and all select the new ru
     await fixture.close();
   }
 });
+
+test("unfiled reminders require real turn event declarations in stable shell", async () => {
+  // A signed runtime cannot subscribe itself to a client event. These two
+  // declarations are the minimal justified shell change for every-answer
+  // enforcement; admission hooks and the verified loader stay unchanged.
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, "hooks/hooks.json"), "utf8"));
+  for (const event of ["UserPromptSubmit", "Stop"]) {
+    assert.deepEqual(manifest.hooks[event], manifest.hooks.SessionStart);
+    assert.equal(manifest.hooks[event][0].hooks[0].timeout, 10);
+    assert.match(manifest.hooks[event][0].hooks[0].command, /trelio-host-runtime-loader\.mjs/);
+  }
+});

@@ -1,5 +1,5 @@
 {
-  "description": "Закрепляет наблюдаемую клиентом модель и reasoning effort и подписывает защищённые Trelio MCP-вызовы.",
+  "description": "Закрепляет наблюдаемую модель и effort, подписывает защищённые MCP-вызовы и проверяет личную очередь «Неразобранные» перед каждым ответом.",
   "hooks": {
     "SessionStart": [
       {
@@ -36,6 +36,32 @@
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
             "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
             "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/launch-trelio-node\" \"${CLAUDE_PLUGIN_ROOT}/scripts/trelio-host-runtime-loader.mjs\" hook",
+            "commandWindows": "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JgAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXABsAGEAdQBuAGMAaAAtAHQAcgBlAGwAaQBvAC0AbgBvAGQAZQAuAGMAbQBkACcAKQAgACgASgBvAGkAbgAtAFAAYQB0AGgAIAAkAGUAbgB2ADoAQwBMAEEAVQBEAEUAXwBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAHMAYwByAGkAcAB0AHMAXAB0AHIAZQBsAGkAbwAtAGgAbwBzAHQALQByAHUAbgB0AGkAbQBlAC0AbABvAGEAZABlAHIALgBtAGoAcwAnACkAIABoAG8AbwBrADsAIABlAHgAaQB0ACAAJABMAEEAUwBUAEUAWABJAFQAQwBPAEQARQA=",
+            "timeout": 10
           }
         ]
       }
