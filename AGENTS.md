@@ -96,12 +96,6 @@ provider-tag workflow или внутренние release playbooks в этот 
   попытка вернуть provider source в публичный репозиторий должна оставаться
   видимой в `git status` и блокировать guarded flow.
 
-Для per-response «Неразобранных» shell объявляет два клиентских события
-`UserPromptSubmit`/`Stop` через прежний loader. Это узкое необходимое изменение:
-старые три события не вызываются перед каждым ответом, signed runtime не может
-сам зарегистрировать callback. Execution, очередь и TTL остаются в host/backend;
-trust не автоматизируется. Evidence и regression – `tests/plugin-shell.test.mjs`.
-
 ## Архитектурная граница
 
 - Trelio MCP – control plane; independently published host runtime – локальный
@@ -632,8 +626,8 @@ trust не автоматизируется. Evidence и regression – `tests/p
   credential.
 
 - Удаление именованного Workspace следует [процедуре удаления](plugins/trelio-agent-workspaces/skills/trelio-workspace-worker/references/workspace-deletion.md)
-  навыка worker: только явная просьба/согласие пользователя; обычный Workspace
-  требует причины, личный временный – нет. Прямую просьбу не переподтверждать.
+  навыка worker: только явная просьба/согласие пользователя и его обязательная
+  причина; повторное подтверждение уже прямой просьбы не требуется.
 
 ## Документация
 
