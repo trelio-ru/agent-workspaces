@@ -1,6 +1,11 @@
 @echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
+rem Capture the start before any Node probe/PowerShell. TIME is a cmd builtin;
+rem asking a new process for a timestamp would itself add Windows cold-start.
+set "TRELIO_MCP_LAUNCH_TIME="
+if /I "%~2"=="mcp" set "TRELIO_MCP_LAUNCH_TIME=win-time:%TIME%"
+
 rem A lifecycle hook must return Codex's blocking exit code even when Node
 rem cannot be selected, before the JavaScript loader has a chance to run.
 set "TRELIO_HOOK_MODE="

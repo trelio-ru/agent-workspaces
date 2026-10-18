@@ -4,6 +4,14 @@ set -eu
 minimum_node_major=22
 hook_mode=${2:-}
 
+# Count Node selection against the same startup budget as the loader. Never
+# inherit another MCP invocation's timestamp into a new launch or a hook.
+unset TRELIO_MCP_LAUNCH_TIME
+if [ "$hook_mode" = mcp ]; then
+  TRELIO_MCP_LAUNCH_TIME="unix:$(/bin/date +%s)"
+  export TRELIO_MCP_LAUNCH_TIME
+fi
+
 if [ "$#" -lt 1 ]; then
   printf '%s\n' 'Trelio could not start: missing bundled JavaScript entrypoint.' >&2
   if [ "$hook_mode" = hook ]; then exit 2; fi

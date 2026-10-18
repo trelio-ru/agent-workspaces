@@ -113,18 +113,25 @@ provider-tag workflow или внутренние release playbooks в этот 
   transport/idle timeout/5xx с освобождением предыдущего stream. Метаданные
   ограничены 256 KiB, package – размером descriptor. Idle timeout 15 секунд
   сбрасывается только непустыми chunks; общий network budget 120 секунд на
-  metadata + package + backoff не продлевается. MCP startup задаёт единый срок
-  20 секунд до чтения cache: ожидание update lock, metadata, package и backoff
-  расходуют один бюджет; idle timeout – 4 секунды. После истечения срока loader
-  повторно проверяет current pointer и может запустить только verified runtime;
-  при его отсутствии завершает первый bootstrap fail-closed, без нового бюджета.
+  metadata + package + backoff не продлевается. MCP update получает остаток
+  20 секунд от launcher/начала Node, включая выбор Node и imports; idle timeout –
+  4 секунды. Local verification/materialization/spawn проверяют общий срок
+  25 секунд по тем же часам, оставляя резерв внешнему initialize. После update
+  loader повторно проверяет current pointer и может запустить только verified
+  runtime; прежний fallback тоже проверяется заново. При его отсутствии первый
+  bootstrap fail-closed не получает новый бюджет. Проверки кооперативны: они
+  не прерывают зависший выбор Node или системный вызов; внешний timeout клиента
+  остаётся необходим. Этот pre-runtime shell defect нельзя исправить новым
+  signed runtime, который ещё не загружен. Проверять native launcher → framed
+  MCP initialize и synthetic cold-start/slow-read сценарии на трёх ОС.
   Чужой lock и retry-state при timeout не меняются. HTTP 4xx,
   size/signature/manifest failure не повторяются; current
   pointer меняется только после полной проверки. Диагностика transport содержит
   закрытый stage, reason, attempt, receivedBytes и timeoutKind/timeoutMs либо
   httpStatus, без URL/body/local paths; timeout ожидания lock имеет отдельный
-  stage `update_lock`. Контракт нужен до загрузки runtime и
-  проверяется synthetic HTTP regressions stable shell.
+  stage `update_lock`. Opt-in `TRELIO_MCP_STARTUP_TRACE=1` пишет в stderr только
+  закрытый stage, PID и elapsedMs; stdout остаётся MCP. Контракт нужен до
+  загрузки runtime и проверяется synthetic HTTP regressions stable shell.
 - Повреждённый exact content-addressed host runtime восстанавливается только под
   update lock: loader удаляет и заново материализует один каталог
   `runtimeVersion/packageSha256`, не сканируя и не очищая соседние версии.

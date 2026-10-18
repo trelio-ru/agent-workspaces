@@ -28,6 +28,7 @@ import {
   downloadHostRuntimeResponse,
   UPDATE_NETWORK_TIMEOUT_MS,
 } from "./trelio-host-runtime-download.mjs";
+import { createMcpStartupBudget, MCP_UPDATE_TIMEOUT_MS } from "./trelio-mcp-startup-budget.mjs";
 
 const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const HOST_RUNTIME_SKILL_ID = "trelio-host-runtime";
@@ -38,7 +39,6 @@ const LOCK_STALE_MS = 5 * 60 * 1000;
 const UPDATE_LOCK_WAIT_MS = 90 * 1000;
 const MAX_METADATA_BYTES = 256 * 1024;
 const MAX_PACKAGE_BYTES = 64 * 1024 * 1024;
-const MCP_STARTUP_TIMEOUT_MS = 20_000;
 const MCP_STARTUP_REQUEST_TIMEOUT_MS = 4_000;
 const MCP_STARTUP_RETRY_DELAYS_MS = Object.freeze([200, 600, 1_200]);
 
@@ -76,11 +76,14 @@ const ensurePrivateDirectory = async (directoryPath) => {
   }
 };
 
-const readPrivateJson = async (filePath) => {
+const readPrivateJson = async (filePath, startupBudget) => {
   try {
+    startupBudget?.check("cache_verification");
     const metadata = await fs.lstat(filePath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
+    const source = await fs.readFile(filePath, "utf8");
+    startupBudget?.check("cache_verification");
+    return JSON.parse(source);
   } catch (error) {
     if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
     throw error;
@@ -168,8 +171,9 @@ const runtimeDirectoryFor = (descriptor) => path.join(
   descriptor.packageSha256,
 );
 
-const readVerifiedRuntime = async (pointer = null) => {
-  const selected = pointer ?? await readPrivateJson(CURRENT_POINTER_PATH);
+const readVerifiedRuntime = async (pointer = null, startupBudget) => {
+  startupBudget?.check("cache_verification");
+  const selected = pointer ?? await readPrivateJson(CURRENT_POINTER_PATH, startupBudget);
 
   if (
     !selected
@@ -180,7 +184,7 @@ const readVerifiedRuntime = async (pointer = null) => {
   }
 
   const runtimeDirectory = runtimeDirectoryFor(selected);
-  const marker = await readPrivateJson(path.join(runtimeDirectory, ".trelio-verified.json"));
+  const marker = await readPrivateJson(path.join(runtimeDirectory, ".trelio-verified.json"), startupBudget);
   const entrypointRelativePath = "scripts/trelio-host-runtime-entry.mjs";
   const entrypointPath = path.join(runtimeDirectory, ...entrypointRelativePath.split("/"));
 
@@ -194,6 +198,7 @@ const readVerifiedRuntime = async (pointer = null) => {
 
   const verifiedPaths = new Set();
   for (const file of marker.files) {
+    startupBudget?.check("cache_verification");
     if (
       typeof file?.path !== "string"
       || file.path.includes("\\")
@@ -218,6 +223,9 @@ const readVerifiedRuntime = async (pointer = null) => {
       if (crypto.createHash("sha256").update(bytes).digest("hex") !== file.sha256) {
         return null;
       }
+      // Проверка файла не становится бесплатной частью startup: даже если
+      // ОС долго отвечала на read, просроченный результат не запускает runtime.
+      startupBudget?.check("cache_verification");
     } catch (error) {
       if (error?.code === "ENOENT") return null;
       throw error;
@@ -254,7 +262,8 @@ const removeInvalidRuntimeTarget = async (targetDirectory) => {
   }
 };
 
-const materializeRuntime = async (descriptor, packageBytes) => {
+const materializeRuntime = async (descriptor, packageBytes, startupBudget) => {
+  startupBudget?.check("materialization");
   const parsed = parseAndValidateHostRuntimePackage(packageBytes, HOST_RUNTIME_SKILL_ID);
 
   if (
@@ -268,7 +277,7 @@ const materializeRuntime = async (descriptor, packageBytes) => {
   }
 
   const targetDirectory = runtimeDirectoryFor(descriptor);
-  const existing = await readVerifiedRuntime(descriptor);
+  const existing = await readVerifiedRuntime(descriptor, startupBudget);
   if (existing) {
     // An interrupted pointer update can leave the signed, fully verified tree
     // intact while current.json is absent. Restore only the exact descriptor
@@ -290,6 +299,7 @@ const materializeRuntime = async (descriptor, packageBytes) => {
 
   try {
     for (const file of parsed.files) {
+      startupBudget?.check("materialization");
       const absolutePath = path.join(temporaryDirectory, ...file.path.split("/"));
       await ensurePrivateDirectory(path.dirname(absolutePath));
       await fs.writeFile(absolutePath, file.bytes, {
@@ -308,17 +318,19 @@ const materializeRuntime = async (descriptor, packageBytes) => {
       })),
     });
 
+    startupBudget?.check("materialization");
     await fs.rename(temporaryDirectory, targetDirectory);
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true });
     for (const file of parsed.files) file.bytes.fill(0);
   }
 
+  startupBudget?.check("materialization");
   await writePrivateJson(CURRENT_POINTER_PATH, {
     runtimeVersion: descriptor.runtimeVersion,
     packageSha256: descriptor.packageSha256,
   });
-  const verified = await readVerifiedRuntime(descriptor);
+  const verified = await readVerifiedRuntime(descriptor, startupBudget);
   if (!verified) throw new Error("Trelio host runtime не прошёл проверку после materialization.");
   return verified;
 };
@@ -372,6 +384,8 @@ const updateRuntime = async ({
   environment = process.env,
   waitForExisting = false,
   requestPolicy,
+  startupBudget,
+  verifiedCurrent,
 } = {}) => {
   // Lock acquisition остаётся вне try/finally: процесс, который не получил
   // блокировку, не вправе удалить её или менять retry-state другого updater.
@@ -410,7 +424,10 @@ const updateRuntime = async ({
       throw new Error(`Host runtime требует plugin v${descriptor.minimumPluginVersion} или новее.`);
     }
 
-    const current = await readVerifiedRuntime();
+    // Уже проверенный в этом процессе immutable snapshot достаточен для
+    // сравнения с descriptor. Перед исполнением всё дерево проверяется снова;
+    // повторный полный scan посреди HTTP-проверки не усиливал эту границу.
+    const current = verifiedCurrent ?? await readVerifiedRuntime(null, startupBudget);
     if (
       current
       && current.runtimeVersion === descriptor.runtimeVersion
@@ -433,7 +450,7 @@ const updateRuntime = async ({
       verifyHostRuntimeSignature(packageBytes, descriptor);
       // Package parsing computes the whole-package SHA-256 once and compares
       // both size and digest with this descriptor before any file is written.
-      await materializeRuntime(descriptor, packageBytes);
+      await materializeRuntime(descriptor, packageBytes, startupBudget);
     } finally {
       packageBytes.fill(0);
     }
@@ -488,16 +505,19 @@ export const runHostRuntimeLoader = async ({
     throw new Error("Trelio host runtime loader ожидает mode bridge, hook или mcp.");
   }
 
-  // Срок задаётся один раз до чтения cache и не продлевается после lock,
-  // повторного GET или перехода к первому bootstrap. Остаток внешних 30 секунд
-  // нужен для локальной проверки package и initialize самого runtime.
+  // Отсчитываем от launcher/начала Node, а не от входа в эту функцию ПОСЛЕ
+  // imports. HTTP/lock получают только остаток 20 секунд; локальные проверки
+  // и spawn ограничены теми же часами с резервом 5 секунд, без нового бюджета.
+  const startupBudget = mode === "mcp" ? createMcpStartupBudget({ environment }) : undefined;
+  startupBudget?.trace("loader_enter");
   const requestPolicy = mode === "mcp" ? {
     requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
-    totalTimeoutMs: MCP_STARTUP_TIMEOUT_MS,
-    deadline: Date.now() + MCP_STARTUP_TIMEOUT_MS,
+    totalTimeoutMs: MCP_UPDATE_TIMEOUT_MS,
+    deadline: startupBudget.updateDeadline,
     retryDelaysMs: MCP_STARTUP_RETRY_DELAYS_MS,
   } : undefined;
-  let selected = await selectHostRuntime();
+  let selected = await readVerifiedRuntime(null, startupBudget);
+  startupBudget?.trace("cache_verified");
   if (
     !selected
     || (mode === "mcp" && environment.TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE !== "1")
@@ -514,6 +534,8 @@ export const runHostRuntimeLoader = async ({
         environment,
         waitForExisting: true,
         requestPolicy,
+        startupBudget,
+        verifiedCurrent: selected,
       });
     } catch (error) {
       updateError = error;
@@ -523,7 +545,15 @@ export const runHostRuntimeLoader = async ({
     // immutable runtime остаётся fallback с обычным server-side admission.
     // Без проверенного runtime первый запуск fail-closed возвращает исходную
     // ошибку, а не начинает второй bootstrap с новым, неограниченным бюджетом.
-    selected = await selectHostRuntime() ?? selected;
+    const previousSelection = selected;
+    selected = await readVerifiedRuntime(null, startupBudget);
+    // Старый объект выбора сам по себе не доказывает целостность файлов ПОСЛЕ
+    // ожидания updater. Если pointer исчез/повреждён, fallback заново проверяет
+    // exact прежнее дерево и никогда не исполняет уже повреждённый entrypoint.
+    if (!selected && previousSelection) {
+      selected = await readVerifiedRuntime(previousSelection, startupBudget);
+    }
+    startupBudget?.trace("update_complete");
     if (!selected && updateError) throw updateError;
   }
   if (!selected) {
@@ -534,16 +564,20 @@ export const runHostRuntimeLoader = async ({
   // Update is deliberately outside the foreground path. This process never
   // deletes the selected content-addressed directory, so an already running
   // hook, bridge or MCP host keeps a stable executable tree.
-  await startDetachedUpdate({ environment, spawnProcess }).catch(() => undefined);
-
   return await new Promise((resolve, reject) => {
+    startupBudget?.check("runtime_spawn");
+    startupBudget?.trace("runtime_spawn");
+    // Не переносим отметку предыдущего launcher в hook/bridge либо следующий
+    // самостоятельный MCP. Это только local accounting, не runtime authority.
+    const childEnvironment = { ...environment };
+    delete childEnvironment.TRELIO_MCP_LAUNCH_TIME;
     const child = spawnProcess(
       process.execPath,
       [selected.entrypointPath, mode, ...forwardedArguments],
       {
         cwd: selected.runtimeDirectory,
         env: {
-          ...environment,
+          ...childEnvironment,
           TRELIO_HOST_RUNTIME_VERSION: selected.runtimeVersion,
           TRELIO_PLUGIN_VERSION: PLUGIN_VERSION,
           TRELIO_PLUGIN_ROOT: PLUGIN_ROOT,
@@ -553,6 +587,9 @@ export const runHostRuntimeLoader = async ({
         windowsHide: true,
       },
     );
+    // Чтение updater throttle/его spawn больше не стоит перед MCP transport.
+    // Ошибка фонового обслуживания не меняет уже проверенный выбор runtime.
+    void startDetachedUpdate({ environment: childEnvironment, spawnProcess }).catch(() => undefined);
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (signal) {

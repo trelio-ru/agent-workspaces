@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   normalizeHostRuntimeDescriptor,
@@ -628,7 +628,7 @@ test("host runtime updater verifies, materializes and selects a signed package",
 // signed entrypoint, поэтому исправление внутри host runtime сюда не дойдёт.
 // Каждая fixture использует отдельный cache и synthetic Ed25519 package;
 // реальные установки, credentials и сервер Trelio в проверке не участвуют.
-const createMcpStartupFixture = async () => {
+const createMcpStartupFixture = async ({ sourceForVersion } = {}) => {
   const temporaryHome = await fs.mkdtemp(path.join(os.tmpdir(), "trelio-runtime-mcp-convergence-test-"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const signingPublicKeySpki = publicKey
@@ -639,7 +639,8 @@ const createMcpStartupFixture = async () => {
   for (const runtimeVersion of ["2.4.6", "3.0.2"]) {
     const packageBytes = buildSyntheticHostRuntimePackage({
       runtimeVersion,
-      source: `process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION }));\n`,
+      source: sourceForVersion?.(runtimeVersion)
+        ?? `process.stdout.write(JSON.stringify({ mode: process.argv[2], version: process.env.TRELIO_HOST_RUNTIME_VERSION }));\n`,
     });
     releases.set(runtimeVersion, {
       runtimeVersion,
@@ -649,16 +650,21 @@ const createMcpStartupFixture = async () => {
     });
   }
   let publishedVersion = "2.4.6";
-  const behavior = { stallMetadata: false, packageDelayMs: 0 };
+  const behavior = { stallMetadata: false, metadataStatus: 200, onMetadata: null, packageDelayMs: 0 };
   const requests = { metadata: 0, package: 0 };
   const timers = new Set();
 
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const published = releases.get(publishedVersion);
     assert.ok(published);
     if (request.url?.startsWith("/api/agent-workspaces/host-runtime/current")) {
       requests.metadata += 1;
+      await behavior.onMetadata?.();
       if (behavior.stallMetadata) return;
+      if (behavior.metadataStatus !== 200) {
+        response.writeHead(behavior.metadataStatus).end();
+        return;
+      }
       const address = server.address();
       assert.ok(address && typeof address !== "string");
       response.writeHead(200, { "content-type": "application/json" });
@@ -758,6 +764,146 @@ test("long-lived MCP startup converges before selecting a cached runtime", async
       mode: "mcp",
       version: "3.0.2",
     });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("MCP uses only the update time left after launcher cold start", async () => {
+  const fixture = await createMcpStartupFixture();
+  try {
+    await fixture.bootstrap();
+    fixture.behavior.stallMetadata = true;
+    // Имитируем уже потраченные 19 секунд до Node. Установленный launcher
+    // передаёт ту же отметку; здесь direct loader сохраняет synthetic origin.
+    const invocation = await runLoader(["mcp"], {
+      ...fixture.environment,
+      TRELIO_MCP_LAUNCH_TIME: `unix:${Math.floor((Date.now() - 19_000) / 1000)}`,
+    }, { timeout: 6_000 });
+    assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+    assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "2.4.6" });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("slow local cache reads cannot execute a runtime after the local deadline", async () => {
+  const fixture = await createMcpStartupFixture();
+  try {
+    await fixture.bootstrap();
+    const probePath = path.join(fixture.runtimeRoot, "slow-read-probe.mjs");
+    // Задерживаем только один synthetic файл вместо глобального monkeypatch
+    // production timeout. Это воспроизводит долгий ответ ОС/антивируса: после
+    // завершения read loader обязан заметить истёкшее время до исполнения кода.
+    await fs.writeFile(probePath, `
+      import fs from "node:fs/promises";
+      import { runHostRuntimeLoader } from ${JSON.stringify(pathToFileURL(loaderPath).href)};
+      const read = fs.readFile;
+      fs.readFile = async (...args) => {
+        if (String(args[0]) === ${JSON.stringify(path.join(fixture.runtimeRoot, "current.json"))}) {
+          await new Promise(resolve => setTimeout(resolve, 2_200));
+        }
+        return await read(...args);
+      };
+      try { process.exitCode = await runHostRuntimeLoader(); }
+      catch (error) { process.stderr.write(error.message); process.exitCode = 1; }
+    `);
+    const invocation = await runLoader(["mcp"], {
+      ...fixture.environment,
+      TRELIO_HOST_RUNTIME_DISABLE_AUTO_UPDATE: "1",
+      TRELIO_MCP_LAUNCH_TIME: `unix:${Math.floor((Date.now() - 23_000) / 1000)}`,
+    }, { scriptPath: probePath, timeout: 6_000 });
+    assert.equal(invocation.code, 1, `${invocation.signal}: ${invocation.stderr}`);
+    assert.equal(invocation.stdout, "");
+    assert.equal(JSON.parse(invocation.stderr).code, "TRELIO_MCP_STARTUP_TIMEOUT");
+    assert.equal(JSON.parse(invocation.stderr).stage, "cache_verification");
+    assert.equal(fixture.requests.metadata, 1, "only the initial bootstrap accessed HTTP");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("fallback rechecks cached executable integrity after foreground update failure", async () => {
+  const fixture = await createMcpStartupFixture();
+  try {
+    await fixture.bootstrap();
+    const pointer = JSON.parse(await fs.readFile(path.join(fixture.runtimeRoot, "current.json"), "utf8"));
+    const entrypoint = path.join(fixture.runtimeRoot, pointer.runtimeVersion, pointer.packageSha256,
+      "scripts", "trelio-host-runtime-entry.mjs");
+    fixture.behavior.onMetadata = async () => {
+      await fs.writeFile(entrypoint, 'process.stdout.write("UNVERIFIED_CODE_EXECUTED");');
+    };
+    fixture.behavior.metadataStatus = 503;
+    const invocation = await runLoader(["mcp"], {
+      ...fixture.environment,
+      TRELIO_MCP_LAUNCH_TIME: `unix:${Math.floor((Date.now() - 19_000) / 1000)}`,
+    }, { timeout: 6_000 });
+    assert.equal(invocation.code, 1, `${invocation.signal}: ${invocation.stderr}`);
+    assert.equal(invocation.stdout, "", "a prior verified object never authorizes changed bytes");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("native launcher reaches a framed MCP initialize response with stage timings", async () => {
+  const fixture = await createMcpStartupFixture({
+    // Небольшой подписанный runtime проверяет только публичный stdio ABI.
+    // Он не копирует implementation настоящего MCP и не читает company state.
+    sourceForVersion: () => `
+      import readline from "node:readline";
+      process.stderr.write(JSON.stringify({ type: "fixture_runtime", stage: "entry", pid: process.pid }) + "\\n");
+      if (process.env.TRELIO_MCP_LAUNCH_TIME) throw new Error("Inherited launcher timestamp");
+      for await (const line of readline.createInterface({ input: process.stdin, terminal: false })) {
+        const request = JSON.parse(line);
+        if (request.method !== "initialize") throw new Error("Unexpected fixture request");
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {
+          protocolVersion: request.params.protocolVersion, capabilities: {},
+          serverInfo: { name: "synthetic-startup", version: process.env.TRELIO_HOST_RUNTIME_VERSION }
+        } }) + "\\n");
+      }
+    `,
+  });
+  try {
+    await fixture.bootstrap();
+    const windows = process.platform === "win32";
+    const launcher = path.join(pluginDirectory, "scripts", windows ? "launch-trelio-node.cmd" : "launch-trelio-node");
+    const executable = windows ? path.join(process.env.SystemRoot, "System32", "cmd.exe") : launcher;
+    // cmd.exe нужен только для штатного .cmd, как в Windows MCP client. Пути
+    // созданы тестом; дополнительные команды/PowerShell/PATH lookup не нужны.
+    const args = windows ? ["/d", "/s", "/c", `""${launcher}" "${loaderPath}" mcp"`] : [loaderPath, "mcp"];
+    const startedAt = performance.now();
+    const invocation = await new Promise((resolve, reject) => {
+      const child = spawn(executable, args, {
+        env: { ...fixture.environment, CODEX_MCP_NODE_PATH: process.execPath, TRELIO_MCP_STARTUP_TRACE: "1" },
+        shell: false, windowsVerbatimArguments: windows, windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"], timeout: 28_000,
+      });
+      const stdout = [];
+      const stderr = [];
+      let responseAt;
+      child.stdout.on("data", (bytes) => { responseAt ??= performance.now(); stdout.push(bytes); });
+      child.stderr.on("data", (bytes) => stderr.push(bytes));
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal, responseAt,
+        stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") }));
+      child.stdin.on("error", reject);
+      child.stdin.end(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "fixture", version: "1" },
+      } })}\n`);
+    });
+    assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+    const response = JSON.parse(invocation.stdout);
+    assert.equal(response.id, 1);
+    assert.equal(response.result.serverInfo.name, "synthetic-startup");
+    assert.ok(invocation.responseAt - startedAt < 28_000, "initialize must fit the external startup budget");
+    const stages = invocation.stderr.trim().split(/\r?\n/u).map(line => JSON.parse(line));
+    assert.deepEqual(stages.filter(row => row.type === "trelio_mcp_startup").map(row => row.stage),
+      ["loader_enter", "cache_verified", "update_complete", "runtime_spawn"]);
+    const loaderPid = stages.find(row => row.stage === "loader_enter").pid;
+    assert.notEqual(stages.find(row => row.type === "fixture_runtime").pid, loaderPid);
+    assert.ok(stages.filter(row => row.type === "trelio_mcp_startup").every(row => (
+      Object.keys(row).sort().join(",") === "elapsedMs,pid,stage,type"
+    )), "timings contain neither argv, URLs, paths nor request contents");
   } finally {
     await fixture.close();
   }
