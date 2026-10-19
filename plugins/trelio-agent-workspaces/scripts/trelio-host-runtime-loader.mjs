@@ -385,7 +385,6 @@ const updateRuntime = async ({
   waitForExisting = false,
   requestPolicy,
   startupBudget,
-  verifiedCurrent,
 } = {}) => {
   // Lock acquisition остаётся вне try/finally: процесс, который не получил
   // блокировку, не вправе удалить её или менять retry-state другого updater.
@@ -424,10 +423,10 @@ const updateRuntime = async ({
       throw new Error(`Host runtime требует plugin v${descriptor.minimumPluginVersion} или новее.`);
     }
 
-    // Уже проверенный в этом процессе immutable snapshot достаточен для
-    // сравнения с descriptor. Перед исполнением всё дерево проверяется снова;
-    // повторный полный scan посреди HTTP-проверки не усиливал эту границу.
-    const current = verifiedCurrent ?? await readVerifiedRuntime(null, startupBudget);
+    // Lock мог достаться после публикации соседом нового pointer. Проверяем
+    // именно этот свежий snapshot, иначе каждый ожидавший процесс повторно
+    // скачает уже установленный package по своему прежнему выбору.
+    const current = await readVerifiedRuntime(null, startupBudget);
     if (
       current
       && current.runtimeVersion === descriptor.runtimeVersion
@@ -535,7 +534,6 @@ export const runHostRuntimeLoader = async ({
         waitForExisting: true,
         requestPolicy,
         startupBudget,
-        verifiedCurrent: selected,
       });
     } catch (error) {
       updateError = error;
