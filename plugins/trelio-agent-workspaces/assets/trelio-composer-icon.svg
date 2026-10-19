@@ -1,7 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 512 512" fill="none">
-  <!-- Компактный знак наследует цвет интерфейса Codex, поэтому остаётся
-       читаемым и в светлой, и в тёмной теме без отдельной composer-иконки. -->
-  <rect x="112" y="80" width="32" height="352" rx="16" fill="currentColor" />
-  <rect x="240" y="80" width="32" height="352" rx="16" fill="currentColor" />
-  <rect x="368" y="80" width="32" height="352" rx="16" fill="currentColor" />
+  <!-- Manifest отдаёт этот SVG отдельным изображением: currentColor внутри
+       него не наследует цвет текста Codex и остаётся чёрным в тёмной теме.
+       Собственная белая подложка сохраняет контраст без зависимости от host CSS;
+       чёрные полоски повторяют геометрию обычного и тёмного логотипов. -->
+  <rect width="512" height="512" fill="#FFFFFF" />
+  <rect x="112" y="80" width="32" height="352" rx="16" fill="#000000" />
+  <rect x="240" y="80" width="32" height="352" rx="16" fill="#000000" />
+  <rect x="368" y="80" width="32" height="352" rx="16" fill="#000000" />
 </svg>

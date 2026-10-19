@@ -237,6 +237,24 @@ test("platform Node launcher preserves blocking hook failures", async () => {
   assert.match(result.stderr, /trelio-absent-hook-entrypoint\.mjs/u);
 });
 
+test("Codex composer icon keeps its own contrast when loaded as an external image", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  const icon = await fs.readFile(path.join(pluginDirectory, manifest.interface.composerIcon), "utf8");
+  // Codex выбирает этот bundled resource до запуска MCP. Signed runtime не
+  // управляет его оформлением, а currentColor в отдельном SVG не наследует
+  // цвет host UI. Проверяем реальный manifest target и его собственный фон.
+  const markup = icon.replace(/<!--[\s\S]*?-->/gu, "");
+  assert.doesNotMatch(markup, /currentColor/iu);
+  const rectangles = [...markup.matchAll(/<rect\b[^>]*\/>/gu)].map(([tag]) => (
+    Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/gu)].map(([, name, value]) => [name, value]))
+  ));
+  assert.deepEqual(rectangles[0], { width: "512", height: "512", fill: "#FFFFFF" });
+  assert.deepEqual(rectangles.slice(1), ["112", "240", "368"].map((x) => ({
+    x, y: "80", width: "32", height: "352", rx: "16", fill: "#000000",
+  })));
+  assert.match(markup, /viewBox="0 0 512 512"/u);
+});
+
 test("plugin manifests and stable shell keep one version", async () => {
   const [codexManifest, claudeManifest, cursorManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),

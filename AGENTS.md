@@ -147,6 +147,13 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Внешние provider integrations доставляются независимо backend-managed
   instruction, declarative Remote MCP либо immutable signed package. Provider
   change сам по себе не меняет plugin version или global compatibility policy.
+- `interface.composerIcon` в Codex manifest – shell-owned SVG-ресурс, загружаемый
+  отдельным изображением. Он использует собственную белую подложку и чёрный знак,
+  а не наследуемый `currentColor`: внешний SVG не получает цвет текста host UI.
+  Исправление этого presentation defect требует bundled asset; backend и signed
+  runtime не могут заменить manifest resource. `logo`/`logoDark` сохраняют свои
+  варианты. Regression живёт в `tests/plugin-shell.test.mjs`; ABI и minimum
+  versions от изменения иконки не повышаются.
 - Provider-specific ID, команды, parser, DOM/API fixtures, login exceptions и
   capability matrices не добавляются в plugin instructions, README или tests.
   Generic regression использует synthetic integration identity и проверяет
