@@ -12,6 +12,23 @@
 - Политика моделей
 - Правила компании, проекта и пользователя
 
+<a id="operator-release-approval"></a>
+
+## Согласование релиза
+
+Релиз Trelio Agent Workspaces выполняется только по отдельному явному
+согласованию оператора именно на выпуск этого плагина. Поручения исправить,
+исследовать, протестировать, закоммитить или интегрировать изменение такого
+согласования не содержат. Готовый candidate, зелёный CI, завершение PR и выпуск
+backend, signed runtime или другого плагина также не разрешают релиз.
+
+До согласования допускаются source-правка, проверки, commit и обычная
+интеграция. Изменение release version, создание stable tag/GitHub Release,
+публикация marketplace release и переключение live plugin policy выполняются
+только после согласования. Агент обязан сохранить в описании выпуска основание:
+точное поручение оператора и область разрешённого релиза. Нельзя выводить
+согласие из молчания, прежнего релиза или формулировки «исправь проблему».
+
 ## Codex marketplace
 
 Сначала выберите постоянную доступную локальную папку: основную папку проекта
@@ -143,9 +160,18 @@ runtime cache он не сканирует и не затрагивает.
 Агент в этом выборе не участвует. Runtime metadata/package не добавляются в
 prompt или MCP tool schema, поэтому обновление не расходует model tokens.
 Marketplace self-update остаётся только для `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`,
-когда ниже minimum оказалась сама оболочка. Compatible runtime release не
-запускает `codex plugin marketplace upgrade`, не копирует старые cache-папки и
-не требует restart/new task.
+когда ниже minimum оказалась сама оболочка. Compatible signed-runtime update не
+запускает `codex plugin marketplace upgrade` и не требует restart/new task.
+
+Открытый Codex MCP сохраняет exact загруженную shell отдельно от её versioned
+cache и восстанавливает прежние hook/skill paths после внешнего удаления этой
+версии менеджером клиента. Это lifecycle signed runtime, не установка новой
+версии, не смена доверенного определения и не выбор похожего каталога.
+Snapshot начинается только после initialize; наблюдение заканчивается вместе
+с MCP. Integrity/permission failure сохраняет fail-closed поведение. Полный
+[контракт сохранения сессии](https://github.com/trelio-ru/agent-workspaces-runtime/blob/main/docs/agent-workspace-runtime.md#codex-plugin-preservation)
+включает тест внешнего обновления в production MCP и ограничения короткого
+окна до восстановления файлов.
 
 Подписанный runtime содержит только код. E2EE keys, plaintext company content,
 credentials и sessions живут в отдельных прежних owner-only хранилищах; unknown

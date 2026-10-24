@@ -740,9 +740,13 @@ provider-tag workflow или внутренние release playbooks в этот 
   patch version.
 - `PLUGIN_VERSION`, Codex/Claude/Cursor manifests, оба marketplace entry и exact
   version assertions должны оставаться синхронны. Runtime version независима.
-- Stable plugin version и tag `vX.Y.Z` выпускаются вместе. Не меняй version, не
-  создавай tag/GitHub Release и не публикуй production без явной команды на
-  релиз.
+- Stable plugin version и tag `vX.Y.Z` выпускаются вместе. Выпуск требует
+  отдельного явного согласования оператора именно на релиз этого плагина.
+  Просьба исправить, проверить, закоммитить или интегрировать изменение,
+  зелёный CI, готовый candidate и релиз другого компонента не дают такого
+  разрешения. До согласования не менять release version, не создавать tag,
+  GitHub Release и не публиковать marketplace/live policy. Полный контракт –
+  [согласование релиза](docs/plugin-setup-and-policies.md#operator-release-approval).
 - Перед коммитом выполни `git diff --check`, проверь staged scope и отсутствие
   секретов/generated cache. Коммиты, descriptions и release notes пиши
   по-русски.
