@@ -683,6 +683,14 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Проверки и релизы
 
+- Перед релизом человеческого плагина выполни
+  [проверку влияния на цифровых ассистентов](docs/plugin-setup-and-policies.md#совместимость-общей-оболочки):
+  сравни exact source с `shared-shell.lock.json` потребителя, раздели общие
+  технические изменения и human-specific flow и сохрани impact receipt.
+  Применимое общее исправление требует проверенного candidate pin и
+  согласованного выпуска потребителя; решение «не применимо» требует причины.
+  Не импортируй floating `main`, human OAuth или инструкции вместо этой проверки.
+
 - Изменение model-visible результата требует проверки
   [контракта MCP-проекции](docs/agent-mcp-responses.md): одинаковая семантика
   native/local после hydration, рабочий exact read отложенных данных и
