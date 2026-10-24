@@ -26,12 +26,14 @@
   "mcpServers": {
     "trelio": {
       "url": "https://trelio.ru/mcp",
+      "omit_tools_from": ["deferred", "code_mode"],
       "oauth": {
         "clientId": "trelio_agent_workspaces_v1"
       }
     },
     "trelio-remote-skills": {
       "command": "./scripts/launch-trelio-node",
+      "omit_tools_from": ["deferred", "code_mode"],
       "args": [
         "./scripts/trelio-host-runtime-loader.mjs",
         "mcp"

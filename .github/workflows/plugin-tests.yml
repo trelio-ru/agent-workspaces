@@ -25,6 +25,25 @@ permissions:
   contents: read
 
 jobs:
+  codex-tool-exposure:
+    name: Codex same-thread tool exposure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Pin the client that reproduces the session-static routing boundary.
+      # All requests during the test go to synthetic loopback peers, without
+      # OpenAI/Trelio authentication or a copied user model catalogue.
+      - name: Install isolated Codex test client
+        run: npm install --prefix "$RUNNER_TEMP/codex-schema-client" --no-audit --no-fund @openai/codex@0.163.0-alpha.11
+      - name: Check model schemas after MCP reconnection
+        run: python tests/codex-tool-exposure.py --codex-bin "$RUNNER_TEMP/codex-schema-client/node_modules/.bin/codex"
+
   git-main-guard:
     name: Canonical main Git guard
     runs-on: ubuntu-latest

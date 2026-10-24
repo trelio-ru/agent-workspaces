@@ -413,6 +413,17 @@ provider-tag workflow или внутренние release playbooks в этот 
   нужен только после фактического сбоя этой проверки, без требования локального
   проекта. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
   не включает Hooks, не меняет trust и не создаёт runtime proof.
+- Codex manifest обоих MCP servers задаёт
+  `omit_tools_from=["deferred","code_mode"]`: protected вызовы должны быть
+  direct для client `PreToolUse`, независимо от прежнего session snapshot
+  `features.code_mode`. MCP reload обновляет server declarations, но может
+  сохранять старый глобальный routing. Это pre-dispatch shell/security defect:
+  MCP/runtime response не может менять каталог, до которого модель не дошла.
+  Не переносить поле в Claude/Cursor definitions, не менять hook trust и не
+  считать MCP `ready` доказательством доставки схем. Regression на настоящем
+  Codex с loopback MCP/model проверяет outgoing schemas в том же thread после
+  startup timeout и toggle, включая Responses Lite `additional_tools`; тест
+  не читает пользовательские config, credentials или беседы.
 - В Codex/Claude bundled entrypoints и `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

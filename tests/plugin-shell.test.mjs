@@ -255,6 +255,22 @@ test("Codex composer icon keeps its own contrast when loaded as an external imag
   assert.match(markup, /viewBox="0 0 512 512"/u);
 });
 
+test("Codex MCP registration keeps protected tools direct without session config", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
+  const cursor = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/mcp.json"), "utf8"));
+  // MCP reload refreshes server declarations but may retain the session's old
+  // features.code_mode config. Put this PreToolUse dispatch requirement in the
+  // owning Codex registration, before either MCP server can execute code. The
+  // real-client regression separately checks the outgoing model schema, not
+  // just MCP readiness or a copy of Codex's exposure algorithm.
+  for (const name of ["trelio", "trelio-remote-skills"]) {
+    assert.deepEqual(manifest.mcpServers[name].omit_tools_from, ["deferred", "code_mode"]);
+    assert.equal(claude.mcpServers[name].omit_tools_from, undefined);
+    assert.equal(cursor.mcpServers[name].omit_tools_from, undefined);
+  }
+});
+
 test("plugin manifests and stable shell keep one version", async () => {
   const [codexManifest, claudeManifest, cursorManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),
