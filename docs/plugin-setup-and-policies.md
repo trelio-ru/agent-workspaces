@@ -216,7 +216,13 @@ native fingerprint. Реальные изменения hook/loader требую
 Клиентская ошибка reload остаётся отдельным отказом, а не поводом переносить
 trust либо автоматически завершать приложение.
 
-Hook artifact публикуется stable-tag job только после всех source gates.
+Hook artifact публикуется hosted job после всех source gates по отдельно
+согласованному `codex-hooks-source-vX.Y.Z`, где версия относится к компоненту.
+Этот source tag указывает на проверенный candidate до интеграции main: сначала
+публикуется immutable hook ref, затем guarded main release переключает floating
+marketplace source. Stable `vX.Y.Z` основного плагина только проверяет уже
+существующий component ref и не может впервые опубликовать его. Оба вида source
+tag требуют явного согласования выпуска; PR и обычный push ничего не публикуют.
 Content-deterministic orphan commit зависит от component bytes, а не текущего
 main SHA/версии: следующий main release перечитывает тот же immutable ref.
 Existing different ref не перезаписывается; lost push reply разрешает только

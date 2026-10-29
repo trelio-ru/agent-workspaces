@@ -137,7 +137,7 @@ export async function prepareCodexHookDistribution({ root = ROOT } = {}) {
 // Publication is an explicit release operation, never performed by build or
 // check. One native push may create an absent immutable ref; a lost reply only
 // permits read-back. Existing different bytes are never force-updated.
-export async function publishCodexHookDistribution({ root = ROOT } = {}) {
+export async function publishCodexHookDistribution({ root = ROOT, requireExisting = false } = {}) {
   const prepared = await prepareCodexHookDistribution({ root });
   const observe = () => {
     const text = git(root, ["ls-remote", "--refs", "origin", prepared.ref]).toString().trim();
@@ -148,12 +148,38 @@ export async function publishCodexHookDistribution({ root = ROOT } = {}) {
   };
   const before = observe();
   if (before && before !== prepared.commit) fail();
+  // A main release may only verify an already published component. Its floating
+  // marketplace source must never expose hook-free main before that immutable
+  // source exists; first publication belongs to the separately approved source
+  // tag, whose hosted gates run before guarded main integration.
+  if (requireExisting && !before) fail();
   if (!before) spawnSync("git", ["-C", root, "push", "origin", `${prepared.commit}:${prepared.ref}`], {
     windowsHide: true, timeout: 30_000, stdio: ["ignore", "ignore", "pipe"],
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat" },
   });
   if (observe() !== prepared.commit) fail();
   return prepared;
+}
+
+/** Two explicit release boundaries keep initial rollout ordered without a
+ * mutable hook ref. A component-source tag can precede main integration; a
+ * stable main tag can only verify that already published immutable component.
+ * PR/main pushes are never publication authority. Both tag types require the
+ * operator's separate release decision, as documented in the repository. */
+export async function codexHookReleaseSource({ root = ROOT, environment = process.env } = {}) {
+  const tag = environment.GITHUB_REF;
+  if (environment.GITHUB_ACTIONS !== "true" || environment.GITHUB_REPOSITORY !== "trelio-ru/agent-workspaces") fail();
+  const source = /^refs\/tags\/codex-hooks-source-v(\d+\.\d+\.\d+)$/u.exec(tag ?? "");
+  const main = /^refs\/tags\/v(\d+\.\d+\.\d+)$/u.exec(tag ?? "");
+  if (!source && !main) fail();
+  const version = source
+    ? (await codexHookComponent({ root })).requirement.version
+    : (await sourceJson(root, "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json")).version;
+  if ((source ?? main)[1] !== version) fail();
+  if (git(root, ["rev-parse", "HEAD"]).toString().trim() !== git(root, ["rev-parse", `${tag}^{commit}`]).toString().trim()) fail();
+  git(root, ["merge-base", "--is-ancestor", ...(source
+    ? ["refs/remotes/origin/main", "HEAD"] : ["HEAD", "refs/remotes/origin/main"])]);
+  return { requireExisting: !source };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -168,15 +194,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       if (JSON.stringify(expected) !== JSON.stringify(component.requirement)) fail();
       console.log("Codex hook component matches its immutable requirement");
     } else if (args.length === 1 && args[0] === "--publish-release") {
-      // A source commit/PR is not release authority. This entrypoint is for the
-      // stable-tag job only, after its exact source gates have succeeded.
-      const tag = process.env.GITHUB_REF;
-      if (!/^refs\/tags\/v\d+\.\d+\.\d+$/u.test(tag ?? "") || process.env.GITHUB_ACTIONS !== "true") fail();
-      const main = await sourceJson(ROOT, "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json");
-      if (tag !== `refs/tags/v${main.version}`) fail();
-      if (git(ROOT, ["rev-parse", "HEAD"]).toString().trim() !== git(ROOT, ["rev-parse", `${tag}^{commit}`]).toString().trim()) fail();
-      git(ROOT, ["merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main"]);
-      console.log(JSON.stringify(await publishCodexHookDistribution()));
+      console.log(JSON.stringify(await publishCodexHookDistribution(await codexHookReleaseSource())));
     } else fail();
   } catch {
     console.error("Codex hook component build/check/publication failed");

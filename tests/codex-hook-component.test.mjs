@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { ROOT, codexHookComponent, buildCodexHookComponent, prepareCodexHookDistribution, publishCodexHookDistribution } from "../scripts/build-codex-hook-component.mjs";
+import { ROOT, codexHookComponent, buildCodexHookComponent, prepareCodexHookDistribution, publishCodexHookDistribution, codexHookReleaseSource } from "../scripts/build-codex-hook-component.mjs";
 
 test("Codex main disables conventional hooks while Claude retains its own definition", async () => {
   const manifest = JSON.parse(await fs.readFile(path.join(ROOT, "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json")));
@@ -59,9 +59,42 @@ test("main version, instructions and dirty shell cannot change immutable hook by
   const remote = path.join(temporary, "remote.git");
   assert.equal(spawnSync("git", ["init", "--bare", "-q", remote], {windowsHide:true}).status, 0);
   git(["remote", "add", "origin", remote]);
+  await assert.rejects(publishCodexHookDistribution({ root, requireExisting: true }), /Invalid immutable/,
+    "main publication must fail before an absent hook ref can expose broken fresh installs");
   assert.deepEqual(await publishCodexHookDistribution({root}), beforeDistribution);
-  assert.deepEqual(await publishCodexHookDistribution({root}), beforeDistribution,
+  assert.deepEqual(await publishCodexHookDistribution({root, requireExisting: true}), beforeDistribution,
     "a repeated release observes and retains the existing identical immutable ref");
+
+  // Exercise real Git ancestry and exact tag/HEAD checks before any production
+  // rollout. Source publication can precede main, while stable-main validation
+  // must refuse that same unintegrated candidate and can never create its ref.
+  await fs.mkdir(path.join(root, "plugins/trelio-agent-workspaces/.codex-plugin"));
+  await fs.writeFile(path.join(root, "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json"), JSON.stringify({version:"999.0.0"}));
+  const commit = () => {
+    git(["add", "."]);
+    git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "Synthetic release source"]);
+  };
+  commit();
+  git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  await fs.writeFile(path.join(root, "README.md"), "Unintegrated source candidate");
+  commit();
+  const environment = { GITHUB_ACTIONS: "true", GITHUB_REPOSITORY: "trelio-ru/agent-workspaces",
+    GITHUB_REF: `refs/tags/codex-hooks-source-v${before.requirement.version}` };
+  git(["tag", environment.GITHUB_REF.slice("refs/tags/".length)]);
+  assert.deepEqual(await codexHookReleaseSource({ root, environment }), { requireExisting: false });
+  for (const changed of [{ GITHUB_ACTIONS: "false" }, { GITHUB_REPOSITORY: "foreign/repo" },
+    { GITHUB_REF: "refs/heads/main" }, { GITHUB_REF: "refs/tags/codex-hooks-source-v999.0.0" }]) {
+    await assert.rejects(codexHookReleaseSource({ root, environment: { ...environment, ...changed } }), /Invalid immutable/);
+  }
+  git(["tag", "v999.0.0"]);
+  const mainEnvironment = { ...environment, GITHUB_REF: "refs/tags/v999.0.0" };
+  await assert.rejects(codexHookReleaseSource({ root, environment: mainEnvironment }), /Invalid immutable/,
+    "stable main source cannot be published before guarded integration");
+  git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  assert.deepEqual(await codexHookReleaseSource({ root, environment: mainEnvironment }), { requireExisting: true });
+  git(["update-ref", environment.GITHUB_REF, "HEAD^"]);
+  await assert.rejects(codexHookReleaseSource({ root, environment }), /Invalid immutable/,
+    "an approved tag must identify this exact checkout, never another candidate");
   const manifestPath = path.join(root, "components/codex-hooks/plugin.json");
   const manifest = JSON.parse(await fs.readFile(manifestPath));
   await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, mcpServers: {} }));

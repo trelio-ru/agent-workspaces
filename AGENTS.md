@@ -104,6 +104,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   исправить signed runtime либо неизменностью одного hooks.json. Main явно
   подавляет conventional hooks только в Codex; Claude сохраняет прежний flow.
   Не переносить approvals и не менять pin/версию компонента при main-only правках.
+  Первый выпуск компонента по отдельно согласованному source tag предшествует
+  hook-free main; stable main tag только проверяет уже опубликованный ref.
 
 - Trelio MCP – control plane; independently published host runtime – локальный
   Git/data plane.
