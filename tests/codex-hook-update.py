@@ -24,16 +24,18 @@ MARKET = "human-update-fixture"
 
 @contextmanager
 def fixture_directory():
-    directory = tempfile.mkdtemp(prefix="human-native-hooks-")
+    temporary = tempfile.TemporaryDirectory(prefix="human-native-hooks-")
     try:
-        yield directory
+        yield temporary.name
     finally:
         # Native Windows may release its final SQLite/cwd handle just after
         # process exit. Retry ONLY removal of this owned disposable directory,
         # after Native.close; never retry installation, assertions or requests.
         for attempt in range(20):
             try:
-                shutil.rmtree(directory)
+                # Keep Python's standard cleanup for Git's Windows read-only
+                # pack/index files. Plain rmtree cannot remove those files.
+                temporary.cleanup()
                 break
             except FileNotFoundError:
                 break
