@@ -86,9 +86,9 @@ def run(binary):
                    XDG_CONFIG_HOME=str(home / "config"), XDG_CACHE_HOME=str(home / "cache"),
                    GIT_CONFIG_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
         git_config = root / "git-config"
-        git_config.write_text("")
+        git_config.write_text("", encoding="utf-8", newline="\n")
         env["GIT_CONFIG_GLOBAL"] = str(git_config)
-        (home / "config.toml").write_text("[features]\nplugins=true\nhooks=true\napps=false\n")
+        (home / "config.toml").write_text("[features]\nplugins=true\nhooks=true\napps=false\n", encoding="utf-8", newline="\n")
 
         def command(executable, args, location=cwd):
             result = subprocess.run([executable, *args], cwd=location, env=env, capture_output=True, timeout=40)
@@ -98,13 +98,15 @@ def run(binary):
         node = shutil.which("node")
         assert node, "fixture Node unavailable"
         command(node, [str(ROOT / "scripts/build-codex-hook-component.mjs"), "--output", str(repository / "plugin")])
-        (repository / ".gitattributes").write_text("* -text\n")
+        (repository / ".gitattributes").write_text("* -text\n", encoding="utf-8", newline="\n")
         (repository / ".codex-plugin").mkdir()
         # Keep the real main's empty native hook declaration AND conventional
         # Claude file. This proves Codex doesn't discover duplicate legacy hooks.
         (repository / "hooks").mkdir()
         shutil.copyfile(ROOT / "plugins" / MAIN / "hooks/hooks.json", repository / "hooks/hooks.json")
-        manifest = json.loads((ROOT / "plugins" / MAIN / ".codex-plugin/plugin.json").read_text())
+        # Native plugin sources are UTF-8 regardless of the Windows runner's
+        # current ANSI code page. Never translate Russian metadata through it.
+        manifest = json.loads((ROOT / "plugins" / MAIN / ".codex-plugin/plugin.json").read_text(encoding="utf-8"))
         manifest.pop("skills", None)
         manifest["mcpServers"] = {"human-update-probe": {"command": node,
             "args": [str(root / "probe.mjs")], "env": {"PROBE_VERSION": "1"}}}
@@ -115,9 +117,9 @@ for await (const line of readline.createInterface({input:process.stdin})) {
  :m.method==="tools/list"?{tools:[{name:"probe_"+process.env.PROBE_VERSION,description:"Synthetic read",inputSchema:{type:"object",properties:{}}}]}:{};
  process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result})+"\\n");
 }
-''')
+''', encoding="utf-8", newline="\n")
         manifest_path = repository / ".codex-plugin/plugin.json"
-        manifest_path.write_text(json.dumps(manifest))
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
 
         def git(args):
             return command("git", ["-c", "core.hooksPath=" + str(root / "no-hooks"), *args], repository)
@@ -132,15 +134,15 @@ for await (const line of readline.createInterface({input:process.stdin})) {
         git(["tag", "main-one"])
         manifest["version"] = "999.0.0"
         manifest["mcpServers"]["human-update-probe"]["env"]["PROBE_VERSION"] = "2"
-        manifest_path.write_text(json.dumps(manifest))
-        (repository / "README.md").write_text("Changed main instructions\n")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+        (repository / "README.md").write_text("Changed main instructions\n", encoding="utf-8", newline="\n")
         commit("Main-only update")
         git(["tag", "main-two"])
         catalogue = {"name": MARKET, "plugins": [
             {"name": MAIN, "source": {"source": "url", "url": repository.as_uri(), "ref": "main-one"}},
             {"name": HOOKS, "source": {"source": "git-subdir", "url": repository.as_uri(), "path": "./plugin", "ref": "fixed-hooks"}}]}
         catalogue_path = market / ".agents/plugins/marketplace.json"
-        catalogue_path.write_text(json.dumps(catalogue))
+        catalogue_path.write_text(json.dumps(catalogue), encoding="utf-8", newline="\n")
         native = lambda args: json.loads(command(binary, args))
         native(["plugin", "marketplace", "add", str(market), "--json"])
         installed = native(["plugin", "add", f"{HOOKS}@{MARKET}", "--json"])
@@ -154,7 +156,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
             status = owner.request("mcpServerStatus/list", {"serverName": "human-update-probe", "detail": "toolsAndAuthOnly"})
             assert any("probe_1" in row.get("tools", {}) for row in status["data"]), "initial MCP not connected"
             catalogue["plugins"][0]["source"]["ref"] = "main-two"
-            catalogue_path.write_text(json.dumps(catalogue))
+            catalogue_path.write_text(json.dumps(catalogue), encoding="utf-8", newline="\n")
             native(["plugin", "add", f"{MAIN}@{MARKET}", "--json"])
             owner.request("config/mcpServer/reload")
             status = owner.request("mcpServerStatus/list", {"serverName": "human-update-probe", "detail": "toolsAndAuthOnly"})
@@ -162,15 +164,15 @@ for await (const line of readline.createInterface({input:process.stdin})) {
             assert owner.process.pid == pid and owner.process.poll() is None, "Codex owner was restarted"
             assert owner.hooks(cwd, component) == before, "main update changed native approval fingerprints"
             hook_file = component / "hooks/hooks.json"
-            hook = json.loads(hook_file.read_text())
+            hook = json.loads(hook_file.read_text(encoding="utf-8"))
             hook["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"] += 1
-            hook_file.write_text(json.dumps(hook))
+            hook_file.write_text(json.dumps(hook), encoding="utf-8", newline="\n")
             changed = owner.hooks(cwd, component)
             assert changed != before, "actual hook changes must still invalidate trust"
-            with (component / "scripts/trelio-host-runtime-loader.mjs").open("a") as output:
+            with (component / "scripts/trelio-host-runtime-loader.mjs").open("a", encoding="utf-8", newline="\n") as output:
                 output.write("\n// synthetic executable change\n")
             assert owner.hooks(cwd, component) != changed, "loader changes must still invalidate trust"
-            config = (home / "config.toml").read_text()
+            config = (home / "config.toml").read_text(encoding="utf-8")
             assert not any(word in config for word in ("trusted_hash", "trusted_content_hash", "bypass_hook_trust"))
         finally:
             owner.close()
