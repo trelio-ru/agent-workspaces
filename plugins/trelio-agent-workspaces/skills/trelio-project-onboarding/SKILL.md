@@ -80,6 +80,9 @@ runtime. Не воспроизводи эти проверки shell-коман�
      системным одобрением;
    - `REPAIR_LOADED_PLUGIN_SHELL` – используй официальный менеджер клиента, не
      сбрасывая OAuth, pairing и runtime sessions;
+   - `REVIEW_CODEX_HOOK_COMPONENT` – следуй exact `nextStep` для отдельного
+     источника `Trelio Agent Workspaces Hooks`. Первую установку одобряет
+     пользователь; старое trust не переносится. Не включай disabled component;
    - `REVIEW_CODEX_DIRECT_ROUTING` – покажи table/key, добавляемые namespaces и
      `planHash`; после отдельного подтверждения вызови exact apply. Stale plan
      перечитай. После успеха полностью перезапусти Codex/ChatGPT, вернись в этот

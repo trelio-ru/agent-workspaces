@@ -74,6 +74,7 @@ worktree. Наличие проекта и значение `projectId` сами
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
+codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
 
 После установки onboarding завершает OAuth и сам выполняет первый обязательный
@@ -81,12 +82,17 @@ read-only `get_agent_instructions`. Если текущие hooks уже был�
 `PreToolUse` добавляет proof и настройка продолжается без паузы. Для новой либо
 неодобренной definition protected content не возвращается; после
 `TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` агент попросит проверить
-Hooks. В Codex Desktop откройте настройки `Trelio Agent Workspaces`, просмотрите
+Hooks. В Codex Desktop откройте настройки `Trelio Agent Workspaces Hooks`, просмотрите
 текущую конфигурацию в разделе Hooks и включите её. В Codex CLI откройте
-`/hooks`, выберите источник `Trelio Agent Workspaces`, проверьте текущую
+`/hooks`, выберите источник `Trelio Agent Workspaces Hooks`, проверьте текущую
 конфигурацию и отметьте её доверенной. Codex не доверяет plugin-bundled hooks
 автоматически и пропускает новую либо изменённую definition до такого review;
 bypass-флаг для онбординга не используется.
+
+При первом переходе на отдельный hook-компонент его нужно одобрить один раз.
+Дальнейшие обновления основного пакета не меняют его файлы и одобрение, не
+требуют выхода из Codex. Самостоятельное изменение hooks/loader требует нового
+review. Подробности – [контракт обновления](docs/plugin-setup-and-policies.md#codex-hook-component).
 
 До первого protected read onboarding также вызывает локальный read-only
 `plan_codex_trelio_hook_routing`. Если в

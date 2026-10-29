@@ -248,6 +248,7 @@ worktree. Наличие проекта и значение `projectId` сами
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
+codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
 
 После установки onboarding сначала завершает OAuth, выбирает exact company и
@@ -256,9 +257,9 @@ hooks уже были одобрены, `PreToolUse` добавляет proof и
 без паузы. Для новой либо неодобренной definition backend fail-closed не
 возвращает protected content; после `TRELIO_RUNTIME_HOOK_REQUIRED` с
 `reason=missing` агент попросит проверить Hooks. В Codex Desktop откройте
-настройки `Trelio Agent Workspaces`, просмотрите текущую конфигурацию в разделе
+настройки `Trelio Agent Workspaces Hooks`, просмотрите текущую конфигурацию в разделе
 Hooks и включите её. В Codex CLI откройте `/hooks`, выберите источник
-`Trelio Agent Workspaces`, проверьте текущую конфигурацию и отметьте её
+`Trelio Agent Workspaces Hooks`, проверьте текущую конфигурацию и отметьте её
 доверенной. Codex не доверяет plugin-bundled hooks автоматически и пропускает
 новую либо изменённую definition до такого review; bypass-флаг для онбординга
 не используется.
@@ -534,6 +535,13 @@ signature verification остаются в плагине. Bridge, hook implemen
 локальный MCP приходят подписанным content-addressed package в owner-only
 каталог вне Codex plugin cache. Агент не выбирает версию и не видит updater в
 model context.
+
+В Codex hooks принадлежат отдельному immutable пакету
+`trelio-agent-workspaces-hooks`. Первое переключение источника требует одного
+native approval; обновления main сохраняют этот компонент и его доверие без
+выхода из Codex. Изменение самих hooks/loader требует нового review.
+Claude использует прежний conventional hook file. Полный
+[контракт обновления](../../docs/plugin-setup-and-policies.md#codex-hook-component).
 
 Прямой запуск loader определяется по реальному пути файла. Если родительский
 каталог плагина открыт через ссылку или Windows junction, различие между

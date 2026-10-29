@@ -6,6 +6,7 @@
     "name": "Trelio"
   },
   "skills": "./skills/",
+  "hooks": { "hooks": {} },
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",

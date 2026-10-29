@@ -247,6 +247,9 @@ lifecycle matchers с будущими версиями. Оно запускае
   затем проверь плагин.
 - Плагин отсутствует/выключен: установи/включи
   `trelio-agent-workspaces@trelio-plugins`; наличие marketplace не доказывает установку.
+- `REVIEW_CODEX_HOOK_COMPONENT`: следуй exact `nextStep` отдельного
+  `Trelio Agent Workspaces Hooks`, сохраняя различие missing/disabled/invalid.
+  Первое native approval выполняет пользователь; trust не переносится.
 - `REVIEW_CODEX_DIRECT_ROUTING`: применяй вложенный plan только после
   отдельного подтверждения exact `planHash`; затем требуется полный restart
   owning App Server и protected read сначала в этом же чате.

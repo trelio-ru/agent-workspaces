@@ -98,6 +98,13 @@ provider-tag workflow или внутренние release playbooks в этот 
 
 ## Архитектурная граница
 
+- Codex hooks принадлежат отдельному immutable компоненту по
+  [контракту обновления](docs/plugin-setup-and-policies.md#codex-hook-component).
+  Native hash охватывает весь hook-owning bundle, поэтому эту границу нельзя
+  исправить signed runtime либо неизменностью одного hooks.json. Main явно
+  подавляет conventional hooks только в Codex; Claude сохраняет прежний flow.
+  Не переносить approvals и не менять pin/версию компонента при main-only правках.
+
 - Trelio MCP – control plane; independently published host runtime – локальный
   Git/data plane.
 - Plugin является консервативной stable shell. В нём остаются manifests,

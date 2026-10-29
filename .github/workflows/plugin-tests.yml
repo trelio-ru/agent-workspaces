@@ -13,6 +13,8 @@ on:
       - "package.json"
       - "package-lock.json"
       - "plugins/trelio-agent-workspaces/**"
+      - "components/**"
+      - "codex-hook-shell.lock.json"
       - "scripts/**"
       - "tests/**"
   push:
@@ -51,6 +53,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Run canonical main guard regressions
         run: npm run test:git-guard
@@ -69,6 +73,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -80,3 +86,58 @@ jobs:
       # back into the plugin repository.
       - name: Run stable shell tests
         run: npm run test:plugin-shell
+
+  codex-hook-update:
+    name: Codex Windows update without restart or changed hook trust
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify pinned native Codex and exercise one existing owner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $native = Join-Path $env:RUNNER_TEMP 'human-codex-hook-update'
+          New-Item -ItemType Directory -Path $native | Out-Null
+          $inputs = @(
+            @{ Name='codex-x86_64-pc-windows-msvc.exe'; Target='codex.exe'; Sha='90cf31818ddd8b29f956ad1df5f99af86c19296186be9a117d07b02b2c9bf0e8' },
+            @{ Name='codex-code-mode-host-x86_64-pc-windows-msvc.exe'; Target='codex-code-mode-host.exe'; Sha='a17825919d06970ca739cdfd5e9c8040b1b0d33896e79db3980f96545ea1774e' }
+          )
+          foreach ($item in $inputs) {
+            $archive = Join-Path $native ($item.Name + '.tar.gz')
+            Invoke-WebRequest -Uri ('https://github.com/openai/codex/releases/download/rust-v0.164.0/' + $item.Name + '.tar.gz') -OutFile $archive -TimeoutSec 120
+            if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $item.Sha) { throw 'Native Codex hash mismatch' }
+            $members = @(& tar -tf $archive)
+            if ($LASTEXITCODE -ne 0 -or $members.Count -ne 1 -or ($members[0] -ne $item.Name -and $members[0] -ne ('./' + $item.Name))) { throw 'Unexpected native archive' }
+            & tar -xf $archive -C $native
+            if ($LASTEXITCODE -ne 0) { throw 'Native extraction failed' }
+            Move-Item (Join-Path $native $item.Name) (Join-Path $native $item.Target)
+          }
+          python tests/codex-hook-update.py --codex-bin (Join-Path $native 'codex.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'Native same-owner hook update failed' }
+
+  publish-codex-hooks:
+    name: Publish or verify immutable Codex hook component
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [plugin-shell, git-main-guard, codex-tool-exposure, codex-hook-update]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.23.2
+      # The source stable tag is the separately approved plugin release. PR and
+      # main checks can only build/verify; neither publishes an executable ref.
+      - run: node scripts/build-codex-hook-component.mjs --check
+      - run: node scripts/build-codex-hook-component.mjs --publish-release

@@ -15,6 +15,20 @@
         "authentication": "ON_INSTALL"
       },
       "category": "Productivity"
+    },
+    {
+      "name": "trelio-agent-workspaces-hooks",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/trelio-ru/agent-workspaces.git",
+        "path": "./plugin",
+        "ref": "hooks-v0.1.0"
+      },
+      "policy": {
+        "installation": "INSTALLED_BY_DEFAULT",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
     }
   ]
 }

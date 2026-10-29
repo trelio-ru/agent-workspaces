@@ -59,6 +59,7 @@ project metadata не заменяет эти проверки и не выби�
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
+codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
 
 После установки onboarding завершает OAuth, выбирает exact company и выполняет
@@ -66,9 +67,9 @@ codex plugin add trelio-agent-workspaces@trelio-plugins
 были одобрены, `PreToolUse` добавляет proof и настройка продолжается без паузы.
 Для новой либо неодобренной definition protected content не возвращается; после
 `TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` агент просит проверить Hooks.
-В Codex Desktop пользователь открывает настройки `Trelio Agent Workspaces`,
+В Codex Desktop пользователь открывает настройки `Trelio Agent Workspaces Hooks`,
 просматривает текущую конфигурацию в разделе Hooks и включает её. В Codex CLI он
-открывает `/hooks`, выбирает источник `Trelio Agent Workspaces`, проверяет
+открывает `/hooks`, выбирает источник `Trelio Agent Workspaces Hooks`, проверяет
 текущую конфигурацию и отмечает её доверенной. Codex не доверяет plugin-bundled
 hooks автоматически и пропускает новую либо изменённую definition до review;
 onboarding не автоматизирует trust и не использует bypass-флаг.
@@ -177,6 +178,50 @@ Snapshot начинается только после initialize; наблюде
 credentials и sessions живут в отдельных прежних owner-only хранилищах; unknown
 или повреждённый package отвергается до исполнения, а plaintext fallback для
 encrypted company не появляется.
+
+<a id="codex-hook-component"></a>
+
+### Обновление Codex без повторного одобрения hooks
+
+Codex привязывает approval к содержимому всего hook-owning plugin, включая
+manifest и инструкции. Неизменный `hooks.json` внутри обновляемого пакета не
+гарантирует сохранения доверия. В Codex основной `trelio-agent-workspaces`
+поэтому объявляет `hooks: {"hooks":{}}`: conventional `hooks/hooks.json` остаётся
+для Claude, но Codex его не исполняет. Три прежних hooks принадлежат отдельному
+`trelio-agent-workspaces-hooks@trelio-plugins`, без MCP, skills и версии main.
+
+Компонент собирается штатным `scripts/build-codex-hook-component.mjs` из exact
+Git blobs `codex-hook-shell.lock.json`. Hook definition и семь shell files
+сохраняют прежние bytes/modes; другая реализация loader/verifier не появляется.
+`codex-hook-component.json` основного пакета фиксирует version и SHA-256 полного
+inventory компонента. Main-only update не меняет этот descriptor, hook manifest,
+pin или executable bytes. Hook source – immutable `hooks-vX.Y.Z`, native
+`git-subdir` с fixed `./plugin`: Git index/reflog не входят в установленный
+hook bundle. Runtime не удаляет metadata из cache и не правит trust.
+
+При первой миграции человек один раз одобряет новый источник. Старое approval
+не копируется. Последующие main-only updates сохраняют прежний компонент и его
+native fingerprint. Реальные изменения hook/loader требуют нового компонента
+и нового native review; security minimum не обходится ради обещания обновления.
+Открытый MCP сохраняет оба exact дерева прежним retention engine до EOF.
+Недостающий, выключенный, изменённый или недоступный компонент диагностируется
+отдельно через `REVIEW_CODEX_HOOK_COMPONENT`, без переустановки main, сброса OAuth
+или автоматического включения. Ready metadata не заменяет native trust/proof.
+
+Обычное обновление main не требует выхода из Codex: его штатный MCP reload
+загружает новую registration в прежнем owner. `tests/codex-hook-update.py`
+проверяет настоящий Codex, тот же PID, новую MCP schema и неизменные hook hashes
+после main version/ref/instruction update. Изменение hook или loader должно
+менять hashes. Тест изолирует HOME/config/Git и не одобряет ни одного hook.
+Клиентская ошибка reload остаётся отдельным отказом, а не поводом переносить
+trust либо автоматически завершать приложение.
+
+Hook artifact публикуется stable-tag job только после всех source gates.
+Content-deterministic orphan commit зависит от component bytes, а не текущего
+main SHA/версии: следующий main release перечитывает тот же immutable ref.
+Existing different ref не перезаписывается; lost push reply разрешает только
+read-back. Source commit/PR не публикует executable component. До первого
+согласованного выпуска нового компонента изменение не считается доставленным.
 
 ### Совместимость общей оболочки
 
