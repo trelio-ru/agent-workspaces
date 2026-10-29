@@ -28,9 +28,11 @@ def fixture_directory():
     try:
         yield temporary.name
     finally:
-        # Native Windows may release its final SQLite/cwd handle just after
-        # process exit. Retry ONLY removal of this owned disposable directory,
-        # after Native.close; never retry installation, assertions or requests.
+        # Native Windows may release its final SQLite/cwd/Git handles just after
+        # process exit. A directory scan can consequently race its last file
+        # removal and report ERROR_DIR_NOT_EMPTY (145), as well as sharing/access
+        # errors. Retry ONLY removal of this owned disposable directory after
+        # Native.close; never retry installation, assertions or requests.
         for attempt in range(20):
             try:
                 # Keep Python's standard cleanup for Git's Windows read-only
@@ -40,7 +42,7 @@ def fixture_directory():
             except FileNotFoundError:
                 break
             except OSError as error:
-                if os.name != "nt" or error.winerror not in (5, 32, 33) or attempt == 19:
+                if os.name != "nt" or error.winerror not in (5, 32, 33, 145) or attempt == 19:
                     raise
                 time.sleep(.1)
 
