@@ -424,6 +424,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   Codex с loopback MCP/model проверяет outgoing schemas в том же thread после
   startup timeout и toggle, включая Responses Lite `additional_tools`; тест
   не читает пользовательские config, credentials или беседы.
+- Remote Codex `trelio` имеет поставляемый `startup_timeout_sec=60` для
+  подключения и каталога на медленной сети. Это pre-runtime client declaration:
+  backend/signed runtime не управляют deadline Codex. Бюджеты local MCP,
+  Hooks, команд и других клиентов не расширяются; user config не правится.
+  Обоснование shell admission и regression — [контракт](docs/mcp-startup-timeout.md).
 - В Codex/Claude bundled entrypoints и `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

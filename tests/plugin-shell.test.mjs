@@ -271,6 +271,21 @@ test("Codex MCP registration keeps protected tools direct without session config
   }
 });
 
+test("Codex remote catalog gets a distributed bounded slow-link startup default", async () => {
+  const codex = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
+  const cursor = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/mcp.json"), "utf8"));
+  // Codex owns its deadline before either MCP can answer. This belongs in the
+  // distributed declaration, not an agent's repair of one user's config or a
+  // signed runtime that the timed-out client has not reached. Keep the local
+  // loader/hook and other clients' independently owned budgets unchanged.
+  assert.equal(codex.mcpServers.trelio.startup_timeout_sec, 60);
+  assert.equal(codex.mcpServers.trelio.tool_timeout_sec, undefined);
+  assert.equal(codex.mcpServers["trelio-remote-skills"].startup_timeout_sec, undefined);
+  assert.equal(claude.mcpServers.trelio.startup_timeout_sec, undefined);
+  assert.equal(cursor.mcpServers.trelio.startup_timeout_sec, undefined);
+});
+
 test("plugin manifests and stable shell keep one version", async () => {
   const [codexManifest, claudeManifest, cursorManifest] = await Promise.all([
     fs.readFile(path.join(pluginDirectory, ".codex-plugin", "plugin.json"), "utf8"),

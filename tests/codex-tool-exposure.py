@@ -73,8 +73,11 @@ class Peer(http.server.BaseHTTPRequestHandler):
                 if fixture.list_counts[server_name] == 1:
                     # The first client exceeds its startup budget. A later
                     # successful client must repopulate the same thread.
-                    time.sleep(3)
-                    return
+                    if fixture.slow_catalog_seconds is None:
+                        time.sleep(3)
+                        return
+                    if server_name == "trelio":
+                        time.sleep(fixture.slow_catalog_seconds)
                 result = {"tools": [{"name": "read_probe", "description": "Synthetic read only.",
                                      "inputSchema": {"type": "object", "properties": {}}}]}
             elif method == "tools/call":
@@ -88,8 +91,12 @@ class Peer(http.server.BaseHTTPRequestHandler):
             # Responses Lite delivers schemas in an additional_tools item,
             # whereas the ordinary protocol uses top-level tools. Discard
             # all message bodies; retain only the structural evidence needed.
-            specs = obj.get("tools") or next((item.get("tools", []) for item in obj.get("input", [])
-                                             if item.get("type") == "additional_tools"), [])
+            # Newer clients may send built-ins in top-level tools and MCP
+            # namespaces in additional_tools in the same request. Inspect both
+            # structural surfaces: an `or` silently discarded the second one
+            # and falsely reported missing MCP schemas in Responses Lite.
+            specs = [*(obj.get("tools") or []), *(tool for item in obj.get("input", [])
+                      if item.get("type") == "additional_tools" for tool in item.get("tools", []))]
             fixture.captured.append({
                 spec.get("name"): {tool.get("name") for tool in spec.get("tools", [])}
                 for spec in specs if spec.get("type") == "namespace"
@@ -116,7 +123,11 @@ class Peer(http.server.BaseHTTPRequestHandler):
 
 
 class Fixture:
-    def initialize(self, root, binary, lite, server_policy):
+    def initialize(self, root, binary, lite, server_policy, startup_timeout_override=1):
+        # None tests the distributed manifest deadline with a real catalog
+        # response later than the old 30 s boundary; existing exposure cases
+        # retain their deliberately tiny 1 s budget and failed first client.
+        self.slow_catalog_seconds = 31 if startup_timeout_override is None else None
         self.root = root
         self.captured = []
         self.list_counts = dict.fromkeys(NAMESPACES, 0)
@@ -161,8 +172,11 @@ direct_only_tool_namespaces=[]
         registrations = {}
         declaration = json.loads(MANIFEST.read_text())["mcpServers"]
         for name in NAMESPACES:
-            registrations[name] = {"url": f"http://127.0.0.1:{self.server.server_port}/mcp/{name}",
-                                   "startup_timeout_sec": 1}
+            registrations[name] = {"url": f"http://127.0.0.1:{self.server.server_port}/mcp/{name}"}
+            if startup_timeout_override is not None:
+                registrations[name]["startup_timeout_sec"] = startup_timeout_override
+            elif "startup_timeout_sec" in declaration[name]:
+                registrations[name]["startup_timeout_sec"] = declaration[name]["startup_timeout_sec"]
             if server_policy:
                 # Test the shipped policy, not a hardcoded passing fixture.
                 registrations[name]["omit_tools_from"] = declaration[name].get("omit_tools_from", [])
@@ -252,6 +266,28 @@ direct_only_tool_namespaces=[]
 
 
 class ExposureTests(unittest.TestCase):
+    def test_shipped_deadline_survives_catalog_after_old_thirty_second_boundary(self):
+        with tempfile.TemporaryDirectory(prefix="trelio-codex-startup-") as directory:
+            fixture = None
+            try:
+                fixture = Fixture()
+                fixture.initialize(Path(directory), CODEX_BINARY, False, True, startup_timeout_override=None)
+                # Wait for optional startup in this synthetic turn. This is a
+                # fixture timing choice, never a mutation of user settings.
+                fixture.config.write_text("mcp_optional_startup_grace_ms=0\n" + fixture.config.read_text())
+                current = subprocess.run([CODEX_BINARY, "mcp", "get", "trelio", "--json"],
+                                         env=fixture.env, cwd=fixture.root / "cwd", capture_output=True, timeout=15)
+                self.assertEqual(current.returncode, 0)
+                self.assertEqual(json.loads(current.stdout)["startup_timeout_sec"], 60)
+                self.assertNotIn("startup_timeout_sec", fixture.config.read_text())
+                thread = fixture.start()
+                fixture.turn(thread)
+                self.assertEqual(fixture.list_counts["trelio"], 1)
+                self.assertEqual(fixture.captured[-1].get(NAMESPACES["trelio"]), {"read_probe"})
+            finally:
+                if fixture:
+                    fixture.close()
+
     def test_same_thread_after_startup_timeout(self):
         for lite in (False, True):
             for server_policy in (False, True):
