@@ -5,6 +5,7 @@ account, Trelio request or hook approval is made. Native currentHash is the
 fingerprint an actual user approval binds to; the test never writes trust.
 """
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -13,11 +14,33 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = "trelio-agent-workspaces"
 HOOKS = MAIN + "-hooks"
 MARKET = "human-update-fixture"
+
+
+@contextmanager
+def fixture_directory():
+    directory = tempfile.mkdtemp(prefix="human-native-hooks-")
+    try:
+        yield directory
+    finally:
+        # Native Windows may release its final SQLite/cwd handle just after
+        # process exit. Retry ONLY removal of this owned disposable directory,
+        # after Native.close; never retry installation, assertions or requests.
+        for attempt in range(20):
+            try:
+                shutil.rmtree(directory)
+                break
+            except FileNotFoundError:
+                break
+            except OSError as error:
+                if os.name != "nt" or error.winerror not in (5, 32, 33) or attempt == 19:
+                    raise
+                time.sleep(.1)
 
 
 class Native:
@@ -69,12 +92,20 @@ class Native:
         return sorted((h["eventName"], h["currentHash"]) for h in hooks)
 
     def close(self):
-        self.process.terminate()
-        self.process.wait(timeout=10)
+        # EOF lets this fixture's App Server close its MCP children before
+        # releasing the private HOME. Terminating its parent first can orphan a
+        # child holding that cwd on Windows, despite all assertions passing.
+        self.process.stdin.close()
+        try:
+            self.process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.process.terminate()
+            self.process.wait(timeout=10)
+            raise AssertionError("isolated native fixture did not close after EOF")
 
 
 def run(binary):
-    with tempfile.TemporaryDirectory(prefix="human-native-hooks-") as directory:
+    with fixture_directory() as directory:
         root = Path(directory).resolve()
         home, cwd, repository, market = (root / p for p in ("home", "cwd", "repository", "market"))
         for item in (home, cwd, repository, market / ".agents/plugins"):
@@ -176,7 +207,7 @@ for await (const line of readline.createInterface({input:process.stdin})) {
             assert not any(word in config for word in ("trusted_hash", "trusted_content_hash", "bypass_hook_trust"))
         finally:
             owner.close()
-        print("PASS: same Codex owner loads updated main MCP; native hook fingerprints unchanged; real hook/loader changes invalidate them")
+    print("PASS: same Codex owner loads updated main MCP; native hook fingerprints unchanged; real hook/loader changes invalidate them")
 
 
 if __name__ == "__main__":
