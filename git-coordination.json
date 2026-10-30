@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "repository": "trelio-ru/agent-workspaces",
+  "canonicalKey": "trelioAgentWorkspaces.canonicalMainWorktree",
+  "mainMutex": "trelio-agent-workspaces-main-update.lock",
+  "verify": [
+    "node",
+    "scripts/verify-integration-ci.mjs"
+  ],
+  "transport": [
+    "bash",
+    "scripts/push-main.sh"
+  ]
+}

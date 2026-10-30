@@ -69,6 +69,14 @@ if [[ -n "${RELEASE_TAG}" ]] \
   exit 2
 fi
 
+# A boolean is not admission. Check the same live exact FIFO owner before
+# transport; canonical pre-push independently checks legacy wrappers too.
+(
+  cd "${REPOSITORY_ROOT}"
+  node "${SCRIPT_DIR}/assert-coordination.mjs" \
+    "$(git rev-parse --verify "${SOURCE_REF}^{commit}")" "${RELEASE_TAG}"
+)
+
 agent_workspaces_validate_retry_settings
 CANONICAL_ROOT="$(
   agent_workspaces_canonical_main_worktree "${REPOSITORY_ROOT}"

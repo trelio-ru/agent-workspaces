@@ -71,7 +71,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   physical worktree через `npm run git:new-worktree -- codex/<task-slug>`.
   Не редактируй канонический checkout вручную.
 - Обычная завершённая правка получает commit в task-ветке и интегрируется
-  только через `npm run git:push-main`. Guard принимает лишь clean source,
+  только через `npm run git:integrate`. Guard принимает лишь clean source,
   fast-forward от свежего `origin/main`, делает exact remote read-back и затем
   fast-forward канонического локального `main`. `git push origin main`,
   `git push origin HEAD:main` и эквивалентные raw refspec запрещены.
@@ -89,7 +89,7 @@ provider-tag workflow или внутренние release playbooks в этот 
   пушь при непустом status. Если canonical либо source содержит чужие tracked
   или untracked изменения, сохрани их и остановись до выяснения scope.
 - Stable plugin tag публикуется атомарно с соответствующим `main` только через
-  `npm run git:push-main -- --tag vX.Y.Z`. Это не заменяет явную команду
+  `npm run git:integrate -- --tag vX.Y.Z`. Это не заменяет явную команду
   пользователя на plugin release и остальные release-проверки.
 - `.gitignore` намеренно скрывает только системные метаданные, dependency cache
   и generated Python bytecode. `platform-skills/**` целиком не игнорируется:
@@ -768,3 +768,12 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Перед коммитом выполни `git diff --check`, проверь staged scope и отсутствие
   секретов/generated cache. Коммиты, descriptions и release notes пиши
   по-русски.
+
+## Координация Git и релизных версий
+
+После commit – `npm run git:integrate`: FIFO до fresh fetch/rebase и final CI,
+затем exact guarded push/read-back. Прямой `git:push-main` больше не является
+самостоятельным workflow. Разрешённый релиз резервирует exact tag до CI через
+`npm run git:integrate -- --tag <tag>`. Старые wrappers/boolean не дают admission.
+После checkout установить pinned maintainer dependency через `npm ci --ignore-scripts`.
+Контракт, recovery и границы общего кода – [git-coordination](docs/git-coordination.md).
