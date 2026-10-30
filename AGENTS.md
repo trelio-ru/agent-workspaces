@@ -106,6 +106,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   Не переносить approvals и не менять pin/версию компонента при main-only правках.
   Первый выпуск компонента по отдельно согласованному source tag предшествует
   hook-free main; stable main tag только проверяет уже опубликованный ref.
+  Автоматическая доустановка отсутствующего human Codex companion принадлежит
+  signed runtime, не новой shell/model-инструкции. Обычная установка main не
+  требует второй ручной команды; native approval, opt-out и unknown outcome
+  сохраняются по тому же контракту. Проверять именно combined → split переход.
 
 - Trelio MCP – control plane; independently published host runtime – локальный
   Git/data plane.

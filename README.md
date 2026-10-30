@@ -74,8 +74,12 @@ worktree. Наличие проекта и значение `projectId` сами
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
-codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
+
+При запуске основной плагин автоматически устанавливает отсутствующий компонент
+`Trelio Agent Workspaces Hooks` через штатный менеджер Codex. Это работает и для
+существующих пользователей после обновления: отдельная ручная команда не нужна.
+Явно отключённый или изменённый компонент сохраняется без переустановки.
 
 После установки onboarding завершает OAuth и сам выполняет первый обязательный
 read-only `get_agent_instructions`. Если текущие hooks уже были одобрены,
@@ -89,7 +93,7 @@ Hooks. В Codex Desktop откройте настройки `Trelio Agent Worksp
 автоматически и пропускает новую либо изменённую definition до такого review;
 bypass-флаг для онбординга не используется.
 
-При первом переходе на отдельный hook-компонент его нужно одобрить один раз.
+При первом переходе автоматически установленный hook-компонент нужно одобрить один раз.
 Дальнейшие обновления основного пакета не меняют его файлы и одобрение, не
 требуют выхода из Codex. Самостоятельное изменение hooks/loader требует нового
 review. Подробности – [контракт обновления](docs/plugin-setup-and-policies.md#codex-hook-component).

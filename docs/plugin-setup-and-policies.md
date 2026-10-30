@@ -59,8 +59,13 @@ project metadata не заменяет эти проверки и не выби�
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
-codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
+
+Отсутствующий `Trelio Agent Workspaces Hooks` основной плагин доустанавливает
+автоматически через штатный менеджер Codex при запуске local MCP. Это также
+мигрирует существующую combined-установку после обновления main. Пользователь
+не выполняет отдельную команду установки companion; первое native approval
+нового источника остаётся отдельным действием человека.
 
 После установки onboarding завершает OAuth, выбирает exact company и выполняет
 первый обязательный read-only `get_agent_instructions`. Если текущие hooks уже
@@ -204,9 +209,18 @@ hook bundle. Runtime не удаляет metadata из cache и не прави�
 native fingerprint. Реальные изменения hook/loader требуют нового компонента
 и нового native review; security minimum не обходится ради обещания обновления.
 Открытый MCP сохраняет оба exact дерева прежним retention engine до EOF.
-Недостающий, выключенный, изменённый или недоступный компонент диагностируется
-отдельно через `REVIEW_CODEX_HOOK_COMPONENT`, без переустановки main, сброса OAuth
-или автоматического включения. Ready metadata не заменяет native trust/proof.
+Доустановка отсутствующего компонента принадлежит signed runtime, после записи
+initialize и вне tool handlers. Используются общий native CLI resolver,
+официальный immutable source, exact descriptor/full inventory и retention main.
+Private PID-lock и durable intent до native add сохраняют единственную попытку
+при concurrency/потерянном ответе; следующий запуск сверяет результат, не
+повторяет mutation. Явный `enabled=false` проверяется и в user config: native
+inventory скрывает такой plugin после удаления cache. Disabled/changed/unknown
+компоненты не включаются и не перезаписываются. Claude, Cursor и Antigravity
+сохраняют свои прежние маршруты и не устанавливают Codex companion.
+Read-only `REVIEW_CODEX_HOOK_COMPONENT` остаётся диагностикой отдельных отказов,
+без переустановки main, сброса OAuth или автоматического включения.
+Ready metadata не заменяет native trust/proof.
 
 Обычное обновление main не требует выхода из Codex: его штатный MCP reload
 загружает новую registration в прежнем owner. `tests/codex-hook-update.py`
