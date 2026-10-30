@@ -1,6 +1,8 @@
 name: Plugin tests
 
 on:
+  # The FIFO verifies this exact PR head before protected fast-forward main.
+  # Do not repeat the same gate on that main push.
   pull_request:
     paths:
       - ".agents/**"
@@ -19,8 +21,6 @@ on:
       - "scripts/**"
       - "tests/**"
   push:
-    branches:
-      - main
     tags:
       - "v*"
       - "codex-hooks-source-v*"

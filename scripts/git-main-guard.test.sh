@@ -274,6 +274,24 @@ if [[ -d "${TASK_THREE_WORKTREE}" ]] \
   exit 1
 fi
 
+# Component source releases use the SAME reviewed FIFO and atomic transport;
+# protecting their refs must not make this existing release namespace unusable.
+COMPONENT_WORKTREE="${TEST_ROOT}/component"
+AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
+  bash "${CANONICAL_REPOSITORY}/scripts/create-task-worktree.sh" \
+    codex/component-source "${COMPONENT_WORKTREE}" >/dev/null
+printf 'component source\n' >> "${COMPONENT_WORKTREE}/README.md"
+git -C "${COMPONENT_WORKTREE}" commit -am "Подготовить source компонента" >/dev/null
+AGENT_WORKSPACES_REPOSITORY_ROOT="${COMPONENT_WORKTREE}" \
+AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --tag codex-hooks-source-v9.9.9' >/dev/null
+component_sha="$(git -C "${COMPONENT_WORKTREE}" rev-parse HEAD)"
+if [[ "$(git --git-dir="${REMOTE_REPOSITORY}" rev-parse refs/tags/codex-hooks-source-v9.9.9^{})" != "${component_sha}" ]]; then
+  echo 'Component source tag did not preserve exact reviewed source' >&2
+  exit 1
+fi
+(cd "${CANONICAL_REPOSITORY}"; node scripts/git-finish-worktree.mjs --no-fetch "${COMPONENT_WORKTREE}") >/dev/null
+
 if [[ -d "${CANONICAL_REPOSITORY}/.git/trelio-agent-workspaces-main-update.lock" ]]; then
   printf 'Git guard left the shared main lock active.\n' >&2
   exit 1

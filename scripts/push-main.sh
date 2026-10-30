@@ -63,9 +63,9 @@ if [[ -z "${REPOSITORY_ROOT}" ]]; then
 fi
 
 if [[ -n "${RELEASE_TAG}" ]] \
-  && [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  && [[ ! "${RELEASE_TAG}" =~ ^(v|codex-hooks-source-v)[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   agent_workspaces_git_guard_log \
-    "ERROR: release tag must match exact vX.Y.Z form: ${RELEASE_TAG}"
+    "ERROR: release tag must match vX.Y.Z or codex-hooks-source-vX.Y.Z: ${RELEASE_TAG}"
   exit 2
 fi
 

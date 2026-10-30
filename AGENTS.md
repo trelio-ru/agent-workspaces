@@ -91,6 +91,7 @@ provider-tag workflow или внутренние release playbooks в этот 
 - Stable plugin tag публикуется атомарно с соответствующим `main` только через
   `npm run git:integrate -- --tag vX.Y.Z`. Это не заменяет явную команду
   пользователя на plugin release и остальные release-проверки.
+  `codex-hooks-source-vX.Y.Z` идёт через ту же FIFO и atomic transport.
 - `.gitignore` намеренно скрывает только системные метаданные, dependency cache
   и generated Python bytecode. `platform-skills/**` целиком не игнорируется:
   попытка вернуть provider source в публичный репозиторий должна оставаться
