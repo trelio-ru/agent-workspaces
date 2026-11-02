@@ -13,3 +13,12 @@ test('current repository uses the pinned common coordinator and refuses forged m
   assert.equal(result.status, 1);
   assert.match(result.stderr, /FIFO owner/);
 });
+
+// Exercise the installed dependency through this owner's real CLI wrapper. A
+// package pin missing its background module/exports must fail before enqueue.
+test('pinned consumer CLI reads an unknown ticket without claiming integration success', () => {
+  const observed = spawnSync(process.execPath, ['scripts/git-integrate.mjs', '--status', '999999999999'],
+    {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+  assert.equal(observed.status, 0, observed.stderr);
+  assert.deepEqual(JSON.parse(observed.stdout), {id: '999999999999', state: 'unknown'});
+});
