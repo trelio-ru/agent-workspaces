@@ -320,8 +320,9 @@ hook contract, Node.js 22+, локальное pairing-состояние и т�
 private keys. Значение `plugin.hooks.approvalStatus=client_managed_unknown`
 означает, что целостность definition подтверждена, но его одобрение нужно
 проверять в самом клиенте.
-Поле `codexRouting` проверяет Code Mode без вывода пути или содержимого
-`config.toml`; действие `REVIEW_CODEX_DIRECT_ROUTING` всё равно требует отдельного
+На прежнем маршруте Codex с Hooks поле `codexRouting` проверяет исключения
+Code Mode без вывода пути или содержимого `config.toml`. Действие
+`REVIEW_CODEX_DIRECT_ROUTING` требует отдельного
 подтверждения exact `planHash`, а stale plan, symlink и неоднозначный TOML
 fail-closed не перезаписываются. Для такого config общий отчёт сохраняет
 локальную диагностику и возвращает `REPAIR_CODEX_DIRECT_ROUTING_MANUALLY`.
@@ -331,11 +332,11 @@ macOS и `winget install --id Git.Git -e` на Windows. Обычное сист�
 approval/native installer окно остаётся за пользователем, после чего doctor
 повторяется и найденный absolute path используется без restart.
 
-Политика модели компании действует и без Agent Run. При первом protected MCP
-call approved hook закрепляет наблюдаемые model/effort в paired runtime-session
-и затем добавляет одноразовый proof автоматически. Discovery/recovery остаются
-доступны без допуска. Agent Run сохраняет pinned policy/runtime snapshot; смена
-runtime позже не отзывает уже допущенную client session.
+Политика модели компании действует и без Agent Run. В Codex с локальным MCP
+runtime подтверждает модель и уровень рассуждений для защищённых вызовов,
+в том числе из Code Mode. На прежнем маршруте с Hooks это делает одобренный
+hook. Discovery/recovery остаются доступны без допуска. Agent Run сохраняет
+закреплённую политику и сведения о runtime.
 
 Hook запускает `PreToolUse` только для Trelio MCP, защищает параллельную первую
 регистрацию локальной блокировкой и удаляет private key до bounded сетевого
@@ -355,10 +356,11 @@ bundled `launch-trelio-node`, а на Windows отдельный quote-free `com
 Node launcher также возвращает код `2` для hook, если Node.js недоступен либо
 запуск JavaScript завершился с ошибкой; обычные bridge/MCP коды сохраняются.
 
-Codex Code Mode может выполнять обычные MCP через nested tool runner, для
-которого клиент не dispatch-ит `PreToolUse`. Поэтому onboarding закрепляет оба
-Trelio server namespaces как direct-only. Это routing-совместимость клиента,
-не замена hook trust и не обход runtime proof.
+Исключение Code Mode нужно прежним регистрациям Codex с Hooks, поскольку
+вложенный вызов не запускает их `PreToolUse`. Регистрации
+`trelio-runtime` и `trelio-runtime-local` с версии 3.3.1 доступны через
+Code Mode. Ранее добавленные пользовательские исключения для них действуют,
+пока их не удалят из настроек Codex.
 
 Если marketplace раньше добавлялся с `--ref vX.Y.Z`, переподключите его без
 фиксации версии:

@@ -95,9 +95,9 @@ credential-файлы и необработанное состояние hook.
 Если доступен local tool `diagnose_trelio_installation`, вызови его один раз с
 точными `clientKind=codex|claude-code` и `intent=diagnostics`. Это канонический
 runtime-план: он одним read-only вызовом проверяет exact загруженный plugin shell,
-Node.js, standalone Git, runtime sessions и pairing; для Codex также включает
-текущий direct-routing plan. Он ничего не устанавливает, не применяет, не
-авторизует и не считает hook одобренным.
+Node.js, standalone Git, runtime sessions и pairing. Direct-routing plan
+относится к прежним регистрациям Codex с Hooks. Диагностика только читает
+состояние. Одобрение hook проверяется в клиенте.
 
 Трактуй `requiredActions`, `warnings`, `clientInspection` и `liveVerification`
 буквально. На первом диагностическом проходе только покажи найденное; действия
@@ -111,8 +111,9 @@ Node.js, standalone Git, runtime sessions и pairing; для Codex также в
 
 Если local MCP не запустился и самого tool нет, допустим только bootstrap fallback:
 запусти bridge exact загруженного плагина через `launch-trelio-node`/соседний
-`.cmd` и `trelio-host-runtime-loader.mjs bridge doctor --json`; затем для Codex
-отдельно вызови `plan_codex_trelio_hook_routing`. Не сканируй cache и не выбирай
+`.cmd` и `trelio-host-runtime-loader.mjs bridge doctor --json`. Только для
+подтверждённого прежнего маршрута Codex с Hooks отдельно вызови
+`plan_codex_trelio_hook_routing`. Не сканируй cache и не выбирай
 другую версию. Пустой `command -v node` или ошибка создания PATH-alias Codex
 не доказывают отсутствия Node, если launcher работает. Если launcher не нашёл
 Node.js 22+, используй `command -v node` в POSIX либо `resolve-node.ps1` в
@@ -135,10 +136,13 @@ bridge; `plugin.hooks.status=ready` означает целостность defi
 1. Через `codex plugin list --json` подтверди установку и включение
    `trelio-agent-workspaces@trelio-plugins`, запиши установленную версию,
    не читая каталоги cache.
-2. Через `codex mcp list --json` оцени удалённый `trelio` отдельно от локального
-   `trelio-remote-skills`. `auth_status: "o_auth"` описывает схему; только успешное
-   реальное чтение доказывает пригодный bearer у текущего процесса.
-3. Используй `codexRouting` из `diagnose_trelio_installation`; только в bootstrap
+2. Через `codex mcp list --json` определи используемые регистрации.
+   Для `trelio-runtime` и `trelio-runtime-local` следуй `liveVerification` и
+   проверяй чтение доступным прямым маршрутом или через Code Mode.
+   Для прежних `trelio` и `trelio-remote-skills` `auth_status: "o_auth"`
+   показывает схему авторизации. Пригодность подключения подтверждает чтение.
+3. Для прежних регистраций с Hooks используй `codexRouting` из
+   `diagnose_trelio_installation`. Только в bootstrap
    fallback вызови read-only `plan_codex_trelio_hook_routing` без аргументов.
    `status=ready` подтверждает только direct routing двух Trelio MCP
    namespaces, не hook trust и не успешный proof. `status=action_required`
