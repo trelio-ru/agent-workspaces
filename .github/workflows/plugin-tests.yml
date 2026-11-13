@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   codex-tool-exposure:
-    name: Codex same-thread tool exposure
+    name: Codex Code Mode after MCP reconnection
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,12 +40,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # Pin the client that reproduces the session-static routing boundary.
+      # Pin the client qualified for nested MCP metadata and App delivery.
       # All requests during the test go to synthetic loopback peers, without
       # OpenAI/Trelio authentication or a copied user model catalogue.
       - name: Install isolated Codex test client
-        run: npm install --prefix "$RUNNER_TEMP/codex-schema-client" --no-audit --no-fund @openai/codex@0.163.0-alpha.11
-      - name: Check model schemas after MCP reconnection
+        run: npm install --prefix "$RUNNER_TEMP/codex-schema-client" --no-audit --no-fund @openai/codex@0.167.2
+      - name: Check nested calls and MCP Apps after reconnection
         run: python tests/codex-tool-exposure.py --codex-bin "$RUNNER_TEMP/codex-schema-client/node_modules/.bin/codex"
 
   git-main-guard:

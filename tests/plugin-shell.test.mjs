@@ -255,17 +255,14 @@ test("Codex composer icon keeps its own contrast when loaded as an external imag
   assert.match(markup, /viewBox="0 0 512 512"/u);
 });
 
-test("Codex MCP registration keeps protected tools direct without session config", async () => {
+test("Codex MCP registration admits protected tools to Code Mode without changing other clients", async () => {
   const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
   const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
   const cursor = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/mcp.json"), "utf8"));
-  // MCP reload refreshes server declarations but may retain the session's old
-  // features.code_mode config. Keep direct dispatch in the Codex registration
-  // so the runtime receives the metadata for the actual model call. The
-  // real-client regression separately checks the outgoing model schema, not
-  // just MCP readiness or a copy of Codex's exposure algorithm.
+  // These stdio registrations receive current-turn metadata in Code Mode.
+  // Keep deferred discovery excluded so only the Code Mode policy changes.
   for (const [name, codexName] of [["trelio", "trelio-runtime"], ["trelio-remote-skills", "trelio-runtime-local"]]) {
-    assert.deepEqual(manifest.mcpServers[codexName].omit_tools_from, ["deferred", "code_mode"]);
+    assert.deepEqual(manifest.mcpServers[codexName].omit_tools_from, ["deferred"]);
     assert.equal(claude.mcpServers[name].omit_tools_from, undefined);
     assert.equal(cursor.mcpServers[name].omit_tools_from, undefined);
   }

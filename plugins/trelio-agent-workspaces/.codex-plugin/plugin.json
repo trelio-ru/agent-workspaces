@@ -30,8 +30,7 @@
     "trelio-runtime": {
       "command": "./scripts/launch-trelio-node",
       "omit_tools_from": [
-        "deferred",
-        "code_mode"
+        "deferred"
       ],
       "args": [
         "./scripts/trelio-host-runtime-loader.mjs",
@@ -58,8 +57,7 @@
     "trelio-runtime-local": {
       "command": "./scripts/launch-trelio-node",
       "omit_tools_from": [
-        "deferred",
-        "code_mode"
+        "deferred"
       ],
       "args": [
         "./scripts/trelio-host-runtime-loader.mjs",

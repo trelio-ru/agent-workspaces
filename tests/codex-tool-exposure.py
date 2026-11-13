@@ -1,8 +1,8 @@
 """Exercise the real Codex plugin/reload/model-request boundary in isolation.
 
 Both HTTP peers are loopback fixtures. No user config, model catalogue, OAuth,
-hooks or Trelio content is loaded. The assertion examines the request sent to
-the model, because a successful tools/list is not evidence of model exposure.
+hooks or Trelio content is loaded. The fixture executes Code Mode on a real
+client and observes MCP calls, current-turn metadata, and model/App outputs.
 Run with --codex-bin pointing to an explicitly selected Codex executable.
 """
 
@@ -31,7 +31,8 @@ def synthetic_model(lite):
     # record. CodeModeOnly is essential: direct-mode models hide this defect.
     return {
         "slug": "fixture", "display_name": "Fixture", "description": None,
-        "supported_reasoning_levels": [], "shell_type": "unified_exec",
+        "supported_reasoning_levels": [{"effort": "high", "description": "Fixture"}],
+        "default_reasoning_level": "high", "shell_type": "unified_exec",
         "visibility": "list", "supported_in_api": True, "priority": 0,
         "support_verbosity": False, "experimental_supported_tools": [],
         "truncation_policy": {"mode": "tokens", "limit": 10000},
@@ -67,7 +68,7 @@ class Peer(http.server.BaseHTTPRequestHandler):
             method = obj.get("method")
             result = {}
             if method == "initialize":
-                result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
+                result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}, "resources": {}},
                           "serverInfo": {"name": server_name, "version": "1"}}
             elif method == "tools/list":
                 fixture.list_counts[server_name] += 1
@@ -80,9 +81,20 @@ class Peer(http.server.BaseHTTPRequestHandler):
                     if server_name == REMOTE_SERVER:
                         time.sleep(fixture.slow_catalog_seconds)
                 result = {"tools": [{"name": "read_probe", "description": "Synthetic read only.",
-                                     "inputSchema": {"type": "object", "properties": {}}}]}
+                                     "inputSchema": {"type": "object", "properties": {}},
+                                     "annotations": {"readOnlyHint": True, "openWorldHint": False},
+                                     "_meta": {"ui": {"resourceUri": "ui://fixture/card",
+                                                      "visibility": ["model", "app"]}}}]}
             elif method == "tools/call":
-                raise AssertionError("No business operation is part of this schema fixture")
+                fixture.calls.append((server_name, obj["params"].get("_meta", {})))
+                result = {"content": [{"type": "text", "text": "READ_ACCEPTED_" + server_name}],
+                          "_meta": {"fixturePrivateAppData": "PRIVATE_APP_SENTINEL"}}
+            elif method == "resources/list":
+                result = {"resources": [{"uri": "ui://fixture/card", "name": "Fixture card",
+                                         "mimeType": "text/html;profile=mcp-app"}]}
+            elif method == "resources/read":
+                result = {"contents": [{"uri": "ui://fixture/card", "mimeType": "text/html;profile=mcp-app",
+                                        "text": "<p>Fixture card</p>"}]}
             if "id" not in obj:
                 self.reply(202, {})
             else:
@@ -106,6 +118,20 @@ class Peer(http.server.BaseHTTPRequestHandler):
             response_id = f"resp_fixture_{index}"
             item = {"id": f"msg_fixture_{index}", "type": "message", "role": "assistant",
                     "content": [{"type": "output_text", "text": "Fixture complete."}], "phase": "final"}
+            # Schedule one synthetic model action per turn. MCP results must
+            # come back through exec, with App-only result metadata filtered.
+            if fixture.dispatch:
+                fixture.dispatch = False
+                script = "for (const name of " + json.dumps(list(NAMESPACES.values())) + (
+                    ') { const tool = name + "__read_probe"; '
+                    'if (ALL_TOOLS.some(candidate => candidate.name === tool)) '
+                    'text(await tools[tool]({})); }')
+                item = {"id": f"ct_fixture_{index}", "type": "custom_tool_call",
+                        "namespace": "functions", "name": "exec", "call_id": f"probe_{index}",
+                        "input": script, "status": "completed"}
+            for value in obj.get("input", []):
+                if value.get("type") == "custom_tool_call_output":
+                    fixture.model_outputs.append(json.dumps(value.get("output")))
             events = [
                 {"type": "response.created", "response": {"id": response_id, "status": "in_progress", "output": []}},
                 {"type": "response.output_item.added", "output_index": 0, "item": item},
@@ -124,13 +150,16 @@ class Peer(http.server.BaseHTTPRequestHandler):
 
 
 class Fixture:
-    def initialize(self, root, binary, lite, server_policy, startup_timeout_override=1):
+    def initialize(self, root, binary, lite, startup_timeout_override=1):
         # None tests the distributed manifest deadline with a real catalog
         # response later than the old 30 s boundary; existing exposure cases
         # retain their deliberately tiny 1 s budget and failed first client.
         self.slow_catalog_seconds = 31 if startup_timeout_override is None else None
         self.root = root
         self.captured = []
+        self.calls = []
+        self.model_outputs = []
+        self.dispatch = False
         self.list_counts = dict.fromkeys(NAMESPACES, 0)
         self.messages = queue.Queue()
         self.pending_events = []
@@ -151,6 +180,7 @@ class Fixture:
         (root / "catalog.json").write_text(json.dumps({"models": [synthetic_model(lite)]}))
         self.config = root / "codex/config.toml"
         self.config.write_text(f'''model="fixture"
+model_reasoning_effort="high"
 model_provider="fixture"
 model_catalog_json={json.dumps(str(root / "catalog.json"))}
 [model_providers.fixture]
@@ -159,9 +189,10 @@ base_url="http://127.0.0.1:{self.server.server_port}/v1"
 wire_api="responses"
 requires_openai_auth=false
 [features]
-apps=false
+apps=true
 plugins=true
 [features.code_mode]
+enabled=true
 direct_only_tool_namespaces=[]
 ''')
         market = root / "marketplace"
@@ -178,9 +209,7 @@ direct_only_tool_namespaces=[]
                 registrations[name]["startup_timeout_sec"] = startup_timeout_override
             elif "startup_timeout_sec" in declaration[name]:
                 registrations[name]["startup_timeout_sec"] = declaration[name]["startup_timeout_sec"]
-            if server_policy:
-                # Test the shipped policy, not a hardcoded passing fixture.
-                registrations[name]["omit_tools_from"] = declaration[name].get("omit_tools_from", [])
+            registrations[name]["omit_tools_from"] = declaration[name]["omit_tools_from"]
         (plugin / ".codex-plugin/plugin.json").write_text(json.dumps({
             "name": "fixture", "version": "1.0.0", "description": "Isolated protocol fixture",
             "mcpServers": registrations}))
@@ -190,7 +219,7 @@ direct_only_tool_namespaces=[]
             if result.returncode:
                 raise AssertionError("Isolated plugin setup failed: " + result.stderr.decode(errors="replace"))
 
-    def start(self):
+    def start(self, *, ephemeral=True):
         self.proc = subprocess.Popen([self.binary, "app-server", "--listen", "stdio://"],
                                      cwd=self.root / "cwd", env=self.env, text=True, bufsize=1,
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
@@ -201,7 +230,7 @@ direct_only_tool_namespaces=[]
         self.request("initialize", {"clientInfo": {"name": "schema_fixture", "version": "1"},
                                     "capabilities": {"experimentalApi": True}})
         self.send({"method": "initialized"})
-        return self.request("thread/start", {"cwd": str(self.root / "cwd"), "ephemeral": True,
+        return self.request("thread/start", {"cwd": str(self.root / "cwd"), "ephemeral": ephemeral,
                                              "approvalPolicy": "never", "sandbox": "read-only",
                                              "model": "fixture", "modelProvider": "fixture"})["thread"]["id"]
 
@@ -232,19 +261,16 @@ direct_only_tool_namespaces=[]
                 timeout=max(.1, deadline - time.monotonic()))
             if message.get("method") == "turn/completed" and message["params"]["turn"]["id"] == turn_id:
                 assert message["params"]["turn"]["status"] == "completed", message
-                return
+                return turn_id
         raise AssertionError("Synthetic turn timed out")
 
-    def reconnect(self, thread, add_global_routing):
+    def reconnect(self, thread):
         config = self.config.read_text()
         assert re.search(r"enabled\s*=\s*true", config), "CLI must have installed the fixture plugin"
         self.config.write_text(re.sub(r"enabled\s*=\s*true", "enabled = false", config))
         self.request("config/mcpServer/reload")
         for name in NAMESPACES:
             self.request("mcpServerStatus/list", {"threadId": thread, "serverName": name, "detail": "toolsAndAuthOnly"})
-        if add_global_routing:
-            config = config.replace("direct_only_tool_namespaces=[]",
-                                    "direct_only_tool_namespaces=" + json.dumps(list(NAMESPACES.values())))
         self.config.write_text(config)
         self.request("config/mcpServer/reload")
         for name in NAMESPACES:
@@ -272,7 +298,7 @@ class ExposureTests(unittest.TestCase):
             fixture = None
             try:
                 fixture = Fixture()
-                fixture.initialize(Path(directory), CODEX_BINARY, False, True, startup_timeout_override=None)
+                fixture.initialize(Path(directory), CODEX_BINARY, False, startup_timeout_override=None)
                 # Wait for optional startup in this synthetic turn. This is a
                 # fixture timing choice, never a mutation of user settings.
                 fixture.config.write_text("mcp_optional_startup_grace_ms=0\n" + fixture.config.read_text())
@@ -284,37 +310,47 @@ class ExposureTests(unittest.TestCase):
                 thread = fixture.start()
                 fixture.turn(thread)
                 self.assertEqual(fixture.list_counts[REMOTE_SERVER], 1)
-                self.assertEqual(fixture.captured[-1].get(NAMESPACES[REMOTE_SERVER]), {"read_probe"})
+                self.assertNotIn(NAMESPACES[REMOTE_SERVER], fixture.captured[-1])
+                fixture.dispatch = True
+                fixture.turn(thread)
+                self.assertTrue(any(name == REMOTE_SERVER for name, _ in fixture.calls))
             finally:
                 if fixture:
                     fixture.close()
 
     def test_same_thread_after_startup_timeout(self):
         for lite in (False, True):
-            for server_policy in (False, True):
-                with self.subTest(responses_lite=lite, manifest_policy=server_policy), tempfile.TemporaryDirectory(
-                        prefix="trelio-codex-exposure-") as directory:
-                    fixture = None
-                    try:
-                        fixture = Fixture()
-                        fixture.initialize(Path(directory), CODEX_BINARY, lite, server_policy)
-                        thread = fixture.start()
-                        fixture.turn(thread)
-                        self.assertTrue(set(NAMESPACES.values()).isdisjoint(fixture.captured[-1]))
-                        # Control: changing global Code Mode config alone does
-                        # not refresh the active session. The fixed manifest
-                        # must work with that global override entirely absent.
-                        fixture.reconnect(thread, add_global_routing=not server_policy)
-                        fixture.turn(thread)
-                        self.assertEqual(len(fixture.captured), 2)
-                        for name, namespace in NAMESPACES.items():
-                            # A status read may build an independent catalogue;
-                            # only the captured model request proves exposure.
-                            self.assertGreaterEqual(fixture.list_counts[name], 2)
-                            self.assertEqual(fixture.captured[-1].get(namespace), {"read_probe"} if server_policy else None)
-                    finally:
-                        if fixture:
-                            fixture.close()
+            with self.subTest(responses_lite=lite), tempfile.TemporaryDirectory(
+                    prefix="trelio-codex-exposure-") as directory:
+                fixture = Fixture()
+                try:
+                    fixture.initialize(Path(directory), CODEX_BINARY, lite)
+                    thread = fixture.start(ephemeral=False)
+                    fixture.turn(thread)
+                    self.assertTrue(set(NAMESPACES.values()).isdisjoint(fixture.captured[-1]))
+                    fixture.reconnect(thread)
+                    fixture.dispatch = True
+                    turn_id = fixture.turn(thread)
+                    self.assertEqual({name for name, _ in fixture.calls}, set(NAMESPACES))
+                    for _, metadata in fixture.calls:
+                        self.assertEqual(metadata.get("threadId"), thread)
+                        turn = metadata["x-codex-turn-metadata"]
+                        self.assertEqual(turn["turn_id"], turn_id)
+                        self.assertEqual(turn["model"], "fixture")
+                        self.assertEqual(turn["reasoning_effort"], "high")
+                    output = "".join(fixture.model_outputs)
+                    for name in NAMESPACES:
+                        self.assertIn("READ_ACCEPTED_" + name, output)
+                    self.assertNotIn("PRIVATE_APP_SENTINEL", output)
+                    detail = fixture.request("thread/read", {"threadId": thread, "includeTurns": True})
+                    calls = [item for turn in detail["thread"]["turns"] for item in turn["items"]
+                             if item["type"] == "mcpToolCall"]
+                    self.assertEqual({call["server"] for call in calls}, set(NAMESPACES))
+                    for call in calls:
+                        self.assertEqual(call["mcpAppResourceUri"], "ui://fixture/card")
+                        self.assertEqual(call["result"]["_meta"]["fixturePrivateAppData"], "PRIVATE_APP_SENTINEL")
+                finally:
+                    fixture.close()
 
 
 if __name__ == "__main__":

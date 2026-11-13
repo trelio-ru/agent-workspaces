@@ -111,6 +111,8 @@ provider-tag workflow или внутренние release playbooks в этот 
   Сначала совместимые backend и signed runtime, затем новый main. Existing
   component остаётся для предыдущего main и отката, без переноса approvals.
   Проверять оба маршрута с установленным companion и сохранённым trust.
+  Эти два MCP доступны через Code Mode. Исключение для deferred сохраняется.
+  Real-client fixture проверяет nested metadata текущего хода и границу MCP App.
 
 - Trelio MCP – control plane; independently published host runtime – локальный
   Git/data plane.
@@ -411,8 +413,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   процессы Codex/ChatGPT, открыть приложение заново и проверить один protected
   read в новой задаче; закрытие окна или новая задача в прежнем owner-процессе
   restart-ом не считаются.
-- Codex Code Mode routing проверяется до первого protected read общим local
-  `plan_codex_trelio_hook_routing` в onboarding и diagnostics. План value-free
+- Для legacy Codex с хуками Code Mode routing проверяется перед первым
+  protected read через `plan_codex_trelio_hook_routing` в onboarding и diagnostics.
+  План value-free
   и добавляет только отсутствующие `mcp__trelio` и
   `mcp__trelio_remote_skills` в
   `features.code_mode.direct_only_tool_namespaces`, сохраняя остальные
