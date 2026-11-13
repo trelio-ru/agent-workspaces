@@ -30,7 +30,7 @@ permissions:
 
 jobs:
   codex-tool-exposure:
-    name: Codex Code Mode after MCP reconnection
+    name: Codex same-thread tool exposure
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
