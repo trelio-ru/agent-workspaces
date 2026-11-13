@@ -105,12 +105,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   исправить signed runtime либо неизменностью одного hooks.json. Main явно
   подавляет conventional hooks только в Codex; Claude сохраняет прежний flow.
   Не переносить approvals и не менять pin/версию компонента при main-only правках.
-  Первый выпуск компонента по отдельно согласованному source tag предшествует
-  hook-free main; stable main tag только проверяет уже опубликованный ref.
-  Автоматическая доустановка отсутствующего human Codex companion принадлежит
-  signed runtime, не новой shell/model-инструкции. Обычная установка main не
-  требует второй ручной команды; native approval, opt-out и unknown outcome
-  сохраняются по тому же контракту. Проверять именно combined → split переход.
+  Main с локальным runtime admission объявляет `trelio-runtime` и
+  `trelio-runtime-local` вне matcher прежнего компонента. Это shell-изменение
+  нужно, потому что `PreToolUse` выполняется до stdio и может остановить вызов.
+  Сначала совместимые backend и signed runtime, затем новый main. Existing
+  component остаётся для предыдущего main и отката, без переноса approvals.
+  Проверять оба маршрута с установленным companion и сохранённым trust.
 
 - Trelio MCP – control plane; independently published host runtime – локальный
   Git/data plane.

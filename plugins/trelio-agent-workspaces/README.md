@@ -248,56 +248,19 @@ worktree. Наличие проекта и значение `projectId` сами
 ```bash
 codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
-codex plugin add trelio-agent-workspaces-hooks@trelio-plugins
 ```
 
-После установки onboarding сначала завершает OAuth, выбирает exact company и
-сам выполняет обязательный read-only `get_agent_instructions`. Если текущие
-hooks уже были одобрены, `PreToolUse` добавляет proof и настройка продолжается
-без паузы. Для новой либо неодобренной definition backend fail-closed не
-возвращает protected content; после `TRELIO_RUNTIME_HOOK_REQUIRED` с
-`reason=missing` агент попросит проверить Hooks. В Codex Desktop откройте
-настройки `Trelio Agent Workspaces Hooks`, просмотрите текущую конфигурацию в разделе
-Hooks и включите её. В Codex CLI откройте `/hooks`, выберите источник
-`Trelio Agent Workspaces Hooks`, проверьте текущую конфигурацию и отметьте её
-доверенной. Codex не доверяет plugin-bundled hooks автоматически и пропускает
-новую либо изменённую definition до такого review; bypass-флаг для онбординга
-не используется.
+В обычном чате Codex выполните `trelio_connect` и завершите вход в браузере.
+Затем проверьте доступ обычным защищённым чтением, например
+`get_agent_instructions` для выбранной компании. Рантайм получает модель и
+effort текущего хода от Codex и передаёт подтверждение Trelio.
 
-До первого protected read onboarding вызывает local read-only
-`plan_codex_trelio_hook_routing`. Если
-`features.code_mode.direct_only_tool_namespaces` не содержит `mcp__trelio` и
-`mcp__trelio_remote_skills`, агент показывает только точную добавку и
-CAS-bound `planHash`, а затем отдельно спрашивает разрешение изменить
-пользовательский `config.toml`. Apply сохраняет остальные настройки и
-существующие namespaces. Legacy `[features] code_mode = true|false` от CLI
-Codex 0.154 переносится в `[features.code_mode] enabled` без изменения boolean.
-Apply не включает Hooks и не одобряет их за пользователя;
-после записи требуется полный restart Codex/ChatGPT. Затем защищённое чтение
-сначала повторяется в этом же чате; новый чат с той же выбранной папкой нужен только
-если проверка здесь снова не прошла. Диагностика использует тот же plan/apply flow и
-остаётся read-only без отдельного согласия.
-
-Codex CLI регистрирует marketplace и устанавливает plugin разными операциями,
-поэтому сообщение об успешно добавленном источнике ещё не означает готовую
-установку. Policy `INSTALLED_BY_DEFAULT` остаётся ускорением для host-ов,
-которые применяют её автоматически, но чистый CLI-flow всегда выполняет
-`codex plugin add` и проверяет результат через `codex plugin list --json`.
-Policy `authentication=ON_INSTALL` просит Codex открыть страницу входа в
-Trelio. Вход в Trelio при необходимости и подтверждение доступа проходят в
-этом одном окне: возвращаться в чат между ними не нужно. Если окно не
-открылось, выполните в той же задаче:
-
-```bash
-codex mcp login trelio
-```
-
-Завершите личный OAuth в браузере. Агент сначала продолжит настройку в текущей
-задаче; новая нужна только если инструменты в ней фактически не появились.
-
-Ручное открытие `Plugins` ради OAuth не является основным fallback. Полный
-restart нужен лишь когда новая задача всё ещё не видит инструменты Trelio или
-использует старую версию плагина.
+После обновления повторите чтение в этом же чате. Новый чат с той же выбранной папкой
+нужен только если Desktop продолжает использовать прежнюю регистрацию.
+Компонент `Trelio Agent Workspaces Hooks` остаётся установленным для старых
+чатов и отката. Новые регистрации `trelio-runtime` и `trelio-runtime-local`
+не совпадают с его matcher. Для перехода выключать или удалять компонент
+в настройках Codex не требуется.
 
 Затем выберите предложенный плагином starter prompt – перепечатывать его
 вручную не нужно:

@@ -28,6 +28,11 @@ credential-файлы и необработанное состояние hook.
 
 ## Проверяй уровни независимо
 
+В Codex с MCP `trelio-runtime` и `trelio-runtime-local` следуй returned
+`liveVerification` для рантайма. При `liveVerification.hook.state=not_applicable`
+пропусти все шаги проверки hook/trust и plan/apply старых namespaces.
+Подключение нового MCP выполняет `trelio_connect`.
+
 1. **Установленный и загруженный плагин.** Версия marketplace может быть новее
    кода, уже загруженного текущей задачей.
 2. **Определение hook и одобрение клиента.** Встроенный doctor проверяет

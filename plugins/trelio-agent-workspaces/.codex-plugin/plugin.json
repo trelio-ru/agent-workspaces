@@ -6,7 +6,9 @@
     "name": "Trelio"
   },
   "skills": "./skills/",
-  "hooks": { "hooks": {} },
+  "hooks": {
+    "hooks": {}
+  },
   "interface": {
     "displayName": "Trelio Agent Workspaces",
     "shortDescription": "Работайте со связанным контекстом безопасно.",
@@ -25,20 +27,45 @@
     ]
   },
   "mcpServers": {
-    "trelio": {
-      "url": "https://trelio.ru/mcp",
-      "startup_timeout_sec": 60,
-      "omit_tools_from": ["deferred", "code_mode"],
-      "oauth": {
-        "clientId": "trelio_agent_workspaces_v1"
-      }
-    },
-    "trelio-remote-skills": {
+    "trelio-runtime": {
       "command": "./scripts/launch-trelio-node",
-      "omit_tools_from": ["deferred", "code_mode"],
+      "omit_tools_from": [
+        "deferred",
+        "code_mode"
+      ],
       "args": [
         "./scripts/trelio-host-runtime-loader.mjs",
-        "mcp"
+        "mcp",
+        "--codex",
+        "remote"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "CODEX_MCP_NODE_PATH",
+        "CODEX_BROWSER_USE_NODE_PATH",
+        "CODEX_ELECTRON_RESOURCES_PATH",
+        "CODEX_CLI_PATH",
+        "CODEX_HOME",
+        "XDG_CACHE_HOME",
+        "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "PATH"
+      ],
+      "tool_timeout_sec": 660,
+      "startup_timeout_sec": 60
+    },
+    "trelio-runtime-local": {
+      "command": "./scripts/launch-trelio-node",
+      "omit_tools_from": [
+        "deferred",
+        "code_mode"
+      ],
+      "args": [
+        "./scripts/trelio-host-runtime-loader.mjs",
+        "mcp",
+        "--codex",
+        "local"
       ],
       "cwd": ".",
       "env_vars": [

@@ -61,66 +61,20 @@ codex plugin marketplace add trelio-ru/agent-workspaces
 codex plugin add trelio-agent-workspaces@trelio-plugins
 ```
 
-Отсутствующий `Trelio Agent Workspaces Hooks` основной плагин доустанавливает
-автоматически через штатный менеджер Codex при запуске local MCP. Это также
-мигрирует существующую combined-установку после обновления main. Пользователь
-не выполняет отдельную команду установки companion; первое native approval
-нового источника остаётся отдельным действием человека.
+Основной плагин запускает локальный MCP. В обычном чате выполните
+`trelio_connect` и подтвердите подключение в браузере. В этом же окне Trelio
+предложит войти, если сессии на сайте нет. После согласия выберите компанию
+и выполните первое защищённое чтение `get_agent_instructions` в этом же чате.
+Для настройки папки используйте предложенный плагином starter prompt.
 
-После установки onboarding завершает OAuth, выбирает exact company и выполняет
-первый обязательный read-only `get_agent_instructions`. Если текущие hooks уже
-были одобрены, `PreToolUse` добавляет proof и настройка продолжается без паузы.
-Для новой либо неодобренной definition protected content не возвращается; после
-`TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` агент просит проверить Hooks.
-В Codex Desktop пользователь открывает настройки `Trelio Agent Workspaces Hooks`,
-просматривает текущую конфигурацию в разделе Hooks и включает её. В Codex CLI он
-открывает `/hooks`, выбирает источник `Trelio Agent Workspaces Hooks`, проверяет
-текущую конфигурацию и отмечает её доверенной. Codex не доверяет plugin-bundled
-hooks автоматически и пропускает новую либо изменённую definition до review;
-onboarding не автоматизирует trust и не использует bypass-флаг.
-
-Перед первым protected read Codex-onboarding отдельно вызывает локальный
-read-only `plan_codex_trelio_hook_routing`. Проверка не читает данные Trelio и
-не делает вывод о доверии к Hooks. Она проверяет user-level default, в котором
-`mcp__trelio` и `mcp__trelio_remote_skills` присутствуют в
-`features.code_mode.direct_only_tool_namespaces`: иначе Code Mode может
-выполнить MCP как nested call без client `PreToolUse`, несмотря на включённую и
-доверенную hook definition. При отсутствующей настройке агент показывает только
-table/key, добавляемые namespaces и CAS-bound `planHash`, а затем отдельно
-спрашивает разрешение на правку пользовательского `config.toml`. Apply сохраняет
-все остальные настройки и существующие namespaces. Legacy
-`[features] code_mode = true|false`, который ещё пишет CLI Codex 0.154,
-преобразуется в `[features.code_mode] enabled` с неизменным boolean. После apply
-нужен полный restart Codex/ChatGPT. Protected read сначала повторяется в этом же
-чате; новый чат с той же выбранной папкой нужен только если проверка здесь
-снова не прошла. Включение или trust Hooks за пользователя не выполняются.
-Диагностический starter использует тот же plan/apply flow.
-Project/profile/CLI override имеет более высокий приоритет, поэтому окончательным
-доказательством effective routing остаётся protected read после restart. Если он
-снова приходит без proof при доверенной hook definition, diagnostics проверяет
-активные config layers и не переписывает более высокий слой автоматически.
+Две MCP-регистрации объявляют direct tools в manifest. Диагностика проверяет
+фактическую выдачу инструментов и текущий вызов. Новый чат с той же выбранной
+папкой нужен только если текущий после обновления продолжает использовать
+старую регистрацию.
 
 Codex CLI добавляет marketplace и устанавливает plugin разными операциями.
-`INSTALLED_BY_DEFAULT` может ускорить установку в host UI, но сообщение только
-о добавленном marketplace не подтверждает её: основной CLI-flow всегда
-выполняет `codex plugin add` и проверяет `codex plugin list --json`.
-`authentication=ON_INSTALL` просит Codex автоматически открыть browser OAuth
-Trelio. Если окно не появилось, агент в той же задаче запускает
-`codex mcp login trelio`; ручной переход в `Plugins` ради OAuth не является
-основным fallback.
-
-Вход в Trelio и подтверждение доступа проходят в одном окне OAuth. Если
-пользователь ещё не авторизован на сайте, это окно само проводит вход и
-возвращает к подтверждению. Не нужно сначала входить на сайт отдельно,
-возвращаться в чат или писать «я вошёл».
-
-После OAuth агент сначала повторно проверяет инструменты в текущей задаче и
-продолжает в ней, если они уже появились. Новая задача нужна только после
-фактического неуспеха этой проверки; в ней пользователь остаётся в выбранной
-локальной папке и выбирает предложенный manifest-ом starter prompt `Настрой
-Trelio Agent Workspaces для текущей рабочей папки`, а не перепечатывает его.
-Полный restart нужен только если новая задача всё ещё не видит tools или
-использует старую plugin-version.
+`INSTALLED_BY_DEFAULT` может ускорить установку в host UI, а CLI-flow выполняет
+`codex plugin add` и проверяет результат через `codex plugin list --json`.
 
 Источник, добавленный с `--ref`, остаётся на tag и перестанет проходить
 обязательный version gate после следующего релиза. Переподключите его:
@@ -186,7 +140,28 @@ encrypted company не появляется.
 
 <a id="codex-hook-component"></a>
 
-### Обновление Codex без повторного одобрения hooks
+### Переход Codex на локальный MCP
+
+Бэкенд сначала начинает принимать новый подписанный источник `codex_mcp`
+наряду с прежним `codex_hook`. Затем публикуется совместимый signed runtime
+и только после его проверки основной плагин переключает обе MCP-регистрации
+Codex. Минимумы Trelio на первом этапе не повышаются. До переключения
+marketplace нужно проверить служебные метаданные текущего хода на
+поддерживаемых версиях Desktop, вход OAuth и чтение с установленным старым
+компонентом. Клиенту без этих метаданных нужен прежний плагин и его hook.
+
+Новый Codex-плагин не устанавливает companion автоматически. Уже установленный
+`Trelio Agent Workspaces Hooks` остаётся доступным старым чатам. Старый
+`PreToolUse` может отклонить вызов до MCP, поэтому новый плагин регистрирует
+`trelio-runtime` и `trelio-runtime-local` вне его matcher. Lifecycle events
+старого компонента относятся только к прежнему источнику допуска. Обновление
+не удаляет компонент, не меняет его trust и сохраняет прежние OAuth-подключения.
+Новый локальный OAuth через `trelio_connect` требует однократного согласия в
+браузере. После согласия повторите защищённое чтение в этом же чате.
+Новый чат с той же выбранной папкой нужен только если Desktop всё ещё использует прежнюю
+регистрацию.
+
+### Сопровождение прежнего маршрута Codex
 
 Codex привязывает approval к содержимому всего hook-owning plugin, включая
 manifest и инструкции. Неизменный `hooks.json` внутри обновляемого пакета не
@@ -208,8 +183,8 @@ hook bundle. Runtime не удаляет metadata из cache и не прави�
 не копируется. Последующие main-only updates сохраняют прежний компонент и его
 native fingerprint. Реальные изменения hook/loader требуют нового компонента
 и нового native review; security minimum не обходится ради обещания обновления.
-Открытый MCP сохраняет оба exact дерева прежним retention engine до EOF.
-Доустановка отсутствующего компонента принадлежит signed runtime, после записи
+Открытый MCP прежнего маршрута сохраняет оба exact дерева до EOF.
+В прежнем маршруте доустановка компонента принадлежит signed runtime, после записи
 initialize и вне tool handlers. Используются общий native CLI resolver,
 официальный immutable source, exact descriptor/full inventory и retention main.
 Private PID-lock и durable intent до native add сохраняют единственную попытку
@@ -338,10 +313,11 @@ HOME/CODEX_HOME, synthetic plugin и двумя loopback endpoints. Она ср�
 ChatGPT/Codex workspace может импортировать marketplace и назначить плагин
 ролям, но не может обойти workspace policy или consent.
 
-Если Trelio tool возвращает `mcp/www_authenticate`, используйте нативную
-карточку reauthorization. На старом Codex host fallback-команда –
-`codex mcp login trelio`; logout и запрос только одного нового scope запрещены,
-поскольку повторный grant должен сохранить уже выданные права.
+Для регистрации `trelio-runtime` запрос недостающих scopes обрабатывает
+`trelio_connect` с `reauthorize=true`. Для прежней регистрации сохраняется
+нативная карточка `mcp/www_authenticate` и fallback `codex mcp login trelio`.
+Сохраните прежнее подключение до успешного согласия и повторите исходный
+вызов один раз.
 
 Наличие skill при отсутствии MCP tools не устанавливает причину: отдельно
 проверяются установка, startup, подключение и доставка схем модели. Нельзя

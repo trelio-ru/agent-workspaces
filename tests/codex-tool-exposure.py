@@ -22,7 +22,8 @@ import unittest
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY / "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json"
-NAMESPACES = {"trelio": "mcp__trelio", "trelio-remote-skills": "mcp__trelio_remote_skills"}
+REMOTE_SERVER = "trelio-runtime"
+NAMESPACES = {REMOTE_SERVER: "mcp__trelio_runtime", "trelio-runtime-local": "mcp__trelio_runtime_local"}
 
 
 def synthetic_model(lite):
@@ -76,7 +77,7 @@ class Peer(http.server.BaseHTTPRequestHandler):
                     if fixture.slow_catalog_seconds is None:
                         time.sleep(3)
                         return
-                    if server_name == "trelio":
+                    if server_name == REMOTE_SERVER:
                         time.sleep(fixture.slow_catalog_seconds)
                 result = {"tools": [{"name": "read_probe", "description": "Synthetic read only.",
                                      "inputSchema": {"type": "object", "properties": {}}}]}
@@ -275,15 +276,15 @@ class ExposureTests(unittest.TestCase):
                 # Wait for optional startup in this synthetic turn. This is a
                 # fixture timing choice, never a mutation of user settings.
                 fixture.config.write_text("mcp_optional_startup_grace_ms=0\n" + fixture.config.read_text())
-                current = subprocess.run([CODEX_BINARY, "mcp", "get", "trelio", "--json"],
+                current = subprocess.run([CODEX_BINARY, "mcp", "get", REMOTE_SERVER, "--json"],
                                          env=fixture.env, cwd=fixture.root / "cwd", capture_output=True, timeout=15)
                 self.assertEqual(current.returncode, 0)
                 self.assertEqual(json.loads(current.stdout)["startup_timeout_sec"], 60)
                 self.assertNotIn("startup_timeout_sec", fixture.config.read_text())
                 thread = fixture.start()
                 fixture.turn(thread)
-                self.assertEqual(fixture.list_counts["trelio"], 1)
-                self.assertEqual(fixture.captured[-1].get(NAMESPACES["trelio"]), {"read_probe"})
+                self.assertEqual(fixture.list_counts[REMOTE_SERVER], 1)
+                self.assertEqual(fixture.captured[-1].get(NAMESPACES[REMOTE_SERVER]), {"read_probe"})
             finally:
                 if fixture:
                     fixture.close()

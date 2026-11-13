@@ -113,7 +113,12 @@ Git, комментарии, checkpoint, handoff и логи. Не проси cr
 
 <a id="let-the-approved-hook-prove-the-runtime"></a>
 
-## Доказательство runtime создаёт подтверждённый hook
+## Доказательство runtime
+
+В Codex с MCP `trelio-runtime` и `trelio-runtime-local` proof добавляет
+локальный рантайм. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED` сохрани код и
+следуй live диагностике. Следующие шаги для hooks относятся к прежнему
+маршруту Codex и Claude Code.
 
 Не создавай, не копируй, не сохраняй и не повторяй `runtimeSessionProof`:
 подтверждённый hook сам добавляет новый proof. Если сам

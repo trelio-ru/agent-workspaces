@@ -12,7 +12,7 @@
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
-        "authentication": "ON_INSTALL"
+        "authentication": "ON_USE"
       },
       "category": "Productivity"
     },
@@ -25,7 +25,7 @@
         "ref": "hooks-v0.1.0"
       },
       "policy": {
-        "installation": "INSTALLED_BY_DEFAULT",
+        "installation": "AVAILABLE",
         "authentication": "ON_USE"
       },
       "category": "Productivity"

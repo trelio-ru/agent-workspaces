@@ -16,8 +16,10 @@ description: Настройка Trelio Agent Workspaces в одной посто
 Git, instruction-файлов, `.gitignore`, managed blocks и CAS выполняет локальный
 runtime. Не воспроизводи эти проверки shell-командами и не собирай файлы вручную.
 
-Защищённые вызовы получают одноразовый `runtimeSessionProof` только от
-подтверждённого hook. Не создавай и не копируй runtime-поля. Если сам Trelio
+В Codex с MCP `trelio-runtime` и `trelio-runtime-local` одноразовый proof
+добавляет рантайм. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED` следуй live
+диагностике этого маршрута. Не создавай и не копируй runtime-поля.
+В прежних регистрациях Codex и Claude Code proof добавляет hook. Если сам Trelio
 вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, это доказывает только отсутствие proof;
 сохрани точный code/reason. Если просмотр
 определения не подтверждён, попроси один раз проверить Hooks в настройках
@@ -100,9 +102,12 @@ runtime. Не воспроизводи эти проверки shell-коман�
    Не сканируй caches и не ищи глобальный `trelio-workspace`. В Codex сохрани
    отдельную plan/apply границу routing; в Claude старый shell обнови официально
    и выполни `/reload-plugins`.
-3. Проверь OAuth свежим `list_companies`. Конфигурация/`Connected` не доказывает
-   bearer. Только при явном 401/required/missing-bearer выполни один login exact
-   сервера клиента: Codex – `codex mcp login trelio`, Claude Code –
+3. Проверь OAuth свежим `list_companies`. Статус `Connected` сам по себе не
+   подтверждает OAuth. Если новый Codex показывает только
+   `trelio_connect` или возвращает `TRELIO_CODEX_AUTH_REQUIRED`, выполни
+   `trelio_connect` и затем `list_companies`. Для прежних регистраций только
+   при явном 401/required/missing-bearer выполни один login exact сервера
+   клиента: старый Codex – `codex mcp login trelio`, Claude Code –
    `claude mcp login plugin:trelio-agent-workspaces:trelio`. После browser flow
    повтори safe read один раз. Если старая Claude session всё ещё не видит tools,
    запусти новую `claude` из той же папки. Timeout,

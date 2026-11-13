@@ -260,15 +260,32 @@ test("Codex MCP registration keeps protected tools direct without session config
   const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
   const cursor = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/mcp.json"), "utf8"));
   // MCP reload refreshes server declarations but may retain the session's old
-  // features.code_mode config. Put this PreToolUse dispatch requirement in the
-  // owning Codex registration, before either MCP server can execute code. The
+  // features.code_mode config. Keep direct dispatch in the Codex registration
+  // so the runtime receives the metadata for the actual model call. The
   // real-client regression separately checks the outgoing model schema, not
   // just MCP readiness or a copy of Codex's exposure algorithm.
-  for (const name of ["trelio", "trelio-remote-skills"]) {
-    assert.deepEqual(manifest.mcpServers[name].omit_tools_from, ["deferred", "code_mode"]);
+  for (const [name, codexName] of [["trelio", "trelio-runtime"], ["trelio-remote-skills", "trelio-runtime-local"]]) {
+    assert.deepEqual(manifest.mcpServers[codexName].omit_tools_from, ["deferred", "code_mode"]);
     assert.equal(claude.mcpServers[name].omit_tools_from, undefined);
     assert.equal(cursor.mcpServers[name].omit_tools_from, undefined);
   }
+});
+
+test("existing Codex companion does not match either new registration", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  const { codexHookComponent } = await import("../scripts/build-codex-hook-component.mjs");
+  const component = await codexHookComponent();
+  const hooks = JSON.parse(component.files.get("hooks/hooks.json").bytes);
+  const matcher = new RegExp(hooks.hooks.PreToolUse[0].matcher, "u");
+  assert.deepEqual(manifest.hooks, { hooks: {} });
+  assert.deepEqual(Object.keys(manifest.mcpServers), ["trelio-runtime", "trelio-runtime-local"]);
+  for (const [server, tool] of [["trelio-runtime", "get_task"], ["trelio-runtime-local", "continue_trelio_local_action"]]) {
+    for (const name of [server, server.replaceAll("-", "_"), `plugin_trelio-agent-workspaces_${server}`]) {
+      assert.equal(matcher.test(`mcp__${name}__${tool}`), false);
+    }
+  }
+  assert.equal(matcher.test("mcp__trelio__get_task"), true);
+  assert.equal(matcher.test("mcp__trelio_remote_skills__continue_trelio_local_action"), true);
 });
 
 test("Codex remote catalog gets a distributed bounded slow-link startup default", async () => {
@@ -279,9 +296,11 @@ test("Codex remote catalog gets a distributed bounded slow-link startup default"
   // distributed declaration, not an agent's repair of one user's config or a
   // signed runtime that the timed-out client has not reached. Keep the local
   // loader/hook and other clients' independently owned budgets unchanged.
-  assert.equal(codex.mcpServers.trelio.startup_timeout_sec, 60);
-  assert.equal(codex.mcpServers.trelio.tool_timeout_sec, undefined);
-  assert.equal(codex.mcpServers["trelio-remote-skills"].startup_timeout_sec, undefined);
+  assert.equal(codex.mcpServers["trelio-runtime"].startup_timeout_sec, 60);
+  assert.equal(codex.mcpServers["trelio-runtime"].tool_timeout_sec, 660);
+  assert.deepEqual(codex.mcpServers["trelio-runtime"].args.slice(-2), ["--codex", "remote"]);
+  assert.deepEqual(codex.mcpServers["trelio-runtime-local"].args.slice(-2), ["--codex", "local"]);
+  assert.equal(codex.mcpServers["trelio-runtime-local"].startup_timeout_sec, undefined);
   assert.equal(claude.mcpServers.trelio.startup_timeout_sec, undefined);
   assert.equal(cursor.mcpServers.trelio.startup_timeout_sec, undefined);
 });
@@ -313,10 +332,10 @@ test("Cursor native manifest isolates OAuth and suppresses incompatible hook dis
   // cannot select Cursor's native auth keys or prevent default hook discovery.
   assert.deepEqual(manifest.hooks, { hooks: {} });
   assert.equal(cursorMcp.mcpServers.trelio.auth.CLIENT_ID, "trelio_cursor_agent_workspaces_v1");
-  assert.equal(cursorMcp.mcpServers.trelio.url, codex.mcpServers.trelio.url);
+  assert.equal(cursorMcp.mcpServers.trelio.url, claudeMcp.mcpServers.trelio.url);
   assert.equal(cursorMcp.mcpServers.trelio.auth.scopes, undefined);
   assert.equal(cursorMcp.mcpServers.trelio.auth.CLIENT_SECRET, undefined);
-  assert.equal(codex.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
+  assert.equal(codex.mcpServers["trelio-runtime"].oauth, undefined);
   assert.equal(claudeMcp.mcpServers.trelio.oauth.clientId, "trelio_agent_workspaces_v1");
   const local = cursorMcp.mcpServers["trelio-remote-skills"];
   // Native Cursor has no documented per-OS command override. Its executable
