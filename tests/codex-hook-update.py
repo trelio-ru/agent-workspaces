@@ -168,7 +168,14 @@ for await (const line of readline.createInterface({input:process.stdin})) {
         git(["tag", "fixed-hooks"])
         git(["tag", "main-one"])
         manifest["version"] = "999.0.0"
-        manifest["mcpServers"]["human-update-probe"]["env"]["PROBE_VERSION"] = "2"
+        # Exercise a manifest update that replaces the server names, as the
+        # Codex MCP migration does. The same App Server must load the new names
+        # while the existing companion keeps its exact approval fingerprints.
+        original_server = manifest["mcpServers"]["human-update-probe"]
+        manifest["mcpServers"] = {
+            "trelio-runtime": {**original_server, "env": {"PROBE_VERSION": "2"}},
+            "trelio-runtime-local": {**original_server, "env": {"PROBE_VERSION": "3"}},
+        }
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
         (repository / "README.md").write_text("Changed main instructions\n", encoding="utf-8", newline="\n")
         commit("Main-only update")
@@ -194,8 +201,9 @@ for await (const line of readline.createInterface({input:process.stdin})) {
             catalogue_path.write_text(json.dumps(catalogue), encoding="utf-8", newline="\n")
             native(["plugin", "add", f"{MAIN}@{MARKET}", "--json"])
             owner.request("config/mcpServer/reload")
-            status = owner.request("mcpServerStatus/list", {"serverName": "human-update-probe", "detail": "toolsAndAuthOnly"})
-            assert any("probe_2" in row.get("tools", {}) for row in status["data"]), "updated MCP not connected in existing owner"
+            for server, tool in (("trelio-runtime", "probe_2"), ("trelio-runtime-local", "probe_3")):
+                status = owner.request("mcpServerStatus/list", {"serverName": server, "detail": "toolsAndAuthOnly"})
+                assert any(tool in row.get("tools", {}) for row in status["data"]), "renamed MCP not connected in existing owner"
             assert owner.process.pid == pid and owner.process.poll() is None, "Codex owner was restarted"
             assert owner.hooks(cwd, component) == before, "main update changed native approval fingerprints"
             hook_file = component / "hooks/hooks.json"
