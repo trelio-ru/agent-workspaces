@@ -284,7 +284,7 @@ Native session values намеренно доставляются разрешё
 
 <a id="durable-workspace-dependency"></a>
 
-## Постоянная зависимость Workspace
+## Постоянная зависимость папки
 
 Только когда выбранный secret стал реальной постоянной зависимостью,
 запиши безопасную ссылку в `WORKSPACE_CONTEXT.md`:

@@ -1,4 +1,4 @@
-# Agent Workspace Run
+# Agent Run в папке
 
 Полностью прочитай файл до start/open/continue/checkpoint/submit Agent Run.
 Для task-scoped Run до открытия также полностью прочитай

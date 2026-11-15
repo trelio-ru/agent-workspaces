@@ -57,6 +57,9 @@ provider-tag workflow или внутренние release playbooks в этот 
   синхронизируются с server/runtime без изменения ABI и minimum versions.
   Test обязан сохранять legacy fallback только для ответа без `guidance`.
   Это не разрешает другие model-guidance правки plugin по умолчанию.
+- Явно согласованное продуктовое переименование разрешает синхронизировать
+  название «папка» в bundled worker и его справочниках. Это только текст:
+  API, пути, имя плагина, hooks, ABI и правила действий остаются прежними.
 
 ## Обязательный Git-workflow
 
