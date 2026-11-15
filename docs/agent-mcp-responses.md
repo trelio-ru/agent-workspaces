@@ -43,7 +43,7 @@ MCP App не изменяются. Поля пользовательских д�
   `fetch`/read. Далёкие совпадения представлены двумя короткими фрагментами, а
   формат сниппета применяется после rank и не меняет native/local top-N.
 - Bounded defaults одинаковы в native и local route. Inventory компаний,
-  проектов, воркспейсов, реестров, регулярных работ и knowledge-base pages
+  проектов, папок, реестров, регулярных работ и knowledge-base pages
   возвращает по 20 элементов с `total`/`hasMore`; task lists, activity и
   newest-first task comments также начинают с 20. Notifications и user resolution –
   10, registry rows – 25, contacts – 20, task-only search – 10, meeting и

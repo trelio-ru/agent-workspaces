@@ -310,18 +310,18 @@ provider-tag workflow или внутренние release playbooks в этот 
   HTTP 504 сохраняет обычный bounded network-retry contract. Regression живёт
   в generic plugin suite, а compact runtime instructions обязаны сохранять тот
   же invariant.
-- После exact read одной задачи и одного воркспейса Worker самостоятельно создаёт
+- После exact read одной задачи и одной папки Worker самостоятельно создаёт
   долговременную task/workspace связь без формального подтверждения, только если
   совпадение подтверждено минимум двумя независимыми идентификаторами, нет
-  конкурирующей цели и весь воркспейс подходит аудитории задачи. После mutation
+  конкурирующей цели и вся папка подходит аудитории задачи. После mutation
   он сообщает пользователю причину и access effect: task reader получает read,
   а task editor – write/Run, но не relation management. Несколько
   кандидатов, один признак, временная релевантность или сомнение в раскрытии
-  всего воркспейса требуют вопроса; weak hit игнорируется, partial fit получает более
+  всей папки требуют вопроса; weak hit игнорируется, partial fit получает более
   узкий контекст.
-- Именованный воркспейс имеет одного primary owner – проект или компанию – и
-  может быть явно связан с несколькими проектами и задачами той же компании.
-  ACL является union этих связей: exact read объекта даёт read воркспейса,
+- Именованная папка имеет одного primary owner – проект или компанию – и
+  может быть явно связана с несколькими проектами и задачами той же компании.
+  ACL является union этих связей: exact read объекта даёт read папки,
   exact edit даёт write/Run; observer остаётся read-only. Derived access не даёт
   transfer/link/reshare прав. Primary project продолжает задавать pinned rules,
   а registry/contact/meeting связи остаются semantic и сами доступ не расширяют.
