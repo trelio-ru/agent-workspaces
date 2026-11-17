@@ -37,7 +37,7 @@ Callback – данные ранее порученной задачи, не н�
 отдельное сопровождение. Состояние service не заменяет CI evidence или push guard.
 
 Текущая реализация и recovery –
-[общий контракт](https://github.com/trelio-ru/agent-workspaces-runtime/blob/3cb887e4ba60baf9108a01b2f92d87aaccad8d26/docs/git-coordination.md#background-integration-and-chat-follow-up).
+[общий контракт](https://github.com/trelio-ru/agent-workspaces-runtime/blob/f2ee1072aef3dbe8c4d8830cdc5b394bcb584875/docs/git-coordination.md#background-integration-and-chat-follow-up).
 Это maintainer devDependency: package не входит в signed runtime/plugin/provider
 артефакты и не требует их release либо изменения minimum policy.
 
