@@ -54,6 +54,8 @@ cp "${PROJECT_ROOT}/scripts/git-finish-worktree.mjs" \
   "${CANONICAL_REPOSITORY}/scripts/git-finish-worktree.mjs"
 cp "${PROJECT_ROOT}/scripts/push-main.sh" \
   "${CANONICAL_REPOSITORY}/scripts/push-main.sh"
+# Completed-transport assertions below use explicit --wait: ordinary launches
+# return admission while their worker still owns the real integration.
 # Use the exact installed common dependency as a read-only fixture input.
 # No shared node_modules symlink/copy and no network/hosted CI is involved.
 export MOCK_COORDINATION_MODULE="${PROJECT_ROOT}/node_modules/@trelio/git-coordinator/scripts/git-coordinator.mjs"
@@ -144,7 +146,7 @@ fi
 
 AGENT_WORKSPACES_REPOSITORY_ROOT="${TASK_ONE_WORKTREE}" \
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
-  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs "$@"' fixture >/dev/null
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --wait "$@"' fixture >/dev/null
 
 task_one_sha="$(git -C "${TASK_ONE_WORKTREE}" rev-parse HEAD)"
 canonical_sha="$(git -C "${CANONICAL_REPOSITORY}" rev-parse HEAD)"
@@ -186,7 +188,7 @@ remote_before_blocked_push="$(
 
 if AGENT_WORKSPACES_REPOSITORY_ROOT="${TASK_TWO_WORKTREE}" \
   AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
-  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs "$@"' fixture >/dev/null 2>&1; then
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --wait "$@"' fixture >/dev/null 2>&1; then
   printf 'Guarded push ignored a dirty canonical main worktree.\n' >&2
   exit 1
 fi
@@ -202,7 +204,7 @@ fi
 git -C "${CANONICAL_REPOSITORY}" restore README.md
 AGENT_WORKSPACES_REPOSITORY_ROOT="${TASK_TWO_WORKTREE}" \
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
-  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs "$@"' fixture >/dev/null
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --wait "$@"' fixture >/dev/null
 
 (
   cd "${CANONICAL_REPOSITORY}"
@@ -245,7 +247,7 @@ fi
 
 AGENT_WORKSPACES_REPOSITORY_ROOT="${TASK_THREE_WORKTREE}" \
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
-  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs "$@"' fixture \
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --wait "$@"' fixture \
     --tag v9.9.9 >/dev/null
 
 release_sha="$(git -C "${TASK_THREE_WORKTREE}" rev-parse HEAD)"
@@ -284,7 +286,7 @@ printf 'component source\n' >> "${COMPONENT_WORKTREE}/README.md"
 git -C "${COMPONENT_WORKTREE}" commit -am "Подготовить source компонента" >/dev/null
 AGENT_WORKSPACES_REPOSITORY_ROOT="${COMPONENT_WORKTREE}" \
 AGENT_WORKSPACES_GIT_RETRY_DELAY_SECONDS=0 \
-  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --tag codex-hooks-source-v9.9.9' >/dev/null
+  bash -c 'cd "$AGENT_WORKSPACES_REPOSITORY_ROOT"; exec node scripts/git-integrate.mjs --wait --tag codex-hooks-source-v9.9.9' >/dev/null
 component_sha="$(git -C "${COMPONENT_WORKTREE}" rev-parse HEAD)"
 if [[ "$(git --git-dir="${REMOTE_REPOSITORY}" rev-parse refs/tags/codex-hooks-source-v9.9.9^{})" != "${component_sha}" ]]; then
   echo 'Component source tag did not preserve exact reviewed source' >&2

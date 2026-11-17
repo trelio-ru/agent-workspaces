@@ -791,3 +791,4 @@ provider-tag workflow или внутренние release playbooks в этот 
 callback не даёт нового push/release authority. Один чат может сопровождать
 несколько clone/ticket независимо. Model heartbeat не создаётся. Без native
 context автоматического возврата нет; release/explicit --wait синхронны.
+Git fixtures, проверяющие завершённый transport, используют явный `--wait`.
