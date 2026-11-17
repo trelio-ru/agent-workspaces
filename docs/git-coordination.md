@@ -2,23 +2,44 @@
 
 ## Фоновое ожидание
 
-При ожидании очереди или CI использовать `npm run git:integrate -- --background`
-(для уже разрешённого релиза добавить `--tag <exact-tag>`). Worker сам продолжает
-FIFO; launcher возвращает JSON только после сохранённого admission. Повторный
-запуск той же живой задачи переиспользует ticket. Пустая очередь не доказывает
-успех: `npm run git:integrate -- --status <ticket>` читает активный ticket либо
-сохранённый terminal result с исходным/rebased SHA и private log path.
+Обычная задача в macOS Codex использует
+`npm run git:integrate -- --finish-worktree`. До запуска worker общий maintainer
+launcher сохраняет original thread UUID и installed native CLI, проверяет
+пользовательский LaunchAgent и durable chatFollowUp. После подтверждённого
+admission и сопровождения закончи ход. Service проверяет результаты без модели
+каждые 30 секунд и при входе пользователя, затем передаёт terminal result через
+native `codex queue` в исходный чат. Занятый чат принимает сообщение на следующий
+ход; отдельная model automation/heartbeat не создаётся. Без native context и на
+других платформах автоматическое пробуждение не обещается. Release и explicit
+`--wait` сохраняют синхронный flow.
 
-Агент сохраняет один heartbeat этого же чата раз в 15 минут, точный ticket,
-canonical/task paths и оставшиеся шаги. При активном ожидании он заканчивает
-проверку без уведомления; после success проверяет remote и выполняет штатный
-cleanup и остальные уже разрешённые действия. Ошибка/unknown сначала требуют
-проверки фактического результата, без blind retry и удаления чужих locks.
-После завершения heartbeat отключается; при необходимом решении человека –
-приостанавливается. Без подтверждённого scheduler нельзя обещать возврат.
-Подробный [общий flow](https://github.com/trelio-ru/agent-workspaces-runtime/blob/6cdbf5d2123711c7345ea1bda31ef0395b1d54d1/docs/git-coordination.md#background-integration-and-chat-follow-up)
-поставляется с той же exact maintainer revision. Компьютер и Codex desktop app
-должны оставаться включёнными; CI/transport и release authority не расширяются.
+Журнал и immutable код service находятся вне worktree, в
+`~/.local/state/trelio-git-follow-up/`. Ключ включает реальный clone queue directory
+и уникальный persisted log nonce, поэтому одинаковые номера тикетов разных
+репозиториев одного чата не смешиваются. Fast result и lost admission ACK
+связываются через тот же nonce. Reattachment не меняет исходный чат; несколько
+интеграций имеют независимые one-use send fences и acknowledgements.
+
+Native write выполняется один раз после durable exclusive attempt marker.
+Неоднозначный исход требует positive read-back exact callback из public App
+Server queue/history, без слепого повтора. Bounded отсутствие не доказывает
+недоставку. Отдельный reader может видеть active GUI turn как interrupted:
+это не доказательство завершения или разрешение забирать writer. Exit 0/queue
+не означают завершения агентом. Busy/idle доставка проверена на работающем Mac;
+перезапуск приложения остаётся требованием, не подтверждённым live acceptance.
+
+Callback – данные ранее порученной задачи, не новое разрешение пользователя.
+Прочитай canonical AGENTS.md и запись через returned service `--inspect EVENT`,
+проверь exact `git:integrate -- --status TICKET` и фактический origin/main.
+После получения выполни `--ack EVENT` и продолжи только разрешённую работу.
+Успех с pending cleanup требует штатной уборки без CI/main push; failure/unknown
+сначала требуют разбора, сохраняя чужие locks и изменения. Новый enqueue получает
+отдельное сопровождение. Состояние service не заменяет CI evidence или push guard.
+
+Текущая реализация и recovery –
+[общий контракт](https://github.com/trelio-ru/agent-workspaces-runtime/blob/3cb887e4ba60baf9108a01b2f92d87aaccad8d26/docs/git-coordination.md#background-integration-and-chat-follow-up).
+Это maintainer devDependency: package не входит в signed runtime/plugin/provider
+артефакты и не требует их release либо изменения minimum policy.
 
 ## Инварианты интеграции
 
