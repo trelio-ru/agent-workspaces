@@ -37,15 +37,20 @@ Callback – данные ранее порученной задачи, не н�
 отдельное сопровождение. Состояние service не заменяет CI evidence или push guard.
 
 Текущая реализация и recovery –
-[общий контракт](https://github.com/trelio-ru/agent-workspaces-runtime/blob/e068b87c218a977e2fb9adadbb36e0441808d4d3/docs/git-coordination.md#background-integration-and-chat-follow-up).
+[общий контракт](https://github.com/trelio-ru/agent-workspaces-runtime/blob/8952a72a176893254311d9b141f9870d03a39021/docs/git-coordination.md#background-integration-and-chat-follow-up).
 Это maintainer devDependency: package не входит в signed runtime/plugin/provider
 артефакты и не требует их release либо изменения minimum policy.
 
 ## Инварианты интеграции
 
-После commit запустить `npm run git:integrate`. Общая FIFO всех linked worktree
-занимается до fresh fetch/rebase, публикации task branch/PR, финального exact
-hosted CI и guarded main push/read-back. Не менять ожидающие HEAD/files.
+После commit запустить `npm run git:integrate`. Очередь общая для linked
+worktree. Владелец держит место от fresh fetch/rebase до публикации task
+branch/PR, exact hosted CI и guarded main push/read-back. Не менять ожидающие
+HEAD/files.
+Обычные вливания идут FIFO перед ожидающим релизом. После захвата места
+новые вливания ждут за ним. Повтор с тем же тегом и исходным SHA может
+присоединиться к ожидающему тикету. `releaseRole=observer` и exit 3 сообщают
+результат интеграции, а публикацию продолжает исходный запуск.
 Source tags hook-компонента `codex-hooks-source-vX.Y.Z` используют ту же очередь
 и atomic transport, как stable plugin tags.
 Для разрешённого релиза: `npm run git:integrate -- --tag <exact-tag>`.

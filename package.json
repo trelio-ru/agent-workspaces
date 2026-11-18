@@ -16,6 +16,6 @@
     "test:git-coordination": "node --test scripts/git-coordination.test.mjs"
   },
   "devDependencies": {
-    "@trelio/git-coordinator": "git+https://github.com/trelio-ru/agent-workspaces-runtime.git#e068b87c218a977e2fb9adadbb36e0441808d4d3"
+    "@trelio/git-coordinator": "git+https://github.com/trelio-ru/agent-workspaces-runtime.git#8952a72a176893254311d9b141f9870d03a39021"
   }
 }
