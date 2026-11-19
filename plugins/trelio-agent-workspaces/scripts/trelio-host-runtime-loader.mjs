@@ -8,6 +8,7 @@
  * package in a detached helper. A fresh installation and every long-lived MCP
  * startup perform a foreground convergence because a stale MCP process cannot
  * replace its own executable after the server raises the runtime minimum.
+ * Overlapping startups share a successful channel check across processes.
  * Therefore runtime updates neither rewrite plugin files nor invalidate
  * absolute paths held by open Codex tasks.
  */
@@ -100,12 +101,34 @@ const writePrivateJson = async (filePath, value) => {
   await fs.rename(temporaryPath, filePath);
 };
 
-const scheduleNextUpdate = async (delayMilliseconds) => {
-  // update-state is a private throttle, not a diagnostic journal. Keeping only
-  // the timestamp consumed by startDetachedUpdate avoids stale duplicate state.
+const isSameRuntime = (left, right) => left?.runtimeVersion === right.runtimeVersion
+  && left?.packageSha256 === right.packageSha256;
+
+const scheduleNextUpdate = async (delayMilliseconds, verifiedCheck) => {
+  const now = Date.now();
   await writePrivateJson(UPDATE_STATE_PATH, {
-    nextAttemptAt: new Date(Date.now() + delayMilliseconds).toISOString(),
+    nextAttemptAt: new Date(now + delayMilliseconds).toISOString(),
+    ...(verifiedCheck && { verifiedCheck: { ...verifiedCheck, completedAt: now } }),
   });
+};
+
+const hasConcurrentRuntimeCheck = async ({ origin, requestedAt, startupBudget }) => {
+  const state = await readPrivateJson(UPDATE_STATE_PATH, startupBudget);
+  const check = state?.verifiedCheck;
+  if (
+    check?.origin !== origin
+    || check.pluginVersion !== PLUGIN_VERSION
+    || !Number.isSafeInteger(check.completedAt)
+    || check.completedAt <= requestedAt
+    || check.completedAt > Date.now()
+    || !stableVersionPattern.test(check.runtimeVersion)
+    || !sha256Pattern.test(check.packageSha256)
+  ) return false;
+
+  // The shared record suppresses duplicate network work only. It must still
+  // refer to the current pointer, and every process verifies the files again
+  // before handing stdio to the selected runtime.
+  return isSameRuntime(await readPrivateJson(CURRENT_POINTER_PATH, startupBudget), check);
 };
 
 const normalizeOrigin = (rawOrigin) => {
@@ -335,7 +358,7 @@ const materializeRuntime = async (descriptor, packageBytes, startupBudget) => {
   return verified;
 };
 
-const acquireUpdateLock = async ({ waitForExisting = false, requestPolicy } = {}) => {
+const acquireUpdateLock = async ({ waitForExisting = false, requestPolicy, hasPeerResult } = {}) => {
   await ensurePrivateDirectory(RUNTIME_ROOT);
   // MCP должен успеть передать stdio рантайму до handshake timeout клиента.
   // Ожидание чужого updater расходует ТОТ ЖЕ срок, что и следующие HTTP GET,
@@ -361,6 +384,7 @@ const acquireUpdateLock = async ({ waitForExisting = false, requestPolicy } = {}
       }
       throw new Error("Trelio host runtime update lock не освободился вовремя.");
     }
+    if (await hasPeerResult?.()) return false;
     try {
       await fs.mkdir(UPDATE_LOCK_PATH, { mode: 0o700 });
       return true;
@@ -385,13 +409,19 @@ const updateRuntime = async ({
   waitForExisting = false,
   requestPolicy,
   startupBudget,
+  requestedAt,
 } = {}) => {
+  const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
+  const hasPeerResult = requestedAt === undefined ? undefined
+    : () => hasConcurrentRuntimeCheck({ origin, requestedAt, startupBudget });
   // Lock acquisition остаётся вне try/finally: процесс, который не получил
   // блокировку, не вправе удалить её или менять retry-state другого updater.
-  if (!await acquireUpdateLock({ waitForExisting, requestPolicy })) return false;
+  if (!await acquireUpdateLock({ waitForExisting, requestPolicy, hasPeerResult })) return false;
 
   try {
-    const origin = normalizeOrigin(environment.TRELIO_ORIGIN || DEFAULT_ORIGIN);
+    // Закрываем гонку между чтением общей отметки и захватом lock. Только
+    // успешная проверка, завершившаяся во время этого запуска, заменяет GET.
+    if (await hasPeerResult?.()) return false;
     const metadataUrl = new URL("/api/agent-workspaces/host-runtime/current", origin);
     metadataUrl.searchParams.set("pluginVersion", PLUGIN_VERSION);
     // Один общий network budget не даёт непрерывному медленному stream либо
@@ -427,12 +457,14 @@ const updateRuntime = async ({
     // именно этот свежий snapshot, иначе каждый ожидавший процесс повторно
     // скачает уже установленный package по своему прежнему выбору.
     const current = await readVerifiedRuntime(null, startupBudget);
-    if (
-      current
-      && current.runtimeVersion === descriptor.runtimeVersion
-      && current.packageSha256 === descriptor.packageSha256
-    ) {
-      await scheduleNextUpdate(UPDATE_INTERVAL_MS);
+    const verifiedCheck = {
+      origin,
+      pluginVersion: PLUGIN_VERSION,
+      runtimeVersion: descriptor.runtimeVersion,
+      packageSha256: descriptor.packageSha256,
+    };
+    if (isSameRuntime(current, descriptor)) {
+      await scheduleNextUpdate(UPDATE_INTERVAL_MS, verifiedCheck);
       return false;
     }
 
@@ -454,7 +486,7 @@ const updateRuntime = async ({
       packageBytes.fill(0);
     }
 
-    await scheduleNextUpdate(UPDATE_INTERVAL_MS);
+    await scheduleNextUpdate(UPDATE_INTERVAL_MS, verifiedCheck);
     return true;
   } catch (error) {
     await scheduleNextUpdate(UPDATE_FAILURE_RETRY_MS).catch(() => undefined);
@@ -508,6 +540,9 @@ export const runHostRuntimeLoader = async ({
   // imports. HTTP/lock получают только остаток 20 секунд; локальные проверки
   // и spawn ограничены теми же часами с резервом 5 секунд, без нового бюджета.
   const startupBudget = mode === "mcp" ? createMcpStartupBudget({ environment }) : undefined;
+  // The launcher clock is rounded to whole seconds on POSIX. Capture a
+  // separate timestamp so a later independent launch always checks afresh.
+  const requestedAt = startupBudget ? Date.now() : undefined;
   startupBudget?.trace("loader_enter");
   const requestPolicy = mode === "mcp" ? {
     requestTimeoutMs: MCP_STARTUP_REQUEST_TIMEOUT_MS,
@@ -534,6 +569,7 @@ export const runHostRuntimeLoader = async ({
         waitForExisting: true,
         requestPolicy,
         startupBudget,
+        requestedAt,
       });
     } catch (error) {
       updateError = error;
@@ -559,9 +595,8 @@ export const runHostRuntimeLoader = async ({
       "HOST_RUNTIME_UNAVAILABLE: подписанный Trelio host runtime ещё не опубликован или недоступен.",
     );
   }
-  // Update is deliberately outside the foreground path. This process never
-  // deletes the selected content-addressed directory, so an already running
-  // hook, bridge or MCP host keeps a stable executable tree.
+  // Run the selected content-addressed tree. Background maintenance runs
+  // after spawn and cannot change the runtime used by this stdio process.
   return await new Promise((resolve, reject) => {
     startupBudget?.check("runtime_spawn");
     startupBudget?.trace("runtime_spawn");

@@ -23,7 +23,8 @@ import unittest
 REPOSITORY = Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY / "plugins/trelio-agent-workspaces/.codex-plugin/plugin.json"
 REMOTE_SERVER = "trelio-runtime"
-NAMESPACES = {REMOTE_SERVER: "mcp__trelio_runtime", "trelio-runtime-local": "mcp__trelio_runtime_local"}
+LOCAL_SERVER = "trelio-runtime-local"
+NAMESPACES = {REMOTE_SERVER: "mcp__trelio_runtime", LOCAL_SERVER: "mcp__trelio_runtime_local"}
 
 
 def synthetic_model(lite):
@@ -68,6 +69,8 @@ class Peer(http.server.BaseHTTPRequestHandler):
             method = obj.get("method")
             result = {}
             if method == "initialize":
+                if server_name == LOCAL_SERVER and fixture.slow_catalog_seconds is not None:
+                    time.sleep(fixture.slow_catalog_seconds)
                 result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}, "resources": {}},
                           "serverInfo": {"name": server_name, "version": "1"}}
             elif method == "tools/list":
@@ -151,8 +154,8 @@ class Peer(http.server.BaseHTTPRequestHandler):
 
 class Fixture:
     def initialize(self, root, binary, lite, startup_timeout_override=1):
-        # None tests the distributed manifest deadline with a real catalog
-        # response later than the old 30 s boundary; existing exposure cases
+        # None tests the distributed deadlines with a local handshake and a
+        # remote catalog past the old 30 s boundary. Other exposure cases
         # retain their deliberately tiny 1 s budget and failed first client.
         self.slow_catalog_seconds = 31 if startup_timeout_override is None else None
         self.root = root
@@ -293,7 +296,7 @@ direct_only_tool_namespaces=[]
 
 
 class ExposureTests(unittest.TestCase):
-    def test_shipped_deadline_survives_catalog_after_old_thirty_second_boundary(self):
+    def test_shipped_deadlines_survive_handshake_and_catalog_after_thirty_seconds(self):
         with tempfile.TemporaryDirectory(prefix="trelio-codex-startup-") as directory:
             fixture = None
             try:
@@ -302,18 +305,19 @@ class ExposureTests(unittest.TestCase):
                 # Wait for optional startup in this synthetic turn. This is a
                 # fixture timing choice, never a mutation of user settings.
                 fixture.config.write_text("mcp_optional_startup_grace_ms=0\n" + fixture.config.read_text())
-                current = subprocess.run([CODEX_BINARY, "mcp", "get", REMOTE_SERVER, "--json"],
-                                         env=fixture.env, cwd=fixture.root / "cwd", capture_output=True, timeout=15)
-                self.assertEqual(current.returncode, 0)
-                self.assertEqual(json.loads(current.stdout)["startup_timeout_sec"], 60)
+                for name in NAMESPACES:
+                    current = subprocess.run([CODEX_BINARY, "mcp", "get", name, "--json"],
+                                             env=fixture.env, cwd=fixture.root / "cwd", capture_output=True, timeout=15)
+                    self.assertEqual(current.returncode, 0)
+                    self.assertEqual(json.loads(current.stdout)["startup_timeout_sec"], 60)
                 self.assertNotIn("startup_timeout_sec", fixture.config.read_text())
                 thread = fixture.start()
                 fixture.turn(thread)
-                self.assertEqual(fixture.list_counts[REMOTE_SERVER], 1)
-                self.assertNotIn(NAMESPACES[REMOTE_SERVER], fixture.captured[-1])
+                self.assertEqual(fixture.list_counts, dict.fromkeys(NAMESPACES, 1))
+                self.assertTrue(set(NAMESPACES.values()).isdisjoint(fixture.captured[-1]))
                 fixture.dispatch = True
                 fixture.turn(thread)
-                self.assertTrue(any(name == REMOTE_SERVER for name, _ in fixture.calls))
+                self.assertEqual({name for name, _ in fixture.calls}, set(NAMESPACES))
             finally:
                 if fixture:
                     fixture.close()

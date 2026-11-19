@@ -125,7 +125,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   нет; first install обязан получить signed package либо завершиться fail-closed.
 - Перед открытием долгоживущего local MCP loader выполняет bounded foreground
   convergence current signed runtime, повторно читает verified pointer и только
-  затем передаёт stdio transport immutable runtime. Обычные compatible updates
+  затем передаёт stdio transport immutable runtime. Пересекающиеся запуски
+  переиспользуют успешную проверку только для того же origin, версии plugin и
+  exact current pointer, если она завершилась после начала своего запуска.
+  Каждый процесс отдельно проверяет файлы выбранного runtime. Старый throttle
+  и отказ updater не заменяют свежую проверку. Обычные compatible updates
   bridge/hook остаются detached; network failure с существующим verified cache
   сохраняет fail-closed server gate и не подделывает compatibility.
 - Loader повторяет bounded GET целиком, включая body: до трёх повторов для
@@ -444,11 +448,11 @@ provider-tag workflow или внутренние release playbooks в этот 
   Codex с loopback MCP/model проверяет outgoing schemas в том же thread после
   startup timeout и toggle, включая Responses Lite `additional_tools`; тест
   не читает пользовательские config, credentials или беседы.
-- Remote Codex `trelio` имеет поставляемый `startup_timeout_sec=60` для
-  подключения и каталога на медленной сети. Это pre-runtime client declaration:
-  backend/signed runtime не управляют deadline Codex. Бюджеты local MCP,
-  Hooks, команд и других клиентов не расширяются; user config не правится.
-  Обоснование shell admission и regression — [контракт](docs/mcp-startup-timeout.md).
+- Codex `trelio-runtime` и `trelio-runtime-local` поставляют
+  `startup_timeout_sec=60` для подключения и каталога при массовом
+  переподключении. Это pre-runtime client declaration: backend/signed runtime
+  не управляют deadline Codex. Внутренние бюджеты loader, Hooks, команд
+  и других клиентов сохраняются. [Обоснование и проверки](docs/mcp-startup-timeout.md).
 - В Codex/Claude bundled entrypoints и `trelio-remote-skills` запускаются
   только через парные `scripts/launch-trelio-node` / `.cmd`: launcher требует
   Node.js 22+, сначала использует host-owned подсказки и bundled runtime Codex,

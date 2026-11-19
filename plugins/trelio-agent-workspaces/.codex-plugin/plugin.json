@@ -78,7 +78,8 @@
         "LOCALAPPDATA",
         "PATH"
       ],
-      "tool_timeout_sec": 660
+      "tool_timeout_sec": 660,
+      "startup_timeout_sec": 60
     }
   }
 }

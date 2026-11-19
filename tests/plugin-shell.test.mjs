@@ -62,7 +62,9 @@ const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
   })}\n`, "utf8");
 };
 
-const runLoader = async (argumentsList, environment, { timeout = 0, scriptPath = loaderPath } = {}) => await new Promise((resolve, reject) => {
+const runLoader = async (
+  argumentsList, environment, { timeout = 0, scriptPath = loaderPath, onStderr } = {},
+) => await new Promise((resolve, reject) => {
   const child = spawn(process.execPath, [scriptPath, ...argumentsList], {
     env: environment,
     shell: false,
@@ -73,7 +75,10 @@ const runLoader = async (argumentsList, environment, { timeout = 0, scriptPath =
   const stdout = [];
   const stderr = [];
   child.stdout.on("data", (chunk) => stdout.push(chunk));
-  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  child.stderr.on("data", (chunk) => {
+    stderr.push(chunk);
+    if (onStderr) onStderr(Buffer.concat(stderr).toString("utf8"));
+  });
   child.once("error", reject);
   child.once("exit", (code, signal) => resolve({
     code,
@@ -285,19 +290,20 @@ test("existing Codex companion does not match either new registration", async ()
   assert.equal(matcher.test("mcp__trelio_remote_skills__continue_trelio_local_action"), true);
 });
 
-test("Codex remote catalog gets a distributed bounded slow-link startup default", async () => {
+test("both Codex MCP registrations get a distributed bounded startup deadline", async () => {
   const codex = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
   const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));
   const cursor = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".cursor-plugin/mcp.json"), "utf8"));
   // Codex owns its deadline before either MCP can answer. This belongs in the
   // distributed declaration, not an agent's repair of one user's config or a
-  // signed runtime that the timed-out client has not reached. Keep the local
-  // loader/hook and other clients' independently owned budgets unchanged.
+  // signed runtime that the timed-out client has not reached. The loader,
+  // individual tools and other clients keep their separate deadlines.
   assert.equal(codex.mcpServers["trelio-runtime"].startup_timeout_sec, 60);
   assert.equal(codex.mcpServers["trelio-runtime"].tool_timeout_sec, 660);
   assert.deepEqual(codex.mcpServers["trelio-runtime"].args.slice(-2), ["--codex", "remote"]);
   assert.deepEqual(codex.mcpServers["trelio-runtime-local"].args.slice(-2), ["--codex", "local"]);
-  assert.equal(codex.mcpServers["trelio-runtime-local"].startup_timeout_sec, undefined);
+  assert.equal(codex.mcpServers["trelio-runtime-local"].startup_timeout_sec, 60);
+  assert.equal(codex.mcpServers["trelio-runtime-local"].tool_timeout_sec, 660);
   assert.equal(claude.mcpServers.trelio.startup_timeout_sec, undefined);
   assert.equal(cursor.mcpServers.trelio.startup_timeout_sec, undefined);
 });
@@ -829,6 +835,7 @@ test("long-lived MCP startup converges before selecting a cached runtime", async
       mode: "mcp",
       version: "3.0.2",
     });
+    assert.equal(fixture.requests.metadata, 2, "a new launch still checks the channel after an earlier success");
   } finally {
     await fixture.close();
   }
@@ -1074,23 +1081,41 @@ test("MCP startup shares one deadline across lock wait, retries and first bootst
   ]);
 });
 
-test("concurrent MCP startups share one signed package and all select the new runtime", async () => {
-  const fixture = await createMcpStartupFixture();
-  try {
-    await fixture.bootstrap();
-    fixture.publish("3.0.2");
-    fixture.behavior.packageDelayMs = 500;
-    const invocations = await Promise.all(Array.from({ length: 4 }, () => (
-      runLoader(["mcp"], fixture.environment, { timeout: 10_000 })
-    )));
-    for (const invocation of invocations) {
-      assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
-      assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version: "3.0.2" });
-    }
-    assert.equal(fixture.requests.package, 2, "one initial and one new signed package");
-    await assert.rejects(fs.access(fixture.lockPath));
-    assert.equal((await fs.readdir(fixture.runtimeRoot)).some((name) => name.endsWith(".tmp")), false);
-  } finally {
-    await fixture.close();
+test("overlapping MCP startups share one channel check and select the verified runtime", async (t) => {
+  for (const { name, warmCache, version, packageDownloads } of [
+    { name: "unchanged runtime", warmCache: true, version: "2.4.6", packageDownloads: 1 },
+    { name: "new runtime", warmCache: true, version: "3.0.2", packageDownloads: 2 },
+    { name: "first install", warmCache: false, version: "2.4.6", packageDownloads: 1 },
+  ]) {
+    await t.test(name, async () => {
+      const fixture = await createMcpStartupFixture();
+      try {
+        if (warmCache) await fixture.bootstrap();
+        fixture.publish(version);
+        const started = Array.from({ length: 6 }, () => Promise.withResolvers());
+        // Hold the first GET until every loader recorded its start. The
+        // regression then tests actual overlap even on a busy Windows runner,
+        // without using a sleep to guess when the workers have started.
+        fixture.behavior.onMetadata = () => Promise.all(started.map(({ promise }) => promise));
+        const invocations = await Promise.all(started.map(({ resolve }) => runLoader(
+          ["mcp"], { ...fixture.environment, TRELIO_MCP_STARTUP_TRACE: "1" }, {
+            timeout: 10_000,
+            onStderr: (source) => {
+              if (source.includes('"stage":"loader_enter"')) resolve();
+            },
+          },
+        )));
+        for (const invocation of invocations) {
+          assert.equal(invocation.code, 0, `${invocation.signal}: ${invocation.stderr}`);
+          assert.deepEqual(JSON.parse(invocation.stdout), { mode: "mcp", version });
+        }
+        assert.equal(fixture.requests.metadata, warmCache ? 2 : 1);
+        assert.equal(fixture.requests.package, packageDownloads);
+        await assert.rejects(fs.access(fixture.lockPath));
+        assert.equal((await fs.readdir(fixture.runtimeRoot)).some((name) => name.endsWith(".tmp")), false);
+      } finally {
+        await fixture.close();
+      }
+    });
   }
 });
