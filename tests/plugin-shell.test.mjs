@@ -33,7 +33,7 @@ test("unified discovery bootstrap avoids a second catalog call and retains old-s
   assert.match(catalog, /вызывай `search_agent_guidance` только если отсутствуют оба блока/u);
   assert.match(catalog, /В прежнем ответе без `skills` кандидаты навыков находятся в\s+`guidance`/u);
   assert.match(catalog, /`skills` \(до двух навыков\)/u);
-  assert.match(context, /лимит материалов независим/u);
+  assert.match(context, /Материалы, `guidance` и `skills` имеют свои лимиты/u);
   assert.match(catalog, /`unavailable`\/ошибка не означают\s+отсутствия навыка/u);
 });
 
