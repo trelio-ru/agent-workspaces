@@ -52,10 +52,10 @@ provider-tag workflow или внутренние release playbooks в этот 
   задаче и тестах. Не копируй сюда backend schema или runtime implementation.
 - Сохраняй чужие изменения в рабочем дереве и отделяй scope текущей задачи.
 - Согласованное узкое исключение для bundled instructions: единый `search`
-  одновременно возвращает компактный `guidance` и материалы. Старые инструкции
+  одновременно возвращает материалы, правила и процедуры в `guidance` и навыки в `skills`. Старые инструкции
   предписывали второй catalog call, поэтому bootstrap router и references
   синхронизируются с server/runtime без изменения ABI и minimum versions.
-  Test обязан сохранять legacy fallback только для ответа без `guidance`.
+  Test обязан сохранять legacy fallback только для ответа без обоих блоков.
   Это не разрешает другие model-guidance правки plugin по умолчанию.
 - Явно согласованное продуктовое переименование разрешает синхронизировать
   название «папка» в bundled worker и его справочниках. Это только текст:

@@ -30,11 +30,11 @@ test("unified discovery bootstrap avoids a second catalog call and retains old-s
   const catalog = await fs.readFile(path.join(pluginDirectory, "skills/trelio-skill-catalog/SKILL.md"), "utf8");
   const context = await fs.readFile(path.join(pluginDirectory, "skills/trelio-workspace-worker/references/scope-and-context.md"), "utf8");
   assert.match(catalog, /единый `search`/u);
-  assert.match(catalog, /После `guidance.status=searched` не вызывай `search_agent_guidance`/u);
-  assert.match(catalog, /старый ответ вообще не содержит `guidance`/u);
-  assert.match(catalog, /трёх коротких совпадений/u);
+  assert.match(catalog, /вызывай `search_agent_guidance` только если отсутствуют оба блока/u);
+  assert.match(catalog, /В прежнем ответе без `skills` кандидаты навыков находятся в\s+`guidance`/u);
+  assert.match(catalog, /`skills` \(до двух навыков\)/u);
   assert.match(context, /лимит материалов независим/u);
-  assert.match(catalog, /`unavailable`\/ошибка не означают отсутствия навыка/u);
+  assert.match(catalog, /`unavailable`\/ошибка не означают\s+отсутствия навыка/u);
 });
 
 const buildSyntheticHostRuntimePackage = ({ runtimeVersion, source }) => {
