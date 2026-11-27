@@ -112,18 +112,13 @@ references. Переиспользуй их, пока полная версия 
 
 ## Доказательство runtime
 
-В Codex с MCP `trelio-runtime` и `trelio-runtime-local` proof добавляет
-локальный рантайм. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED` сохрани код и
-следуй live диагностике. Следующие шаги для hooks относятся к прежнему
-маршруту Codex и Claude Code.
-
-Не создавай, не копируй, не сохраняй и не повторяй `runtimeSessionProof`:
-подтверждённый hook сам добавляет новый proof. Если сам
-Trelio вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищённую работу. Ответ
-доказывает отсутствие proof, но не причину. Если просмотр текущего определения
-не подтверждён, попроси включить/одобрить его штатным способом данного клиента.
-При уже подтверждённом доверии не повторяй совет: сразу прочитай восстановление
-и проверь владеющий процесс клиента и хронологию вызова hook.
+В актуальном Codex (`trelio-runtime` и `trelio-runtime-local`) proof добавляет
+рантайм. Не создавай, не копируй, не сохраняй и не повторяй `runtimeSessionProof`.
+При `TRELIO_RUNTIME_OBSERVATION_REQUIRED`, `TRELIO_RUNTIME_ADMISSION_REJECTED`
+или совместимом `TRELIO_RUNTIME_HOOK_REQUIRED` останови защищённую работу,
+сохрани код и `reason`, следуй `trelio-diagnostics`.
+Проверка Hooks допустима только при подтверждённом прежнем маршруте Codex
+или Claude Code, `reason=missing` и неподтверждённом одобрении определения.
 
 Ошибка `PreToolUse` доказывает запуск hook: сохраняй точные код и причину.
 При `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED`, любом runtime

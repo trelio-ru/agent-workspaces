@@ -290,6 +290,27 @@ test("existing Codex companion does not match either new registration", async ()
   assert.equal(matcher.test("mcp__trelio_remote_skills__continue_trelio_local_action"), true);
 });
 
+test("bundled skills reserve hook troubleshooting for the legacy route", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
+  const entries = [
+    "trelio-diagnostics/SKILL.md",
+    "trelio-project-access/SKILL.md",
+    "trelio-project-onboarding/SKILL.md",
+    "trelio-skill-catalog/SKILL.md",
+    "trelio-workspace-worker/SKILL.md",
+    "trelio-workspace-worker/references/setup-and-recovery.md",
+  ];
+  // Codex reads this Markdown directly from the shell, before signed runtime
+  // instructions can be loaded from MCP.
+  for (const entry of entries) {
+    const markdown = await fs.readFile(path.join(pluginDirectory, manifest.skills, entry), "utf8");
+    assert.match(markdown, /`trelio-runtime` и `trelio-runtime-local`/u, entry);
+    assert.match(markdown, /`TRELIO_RUNTIME_ADMISSION_REJECTED`/u, entry);
+    assert.match(markdown, /[Пп]режн(?:ий|ем)\s+маршрут/u, entry);
+    assert.match(markdown, /`reason=missing`/u, entry);
+  }
+});
+
 test("both Codex MCP registrations get a distributed bounded startup deadline", async () => {
   const codex = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".codex-plugin/plugin.json"), "utf8"));
   const claude = JSON.parse(await fs.readFile(path.join(pluginDirectory, ".mcp.json"), "utf8"));

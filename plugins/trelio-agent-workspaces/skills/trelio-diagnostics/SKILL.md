@@ -189,17 +189,24 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
 
 <a id="interpret-hook-and-version-failures-exactly"></a>
 
-## Точно различай ошибки hook и версии
+## Точно различай ошибки допуска и версии
 
-- Успешное защищённое чтение доказывает, что подтверждённый hook добавил
-  действующий proof в этой задаче.
-- `TRELIO_RUNTIME_HOOK_REQUIRED` от Trelio доказывает только отсутствие proof.
-  Он не отличает выключенные hooks от доверенного определения, которое
-  владеющий процесс не загрузил или не вызвал. Останови защищённую работу.
-  Если просмотр определения не подтверждён, назови штатное включение/одобрение
-  Hooks. Иначе не повторяй совет: сначала проверь Codex direct routing через
-  plan выше, затем загруженное определение, точный matcher и хронологию
-  установки, записи доверия, запуска App Server и задачи.
+В актуальном Codex (`trelio-runtime` и `trelio-runtime-local`) сохрани код
+`TRELIO_RUNTIME_OBSERVATION_REQUIRED`, `TRELIO_RUNTIME_ADMISSION_REJECTED`
+или совместимый `TRELIO_RUNTIME_HOOK_REQUIRED` и точный `reason`. Проверяй
+доступность наблюдения текущего хода и привязку сессии на фактическом
+маршруте. При `liveVerification.hook.state=not_applicable` пропусти
+проверку Hooks, trust и `PreToolUse`.
+
+### Только прежний маршрут Codex и Claude Code
+
+- Успешное защищённое чтение подтверждает допуск на этом вызове.
+- `TRELIO_RUNTIME_HOOK_REQUIRED` означает, что сервер не принял допуск.
+  Только `reason=missing` означает отсутствие proof. При подтверждённом
+  маршруте с хуками и неподтверждённом одобрении определения проверь Hooks.
+  При действующем одобрении проверь direct routing, загруженное определение,
+  matcher и хронологию клиента. При `invalid`, `expired` или `replayed`
+  проверь причину отказа по сессии, подписи или времени.
 - Core/App Server Codex до `0.154.0-alpha.2` не перечитывает config после локальной
   установки. Если такой процесс старше плагина/доверия или обратное не доказано,
   нужно завершить все процессы Codex/ChatGPT, открыть приложение, создать одну
@@ -216,6 +223,18 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
   включить Hooks.
 - При `TRELIO_RUNTIME_HOOK_FAILED` исправь названную локальную причину и повтори
   один раз в текущей задаче.
+
+Текущее определение ограничивает `PreToolUse` Trelio MCP, сохраняя совместимость
+lifecycle matchers с будущими версиями. Оно запускается через встроенный
+`launch-trelio-node` в macOS/Linux и `commandWindows` без кавычек, ведущий к
+`launch-trelio-node.cmd`, в Windows. Прямой `node` в загруженной команде означает
+старое несовместимое определение: обнови официальный плагин, дай пользователю
+один раз одобрить изменение и начни новую задачу. Не проси устанавливать Node
+только из-за отсутствия его в PATH desktop-процесса. Последующие исправления
+поведения runtime-скрипта не требуют изменения `hooks.json` и повторного доверия.
+
+### Версии плагина и рантайма
+
 - При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
   `AGENT_SKILL_RUNTIME_HOST_UPGRADE_REQUIRED` не обновляй plugin: stable loader
   сам дожидается подписанного runtime и повторно запускает exact bridge-команду.
@@ -235,15 +254,6 @@ namespace: удалённый – `plugin:trelio-agent-workspaces:trelio`, ло�
   проверь новую версию и повтори один раз в текущей задаче до просьбы о новой.
   Не редактируй version-файл, не подделывай заголовок, не сканируй cache и не
   обходи допуск HTTP, браузером или другим MCP.
-
-Текущее определение ограничивает `PreToolUse` Trelio MCP, сохраняя совместимость
-lifecycle matchers с будущими версиями. Оно запускается через встроенный
-`launch-trelio-node` в macOS/Linux и `commandWindows` без кавычек, ведущий к
-`launch-trelio-node.cmd`, в Windows. Прямой `node` в загруженной команде означает
-старое несовместимое определение: обнови официальный плагин, дай пользователю
-один раз одобрить изменение и начни новую задачу. Не проси устанавливать Node
-только из-за отсутствия его в PATH desktop-процесса. Последующие исправления
-поведения runtime-скрипта не требуют изменения `hooks.json` и повторного доверия.
 
 <a id="apply-only-the-matching-repair"></a>
 
@@ -266,7 +276,8 @@ lifecycle matchers с будущими версиями. Оно запускае
   этой проверки. Это исправляет
   dispatch для Code Mode, но не одобряет hook за пользователя.
 - Удалённый Trelio явно вернул HTTP 401 или отсутствие bearer: выполни вход
-  MCP Trelio один раз в точном клиенте. Codex: `codex mcp login trelio`;
+  MCP Trelio один раз в точном клиенте. Актуальный Codex использует
+  `trelio_connect`; прежний маршрут – `codex mcp login trelio`;
   Claude Code: `claude mcp login plugin:trelio-agent-workspaces:trelio`
   с точным namespace из `claude mcp list`. Дождись входа и согласия пользователя
   в браузере, затем повтори безопасное чтение один раз. Если процесс не подхватил
@@ -285,8 +296,10 @@ lifecycle matchers с будущими версиями. Оно запускае
   в cache. Старые `uv_cwd`/`process.cwd` ENOENT требуют этого же восстановления
   только после доказанного удаления cwd host; обычный отсутствующий файл или
   явно заданный каталог Workspace – другой сбой.
-- Ошибка только `trelio-remote-skills`: проверь точную команду клиента.
-  Codex `codex mcp list --json` должен показывать `./scripts/launch-trelio-node`
+- Ошибка только локального MCP: проверь точную команду клиента. В актуальном
+  Codex это `trelio-runtime-local` с аргументами `mcp --codex local`. Для
+  прежнего `trelio-remote-skills` команда `codex mcp list --json` должна
+  показывать `./scripts/launch-trelio-node`
   с аргументами `./scripts/trelio-host-runtime-loader.mjs mcp`
   с `cwd` корня плагина; старый прямой `node` требует обычного обновления/
   новой задачи. Claude `claude mcp list` должен разрешать launcher от
@@ -305,8 +318,8 @@ lifecycle matchers с будущими версиями. Оно запускае
   выполни встроенный pairing. Его одобрение остаётся защищённым MCP-действием;
   token и pairing code не показываются в чате.
 - Один `runtimeSessions.status=attention` не доказывает сбоя hooks/OAuth/плагина.
-  Текущие hooks восстанавливают истёкшее состояние и старые registration locks;
-  сообщи счётчики и повтори одно чтение до предложения очистки.
+  Сообщи счётчики и повтори одно чтение до предложения очистки. На маршруте
+  с хуками они восстанавливают истёкшее состояние и старые registration locks.
 - `TRELIO_WORKSPACE_LAYOUT_MIGRATION_BLOCKED` – локальный data-plane blocker,
   а не общий сбой bridge. Сообщи exact `details.rootDirectory`, каждую видимую
   запись из `details.blockingEntries` с её `reasonCode` и значение

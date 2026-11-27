@@ -16,18 +16,15 @@ description: Настройка Trelio Agent Workspaces в одной посто
 Git, instruction-файлов, `.gitignore`, managed blocks и CAS выполняет локальный
 runtime. Не воспроизводи эти проверки shell-командами и не собирай файлы вручную.
 
-В Codex с MCP `trelio-runtime` и `trelio-runtime-local` одноразовый proof
-добавляет рантайм. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED` следуй live
-диагностике этого маршрута. Не создавай и не копируй runtime-поля.
-В прежних регистрациях Codex и Claude Code proof добавляет hook. Если сам Trelio
-вернул `TRELIO_RUNTIME_HOOK_REQUIRED`, это доказывает только отсутствие proof;
-сохрани точный code/reason. Если просмотр
-определения не подтверждён, попроси один раз проверить Hooks в настройках
-плагина или `/hooks`; при подтверждённом доверии используй `trelio-diagnostics`
-для exact definition/matcher и хронологии владеющего процесса, не повторяй этот
-совет. Ошибка `PreToolUse` доказывает, что hook запускался. Не автоматизируй
-доверие. Runtime upgrade исправляет stable loader; только
-`AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` требует официальный plugin update.
+В актуальном Codex (`trelio-runtime` и `trelio-runtime-local`) proof добавляет
+рантайм. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED`,
+`TRELIO_RUNTIME_ADMISSION_REJECTED` или совместимом
+`TRELIO_RUNTIME_HOOK_REQUIRED` сохрани код и `reason`, следуй live-диагностике.
+Не создавай и не копируй runtime-поля. Проверка Hooks допустима только при
+подтверждённом прежнем маршруте Codex или Claude Code, `reason=missing` и
+неподтверждённом одобрении определения. Ошибка `PreToolUse` доказывает запуск
+hook. Не автоматизируй доверие. Runtime upgrade исправляет stable loader;
+только `AGENT_WORKSPACE_PLUGIN_UPGRADE_REQUIRED` требует официальный plugin update.
 
 <a id="confirm-the-working-folder-first"></a>
 

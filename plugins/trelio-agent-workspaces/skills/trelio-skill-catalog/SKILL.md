@@ -23,14 +23,14 @@ company/project-scoped Markdown-инструкция для повторяемо
 runtime. Отсутствие назначения skill означает лишь отсутствие этого навыка
 Trelio в контексте, а не запрет компании.
 
-Поиск каталога доступен без runtime admission. Защищённое чтение
-`get_agent_skill` получает одноразовый `runtimeSessionProof` от подтверждённого
-клиентского hook. Не создавай и не копируй runtime-поля. Если сам Trelio вернул
-`TRELIO_RUNTIME_HOOK_REQUIRED`, останови защищённое чтение. Ответ доказывает
-только отсутствие proof. Если просмотр определения не подтверждён, попроси
-штатное включение/одобрение в настройках или `/hooks`. При подтверждённом
-доверии не повторяй совет: через навык диагностики проверь загруженное определение,
-matcher, хронологию владеющего процесса и вызов `PreToolUse`. Не обходи проверку.
+Поиск каталога доступен без допуска. Для `get_agent_skill` в актуальном Codex
+(`trelio-runtime` и `trelio-runtime-local`) proof добавляет рантайм.
+Не создавай и не копируй runtime-поля. При `TRELIO_RUNTIME_OBSERVATION_REQUIRED`,
+`TRELIO_RUNTIME_ADMISSION_REJECTED` или совместимом
+`TRELIO_RUNTIME_HOOK_REQUIRED` останови защищённую работу, сохрани код и
+`reason`, следуй `trelio-diagnostics`. Проверка Hooks допустима только при
+подтверждённом прежнем маршруте Codex или Claude Code, `reason=missing` и
+неподтверждённом одобрении определения. Не обходи допуск.
 
 Ошибка `PreToolUse` доказывает активность hook. Сохрани точные код и причину.
 При `AGENT_WORKSPACE_HOST_RUNTIME_UPGRADE_REQUIRED` или
