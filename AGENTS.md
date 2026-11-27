@@ -383,16 +383,20 @@ provider-tag workflow или внутренние release playbooks в этот 
   заменяет конфликтующий ранний; любой draft, в том числе запомненный из истории
   переписки, нельзя склеивать, исправлять или считать предыдущей публичной
   репликой.
-- Runtime admission proof создаёт только approved hook. Агент не формирует, не
-  копирует и не обходит proof другим MCP, HTTP, browser или script.
-- `hooks/hooks.json` является стабильной client-trust границей: lifecycle
-  matchers остаются wildcard, а `PreToolUse` охватывает direct Trelio MCP в
-  Codex, plugin-qualified Trelio MCP в Claude Code и только exact local facade
-  `continue_trelio_local_action`, который переносит proof в защищённый native
-  вызов. Остальные local/unrelated tools не матчить. Behavior-only recovery и
-  lifecycle-улучшения вноси в `trelio-runtime-session.mjs`; definition меняй
-  только при реальной несовместимости host contract, потому что новый hash
-  требует повторного review пользователя.
+- Runtime admission proof добавляет клиент. В актуальном Codex его создаёт
+  локальный runtime по наблюдению текущего MCP-вызова. На прежнем маршруте
+  Codex и в Claude Code proof добавляет одобренный hook. Агент не формирует и
+  не копирует proof. Обход допуска через другой MCP, HTTP, browser или script
+  запрещён.
+- `hooks/hooks.json` остаётся стабильной client-trust границей для маршрута с
+  хуками. Lifecycle matchers остаются wildcard, а `PreToolUse` охватывает
+  прежние direct Trelio MCP в Codex, plugin-qualified Trelio MCP в Claude Code
+  и exact local facade `continue_trelio_local_action`, который передаёт proof
+  в защищённый native вызов. Актуальные `trelio-runtime` и
+  `trelio-runtime-local` и остальные посторонние инструменты вне matcher.
+  Behavior-only recovery и lifecycle меняются в `trelio-runtime-session.mjs`.
+  Меняй определение только при доказанной несовместимости host contract.
+  Новый hash требует повторного review пользователя.
 - Внешний `PreToolUse.timeout` равен 30 секундам и включает Windows cold
   start, private ACL, ожидание lock и сохранение state; внутренние 11 секунд
   регистрации не являются полным бюджетом hook. Lock считается устаревшим
@@ -403,27 +407,16 @@ provider-tag workflow или внутренние release playbooks в этот 
   value-free статусы. Он не сканирует cache, не раскрывает token, pairing/session
   ID или private key и не объявляет Hooks включёнными: client approval остаётся
   `client_managed_unknown` до отдельного client/live-read подтверждения.
-- Codex onboarding после подтверждённой установки плагина, OAuth и exact company
-  resolve сначала выполняет обязательный read-only `get_agent_instructions` как
-  live-проверку Hooks. Ранее одобренный `PreToolUse` сам добавляет proof, поэтому
-  предварительный пользовательский checkpoint не нужен. Новая либо неодобренная
-  definition fail-closed не раскрывает content; только
-  `TRELIO_RUNTIME_HOOK_REQUIRED` с `reason=missing` при неподтверждённом review
-  направляет пользователя в Hooks настроек плагина или `/hooks`. Установка либо
-  enable плагина не считаются доверием к его hooks; агент не автоматизирует
-  approval, не использует bypass-флаг и не подменяет live proof результатом
-  doctor-а. Уже наблюдённый `PreToolUse` не требует повторного review в той же
-  задаче, а стандартный `TRELIO_RUNTIME_HOOK_REQUIRED` остаётся fail-closed
-  сигналом отсутствующего proof, но сам по себе не доказывает, что Hooks выключены. При уже
-  подтверждённом trust агент не повторяет enable-инструкцию: он проверяет exact
-  matcher, dispatch и хронологию plugin/trust относительно owning App Server.
-  Подтверждённый `hook/started` направляет диагностику к завершению и timeout
-  hook, а не к restart по версии core. При отсутствии dispatch у Codex
-  core/App Server до `0.154.0-alpha.2`, не перечитывающего config после
-  установки, owner старше plugin/trust требует полностью завершить все
-  процессы Codex/ChatGPT, открыть приложение заново и проверить один protected
-  read в новой задаче; закрытие окна или новая задача в прежнем owner-процессе
-  restart-ом не считаются.
+- Onboarding после установки, OAuth и exact company resolve использует
+  защищённое чтение для подтверждения доступа на текущем маршруте. В
+  актуальном Codex сохрани точный `reason` отказа и следуй
+  [диагностике](plugins/trelio-agent-workspaces/skills/trelio-diagnostics/SKILL.md#interpret-hook-and-version-failures-exactly).
+  Только на подтверждённом маршруте с хуками `reason=missing` при
+  неподтверждённом review направляет пользователя к штатному одобрению Hooks.
+  Активный `PreToolUse` подтверждает dispatch. Дальнейшее восстановление
+  опирается на точные сведения о definition, matcher, хронологии и причине
+  отказа. Агент не автоматизирует hook approval и не подменяет proof данными
+  doctor-а.
 - Для legacy Codex с хуками Code Mode routing проверяется перед первым
   protected read через `plan_codex_trelio_hook_routing` в onboarding и diagnostics.
   План value-free
@@ -441,17 +434,12 @@ provider-tag workflow или внутренние release playbooks в этот 
   нужен только после фактического сбоя этой проверки, без требования локального
   проекта. Этот flow исправляет dispatch `PreToolUse` для direct Trelio MCP, но
   не включает Hooks, не меняет trust и не создаёт runtime proof.
-- Codex manifest обоих MCP servers задаёт
-  `omit_tools_from=["deferred","code_mode"]`: protected вызовы должны быть
-  direct для client `PreToolUse`, независимо от прежнего session snapshot
-  `features.code_mode`. MCP reload обновляет server declarations, но может
-  сохранять старый глобальный routing. Это pre-dispatch shell/security defect:
-  MCP/runtime response не может менять каталог, до которого модель не дошла.
-  Не переносить поле в Claude/Cursor definitions, не менять hook trust и не
-  считать MCP `ready` доказательством доставки схем. Regression на настоящем
-  Codex с loopback MCP/model проверяет outgoing schemas в том же thread после
-  startup timeout и toggle, включая Responses Lite `additional_tools`; тест
-  не читает пользовательские config, credentials или беседы.
+- В актуальном Codex обе регистрации используют
+  `omit_tools_from=["deferred"]` и доступны через Code Mode. Runtime проверяет
+  наблюдение текущего хода и при прямом вызове, и через Code Mode. `ready`
+  сервисов само по себе не подтверждает доступность схем. Тест на реальном Codex
+  с синтетическими MCP/model проверяет оба способа вызова, метаданные хода
+  и доставку MCP App. См. [контракт](docs/plugin-setup-and-policies.md#прямые-инструменты-после-переподключения).
 - Codex `trelio-runtime` и `trelio-runtime-local` поставляют
   `startup_timeout_sec=60` для подключения и каталога при массовом
   переподключении. Это pre-runtime client declaration: backend/signed runtime
